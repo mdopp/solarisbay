@@ -10,7 +10,7 @@ The `oscar-household` ServiceBay template bind-mounts this directory into the He
 
 | Directory | `name:` | Phase | One-liner |
 |---|---|---|---|
-| `status/` | `oscar-status` | 0 | Pings every OSCAR dependency (`oscar.db`, Hermes, Ollama, HA-MCP, ServiceBay-MCP; voice probes once Phase 1 voice is deployed) and returns per-component status. Read-only. |
+| `status/` | `oscar-status` | 0 | Pings every OSCAR dependency (`oscar.db`, Hermes, Ollama, Home Assistant, ServiceBay-MCP; voice probes once Phase 1 voice is deployed) and returns per-component status. Read-only. |
 | `audit-query/` | `oscar-audit-query` | 0 | Read-only query over `cloud_audit` (and future Phase-3a household-domain tables) in `oscar.db`. |
 | `debug-set/` | `oscar-debug-set` | 0 | Admin: toggle `system_settings.debug_mode` row in `oscar.db` (verbose logging on demand, TTL-bounded). |
 

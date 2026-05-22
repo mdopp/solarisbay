@@ -33,17 +33,17 @@ templates/
 └── oscar-household/          # the one OSCAR ServiceBay template
                               #   - runs Alembic against the local SQLite (oscar.db)
                               #   - bind-mounts skills/ into Hermes
-                              #   - wires HA-MCP + ServiceBay-MCP via post-deploy
+                              #   - registers ServiceBay-MCP via post-deploy
 gatekeeper/                   # Python source for the gatekeeper image
                               #   (published as ghcr.io/mdopp/oscar-gatekeeper,
                               #    runs as a container inside oscar-household;
                               #    reaches ServiceBay's voice template via host loopback)
 schema/                       # Alembic migrations for cloud_audit,
                               # system_settings, voice_embeddings
-                              # (+ Phase 3a domain collections)
 skills/                       # household-specific Hermes skills:
                               #   oscar-status, oscar-audit-query, oscar-debug-set
 stacks/oscar/                 # ServiceBay stack walkthrough
+docs/getting-started.md       # three-tier fastest-path walkthrough
 ```
 
 What is **not** in this repo:
@@ -53,7 +53,8 @@ What is **not** in this repo:
 - Voice-pipeline template — ServiceBay's unchanged `voice` template provides Whisper/Piper/openWakeWord; the gatekeeper container lives in OSCAR's `oscar-household` (both pods hostNetwork, host-loopback bridge)
 - Connector code (weather, etc.) — belongs to third-party MCP servers
 - Structured-logging / health-probe libraries — belong to ServiceBay platform contracts
-- `oscar-light` skill — upstreamed as `smart-home/home-assistant` to Hermes Skills Hub
+- HA device control — **Hermes ships a native HA integration** (`HASS_TOKEN`, a gateway + four device tools). The old `oscar-light` skill is deleted; there is no OSCAR HA code.
+- Document/note retrieval — Hermes' `qmd` skill (`hermes skills install official/research/qmd`) does local hybrid retrieval over markdown. Don't build a retrieval engine.
 
 If you find yourself adding any of the above to OSCAR, stop and open an issue in the appropriate upstream project instead.
 
@@ -61,7 +62,7 @@ If you find yourself adding any of the above to OSCAR, stop and open an issue in
 
 | Need | Source |
 |---|---|
-| Smart-home hub | `home-assistant` (via HA's native MCP server) |
+| Smart-home hub | `home-assistant` — reached through Hermes' **native HA integration** (`HASS_TOKEN`), a gateway + four device tools. Not HA-MCP, not an OSCAR skill. |
 | Identity, SSO, OIDC | `auth` (LLDAP + Authelia) |
 | Photos | `immich` |
 | CalDAV/CardDAV | `radicale` |
@@ -115,21 +116,24 @@ Voice embeddings are **never** in LLDAP. Biometric PII goes in OSCAR's SQLite on
 
 ## Phase plan (digest)
 
-- **Phase 0 — Chat on Hermes + lights.** Prereqs: ServiceBay v3.16+ with full-stack; `mdopp/servicebay#443` merged (registry sync); the new ServiceBay `ai-stack` templates (`ollama`, `hermes`). Deploy `ai-stack` + `oscar-household` (the latter ships its own SQLite). Operator pairs Signal once via `podman exec -it hermes signal-cli link -n "HermesAgent"` + QR-scan ([Hermes Signal docs](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/signal)). `oscar-household`'s post-deploy merges HA-MCP and ServiceBay-MCP into `${DATA_DIR}/hermes/config.yaml` and restarts Hermes via the ServiceBay API. First household skill: `smart-home/home-assistant` (upstreamed to Hermes Skills Hub).
-- **Phase 1 — Voice path.** Prereqs: `mdopp/servicebay#348` merged (HA without bundled Wyoming); ServiceBay's unchanged `voice` template deployed alongside `oscar-household`. The gatekeeper container in `oscar-household` reaches Whisper/Piper via host loopback (both pods are `hostNetwork: true`). HA Voice PE points its Wyoming endpoint at `<host>:<GATEKEEPER_PORT>`. Gatekeeper in pass-through mode (`DEFAULT_UID`).
-- **Phase 2 — Speaker ID + harnesses.** SpeechBrain ECAPA-TDNN in the gatekeeper, `voice_embeddings` table, enrolment wizard, harness YAML schema, `system.yaml` + `michael.yaml` + `guest.yaml`. Harness `uid` flows from the gatekeeper into Hermes per turn.
-- **Phase 3a — Streaming ingestion.** Build the ingestion pipeline + enrichment connectors (Open Library, MusicBrainz, Discogs). Roll-out per material type.
+Before Phase 0, see [`docs/getting-started.md`](docs/getting-started.md): Tiers 1–2 (`pip install hermes-agent` + native HA + `qmd` + Signal + voice) reach four of five intents with zero OSCAR code. Phase 0 below is the *packaged household* version of that.
+
+- **Phase 0 — Household deployment.** Prereqs: ServiceBay v3.16+ with full-stack; `mdopp/servicebay#443` merged (registry sync); the new ServiceBay `ai-stack` templates (`ollama`, `hermes` — [#544](https://github.com/mdopp/servicebay/pull/544)). Deploy `ai-stack` + `oscar-household`. The `hermes` template carries `HASS_TOKEN` so Hermes' native HA integration is live on first boot. Operator pairs Signal once via `podman exec -it hermes signal-cli link -n "HermesAgent"` + QR-scan. `oscar-household`'s post-deploy registers ServiceBay-MCP into `${DATA_DIR}/hermes/config.yaml` and restarts Hermes via the ServiceBay API.
+- **Phase 1 — Room voice.** Prereqs: `mdopp/servicebay#348` merged (HA without bundled Wyoming); ServiceBay's unchanged `voice` template deployed alongside `oscar-household`. The gatekeeper container in `oscar-household` reaches Whisper/Piper via host loopback. HA Voice PE points its Wyoming endpoint at `<host>:<GATEKEEPER_PORT>`. Gatekeeper in pass-through mode (`DEFAULT_UID`).
+- **Phase 2 — Speaker ID.** SpeechBrain ECAPA-TDNN in the gatekeeper, `voice_embeddings` table, enrolment wizard. The gatekeeper resolves which resident is speaking and hands Hermes the matching Honcho peer per turn.
+- **Phase 3a — Streaming ingestion (re-scoped).** Inbound photos/files become markdown notes the `qmd` skill indexes. A custom domain database is re-opened as a question — see `oscar-architecture.md` → Phase 3a — not a given.
 - **Phase 3b — Bulk import + MCP wrappers.** `immich-search`, `radicale-cal`, `audiobookshelf-list`. Signal/Telegram history import.
 - **Phase 4 — Active extensions.** Voice-tone analysis, multi-room voice routing, custom "Oscar" wakeword, proactive memos, TuneIn / internet-radio MCP.
 
 ## Upstream work tracked from OSCAR
 
-These are not OSCAR tickets — they live in the projects they're filed against, with OSCAR's tracking issue linking to them:
+These are not OSCAR tickets — they live in the projects they're filed against, with OSCAR's tracking issue ([`mdopp/oscar#70`](https://github.com/mdopp/oscar/issues/70)) linking to them:
 
-- `mdopp/servicebay`: `ollama` ([#538](https://github.com/mdopp/servicebay/issues/538)), `hermes` ([#539](https://github.com/mdopp/servicebay/issues/539)) templates and `ai-stack` walkthrough ([#540](https://github.com/mdopp/servicebay/issues/540)) for Phase 0. Doc-only tickets for the existing logging contract ([#542](https://github.com/mdopp/servicebay/issues/542)) and health-check system ([#543](https://github.com/mdopp/servicebay/issues/543)). `postgres` + `qdrant` are Phase-3a-conditional and only if we decide to migrate off SQLite. The `voice` template stays unchanged — gatekeeper moved into `oscar-household` ([#541](https://github.com/mdopp/servicebay/issues/541) closed as superseded).
-- `NousResearch/hermes-agent`: voice-gateway PR (Phase-0 pass-through path of the gatekeeper)
-- Hermes Skills Hub / agentskills.io: `smart-home/home-assistant` skill (from current `oscar-light`)
-- New separate repo: `mcp-audit-proxy` — the generic cloud-LLM auditing MCP
+- `mdopp/servicebay`: `ollama` ([#538](https://github.com/mdopp/servicebay/issues/538)), `hermes` ([#539](https://github.com/mdopp/servicebay/issues/539)) templates and `ai-stack` walkthrough ([#540](https://github.com/mdopp/servicebay/issues/540)) for Phase 0 — bundled in PR [#544](https://github.com/mdopp/servicebay/pull/544). Doc-only tickets for the existing logging contract ([#542](https://github.com/mdopp/servicebay/issues/542)) and health-check system ([#543](https://github.com/mdopp/servicebay/issues/543)). `postgres` + `qdrant` Phase-3a-conditional. The `voice` template stays unchanged ([#541](https://github.com/mdopp/servicebay/issues/541) closed). Still to file: the `hermes` template should grow optional `HASS_TOKEN` / `HASS_URL` variables for the native HA integration.
+- `NousResearch/hermes-agent`: voice-gateway PR (Phase-1 pass-through path of the gatekeeper).
+- New separate repo: `mcp-audit-proxy` — the generic cloud-LLM auditing MCP.
+
+The `smart-home/home-assistant` skill an earlier draft planned to upstream is **dropped** — Hermes' native HA integration supersedes it.
 
 ## Local dev setup (one-time, per clone)
 

@@ -1,6 +1,6 @@
 ---
 name: oscar-status
-description: Use when the user asks "is OSCAR alive?", "is everything working?", "why isn't the light responding?", or any other "health-check" style question. Probes the configured OSCAR dependencies (oscar.db, Ollama, Hermes, HA-MCP, ServiceBay-MCP) and reports per-component status. Read-only.
+description: Use when the user asks "is OSCAR alive?", "is everything working?", "why isn't the light responding?", or any other "health-check" style question. Probes the configured OSCAR dependencies (oscar.db, Ollama, Hermes, Home Assistant, ServiceBay-MCP) and reports per-component status. Read-only.
 version: 0.3.0
 author: OSCAR
 license: MIT
@@ -32,7 +32,7 @@ Quick "is everything OK?" probe across every OSCAR dependency. Read-only — no 
      "results": [
        {"name": "ollama", "ok": true, "latency_ms": 8, "type": "http"},
        {"name": "hermes-api", "ok": true, "latency_ms": 12, "type": "http"},
-       {"name": "ha-mcp", "ok": false, "latency_ms": 3000, "type": "http", "detail": "ConnectError: ..."},
+       {"name": "home-assistant", "ok": false, "latency_ms": 3000, "type": "http", "detail": "ConnectError: ..."},
        {"name": "oscar.db", "ok": true, "latency_ms": 1, "type": "script"}
      ]
    }
@@ -40,7 +40,7 @@ Quick "is everything OK?" probe across every OSCAR dependency. Read-only — no 
 3. If a result needs deeper context (specific error chain, last successful run, history), call `diagnose <check-id>` for that one check.
 4. Summarise verbally:
    - **All green** → "Alles ok." or "Alles grün."
-   - **One red** → name it: "HA-MCP antwortet nicht — ich erreiche Home Assistant gerade nicht."
+   - **One red** → name it: "Home Assistant antwortet nicht — ich erreiche die Haussteuerung gerade nicht."
    - **Multiple red** → group by impact: "Hermes und Ollama sind beide down — das ist ernst."
 
 ## What gets probed
@@ -52,7 +52,7 @@ This skill **does not** define what gets probed. The set of health checks is **d
 | `oscar.db` | `script` | SQLite open + `SELECT 1` on `cloud_audit` — OSCAR's audit state readable |
 | `hermes-api` | `http` | Hermes' `/health` endpoint reachable with the token |
 | `ollama` | `http` | Local LLM responding to `/api/tags` |
-| `ha-mcp` | `http` | HA's native MCP server reachable |
+| `home-assistant` | `http` | Home Assistant reachable (Hermes native HA gateway target) |
 | `servicebay-mcp` | `http` | Platform control surface reachable |
 | `gatekeeper` *(Phase 1)* | `http` | Gatekeeper container's internal `/push/health` |
 | `voice-whisper` *(Phase 1)* | `podman` | Whisper container running |
@@ -64,7 +64,7 @@ ServiceBay's existing templates (`home-assistant`, `media`, …) register their 
 
 - **Skill correctness** — we know Hermes is reachable, not that a specific skill behaves. For that, `oscar-audit-query` over `cloud_audit` and the relevant SKILL events.
 - **Voice latency** — `podman`/`http` checks say the service is up, not that it's fast. For latency hunting, `oscar-debug-set` + the gatekeeper's `gatekeeper.transcript` / `gatekeeper.response` timestamps.
-- **HA device state** — "is the office light actually on?" is an HA-MCP query, not a status probe.
+- **HA device state** — "is the office light actually on?" is a Hermes HA-tool query, not a status probe.
 
 ## Failure paths
 
@@ -74,7 +74,7 @@ ServiceBay's existing templates (`home-assistant`, `media`, …) register their 
 
 | Phase | Checks registered by oscar-household's post-deploy |
 |---|---|
-| **0 (now)** | oscar.db, hermes-api, ollama, ha-mcp, servicebay-mcp |
+| **0 (now)** | oscar.db, hermes-api, ollama, home-assistant, servicebay-mcp |
 | **1** | + gatekeeper, voice-whisper, voice-piper |
 | **2** | + gatekeeper-speaker-id (model loaded? embeddings table populated?) |
 | **3a** | + ingestion-pipeline backlog (rows in incoming state) |

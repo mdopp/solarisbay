@@ -36,13 +36,14 @@ Anything in OSCAR that *isn't* specifically about *this household* either gets c
    │   • MCP client           │                                 │    Alembic       │  ┌──────────────────┐
    │   • self-improvement     │                                 │    (oscar.db)    │  │ voice            │
    └──┬──────┬────────────────┘                                 │  • mounts OSCAR  │  │ (ServiceBay)     │
-      │      │ MCP                                              │    skills        │  │ whisper + piper +│
-      │      ▼                                                  │  • non-interact. │  │ openwakeword     │
+      │      │                                                  │    skills        │  │ whisper + piper +│
+      │      ▼ native HA gateway      ▼ MCP                      │  • non-interact. │  │ openwakeword     │
       │  ┌───────────────┐  ┌─────────────────────────┐         │    post-deploy   │  └──────────────────┘
-      │  │   HA-MCP      │  │  ServiceBay-MCP         │         │    registers MCPs│
-      │  │  (devices,    │  │  (services, health,     │         └──────────────────┘
-      │  │   scenes)     │  │   logs, diagnostics)    │
-      │  └───────────────┘  └─────────────────────────┘
+      │  │ Home Assistant│  │  ServiceBay-MCP         │         │    registers      │
+      │  │ (HASS_TOKEN,  │  │  (services, health,     │         │    ServiceBay-MCP │
+      │  │  native — not │  │   logs, diagnostics)    │         └──────────────────┘
+      │  │  an MCP)      │  └─────────────────────────┘
+      │  └───────────────┘
       ▼ Hermes LLM-provider URL
    ┌─────────────────────────────────┐
    │  ollama (ServiceBay, ai-stack)  │
@@ -56,24 +57,28 @@ One OSCAR template (`oscar-household` — schema init + skill mount + gatekeeper
 
 | Capability | How it's done | Phase |
 |---|---|---|
-| Conversation via Signal/Telegram/Discord/Slack/WhatsApp/Email | Hermes' built-in gateway, paired interactively | 0 |
-| Local LLM (Gemma family) | Ollama in ServiceBay's `ai-stack`, Hermes points its provider at the Ollama port | 0 |
-| Cloud LLM (Anthropic, Google, OpenRouter, …) | Hermes' built-in providers, every call audited via `cloud_audit` | 0 |
-| Light/heating/scenes via Home Assistant | Hermes consumes HA-MCP; the `smart-home/home-assistant` skill (Hermes Skills Hub, contributed from OSCAR) drives it | 0 |
-| Timers / alarms / reminders / recurring tasks | Hermes' native cron scheduler | 0 (Hermes-native) |
-| Health check ("Is OSCAR alive?") | `oscar-status` skill runs structured probes | 0 |
-| Cloud-LLM audit ("Was kostete der gestrige Call?") | `oscar-audit-query` skill reads `cloud_audit` | 0 |
-| Debug-mode toggle ("Verboser Log für eine Stunde") | `oscar-debug-set` skill flips `system_settings.debug_mode` | 0 |
-| Voice in the house (Wyoming + HA Voice PE) | ServiceBay's unchanged `voice` template + OSCAR's `gatekeeper` container inside `oscar-household` (both pods `hostNetwork: true`) | 1 |
+| Conversation via Signal/Telegram/Discord/Slack/WhatsApp/Email/… | Hermes' built-in gateways (20+), paired interactively | Hermes-native |
+| Local LLM (Gemma family) | Ollama in ServiceBay's `ai-stack`, Hermes points its provider at the Ollama port | Hermes-native |
+| Cloud LLM (Anthropic, Google, OpenRouter, …) | Hermes' built-in providers; OSCAR adds the per-call `cloud_audit` row | Hermes + OSCAR |
+| Light/heating/scenes/media via Home Assistant | Hermes' **native HA integration** — a gateway + four device-control tools, `HASS_TOKEN` setup | Hermes-native |
+| Document / note retrieval | Hermes' `qmd` skill — local BM25 + vector + rerank over markdown | Hermes-native |
+| Timers / alarms / reminders / recurring tasks | Hermes' native cron scheduler | Hermes-native |
+| Cloud-LLM audit ("Was kostete der gestrige Call?") | `oscar-audit-query` skill reads `cloud_audit` | OSCAR |
+| Debug-mode toggle ("Verboser Log für eine Stunde") | `oscar-debug-set` skill flips `system_settings.debug_mode` | OSCAR |
+| Health check ("Is OSCAR alive?") | `oscar-status` skill reads ServiceBay-MCP's health surface | OSCAR |
+| Voice — CLI + Discord voice channels | Hermes' voice mode (faster-whisper local STT, local TTS) | Hermes-native |
+| Voice in the house (Wyoming + HA Voice PE pucks) | ServiceBay's `voice` template + OSCAR's `gatekeeper` container in `oscar-household` | OSCAR (Phase 1) |
+
+Most of this is reachable **today** from a bare `pip install hermes-agent` — see [`docs/getting-started.md`](docs/getting-started.md). OSCAR's own contribution is the audit policy, the household packaging, and the room-voice gatekeeper.
 
 ## Phase plan
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | Chat on Hermes + lights via HA-MCP. Family talks to the assistant in Signal; the assistant turns on the lights. | code design complete; deploy pending the new ServiceBay `ai-stack` templates ([tracking](https://github.com/mdopp/oscar/issues)) |
-| **1** | Voice path. HA Voice PE → gatekeeper (in `oscar-household`) → Whisper/Piper (ServiceBay's unchanged `voice` template) → Hermes. Single uid. | designed |
-| 2 | Speaker ID (SpeechBrain) → LLDAP-uid → per-resident memory namespace and tool scope. | designed |
-| 3a | Ingestion pipeline. Books → records → audiobooks → documents → experience notes. | designed |
+| **0** | Household deployment: chat + native HA control + memory + cloud audit, packaged as the ServiceBay `ai-stack` + `oscar-household`. | code design complete; deploy pending the ServiceBay `ai-stack` templates ([#70](https://github.com/mdopp/oscar/issues/70)) |
+| **1** | Room voice. HA Voice PE → gatekeeper (in `oscar-household`) → Whisper/Piper (ServiceBay's `voice` template) → Hermes. Single uid. | designed |
+| 2 | Speaker ID (SpeechBrain) → LLDAP-uid → the resident's Honcho peer + tool scope. | designed |
+| 3a | Ingestion — inbound photos/files become markdown notes the `qmd` skill indexes. A custom domain database is re-opened as a question, not a given. | re-scoped |
 | 3b | Bulk import + MCP wrappers for Immich/Radicale/Audiobookshelf. | sketched |
 | 4 | Multi-room voice, voice-tone analysis, custom "Oscar" wakeword, proactive memos. | sketched |
 
@@ -91,16 +96,27 @@ schema/                       # Alembic migrations for the OSCAR tables
 skills/                       # household-specific Hermes skills:
                               #   oscar-status, oscar-audit-query, oscar-debug-set
 stacks/oscar/                 # ServiceBay stack walkthrough
+docs/getting-started.md       # the three-tier fastest path
 ```
 
 OSCAR is intentionally small. Anything bigger has either moved upstream or hasn't been built yet — see [`oscar-architecture.md`](oscar-architecture.md) for the boundary.
 
-## Install
+## Getting started
 
-OSCAR ships as a **ServiceBay external registry** — no install script. The walkthrough is in two steps:
+**Fastest path — try it today, no OSCAR code, no ServiceBay templates:**
 
-1. **Prereqs**: ServiceBay v3.16+ with the full-stack deployed; [mdopp/servicebay#348](https://github.com/mdopp/servicebay/issues/348) merged (needed only once you add voice); [mdopp/servicebay#443](https://github.com/mdopp/servicebay/issues/443) merged (so the OSCAR registry can be cloned).
-2. **Two stacks**: walk through ServiceBay's `ai-stack` first (Ollama + Hermes), then OSCAR's stack (just `oscar-household` — it ships its own SQLite and runs the gatekeeper container inside the same pod). Optional, for the voice path: deploy ServiceBay's unchanged `voice` template alongside — the gatekeeper in `oscar-household` reaches it via host loopback. (Phase 3a may add Postgres + Qdrant to `ai-stack` if the domain-collection scale calls for it — for Phase 0–2 the SQLite in `oscar-household` is enough.)
+```bash
+pip install hermes-agent && hermes postinstall
+hermes model        # pick a provider (local Ollama or a cloud key)
+hermes --tui        # talk to it
+```
+
+Then layer on native HA control (`HASS_TOKEN`), the `qmd` document-retrieval skill, Signal, and voice — all Hermes-native. That's four of OSCAR's five intents from a `pip install`. Full three-tier walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
+
+**Household deployment (the packaged route):** OSCAR ships as a **ServiceBay external registry** — no install script.
+
+1. **Prereqs**: ServiceBay v3.16+ with the full-stack deployed; [mdopp/servicebay#443](https://github.com/mdopp/servicebay/issues/443) merged (so the OSCAR registry can be cloned); [mdopp/servicebay#348](https://github.com/mdopp/servicebay/issues/348) merged (needed only once you add room voice).
+2. **Two stacks**: walk through ServiceBay's `ai-stack` (Ollama + Hermes — [#544](https://github.com/mdopp/servicebay/pull/544)), then OSCAR's stack (`oscar-household` — ships its own SQLite, runs the gatekeeper container). Optional, for room voice: deploy ServiceBay's `voice` template alongside.
 
 Full walkthrough: [`stacks/oscar/README.md`](stacks/oscar/README.md).
 
