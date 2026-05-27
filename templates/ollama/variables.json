@@ -1,0 +1,46 @@
+{
+  "OLLAMA_PORT": {
+    "type": "text",
+    "description": "Host port Ollama binds on. Default-bound to 127.0.0.1 (see template.yml — OLLAMA_HOST). For LAN/public access put NPM + Authelia in front, do not change this to 0.0.0.0.",
+    "default": "11434"
+  },
+  "OLLAMA_DEFAULT_MODEL": {
+    "type": "text",
+    "description": "Primary model — the tag Hermes' `model.model` points at after install. Use any Ollama library tag (https://ollama.com/library) or a user-namespaced tag like `VladimirGav/gemma4-26b-16GB-VRAM:latest`. Default `gemma4:e4b` is the household-stack sweet spot: 8B params at Q4_K_M, ~10 GB on disk, fits 100% on a 16 GB GPU, AND ships native multimodal capabilities (`ollama show gemma4:e4b` reports `completion, vision, audio, tools, thinking`). That single tag covers what we used to need a separate vision pull for (#923 / #938).",
+    "default": "gemma4:e4b"
+  },
+  "OLLAMA_EXTRA_MODELS": {
+    "type": "text",
+    "description": "Additional models to pre-pull on first install (comma-separated tags), on top of OLLAMA_DEFAULT_MODEL. The point is to give the operator one-click switchable alternatives in Hermes' Models tab without a fresh download. Default ships `VladimirGav/gemma4-26b-16GB-VRAM:latest` — a quantized 26B that still fits 100% on a 16 GB GPU, complementing the smaller default for harder text reasoning. CAVEAT: the aggressive quantization strips vision and audio from its `Capabilities` block (it reports `completion, tools, thinking` only). Switching the active model to this tag gives up multimodal — keep `gemma4:e4b` for OCR / voice-note flows, or pull plain `gemma4:26b` (~17 GB, partial CPU offload) which retains vision. Set to empty string to skip extras.",
+    "default": "VladimirGav/gemma4-26b-16GB-VRAM:latest"
+  },
+  "OLLAMA_VISION_MODEL": {
+    "type": "text",
+    "description": "Optional second model pulled on first start, mainly historical now that the default OLLAMA_DEFAULT_MODEL (`gemma4:e4b`) ships vision + audio natively. Leave blank in normal household installs — only set this if you've changed OLLAMA_DEFAULT_MODEL to a text-only tag and still want OSCAR's `media-ingestion-multimodal` skill to have a vision backend. Suggested non-default tags: `qwen2.5vl:7b` (Apache-2, ~6 GB), `llava:13b` (~8 GB), `bakllava:7b` (~5 GB).",
+    "default": ""
+  },
+  "OLLAMA_GPU_PASSTHROUGH": {
+    "type": "text",
+    "description": "Leave blank for CPU-only inference (works everywhere, slower for larger models). Set to any non-blank value (e.g. 'yes') to enable NVIDIA GPU passthrough via CDI — requires a CDI-registered NVIDIA GPU on the host (set up with `nvidia-ctk cdi generate`). When non-blank, the rendered pod manifest gets `resources.limits.nvidia.com/gpu: \"1\"`; podman matches that against the CDI device registry at start time.",
+    "default": ""
+  },
+  "OLLAMA_READINESS_TIMEOUT_SECONDS": {
+    "type": "text",
+    "description": "How long post-deploy waits for the first model pull to finish. Multi-GB models on a slow connection can take 10+ minutes; the default leaves slack. Tune down for tiny models on fast links if you want faster install feedback.",
+    "default": "600"
+  },
+  "OLLAMA_SUBDOMAIN": {
+    "type": "subdomain",
+    "description": "Subdomain for the Ollama API. Internal exposure — gets a cert and a LAN-only access list, plus Authelia forward-auth on top because Ollama itself ships no auth. Use https://<OLLAMA_SUBDOMAIN>.<PUBLIC_DOMAIN>/api/generate from any LAN client; mobile/external clients get a 403 from NPM and a 302-to-Authelia from any in-LAN unauthenticated request.",
+    "default": "ollama",
+    "exposure": "internal",
+    "proxyPort": "OLLAMA_PORT",
+    "loopbackOnly": true,
+    "proxyConfig": {
+      "allow_websocket_upgrade": true,
+      "block_exploits": true,
+      "ssl_forced": true,
+      "advanced_config": "__authelia_forward_auth__"
+    }
+  }
+}

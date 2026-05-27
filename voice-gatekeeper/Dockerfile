@@ -1,0 +1,23 @@
+FROM docker.io/python:3.12-slim
+
+WORKDIR /app
+
+# System deps kept minimal. Wyoming is pure Python; httpx wheel is pre-built.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md /app/
+COPY src /app/src
+
+RUN pip install --no-cache-dir /app
+
+ENV PYTHONUNBUFFERED=1 \
+    OSCAR_COMPONENT=gatekeeper
+
+# Wyoming pipeline endpoint that satellites (HA Voice PE, wyoming-satellite
+# CLI, etc.) connect to. The Wyoming-internal whisper/piper services are
+# reached via 127.0.0.1 inside the same pod.
+EXPOSE 10700
+
+ENTRYPOINT ["python", "-m", "gatekeeper"]

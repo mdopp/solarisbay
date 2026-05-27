@@ -1,0 +1,139 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oscar-household
+  labels:
+    app: oscar-household
+  annotations:
+    servicebay.label: "AI Skills (OSCAR/household)"
+    servicebay.schema-version: "1"
+    # Wyoming endpoint for satellites (HA Voice PE, wyoming-satellite CLI).
+    # The gatekeeper container is the only consumer that exposes a host
+    # port; the schema-init sidecar exits immediately, and the post-deploy
+    # hook talks to Hermes over the shared host loopback.
+    servicebay.ports: "{{GATEKEEPER_PORT}}/tcp"
+    # Deploy order: hermes must exist first (post-deploy talks to its
+    # HTTP API); voice (Whisper/Piper) reached via host loopback at
+    # 127.0.0.1:10300 / 10200, so it must be running too if the gatekeeper
+    # should actually do something.
+    servicebay.dependencies: "hermes,voice"
+    # TCP probe against the gatekeeper's Wyoming listener — once that
+    # socket accepts, the pod is at least minimally functional (init
+    # container is one-shot and has already touched the SQLite schema).
+    # ServiceBay's `household` stack relies on this signal to drop
+    # oscar-household from "unknown" to "ready". Without it the whole
+    # household stack never reports ready=true even when everything is
+    # actually running.
+    servicebay.healthcheck: |
+      kind: tcp
+      host: 127.0.0.1
+      port: 10700
+      interval: 30s
+      timeout: 5s
+      startup_timeout: 3m
+spec:
+  # hostNetwork so:
+  #   - the gatekeeper reaches the ServiceBay `voice` template's Wyoming
+  #     services at 127.0.0.1:10300/10200 (two hostNetwork pods share
+  #     the host netns)
+  #   - the gatekeeper reaches Hermes at 127.0.0.1:{{HERMES_API_PORT}}
+  #     (same reason)
+  #   - HA Voice PE satellites on the LAN reach the gatekeeper at
+  #     <host-ip>:<GATEKEEPER_PORT>
+  hostNetwork: true
+  restartPolicy: Always
+  # oscar-household-init runs as a Kubernetes-style init container —
+  # podman supports `initContainers:` on pod specs and treats it as
+  # run-to-completion before regular containers start. With the unit
+  # `restartPolicy: Always` we previously declared the init in
+  # `containers:` and it thrashed: Alembic exits 0 → podman restarts
+  # it (because restartPolicy applies to all `containers:`) → Alembic
+  # runs again (idempotent, so harmless) → restart → … forever.
+  # Moving it to `initContainers:` runs it exactly once per pod start
+  # and lets it stay `Completed` after the migrations land.
+  initContainers:
+  - name: oscar-household-init
+    image: ghcr.io/mdopp/oscar-household-init:latest
+    env:
+    - name: OSCAR_DB_URL
+      value: "sqlite:////var/lib/oscar/oscar.db"
+    - name: OSCAR_DEBUG_MODE_DEFAULT
+      value: "{{OSCAR_DEBUG_MODE}}"
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /var/lib/oscar
+      name: oscar-data
+
+  containers:
+  # gatekeeper — OSCAR-published Wyoming-to-Hermes bridge. Phase 0/1
+  #    runs pass-through with uid = DEFAULT_UID; Phase 2 reads
+  #    voice_embeddings from oscar.db and resolves uid per turn.
+  - name: gatekeeper
+    image: "{{GATEKEEPER_IMAGE}}"
+    env:
+    - name: OSCAR_COMPONENT
+      value: "gatekeeper"
+    - name: GATEKEEPER_URI
+      value: "tcp://0.0.0.0:10700"
+    - name: WHISPER_URI
+      value: "{{WHISPER_URI}}"
+    - name: PIPER_URI
+      value: "{{PIPER_URI}}"
+    - name: OPENWAKEWORD_URI
+      value: "{{OPENWAKEWORD_URI}}"
+    - name: HERMES_URL
+      value: "http://127.0.0.1:{{HERMES_API_PORT}}"
+    - name: HERMES_TOKEN
+      value: "{{HERMES_API_KEY}}"
+    - name: DEFAULT_UID
+      value: "{{DEFAULT_UID}}"
+    # Push endpoint — Hermes calls POST /push for cron-fire / proactive
+    # deliveries. Pod-internal listener, not exposed via hostPort.
+    - name: PUSH_HOST
+      value: "0.0.0.0"
+    - name: PUSH_PORT
+      value: "10750"
+    - name: PUSH_TOKEN
+      value: "{{PUSH_TOKEN}}"
+    # JSON map of `<device-name> -> <wyoming-uri>` for push-to-device.
+    # Empty by default; populated per household once devices are paired.
+    - name: VOICE_PE_DEVICES
+      value: '{{VOICE_PE_DEVICES}}'
+    # Path to oscar.db so Phase 2 speaker-ID can read voice_embeddings.
+    - name: OSCAR_DB_PATH
+      value: "/var/lib/oscar/oscar.db"
+    - name: OSCAR_DEBUG_MODE
+      value: "{{OSCAR_DEBUG_MODE}}"
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /var/lib/oscar
+      name: oscar-data
+    # No `ports:` block — `hostNetwork: true` (set on the pod) puts the
+    # gatekeeper directly on the host netns, so its listener at
+    # tcp://0.0.0.0:10700 already binds host port 10700. Adding port
+    # mappings alongside hostNetwork makes `podman kube play` reject the
+    # spec with "PortMappings can only be used with Bridge, slirp4netns,
+    # or pasta networking" — observed during a household-stack install
+    # 2026-05-25. GATEKEEPER_PORT remains in variables.json for the
+    # servicebay.ports annotation + NPM proxy host, but it must match
+    # the GATEKEEPER_URI hard-coded above (10700).
+
+  volumes:
+  # The OSCAR data volume holds:
+  #   - oscar.db   (SQLite, populated by the init container, read by the
+  #                 gatekeeper for Phase 2 voice_embeddings)
+  #   - skills/    (read-mounted into the Hermes container by the
+  #                 ServiceBay `hermes` template via a shared hostPath;
+  #                 cloned by ServiceBay's registry sync)
+  - name: oscar-data
+    hostPath:
+      path: {{DATA_DIR}}/oscar-household
+      type: DirectoryOrCreate
+
+# Post-deploy: ./post-deploy.py
+#
+# Drives Hermes setup non-interactively from the wizard variables, then
+# registers HA-MCP and ServiceBay-MCP via Hermes' HTTP API. See
+# post-deploy.py for the flow.

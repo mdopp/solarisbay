@@ -1,0 +1,20 @@
+name: oscar
+version: "0.1.0"
+description: |
+  OSCAR — household AI assistant.
+
+  Provides a Hermes skill pack (audit-query, debug-set, dynamic-skills,
+  media-ingestion-multimodal, status) plus the ServiceBay templates and
+  container images that deploy the household pod (oscar-household)
+  alongside Hermes + Ollama. Installable two ways:
+
+  - As a Hermes plugin via Skills → Install from URL: clone this repo
+    to ~/.hermes/plugins/oscar/. The __init__.py at the repo root
+    walks templates/oscar-household/skills/ and registers each
+    SKILL.md via ctx.register_skill(...).
+
+  - As a ServiceBay external registry (mdopp/oscar) alongside
+    mdopp/servicebay-templates. The oscar-household template's
+    post-deploy.py copies templates/oscar-household/skills/ into
+    Hermes' bind-mount target {{DATA_DIR}}/oscar-household/skills/
+    where Hermes' built-in skill loader auto-discovers them.

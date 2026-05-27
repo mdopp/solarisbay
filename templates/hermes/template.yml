@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hermes
+  labels:
+    app: hermes
+  annotations:
+    servicebay.label: "AI Assistant (Hermes)"
+    servicebay.schema-version: "3"
+    servicebay.ports: "{{HERMES_API_PORT}}/tcp,{{HERMES_DASHBOARD_PORT}}/tcp"
+    # Hermes' default LLM_PROVIDER_URL points at the `ollama` template's
+    # default port. The wizard topo-sorts based on this annotation so
+    # ollama lands first and the http://127.0.0.1:11434 target resolves
+    # on first Hermes start.
+    # home-assistant must come up before us so the post-deploy can pick up
+    # `.oscar-long-lived-token` (#1002 fix for the timing race that left
+    # HASS_TOKEN as a placeholder). ollama is the LLM provider Hermes
+    # talks to on startup.
+    servicebay.dependencies: "ollama,home-assistant"
+    # Continuous health probe (#628). The Hermes API server requires an
+    # API_SERVER_KEY for every endpoint, so an unauthenticated HTTP
+    # probe would always get 401. A raw TCP connect proves the listener
+    # is up without smuggling secrets into the probe config.
+    servicebay.healthcheck: |
+      kind: tcp
+      host: 127.0.0.1
+      port: "{{HERMES_API_PORT}}"
+      interval: 30s
+      timeout: 5s
+      startup_timeout: 5m
+spec:
+  # hostNetwork so:
+  #   1. Hermes can reach Ollama at 127.0.0.1:11434 — two hostNetwork
+  #      pods share the host's network namespace, which is what makes
+  #      that loopback-cross-pod call work.
+  #   2. OSCAR's `oscar-household` pod (also hostNetwork) can reach
+  #      Hermes' API at 127.0.0.1:{{HERMES_API_PORT}}.
+  #   3. NPM (also hostNetwork) proxies the dashboard container from the
+  #      same host loopback, behind Authelia forward-auth.
+  hostNetwork: true
+  containers:
+  - name: hermes
+    image: docker.io/nousresearch/hermes-agent:latest
+    # The image's entrypoint is `/usr/bin/tini -g -- /opt/hermes/docker/entrypoint.sh`,
+    # which at the end does `exec hermes "$@"`. Without args the
+    # interactive TUI starts, detects no terminal, exits with
+    # "Goodbye!", systemd restarts → infinite TUI-exit loop (#706
+    # initial fix dropped `command:` entirely, which IS what produced
+    # this loop — the pre-#706 `command: [gateway, run]` was using
+    # `gateway` as if it were a binary, which podman kube interprets
+    # as `command:` → looks for `gateway` on PATH → not found → exit
+    # 125. Both forms were wrong.
+    #
+    # Correct invocation: pass `gateway run` as `args:` (CMD), let
+    # the image's entrypoint receive them and `exec hermes gateway
+    # run`. The entrypoint's first-arg-is-executable shortcut doesn't
+    # fire because `gateway` isn't an exec on PATH — falls through to
+    # the `exec hermes "$@"` branch, which is exactly what we want.
+    args:
+    - gateway
+    - run
+    env:
+    # API server config (per upstream Docker docs at
+    # https://hermes-agent.nousresearch.com/docs/user-guide/docker).
+    # Each value is wired non-interactively — `hermes setup` is NOT
+    # invoked. UX_PHILOSOPHY.md § 2 bans operator-facing `podman exec`
+    # instructions; everything Hermes needs at first boot lives here
+    # or in DATA_DIR/hermes/config.yaml (written by post-deploy.py).
+    - name: API_SERVER_ENABLED
+      value: "true"
+    - name: API_SERVER_HOST
+      value: "127.0.0.1"
+    - name: API_SERVER_PORT
+      value: "{{HERMES_API_PORT}}"
+    - name: API_SERVER_KEY
+      value: "{{HERMES_API_KEY}}"
+    - name: API_SERVER_CORS_ORIGINS
+      value: "*"
+    - name: HASS_URL
+      value: "{{HASS_URL}}"
+    - name: HASS_TOKEN
+      value: "{{HASS_TOKEN}}"
+    # OpenAI-compatible inference target for Hermes' API server platform.
+    # The config.yaml `model:` block (provider/base_url/api_key — written
+    # by post-deploy.py) is read by `hermes` CLI / dashboard but NOT by
+    # `gateway run`'s `api_server` platform when resolving credentials
+    # for /v1/chat/completions: `_resolve_runtime_agent_kwargs()` calls
+    # `resolve_runtime_provider(requested=os.getenv('HERMES_INFERENCE_PROVIDER'))`
+    # and that path's `_resolve_named_custom_runtime` short-circuits on
+    # `provider: custom` (config.yaml's value) before ever consulting
+    # `model.base_url`. Without OPENAI_BASE_URL + OPENAI_API_KEY in env,
+    # every chat completion through Open WebUI / OSCAR / external API
+    # hits its auto-detect fallback and raises "No inference provider
+    # configured. Run 'hermes model'…" — observed live 2026-05-26.
+    # Setting these here makes the env path's openrouter-with-custom-
+    # endpoint detection route every API-server chat through Ollama,
+    # matching the `model.base_url` the config.yaml already declares.
+    - name: OPENAI_BASE_URL
+      value: "{{HERMES_LLM_PROVIDER_URL}}"
+    - name: OPENAI_API_KEY
+      value: "ollama"
+    ports:
+    - containerPort: {{HERMES_API_PORT}}
+    volumeMounts:
+    - mountPath: /opt/data
+      name: hermes-data
+    - mountPath: /opt/data/skills/oscar
+      name: oscar-skills
+    # Drafted skills go here, NOT under /opt/data/skills/oscar. Hermes'
+    # skill loader scans /opt/data/skills/oscar; anything that lands
+    # there is live immediately. OSCAR's dynamic-skills SKILL.md writes
+    # drafts here instead, and an admin promotes them via the
+    # ServiceBay dashboard (issue #940). Keeping the pending dir
+    # outside the loader's scan root is the structural half of that
+    # gate — the SKILL.md is the prompt-level half.
+    - mountPath: /opt/data/skills-pending
+      name: oscar-skills-pending
+    - mountPath: /opt/data/notes
+      name: syncthing-notes
+
+  # The Hermes web dashboard (config / API-key / session UI) runs as its
+  # own `hermes dashboard` process — the HERMES_DASHBOARD* env vars are
+  # NOT read by `hermes gateway run`, so it cannot share the gateway
+  # container. Both containers share the hermes-data volume (one Hermes
+  # home); upstream supports running the gateway and dashboard together.
+  #   - `hermes dashboard` binds 127.0.0.1:{{HERMES_DASHBOARD_PORT}} (its
+  #     default host). The pod is hostNetwork, so NPM — also hostNetwork —
+  #     proxies hermes.{{PUBLIC_DOMAIN}} to that loopback address behind
+  #     Authelia forward-auth. The dashboard surfaces API keys, so it is
+  #     never bound to a LAN-reachable address (no `--insecure`).
+  #   - `--skip-build` serves the web UI dist bundled in the image
+  #     (/opt/hermes/hermes_cli/web_dist); `--no-open` suppresses the
+  #     browser launch, which is meaningless in a container.
+  - name: hermes-dashboard
+    image: docker.io/nousresearch/hermes-agent:latest
+    args:
+    - dashboard
+    - --port
+    - "{{HERMES_DASHBOARD_PORT}}"
+    - --no-open
+    - --skip-build
+    ports:
+    - containerPort: {{HERMES_DASHBOARD_PORT}}
+    volumeMounts:
+    - mountPath: /opt/data
+      name: hermes-data
+  volumes:
+  - name: hermes-data
+    hostPath:
+      path: {{DATA_DIR}}/hermes
+      type: DirectoryOrCreate
+  - name: oscar-skills
+    hostPath:
+      path: {{DATA_DIR}}/oscar-household/skills
+      type: DirectoryOrCreate
+  - name: oscar-skills-pending
+    hostPath:
+      path: {{DATA_DIR}}/oscar-household/skills-pending
+      type: DirectoryOrCreate
+  - name: syncthing-notes
+    hostPath:
+      path: {{DATA_DIR}}/file-share/data/notes
+      type: DirectoryOrCreate

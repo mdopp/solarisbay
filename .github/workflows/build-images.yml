@@ -1,0 +1,97 @@
+name: build-images
+
+# Build and publish container images for OSCAR.
+#
+# - On push to `main` and tags `v*`: builds + pushes to GHCR.
+# - On pull requests touching image sources: builds without pushing,
+#   so Dockerfiles are validated before merge.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'voice-gatekeeper/**'
+      - 'database/**'
+      - '.github/workflows/build-images.yml'
+  pull_request:
+    paths:
+      - 'voice-gatekeeper/**'
+      - 'database/**'
+      - '.github/workflows/build-images.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: oscar-gatekeeper
+            context: voice-gatekeeper
+            description: "OSCAR Wyoming-to-Hermes bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Runs as a container inside oscar-household; reaches ServiceBay's voice template via host loopback (both pods hostNetwork)."
+          - image: oscar-household-init
+            context: database
+            description: "OSCAR schema-init sidecar — runs alembic upgrade head against oscar-household's local SQLite (oscar.db) on every pod start. Idempotent."
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check Dockerfile exists
+        id: check
+        run: |
+          if [ -f "${{ matrix.context }}/Dockerfile" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${{ matrix.context }}/Dockerfile not present on this ref; skipping ${{ matrix.image }} build."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.exists == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.check.outputs.exists == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        if: steps.check.outputs.exists == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build (and push on main/tags)
+        if: steps.check.outputs.exists == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          platforms: linux/amd64
