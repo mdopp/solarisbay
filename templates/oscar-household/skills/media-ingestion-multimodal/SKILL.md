@@ -1,7 +1,7 @@
 ---
 name: media-ingestion-multimodal
 description: Triggers automatically when a resident uploads an image or photo attachment (such as a book cover, physical document, receipt, or music album art) via Signal, Telegram, Discord, or any other messaging gateway, or explicitly asks to ingest or scan a photographed item. Extracts structured metadata (ISBN, Title, Author, Artist, Tracklist, or Document Summary) and full OCR transcripts using multimodal LLMs. Writes the formatted, Obsidian-compatible structured Markdown note directly into the '/opt/data/notes/' folder (which is synced via Syncthing) so that the native 'qmd' skill can automatically index and retrieve it.
-version: 1.0.0
+version: 1.1.0
 author: OSCAR
 license: MIT
 ---
@@ -62,6 +62,31 @@ Do **not** trigger on plain text messages that do not contain an image attachmen
   - Section for **Summary & Key Facts**
   - Section for **OCR Transcript** (under an expandable folding block if long)
 
+### 3b. Insert Obsidian Wiki-Links (vault-aware)
+
+Turn the key entities into Obsidian wiki-links so the new note joins the
+graph instead of sitting isolated. Applies to the structured-metadata
+fields — **author(s)**, **genre(s)**, **artist** — and any **related works**
+you extracted.
+
+1. **List candidate link targets** from the metadata: each author, each
+   genre, the artist (albums), and any explicitly named related titles.
+2. **Vault existence check** — for each candidate, look for an existing note
+   before linking. Search `/opt/data/notes/` recursively, e.g. with the
+   `terminal` tool: `grep -ril "<Entity>" /opt/data/notes/` or
+   `ls /opt/data/notes/**/"<Entity>".md`. A hit means the target note
+   already exists; no hit means it's new.
+3. **Write the link either way.** Obsidian renders `[[Entity]]` whether or
+   not the target file exists yet (a missing target shows as an unresolved
+   link that resolves the moment the note is created). So always emit the
+   wiki-link. **Do not create stub entity notes in this slice** — auto-stubs
+   and the `authors/` / `genres/` folders are a later step of #85.
+4. **Render the links in the document body's metadata block** (not in the
+   YAML frontmatter — keep frontmatter values plain strings):
+   - `**Author:** [[Frank Herbert]]`
+   - `**Genre:** [[Science Fiction]]`
+   - `**Related:** [[Dune Messiah]], [[Children of Dune]]`
+
 ### 4. Write Markdown to the Sync Folder
 - Create a safe, sanitized filename to avoid name collisions:
   - Books: `book_<sanitized_title>.md`
@@ -104,7 +129,7 @@ year: {{year}}
 | Feld | Wert |
 |---|---|
 | **Titel** | {{title}} |
-| **Autor** | {{author}} |
+| **Autor** | [[{{author}}]] |
 | **Verlag** | {{publisher}} |
 | **Jahr** | {{year}} |
 | **ISBN** | {{isbn}} |
@@ -139,9 +164,9 @@ genre: "{{genre}}"
 | Feld | Wert |
 |---|---|
 | **Album** | {{title}} |
-| **Künstler** | {{artist}} |
+| **Künstler** | [[{{artist}}]] |
 | **Jahr** | {{year}} |
-| **Genre** | {{genre}} |
+| **Genre** | [[{{genre}}]] |
 
 ## Trackliste
 {{tracklist}}
