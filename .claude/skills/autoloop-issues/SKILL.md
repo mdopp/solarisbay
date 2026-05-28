@@ -68,7 +68,7 @@ gh issue list --repo mdopp/oscar --state open --limit 100 --json number,title,la
 
 - Labels include any of: `postponed`, `wontfix`, `duplicate`, `invalid`, `autoloop-open`.
 - Issue number appears in `state.completed[]`, `state.skipped[]`, or `state.blocked[]`.
-- Title/body is clearly multi-PR scope ("audit", "strategy", "epic", or work spanning many changes). Mark `blocked` with reason `"needs scoping"` and move on. (Note: many OSCAR feature issues — daily-journal, wiki-linking, media-availability — are genuinely multi-PR; carve a bite-sized first PR or mark `needs scoping`.)
+- Title/body is clearly multi-PR scope ("audit", "strategy", "epic", or work spanning many changes). Mark `blocked` with reason `"needs scoping"` and move on — *or*, in a refine pass (track b) or when the user asks, **decompose** it into bite-sized child issues (see track b's "Decomposing an epic") and keep this one open as the tracking umbrella. (Many OSCAR feature issues — daily-journal, wiki-linking, media-availability — are genuinely multi-PR; decomposing them is usually better than parking them.)
 
 ### Classification (everything that survives)
 
@@ -91,6 +91,8 @@ If Step 1 returns no survivors, **do not exit** and don't blindly default. Decid
 
 - **a) Code hygiene** — small, focused cleanups: fix a flaky/expanded `voice-gatekeeper` or `database` test, tighten a Dockerfile, validate/normalize a `template.yml` or `SKILL.md` frontmatter, kill dead code. (OSCAR has no ESLint warning-count to drive to zero, so this track is opportunistic hygiene, not a mechanical sweep. If `ruff`/`flake8` is ever added to `voice-gatekeeper`, drive its warnings down here.)
 - **b) Refine & unblock issues** — walk `state.blocked[]` + open issues; re-check whether a recent merge or a smaller scoping makes one actionable; tighten thin issue bodies (symptom + repro + starting-point files). Deliverable: a refreshed queue — then pick the head and work it.
+
+  **Decomposing an epic** is a first-class track-b move (better than parking a multi-PR issue as `needs scoping`): break it into bite-sized child issues so the loop can ship it incrementally. Rules: each child is an independently-shippable PR-unit (foundational modules/templates first, then consumers — no dead-code-only stubs); **file them in dependency order so ascending issue number == dependency order** (the loop works ascending within a bucket, and a child whose `Depends on #N` sibling is still open is skipped until #N merges); each child body gives the deliverable + starting-point files + a `Depends on #N` line; comment the dependency DAG on the parent and keep the parent **open as the tracking epic**.
 - **c) Evaluate the codebase** — run the standing eval prompt (below) against HEAD, then file the **Category 2 (Pragmatic)** findings as new issues to refill the queue (symptom-style: symptom + exact file/line + real-world consequence; no patch plan in the body). Record **Category 1 (Academic)** findings in `state.notes[]` only.
 - **d) End-to-end validation on the box** — run the full "does OSCAR work within the ServiceBay install?" smoke (see the section below) and route any failures cross-repo. This is the ultimate goal of the loop; prefer it after a batch of OSCAR changes has merged.
 
@@ -170,6 +172,8 @@ then invoke `/verify` against `<SERVICEBAY_BOX>` **before merge**. OSCAR deploys
 4. **plugin.yaml / __init__.py** → verify Hermes' Install-from-Git path still loads the plugin.
 
 If `/verify` fails, **triage the owner before reacting** — OSCAR runs on ServiceBay, so a failure can be an OSCAR bug *or* a ServiceBay-platform bug (see "Cross-repo issue routing" below). Then: stop, post the failure summary + your owner call on the PR, leave it open, move on. Don't mock around a failing test or skip it — fix the root cause in whichever repo owns it.
+
+**Narrow, deliberately-logged exception to the pre-merge `/verify`.** You MAY merge a path-mandated change on CI-green + a strong unit/pytest test and *defer* the real-box `/verify` — but ONLY when ALL hold: (1) the user has explicitly prioritized it, or a dependent repo is blocked waiting on it (the inverse case ServiceBay sees with OSCAR); (2) the change adds **no new runtime logic** — it reuses an already-tested, pre-existing path (removing a coercion, threading an existing-contract value, a docs/template-comment change); (3) a test covers the new behaviour; (4) you document the deferral in the PR **and** `state`, with the real-environment check to happen at the next natural opportunity (e.g. next OSCAR install on the box). Absent that explicit priority/blocked-dependent signal, the default stands: **path-mandated ⇒ `/verify` before merge.** Never apply it to a security/privacy-gated change. This is a logged judgement call, not a general loosening — when unsure, don't use it.
 
 ### Cross-repo issue routing (OSCAR vs ServiceBay upstream)
 
