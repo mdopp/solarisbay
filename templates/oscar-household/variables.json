@@ -65,6 +65,15 @@
     "type": "secret",
     "description": "ServiceBay-MCP bearer token (Settings → Integrations → MCP → Generate token, scope `read+lifecycle`)."
   },
+  "GATEKEEPER_MCP_URL": {
+    "type": "text",
+    "description": "URL of the gatekeeper's own room MCP server (set_room/list_rooms over streamable HTTP). The post-deploy hook registers it with Hermes so the agent can self-enrol a satellite's room without holding PUSH_TOKEN (#104). Reached via host loopback; the port matches the gatekeeper's MCP_PORT (10760).",
+    "default": "http://127.0.0.1:10760/mcp"
+  },
+  "GATEKEEPER_MCP_TOKEN": {
+    "type": "secret",
+    "description": "Bearer token Hermes presents to the gatekeeper's room MCP server. Pod-internal listener; leave blank during local-only testing, set a value once external callers might reach it."
+  },
   "LLDAP_GROUP": {
     "type": "text",
     "description": "LLDAP group whose members are considered family (versus guests). Members get personal harnesses in Phase 2; non-members get the guest harness.",

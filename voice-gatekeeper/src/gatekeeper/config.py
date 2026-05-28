@@ -24,6 +24,9 @@ class Settings:
     push_host: str
     push_port: int
     push_token: str
+    mcp_host: str
+    mcp_port: int
+    mcp_token: str
     oscar_db_path: str
     speaker_id_enabled: bool
     speaker_id_threshold: float
@@ -58,6 +61,9 @@ class Settings:
             push_host=os.environ.get("PUSH_HOST", "0.0.0.0"),
             push_port=int(os.environ.get("PUSH_PORT", "10750")),
             push_token=os.environ.get("PUSH_TOKEN", ""),
+            mcp_host=os.environ.get("MCP_HOST", "0.0.0.0"),
+            mcp_port=int(os.environ.get("MCP_PORT", "10760")),
+            mcp_token=os.environ.get("GATEKEEPER_MCP_TOKEN", ""),
             oscar_db_path=os.environ.get("OSCAR_DB_PATH", "/var/lib/oscar/oscar.db"),
             speaker_id_enabled=flag in {"1", "true", "yes", "on"},
             speaker_id_threshold=threshold,

@@ -96,6 +96,16 @@ spec:
       value: "10750"
     - name: PUSH_TOKEN
       value: "{{PUSH_TOKEN}}"
+    # Room MCP server — Hermes calls set_room/list_rooms here to self-enrol
+    # a satellite's room without holding PUSH_TOKEN (#104). Pod-internal
+    # streamable-HTTP listener; MCP_PORT is hard-coded like PUSH_PORT and
+    # must match the port in GATEKEEPER_MCP_URL (10760).
+    - name: MCP_HOST
+      value: "0.0.0.0"
+    - name: MCP_PORT
+      value: "10760"
+    - name: GATEKEEPER_MCP_TOKEN
+      value: "{{GATEKEEPER_MCP_TOKEN}}"
     # JSON map of `<device-name> -> <wyoming-uri>` for push-to-device.
     # Empty by default; populated per household once devices are paired.
     - name: VOICE_PE_DEVICES

@@ -16,8 +16,9 @@ What it does
 2. **Read `${DATA_DIR}/hermes/config.yaml`** — the file ServiceBay's
    `hermes` template's post-deploy wrote with the `model:` block.
 
-3. **Splice in our `mcp_servers:` block** with HA-MCP and ServiceBay-MCP
-   entries (and the cloud-LLM audit-proxy once that package ships).
+3. **Splice in our `mcp_servers:` block** with HA-MCP, ServiceBay-MCP and
+   the gatekeeper room-MCP entries (and the cloud-LLM audit-proxy once that
+   package ships).
    Remote-MCP shape per the
    https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference:
 
@@ -52,7 +53,8 @@ Variables (ServiceBay substitutes them)
 From our variables.json:
   HERMES_API_PORT, HERMES_API_KEY,
   HA_MCP_URL, HA_MCP_TOKEN,
-  SERVICEBAY_MCP_URL, SERVICEBAY_MCP_TOKEN
+  SERVICEBAY_MCP_URL, SERVICEBAY_MCP_TOKEN,
+  GATEKEEPER_MCP_URL, GATEKEEPER_MCP_TOKEN
 
 From the ServiceBay platform:
   DATA_DIR, SB_API_URL, HOST, SB_API_TOKEN
@@ -82,6 +84,8 @@ HA_MCP_URL = ""
 HA_MCP_TOKEN = ""
 SERVICEBAY_MCP_URL = ""
 SERVICEBAY_MCP_TOKEN = ""
+GATEKEEPER_MCP_URL = ""
+GATEKEEPER_MCP_TOKEN = ""
 CONFIG_PATH = os.path.join(DATA_DIR, "hermes", "config.yaml")
 READINESS_TIMEOUT_S = 120
 
@@ -99,6 +103,8 @@ def init_env() -> None:
         HA_MCP_TOKEN, \
         SERVICEBAY_MCP_URL, \
         SERVICEBAY_MCP_TOKEN, \
+        GATEKEEPER_MCP_URL, \
+        GATEKEEPER_MCP_TOKEN, \
         CONFIG_PATH, \
         READINESS_TIMEOUT_S
 
@@ -114,6 +120,8 @@ def init_env() -> None:
     HA_MCP_TOKEN = os.environ.get("HA_MCP_TOKEN", "")
     SERVICEBAY_MCP_URL = os.environ.get("SERVICEBAY_MCP_URL", "")
     SERVICEBAY_MCP_TOKEN = os.environ.get("SERVICEBAY_MCP_TOKEN", "")
+    GATEKEEPER_MCP_URL = os.environ.get("GATEKEEPER_MCP_URL", "")
+    GATEKEEPER_MCP_TOKEN = os.environ.get("GATEKEEPER_MCP_TOKEN", "")
 
     CONFIG_PATH = os.path.join(DATA_DIR, "hermes", "config.yaml")
     READINESS_TIMEOUT_S = int(os.environ.get("HERMES_READINESS_TIMEOUT_S", "120"))
@@ -434,6 +442,18 @@ def collect_mcp_servers() -> list[tuple[str, str, str]]:
             "info",
             "oscar-household:mcp",
             "servicebay-mcp skipped",
+            reason="missing url",
+        )
+    if GATEKEEPER_MCP_URL:
+        # The gatekeeper's room MCP server runs in-pod with no enable flag,
+        # so register it whenever the URL is set. An empty token is valid
+        # (pod-internal listener, open — same as PUSH_TOKEN blank).
+        servers.append(("gatekeeper-mcp", GATEKEEPER_MCP_URL, GATEKEEPER_MCP_TOKEN))
+    else:
+        jlog(
+            "info",
+            "oscar-household:mcp",
+            "gatekeeper-mcp skipped",
             reason="missing url",
         )
     return servers

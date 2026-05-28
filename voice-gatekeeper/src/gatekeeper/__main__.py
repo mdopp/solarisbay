@@ -15,6 +15,7 @@ from wyoming.server import AsyncServer
 from . import __version__ as GATEKEEPER_VERSION
 from .config import settings
 from .handler import GatekeeperHandler
+from .mcp_server import serve as serve_mcp
 from .push import serve as serve_push
 
 
@@ -90,8 +91,17 @@ async def _serve() -> None:
         ),
         name="push",
     )
+    mcp = asyncio.create_task(
+        serve_mcp(
+            db_path=settings.oscar_db_path,
+            host=settings.mcp_host,
+            port=settings.mcp_port,
+            token=settings.mcp_token,
+        ),
+        name="mcp",
+    )
     done, pending = await asyncio.wait(
-        {wyoming, push}, return_when=asyncio.FIRST_COMPLETED
+        {wyoming, push, mcp}, return_when=asyncio.FIRST_COMPLETED
     )
     for task in pending:
         task.cancel()
