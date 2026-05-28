@@ -29,6 +29,7 @@ from wyoming.server import AsyncEventHandler
 from .config import settings
 from .embeddings_store import list_embeddings, touch_last_seen
 from .hermes import HermesClient
+from .rooms_store import get_room
 from .speaker import get_extractor, resolve_speaker
 from .tts import synthesize_to_writer
 
@@ -133,10 +134,12 @@ class GatekeeperHandler(AsyncEventHandler):
 
         uid = await self._resolve_uid()
         endpoint = f"voice-pe:{self.client_id or 'unknown'}"
+        location = await self._resolve_location()
         response = await self._hermes.converse(
             text=transcript,
             uid=uid,
             endpoint=endpoint,
+            location=location,
             trace_id=self.trace_id,
         )
         if not response:
@@ -197,6 +200,19 @@ class GatekeeperHandler(AsyncEventHandler):
         if uid != settings.default_uid:
             await asyncio.to_thread(touch_last_seen, settings.oscar_db_path, uid)
         return uid
+
+    async def _resolve_location(self) -> str | None:
+        """Room of the originating satellite, or None when unknown. Hermes
+        uses it to resolve room-dependent commands; absence is what triggers
+        the spoken room-enrolment prompt (see #94)."""
+        if not self.client_id:
+            return None
+        try:
+            return await asyncio.to_thread(
+                get_room, settings.oscar_db_path, self.client_id
+            )
+        except Exception:  # noqa: BLE001 — room lookup is best-effort
+            return None
 
     async def _transcribe(self) -> str:
         assert self._audio_start is not None

@@ -25,6 +25,7 @@ class HermesClient:
         uid: str,
         endpoint: str,
         trace_id: str,
+        location: str | None = None,
     ) -> str:
         url = f"{self._base_url}/converse"
         headers = {"Content-Type": "application/json"}
@@ -34,6 +35,7 @@ class HermesClient:
             "text": text,
             "uid": uid,
             "endpoint": endpoint,
+            "location": location,
             "trace_id": trace_id,
         }
         async with httpx.AsyncClient(timeout=self._timeout) as client:

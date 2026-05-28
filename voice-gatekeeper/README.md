@@ -11,7 +11,7 @@ Satellite (HA Voice PE / wyoming-satellite CLI)
   → AudioStart + AudioChunk* + AudioStop
 Gatekeeper
   → Whisper (local, GPU): transcribe
-  → Hermes (HTTP, oscar-household neighbour pod): converse(text, uid, endpoint, trace_id)
+  → Hermes (HTTP, oscar-household neighbour pod): converse(text, uid, endpoint, location, trace_id)
   → Piper (local): synthesize response
   → AudioStart + AudioChunk* + AudioStop back to the satellite
 ```
@@ -92,6 +92,32 @@ To activate Phase-2 speaker resolution:
 When the env flag is off, deps are missing, or no enrolments exist,
 the handler short-circuits the resolver and uses `DEFAULT_UID`. The
 conversation pipeline is unaffected.
+
+## Room mapping (location)
+
+Each turn, the gatekeeper attaches a `location` (room) to the Hermes
+`converse` payload so room-dependent commands ("turn on the light")
+resolve to the right area. The room is looked up by the originating
+satellite's id (the socket peer host, `voice-pe:<host>`) in the
+`voice_pe_rooms` table of `oscar.db`. When unknown, `location` is `null`
+and Hermes prompts the resident to name the room, then persists it — the
+spoken enrolment ("which room am I in?" / "this is the bath" remap) lives
+in Hermes (see #94).
+
+Rooms are managed over the pod-internal HTTP endpoint (shares `PUSH_TOKEN`):
+
+```bash
+curl -X POST http://127.0.0.1:10750/room \
+     -H "Authorization: Bearer $PUSH_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"satellite_id": "192.168.178.42", "room": "kitchen"}'
+# also accepts {"endpoint": "voice-pe:192.168.178.42", "room": "kitchen"}
+# GET /rooms lists mappings; DELETE /rooms/<satellite_id> removes one.
+```
+
+**Interim store.** `oscar.db` holds the mapping for now. The longer-term
+goal is to source device→area from Home Assistant as the single source of
+truth (HA already owns areas), dropping the local table once that lands.
 
 ## Local development
 

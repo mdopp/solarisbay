@@ -115,18 +115,24 @@ def build_combined_app(
     devices: dict[str, str],
     push_token: str = "",
     db_path: str | None = None,
+    speaker_id_enabled: bool = False,
 ) -> web.Application:
-    """Build the push app and add Phase-2 speaker-ID enrolment routes.
+    """Build the push app and add the DB-backed routes.
 
     Defined here (not in __main__) so tests can construct the full
-    aiohttp surface without spinning up the Wyoming server."""
+    aiohttp surface without spinning up the Wyoming server. Room routes
+    need oscar.db regardless of speaker-ID; enrolment is gated on it."""
     app = build_app(piper_uri=piper_uri, devices=devices, push_token=push_token)
     if db_path:
-        # Imported here to keep speaker.py / enrollment.py out of the
-        # push-only test path that doesn't care about the ML stack.
-        from .enrollment import add_routes as add_enrolment_routes
+        # Imported here to keep these modules out of the push-only test
+        # path that doesn't care about the DB / ML stack.
+        from .rooms import add_routes as add_room_routes
 
-        add_enrolment_routes(app, db_path=db_path, push_token=push_token)
+        add_room_routes(app, db_path=db_path, push_token=push_token)
+        if speaker_id_enabled:
+            from .enrollment import add_routes as add_enrolment_routes
+
+            add_enrolment_routes(app, db_path=db_path, push_token=push_token)
     return app
 
 
@@ -148,10 +154,15 @@ async def serve(
     devices: dict[str, str],
     push_token: str = "",
     db_path: str | None = None,
+    speaker_id_enabled: bool = False,
 ) -> None:
     """Run the aiohttp app forever. Caller composes this with the Wyoming server."""
     app = build_combined_app(
-        piper_uri=piper_uri, devices=devices, push_token=push_token, db_path=db_path
+        piper_uri=piper_uri,
+        devices=devices,
+        push_token=push_token,
+        db_path=db_path,
+        speaker_id_enabled=speaker_id_enabled,
     )
     runner = web.AppRunner(app)
     await runner.setup()
