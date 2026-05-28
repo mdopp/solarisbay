@@ -422,7 +422,16 @@ def main() -> int:
     timeout = int(env("OLLAMA_READINESS_TIMEOUT_SECONDS", "600"))
     sb_api = env("SB_API_URL", "http://localhost:3000")
     sb_token = env("SB_API_TOKEN", "")
-    gpu_requested = env("OLLAMA_GPU_PASSTHROUGH", "").lower() in ("yes", "true", "1")
+    # Blank/unset => auto-detect: engage the GPU when the host has a
+    # CDI-registered NVIDIA device, the same file install_gpu_quadlet_fallback
+    # gates on. Explicit yes/no overrides the probe either way.
+    _gpu = env("OLLAMA_GPU_PASSTHROUGH", "").strip().lower()
+    if _gpu in ("yes", "true", "1"):
+        gpu_requested = True
+    elif _gpu in ("no", "false", "0", "off"):
+        gpu_requested = False
+    else:
+        gpu_requested = os.path.exists("/etc/cdi/nvidia.yaml")
     data_dir = env("DATA_DIR", "/mnt/data/stacks")
     ollama_url = f"http://127.0.0.1:{port}"
 

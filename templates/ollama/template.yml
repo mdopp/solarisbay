@@ -39,8 +39,10 @@ spec:
     # #508 for the existing AdGuard + Syncthing wiring).
     - name: OLLAMA_HOST
       value: "127.0.0.1:{{OLLAMA_PORT}}"
-    # GPU passthrough (CDI). Set OLLAMA_GPU_PASSTHROUGH=yes in the
-    # wizard to render the resources block below. The block is kept
+    # GPU passthrough (CDI). OLLAMA_GPU_PASSTHROUGH=yes renders the
+    # resources block below. (Blank does not render it, but post-deploy
+    # still auto-engages the GPU when /etc/cdi/nvidia.yaml exists — see
+    # below.) The block is kept
     # for documentation + as a fallback signal — `podman kube play`
     # in 5.x silently drops `resources.limits.nvidia.com/gpu`, so the
     # actual passthrough is done by post-deploy.py's

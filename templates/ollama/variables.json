@@ -21,7 +21,7 @@
   },
   "OLLAMA_GPU_PASSTHROUGH": {
     "type": "text",
-    "description": "Leave blank for CPU-only inference (works everywhere, slower for larger models). Set to any non-blank value (e.g. 'yes') to enable NVIDIA GPU passthrough via CDI — requires a CDI-registered NVIDIA GPU on the host (set up with `nvidia-ctk cdi generate`). When non-blank, the rendered pod manifest gets `resources.limits.nvidia.com/gpu: \"1\"`; podman matches that against the CDI device registry at start time.",
+    "description": "Blank = auto-detect: post-deploy engages NVIDIA GPU passthrough when the host has a CDI-registered GPU (`/etc/cdi/nvidia.yaml`, from `nvidia-ctk cdi generate`), otherwise CPU-only. Set `yes` to force GPU or `no` to force CPU. Actual passthrough is delivered by post-deploy's #1026 fixup, which swaps the .kube unit for a `.container` Quadlet with `AddDevice=nvidia.com/gpu=all` (podman silently drops the manifest's `resources.limits.nvidia.com/gpu`, so the fixup — not the rendered block — is what gets the device).",
     "default": ""
   },
   "OLLAMA_READINESS_TIMEOUT_SECONDS": {
