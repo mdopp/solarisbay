@@ -13,10 +13,10 @@
     "description": "OpenAI-compatible LLM endpoint Hermes calls. Default points at the `ollama` template on the same host (127.0.0.1:11434 is reachable because both pods are hostNetwork). Override to point at a remote vLLM, a different Ollama, or a cloud provider — the post-deploy script writes this into Hermes' config.yaml.",
     "default": "http://127.0.0.1:11434/v1"
   },
-  "HERMES_LLM_MODEL": {
+  "OLLAMA_DEFAULT_MODEL": {
     "type": "text",
-    "description": "Model name Hermes passes to the LLM provider. For Ollama, this is the tag used with `ollama pull` (e.g. gemma3:4b, qwen2.5:14b). Make sure the `ollama` template's OLLAMA_DEFAULT_MODEL matches — the post-deploy.py pull happens before Hermes' first request.",
-    "default": "gemma3:4b"
+    "description": "Model tag Hermes writes into `config.yaml`'s `model.model`. Shares its name with the `ollama` template's variable, so ServiceBay prompts for it once and the tag Hermes requests is exactly the one Ollama pre-pulls — the two can't drift apart. Default `gemma4:e4b` (multimodal, fits a 16 GB GPU). Only override if you point `HERMES_LLM_PROVIDER_URL` at a non-Ollama backend.",
+    "default": "gemma4:e4b"
   },
   "HERMES_DASHBOARD_PORT": {
     "type": "text",

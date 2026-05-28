@@ -818,7 +818,7 @@ def main() -> int:
     api_port = env("HERMES_API_PORT", "8642")
     api_key = env("HERMES_API_KEY")
     provider_url = env("HERMES_LLM_PROVIDER_URL", "http://127.0.0.1:11434/v1")
-    model = env("HERMES_LLM_MODEL", "gemma3:4b")
+    model = env("OLLAMA_DEFAULT_MODEL", "gemma4:e4b")
     dashboard_port = env("HERMES_DASHBOARD_PORT")
     honcho_port = env("HONCHO_PORT")
     honcho_api_key = env("HONCHO_API_KEY")

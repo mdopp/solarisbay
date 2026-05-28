@@ -22,8 +22,9 @@ ServiceBay pod that:
   a credential.
 - `HERMES_LLM_PROVIDER_URL` — OpenAI-compatible LLM endpoint.
   Default `http://127.0.0.1:11434/v1` (the `ollama` template).
-- `HERMES_LLM_MODEL` — model tag for the LLM provider. Default
-  `gemma3:4b`.
+- `OLLAMA_DEFAULT_MODEL` — model tag Hermes requests. Shared with
+  the `ollama` template (one prompt, can't drift). Default
+  `gemma4:e4b`.
 - `HERMES_DASHBOARD_PORT` — host loopback port for the web
   dashboard. Default `9119`.
 - `HERMES_SUBDOMAIN` — subdomain for the dashboard. Default
@@ -68,25 +69,17 @@ FTS5 index, SOUL.md skeleton) idempotently on each start.
 
 Hermes' generated `config.yaml` writes a single `model:` block, so
 every turn — text-only or image-bearing — goes through the same
-model tag. If you want OSCAR's `media-ingestion-multimodal` skill
-(book covers, document photos) to actually OCR images instead of
-returning "I can't see images", the model you point `HERMES_LLM_MODEL`
-at must itself be vision-capable.
+model tag (`OLLAMA_DEFAULT_MODEL`, shared with the `ollama`
+template). The default `gemma4:e4b` is natively multimodal, so
+OSCAR's `media-ingestion-multimodal` skill (book covers, document
+photos) OCRs images out of the box.
 
-Two ways to get there:
-
-1. **Single multimodal model.** Pull a vision-capable tag in
-   `ollama` (set `OLLAMA_DEFAULT_MODEL=qwen2.5vl:7b` or similar)
-   and set `HERMES_LLM_MODEL` to the same tag. Vision models
-   handle text-only turns fine, so a single model covers both
-   cases. Simplest setup.
-2. **Two models in parallel (text fast, vision on demand).** Keep
-   `OLLAMA_DEFAULT_MODEL=gemma3:4b` for low-latency text turns and
-   set `OLLAMA_VISION_MODEL=qwen2.5vl:7b` to pre-pull the vision
-   model. Routing image-bearing turns to the vision model is
-   pending upstream Hermes support — until then, point
-   `HERMES_LLM_MODEL` at the vision tag when running the media
-   pipeline.
+If you switch `OLLAMA_DEFAULT_MODEL` to a text-only tag, image-bearing
+turns come back "I can't see images" — point it at a vision-capable
+tag instead (e.g. `qwen2.5vl:7b`; vision models handle text turns
+fine, so one tag covers both). Per-turn routing between a fast text
+model and a separate vision model is pending upstream Hermes support;
+until then a single multimodal tag is the way.
 
 ## Adding MCP servers
 
