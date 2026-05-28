@@ -88,7 +88,9 @@ def cosine_match(
 
     if best_uid is None:
         return None
-    return SpeakerMatch(uid=best_uid, score=best_score, above_threshold=best_score >= threshold)
+    return SpeakerMatch(
+        uid=best_uid, score=best_score, above_threshold=best_score >= threshold
+    )
 
 
 def resolve_speaker(
@@ -124,7 +126,9 @@ class EmbeddingExtractor(Protocol):
     extractor disabled) and the caller falls back to default_uid.
     """
 
-    def extract(self, pcm: bytes, *, rate: int, width: int, channels: int) -> bytes | None: ...
+    def extract(
+        self, pcm: bytes, *, rate: int, width: int, channels: int
+    ) -> bytes | None: ...
 
 
 class SpeechBrainExtractor:
@@ -147,13 +151,16 @@ class SpeechBrainExtractor:
 
         self._classifier = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
-            savedir=savedir or os.environ.get(
+            savedir=savedir
+            or os.environ.get(
                 "OSCAR_SPEAKER_MODEL_CACHE", "/var/lib/oscar/models/spkrec-ecapa"
             ),
             run_opts={"device": "cpu"},  # gatekeeper sidecar has no GPU contract
         )
 
-    def extract(self, pcm: bytes, *, rate: int, width: int, channels: int) -> bytes | None:
+    def extract(
+        self, pcm: bytes, *, rate: int, width: int, channels: int
+    ) -> bytes | None:
         import numpy as np
         import torch
 
@@ -182,7 +189,13 @@ class SpeechBrainExtractor:
 
         tensor = torch.from_numpy(samples).unsqueeze(0)
         with torch.no_grad():
-            emb = self._classifier.encode_batch(tensor).squeeze().cpu().numpy().astype("<f4")
+            emb = (
+                self._classifier.encode_batch(tensor)
+                .squeeze()
+                .cpu()
+                .numpy()
+                .astype("<f4")
+            )
         if emb.shape != (EMBEDDING_DIM,):
             return None
         return emb.tobytes()
@@ -198,7 +211,12 @@ def get_extractor() -> EmbeddingExtractor | None:
     global _extractor_singleton
     if _extractor_singleton is not None:
         return _extractor_singleton
-    if os.environ.get("OSCAR_SPEAKER_ID_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    if os.environ.get("OSCAR_SPEAKER_ID_ENABLED", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
         return None
     if not extractor_available():
         return None

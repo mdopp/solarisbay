@@ -25,7 +25,12 @@ import re
 from aiohttp import web
 from gatekeeper.logging import log
 
-from .embeddings_store import EMBEDDING_DIM, delete_embedding, list_uids, upsert_embedding
+from .embeddings_store import (
+    EMBEDDING_DIM,
+    delete_embedding,
+    list_uids,
+    upsert_embedding,
+)
 from .speaker import average_embeddings, get_extractor
 
 _UID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -53,11 +58,15 @@ def add_routes(
 
     async def enrol(request: web.Request) -> web.Response:
         if not _auth_ok(request, push_token):
-            return web.json_response({"ok": False, "reason": "unauthorized"}, status=401)
+            return web.json_response(
+                {"ok": False, "reason": "unauthorized"}, status=401
+            )
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
-            return web.json_response({"ok": False, "reason": "invalid_json"}, status=400)
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
 
         uid = str(body.get("uid") or "").strip()
         if not _UID_RE.match(uid):
@@ -65,10 +74,17 @@ def add_routes(
 
         samples_b64 = body.get("samples")
         if not isinstance(samples_b64, list):
-            return web.json_response({"ok": False, "reason": "missing_samples"}, status=400)
+            return web.json_response(
+                {"ok": False, "reason": "missing_samples"}, status=400
+            )
         if not (min_samples <= len(samples_b64) <= max_samples):
             return web.json_response(
-                {"ok": False, "reason": "sample_count_out_of_range", "min": min_samples, "max": max_samples},
+                {
+                    "ok": False,
+                    "reason": "sample_count_out_of_range",
+                    "min": min_samples,
+                    "max": max_samples,
+                },
                 status=400,
             )
 
@@ -79,14 +95,20 @@ def add_routes(
         extractor = get_extractor()
         if extractor is None:
             return web.json_response(
-                {"ok": False, "reason": "speaker_id_disabled", "hint": "set OSCAR_SPEAKER_ID_ENABLED=1 and install [speaker-id] extras"},
+                {
+                    "ok": False,
+                    "reason": "speaker_id_disabled",
+                    "hint": "set OSCAR_SPEAKER_ID_ENABLED=1 and install [speaker-id] extras",
+                },
                 status=503,
             )
 
         try:
             decoded = [base64.b64decode(s) for s in samples_b64]
         except Exception:  # noqa: BLE001
-            return web.json_response({"ok": False, "reason": "invalid_base64"}, status=400)
+            return web.json_response(
+                {"ok": False, "reason": "invalid_base64"}, status=400
+            )
 
         loop = asyncio.get_running_loop()
         embeddings: list[bytes] = []
@@ -100,13 +122,17 @@ def add_routes(
                 # doesn't forward keyword args.
                 emb = await loop.run_in_executor(
                     None,
-                    lambda p=pcm: extractor.extract(p, rate=rate, width=width, channels=channels),
+                    lambda p=pcm: extractor.extract(
+                        p, rate=rate, width=width, channels=channels
+                    ),
                 )
             if emb is None:
                 log.warn("gatekeeper.enrol.sample_skipped", uid=uid, sample=idx)
                 continue
             if len(emb) != EMBEDDING_DIM * 4:
-                log.warn("gatekeeper.enrol.bad_dim", uid=uid, sample=idx, bytes=len(emb))
+                log.warn(
+                    "gatekeeper.enrol.bad_dim", uid=uid, sample=idx, bytes=len(emb)
+                )
                 continue
             embeddings.append(emb)
 
@@ -135,7 +161,9 @@ def add_routes(
             enrolled_via="http",
         )
         log.info("gatekeeper.enrol.ok", uid=uid, samples_used=len(embeddings))
-        return web.json_response({"ok": True, "uid": uid, "samples_used": len(embeddings)})
+        return web.json_response(
+            {"ok": True, "uid": uid, "samples_used": len(embeddings)}
+        )
 
     async def list_enrolments(_request: web.Request) -> web.Response:
         uids = await asyncio.to_thread(list_uids, db_path)
@@ -143,7 +171,9 @@ def add_routes(
 
     async def delete_enrolment(request: web.Request) -> web.Response:
         if not _auth_ok(request, push_token):
-            return web.json_response({"ok": False, "reason": "unauthorized"}, status=401)
+            return web.json_response(
+                {"ok": False, "reason": "unauthorized"}, status=401
+            )
         uid = request.match_info.get("uid", "")
         if not _UID_RE.match(uid):
             return web.json_response({"ok": False, "reason": "invalid_uid"}, status=400)

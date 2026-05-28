@@ -1,0 +1,53 @@
+name: ci
+
+# Lint + test the Python in OSCAR (voice-gatekeeper bridge, database/alembic,
+# the Hermes plugin entrypoint, ServiceBay post-deploy scripts). Image builds
+# live in build-images.yml; template-/skill-/docs-only changes are gated by
+# real-box /verify, not CI.
+
+on:
+  pull_request:
+    paths:
+      - '**/*.py'
+      - '**/pyproject.toml'
+      - 'ruff.toml'
+      - '.pre-commit-config.yaml'
+      - '.github/workflows/ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - '**/pyproject.toml'
+      - 'ruff.toml'
+      - '.pre-commit-config.yaml'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.15.12
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: pytest (voice-gatekeeper)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: voice-gatekeeper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e '.[test]'
+      - run: pytest -q

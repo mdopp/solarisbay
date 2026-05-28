@@ -12,8 +12,8 @@ Hermes' built-in skill loader picks them up from the filesystem.
 Hermes plugin contract:
   https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins
 """
+
 from __future__ import annotations
-import os
 from pathlib import Path
 
 

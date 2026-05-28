@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 
 if importlib.util.find_spec("numpy") is None:  # pragma: no cover
-    pytest.skip("numpy not installed — speaker tests need numpy", allow_module_level=True)
+    pytest.skip(
+        "numpy not installed — speaker tests need numpy", allow_module_level=True
+    )
 
 import numpy as np
 
@@ -86,19 +88,25 @@ def test_cosine_match_below_threshold_still_reports_best(tmp_path: Path):
 def test_resolve_speaker_falls_back_to_default(tmp_path: Path):
     db = _seed_db(tmp_path)
     # No enrolments — fall back regardless of query
-    uid, match = resolve_speaker(_emb(1), list_embeddings(db), threshold=0.5, default_uid="guest")
+    uid, match = resolve_speaker(
+        _emb(1), list_embeddings(db), threshold=0.5, default_uid="guest"
+    )
     assert uid == "guest"
     assert match is None
 
     # Enrol Alice; her own embedding should resolve to her
     a = _emb(7)
     upsert_embedding(db, "alice", a, sample_count=3, enrolled_via="test")
-    uid, match = resolve_speaker(a, list_embeddings(db), threshold=0.5, default_uid="guest")
+    uid, match = resolve_speaker(
+        a, list_embeddings(db), threshold=0.5, default_uid="guest"
+    )
     assert uid == "alice"
     assert match is not None and match.uid == "alice"
 
     # A different-seed query falls back if below threshold
-    uid, match = resolve_speaker(_emb(8), list_embeddings(db), threshold=0.99, default_uid="guest")
+    uid, match = resolve_speaker(
+        _emb(8), list_embeddings(db), threshold=0.99, default_uid="guest"
+    )
     assert uid == "guest"
     assert match is not None and match.above_threshold is False
 
@@ -106,7 +114,9 @@ def test_resolve_speaker_falls_back_to_default(tmp_path: Path):
 def test_resolve_speaker_handles_missing_query(tmp_path: Path):
     db = _seed_db(tmp_path)
     upsert_embedding(db, "alice", _emb(1), sample_count=1, enrolled_via="test")
-    uid, match = resolve_speaker(None, list_embeddings(db), threshold=0.5, default_uid="guest")
+    uid, match = resolve_speaker(
+        None, list_embeddings(db), threshold=0.5, default_uid="guest"
+    )
     assert uid == "guest"
     assert match is None
 

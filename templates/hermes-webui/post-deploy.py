@@ -133,7 +133,13 @@ def archive_open_webui_data(data_dir: str) -> str | None:
         os.makedirs(archive_root, exist_ok=True)
         os.rename(src, dst)
     except OSError as e:
-        jlog("warn", "hermes-webui:decom", "could not archive open-webui data dir; data left in place for manual cleanup", src=src, error=str(e))
+        jlog(
+            "warn",
+            "hermes-webui:decom",
+            "could not archive open-webui data dir; data left in place for manual cleanup",
+            src=src,
+            error=str(e),
+        )
         return None
     jlog("info", "hermes-webui:decom", "archived open-webui data dir", src=src, dst=dst)
     return dst
@@ -182,11 +188,19 @@ def remove_from_installed_templates(sb_api: str, installed: dict[str, object]) -
 def decommission_open_webui(sb_api: str, data_dir: str) -> None:
     installed = get_installed_templates(sb_api)
     if installed is None:
-        jlog("warn", "hermes-webui:decom", "could not read installedTemplates; skipping decommission check")
+        jlog(
+            "warn",
+            "hermes-webui:decom",
+            "could not read installedTemplates; skipping decommission check",
+        )
         return
     if OPEN_WEBUI_NAME not in installed:
         return  # Fresh install or already-decommissioned — no-op
-    jlog("info", "hermes-webui:decom", "open-webui detected as installed — beginning decommission for #1083")
+    jlog(
+        "info",
+        "hermes-webui:decom",
+        "open-webui detected as installed — beginning decommission for #1083",
+    )
     archive_open_webui_data(data_dir)
     delete_open_webui_service(sb_api)
     remove_from_installed_templates(sb_api, installed)

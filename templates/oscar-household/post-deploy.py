@@ -85,9 +85,22 @@ SERVICEBAY_MCP_TOKEN = ""
 CONFIG_PATH = os.path.join(DATA_DIR, "hermes", "config.yaml")
 READINESS_TIMEOUT_S = 120
 
+
 def init_env() -> None:
-    global DATA_DIR, SB_API_URL, SB_API_TOKEN, HERMES_API_PORT, HERMES_API_KEY, HERMES_API_URL
-    global HA_MCP_URL, HA_MCP_TOKEN, SERVICEBAY_MCP_URL, SERVICEBAY_MCP_TOKEN, CONFIG_PATH, READINESS_TIMEOUT_S
+    global \
+        DATA_DIR, \
+        SB_API_URL, \
+        SB_API_TOKEN, \
+        HERMES_API_PORT, \
+        HERMES_API_KEY, \
+        HERMES_API_URL
+    global \
+        HA_MCP_URL, \
+        HA_MCP_TOKEN, \
+        SERVICEBAY_MCP_URL, \
+        SERVICEBAY_MCP_TOKEN, \
+        CONFIG_PATH, \
+        READINESS_TIMEOUT_S
 
     DATA_DIR = os.environ.get("DATA_DIR", "/mnt/data")
     SB_API_URL = os.environ.get("SB_API_URL", "http://127.0.0.1:3000").rstrip("/")
@@ -211,7 +224,11 @@ def mint_servicebay_mcp_token() -> str | None:
             "token mint succeeded but response missing `secret`; falling back to env value",
         )
         return None
-    token_id = (body.get("token") or {}).get("id") if isinstance(body.get("token"), dict) else None
+    token_id = (
+        (body.get("token") or {}).get("id")
+        if isinstance(body.get("token"), dict)
+        else None
+    )
     jlog(
         "info",
         "oscar-household:mcp",
@@ -357,7 +374,9 @@ def _ha_long_lived_token() -> str | None:
     leaves a long-lived access token at
     `<DATA_DIR>/home-assistant/homeassistant/.oscar-long-lived-token`.
     Prefer that over HA_MCP_TOKEN from assemble (random placeholder)."""
-    path = os.path.join(DATA_DIR, "home-assistant", "homeassistant", ".oscar-long-lived-token")
+    path = os.path.join(
+        DATA_DIR, "home-assistant", "homeassistant", ".oscar-long-lived-token"
+    )
     if not os.path.exists(path):
         return None
     try:

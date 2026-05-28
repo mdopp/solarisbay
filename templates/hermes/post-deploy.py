@@ -67,7 +67,9 @@ def emit_credential(**fields: object) -> None:
     sys.stdout.flush()
 
 
-def post_json(url: str, payload: dict[str, object], timeout: float = 10.0) -> tuple[int, dict[str, object] | None]:
+def post_json(
+    url: str, payload: dict[str, object], timeout: float = 10.0
+) -> tuple[int, dict[str, object] | None]:
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     token = os.environ.get("SB_API_TOKEN", "")
@@ -131,8 +133,19 @@ def enumerate_ollama_tags(provider_url: str) -> list[str]:
     try:
         with urllib.request.urlopen(f"{base}/api/tags", timeout=8) as resp:
             payload = json.loads(resp.read().decode("utf-8") or "{}")
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as e:
-        jlog("warn", "hermes:ollama-tags", "could not enumerate ollama tags — Hermes' Models tab will fall back to auto-detect via /v1/models", error=str(e))
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        OSError,
+        json.JSONDecodeError,
+    ) as e:
+        jlog(
+            "warn",
+            "hermes:ollama-tags",
+            "could not enumerate ollama tags — Hermes' Models tab will fall back to auto-detect via /v1/models",
+            error=str(e),
+        )
         return []
     tags: list[str] = []
     for entry in payload.get("models", []) or []:
@@ -243,13 +256,27 @@ def write_config_yaml(
     if os.path.exists(config_path):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
-                preserved_mcp_servers = _extract_top_level_block(f.read(), "mcp_servers")
+                preserved_mcp_servers = _extract_top_level_block(
+                    f.read(), "mcp_servers"
+                )
         except OSError as e:
-            jlog("warn", "hermes:config", "could not read existing config.yaml for mcp_servers preservation", path=config_path, error=str(e))
+            jlog(
+                "warn",
+                "hermes:config",
+                "could not read existing config.yaml for mcp_servers preservation",
+                path=config_path,
+                error=str(e),
+            )
     try:
         os.makedirs(config_dir, exist_ok=True)
     except OSError as e:
-        jlog("error", "hermes:config", "could not create config dir", path=config_dir, error=str(e))
+        jlog(
+            "error",
+            "hermes:config",
+            "could not create config dir",
+            path=config_dir,
+            error=str(e),
+        )
         return None
     # #1002 — ServiceBay defaults table. Six overrides on top of
     # Hermes' upstream defaults that swing the box from "developer
@@ -272,19 +299,21 @@ def write_config_yaml(
     #   - display.personality=default — household assistant, not anime.
     honcho_ready = bool(honcho_port) and detect_honcho(honcho_port)
     if honcho_ready:
-        jlog("info", "hermes:config", "honcho /health reachable — memory.provider=honcho", port=honcho_port)
+        jlog(
+            "info",
+            "hermes:config",
+            "honcho /health reachable — memory.provider=honcho",
+            port=honcho_port,
+        )
         memory_block = (
             "memory:\n"
             "  provider: honcho\n"
             "  honcho:\n"
             f"    api_url: http://127.0.0.1:{honcho_port}\n"
-            f"    api_key: \"{honcho_api_key}\"\n"
+            f'    api_key: "{honcho_api_key}"\n'
         )
     else:
-        memory_block = (
-            "memory:\n"
-            "  provider: holographic\n"
-        )
+        memory_block = "memory:\n  provider: holographic\n"
     # Enumerate Ollama tags so the dashboard Models tab can show them as
     # switchable entries — without an explicit `custom_providers.ollama.models`
     # list, the tab's typeahead falls back to remote provider catalogs
@@ -301,9 +330,7 @@ def write_config_yaml(
         f"  provider: custom\n"
         f"  model: {model}\n"
         f"  base_url: {provider_url}\n"
-        f"  api_key: \"none\"\n"
-        + memory_block +
-        "tts:\n"
+        f'  api_key: "none"\n' + memory_block + "tts:\n"
         "  provider: piper\n"
         "browser:\n"
         "  engine: disabled\n"
@@ -326,7 +353,13 @@ def write_config_yaml(
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(content)
     except OSError as e:
-        jlog("error", "hermes:config", "could not write config.yaml", path=config_path, error=str(e))
+        jlog(
+            "error",
+            "hermes:config",
+            "could not write config.yaml",
+            path=config_path,
+            error=str(e),
+        )
         return None
     # Make the dir traversable and the file readable so OTHER templates'
     # post-deploys (notably oscar-household) can splice an `mcp_servers:`
@@ -342,8 +375,21 @@ def write_config_yaml(
         os.chmod(config_dir, 0o755)
         os.chmod(config_path, 0o644)
     except OSError as e:
-        jlog("warn", "hermes:config", "could not relax config perms for downstream merges", path=config_dir, error=str(e))
-    jlog("info", "hermes:config", "wrote config.yaml", path=config_path, model=model, provider_url=provider_url)
+        jlog(
+            "warn",
+            "hermes:config",
+            "could not relax config perms for downstream merges",
+            path=config_dir,
+            error=str(e),
+        )
+    jlog(
+        "info",
+        "hermes:config",
+        "wrote config.yaml",
+        path=config_path,
+        model=model,
+        provider_url=provider_url,
+    )
     return config_path
 
 
@@ -377,7 +423,9 @@ def provision_sb_mcp_token(sb_api: str, token_name: str = "hermes-mcp") -> str |
                 "hermes:sb-mcp",
                 "minted SB-MCP token for Hermes auto-wiring",
                 name=token_name,
-                id=(body.get("token") or {}).get("id") if isinstance(body.get("token"), dict) else None,
+                id=(body.get("token") or {}).get("id")
+                if isinstance(body.get("token"), dict)
+                else None,
             )
             return secret
     jlog(
@@ -410,7 +458,13 @@ def ensure_sb_mcp_servers_block(config_path: str, sb_api: str) -> bool:
         with open(config_path, "r", encoding="utf-8") as f:
             existing = f.read()
     except OSError as e:
-        jlog("warn", "hermes:sb-mcp", "could not read config.yaml", path=config_path, error=str(e))
+        jlog(
+            "warn",
+            "hermes:sb-mcp",
+            "could not read config.yaml",
+            path=config_path,
+            error=str(e),
+        )
         return False
 
     existing_mcp = _extract_top_level_block(existing, "mcp_servers")
@@ -447,7 +501,13 @@ def ensure_sb_mcp_servers_block(config_path: str, sb_api: str) -> bool:
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(new_content)
     except OSError as e:
-        jlog("error", "hermes:sb-mcp", "could not write config.yaml after appending servicebay entry", path=config_path, error=str(e))
+        jlog(
+            "error",
+            "hermes:sb-mcp",
+            "could not write config.yaml after appending servicebay entry",
+            path=config_path,
+            error=str(e),
+        )
         return False
 
     jlog(
@@ -470,7 +530,13 @@ def restart_hermes(sb_api: str) -> bool:
         jlog("info", "hermes:restart", "restart requested via ServiceBay API")
         return True
     err = (body or {}).get("error") if isinstance(body, dict) else None
-    jlog("warn", "hermes:restart", "restart request failed; the config will take effect on next manual restart", status=status, error=str(err) if err else None)
+    jlog(
+        "warn",
+        "hermes:restart",
+        "restart request failed; the config will take effect on next manual restart",
+        status=status,
+        error=str(err) if err else None,
+    )
     return False
 
 
@@ -527,7 +593,13 @@ def write_gateway_env(data_dir: str, entries: dict[str, str]) -> bool:
                     existing[key] = value
                     order.append(key)
         except OSError as e:
-            jlog("warn", "hermes:env", "could not read .env, will recreate", path=env_path, error=str(e))
+            jlog(
+                "warn",
+                "hermes:env",
+                "could not read .env, will recreate",
+                path=env_path,
+                error=str(e),
+            )
             existing = {}
             order = []
             preamble = []
@@ -544,7 +616,9 @@ def write_gateway_env(data_dir: str, entries: dict[str, str]) -> bool:
             desired_lines.append("")
         for key in sorted(new_managed):
             desired_lines.append(f"{key}={new_managed[key]}")
-    new_content = "\n".join(desired_lines).rstrip("\n") + ("\n" if desired_lines else "")
+    new_content = "\n".join(desired_lines).rstrip("\n") + (
+        "\n" if desired_lines else ""
+    )
 
     if not os.path.exists(env_path) and not new_managed:
         return False
@@ -638,7 +712,13 @@ def _wait_for_ha_api(token: str, timeout_secs: int | None = None) -> bool:
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
             pass
         time.sleep(3)
-    jlog("warn", "hermes:ha-ready", "HA /api/ not 200 within deadline; restart anyway", last_status=last_status, deadline_secs=timeout_secs)
+    jlog(
+        "warn",
+        "hermes:ha-ready",
+        "HA /api/ not 200 within deadline; restart anyway",
+        last_status=last_status,
+        deadline_secs=timeout_secs,
+    )
     return False
 
 
@@ -656,10 +736,17 @@ def adopt_ha_long_lived_token(data_dir: str) -> str | None:
     /api/ before signalling ready. The previous one-shot read missed
     the file on every install where HA's auto-onboarding hadn't yet
     written it, leaving HASS_TOKEN as the placeholder."""
-    token_path = os.path.join(data_dir, "home-assistant", "homeassistant", ".oscar-long-lived-token")
+    token_path = os.path.join(
+        data_dir, "home-assistant", "homeassistant", ".oscar-long-lived-token"
+    )
     token = _wait_for_ha_token(token_path)
     if token is None:
-        jlog("info", "hermes:ha-token", "no HA long-lived token after retry — likely operator opted out of HA auto-onboarding", path=token_path)
+        jlog(
+            "info",
+            "hermes:ha-token",
+            "no HA long-lived token after retry — likely operator opted out of HA auto-onboarding",
+            path=token_path,
+        )
         return None
     # The hermes pod yml is written by ServiceBay's install runner to the
     # user-Quadlet directory. Patch the HASS_TOKEN env value in-place so a
@@ -669,13 +756,24 @@ def adopt_ha_long_lived_token(data_dir: str) -> str | None:
     #       value: "<random>"
     pod_yml = os.path.expanduser("~/.config/containers/systemd/hermes.yml")
     if not os.path.exists(pod_yml):
-        jlog("warn", "hermes:ha-token", "hermes.yml not found at expected path", path=pod_yml)
+        jlog(
+            "warn",
+            "hermes:ha-token",
+            "hermes.yml not found at expected path",
+            path=pod_yml,
+        )
         return None
     try:
         with open(pod_yml, encoding="utf-8") as f:
             src = f.read()
     except OSError as e:
-        jlog("warn", "hermes:ha-token", "could not read hermes.yml", path=pod_yml, error=str(e))
+        jlog(
+            "warn",
+            "hermes:ha-token",
+            "could not read hermes.yml",
+            path=pod_yml,
+            error=str(e),
+        )
         return None
     new = re.sub(
         r"(- name: HASS_TOKEN\n\s+value: )[^\n]+",
@@ -689,9 +787,20 @@ def adopt_ha_long_lived_token(data_dir: str) -> str | None:
         with open(pod_yml, "w", encoding="utf-8") as f:
             f.write(new)
     except OSError as e:
-        jlog("warn", "hermes:ha-token", "could not write patched hermes.yml", path=pod_yml, error=str(e))
+        jlog(
+            "warn",
+            "hermes:ha-token",
+            "could not write patched hermes.yml",
+            path=pod_yml,
+            error=str(e),
+        )
         return None
-    jlog("info", "hermes:ha-token", "adopted HA long-lived token from home-assistant post-deploy", token_path=token_path)
+    jlog(
+        "info",
+        "hermes:ha-token",
+        "adopted HA long-lived token from home-assistant post-deploy",
+        token_path=token_path,
+    )
 
     # #1002 — Wait for HA's /api/ to answer 200 with this token before
     # we restart hermes. Without this gate Hermes' first HA-gateway
@@ -717,8 +826,11 @@ def main() -> int:
     # 1. Write config.yaml with the wizard-picked provider + model, and
     # the memory provider chosen by detect-then-configure (#1004).
     config_path = write_config_yaml(
-        data_dir, provider_url, model,
-        honcho_port=honcho_port, honcho_api_key=honcho_api_key,
+        data_dir,
+        provider_url,
+        model,
+        honcho_port=honcho_port,
+        honcho_api_key=honcho_api_key,
     )
     config_written = config_path is not None
 
@@ -773,10 +885,16 @@ def main() -> int:
             notes="Bearer token for Hermes' API. Send as `Authorization: Bearer <key>`. Bind a client by pasting this into oscar-household or your own MCP wiring. Regenerate from the wizard if it leaks.",
         )
 
-    print(f"✅ Hermes is configured: model={model}, provider={provider_url}, port={api_port}.")
+    print(
+        f"✅ Hermes is configured: model={model}, provider={provider_url}, port={api_port}."
+    )
     if dashboard_port:
-        print(f"   Dashboard enabled on 127.0.0.1:{dashboard_port} — see README for the NPM + Authelia setup.")
-    print(f"   Other ServiceBay templates (oscar-household) can reach Hermes at http://127.0.0.1:{api_port}.")
+        print(
+            f"   Dashboard enabled on 127.0.0.1:{dashboard_port} — see README for the NPM + Authelia setup."
+        )
+    print(
+        f"   Other ServiceBay templates (oscar-household) can reach Hermes at http://127.0.0.1:{api_port}."
+    )
     return 0
 
 

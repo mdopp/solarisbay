@@ -131,7 +131,11 @@ class GatekeeperHandler(AsyncEventHandler):
                 extractor.extract, pcm, rate=rate, width=width, channels=channels
             )
         except Exception as exc:  # noqa: BLE001 — extraction errors degrade gracefully
-            log.warn("gatekeeper.speaker.extract_error", trace_id=self.trace_id, error=str(exc))
+            log.warn(
+                "gatekeeper.speaker.extract_error",
+                trace_id=self.trace_id,
+                error=str(exc),
+            )
             return settings.default_uid
         candidates = await asyncio.to_thread(list_embeddings, settings.oscar_db_path)
         uid, match = resolve_speaker(

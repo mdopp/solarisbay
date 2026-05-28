@@ -1,0 +1,19 @@
+# Auto-format + lint staged files on commit. Install once: pre-commit install
+# Never bypass with --no-verify. ruff rev is pinned to match ci.yml's ruff.
+#
+# check-yaml is intentionally omitted: ServiceBay template.yml files contain
+# unquoted {{VAR}} placeholders that aren't valid standalone YAML.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-merge-conflict

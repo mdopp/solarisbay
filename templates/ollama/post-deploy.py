@@ -92,7 +92,12 @@ def wait_for_ready(ollama_url: str, deadline_sec: int) -> bool:
             return True
         elapsed = time.time() - started
         if elapsed - last_beat >= 10:
-            jlog("info", "ollama:wait", "still waiting for Ollama API", elapsed_sec=int(elapsed))
+            jlog(
+                "info",
+                "ollama:wait",
+                "still waiting for Ollama API",
+                elapsed_sec=int(elapsed),
+            )
             last_beat = elapsed
         time.sleep(3)
     return False
@@ -110,7 +115,13 @@ def model_present(ollama_url: str, model: str) -> bool:
     try:
         with urllib.request.urlopen(f"{ollama_url}/api/tags", timeout=10) as resp:
             payload = json.loads(resp.read().decode("utf-8") or "{}")
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as e:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        OSError,
+        json.JSONDecodeError,
+    ) as e:
         jlog("warn", "ollama:verify", "/api/tags probe failed", error=str(e))
         return False
     for entry in payload.get("models", []) or []:
@@ -140,7 +151,13 @@ def pull_model(ollama_url: str, model: str, deadline_sec: int) -> bool:
             last_status = ""
             for raw in resp:
                 if time.time() - started > deadline_sec:
-                    jlog("error", "ollama:pull", "model pull exceeded deadline", model=model, deadline_sec=deadline_sec)
+                    jlog(
+                        "error",
+                        "ollama:pull",
+                        "model pull exceeded deadline",
+                        model=model,
+                        deadline_sec=deadline_sec,
+                    )
                     return False
                 try:
                     chunk = json.loads(raw.decode("utf-8").strip())
@@ -151,7 +168,13 @@ def pull_model(ollama_url: str, model: str, deadline_sec: int) -> bool:
                     jlog("info", "ollama:pull", status, model=model)
                     last_status = status
                 if chunk.get("error"):
-                    jlog("error", "ollama:pull", "pull error", model=model, error=str(chunk.get("error")))
+                    jlog(
+                        "error",
+                        "ollama:pull",
+                        "pull error",
+                        model=model,
+                        error=str(chunk.get("error")),
+                    )
                     return False
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         jlog("error", "ollama:pull", "pull failed", model=model, error=str(e))
@@ -164,7 +187,13 @@ def pull_model(ollama_url: str, model: str, deadline_sec: int) -> bool:
             model=model,
         )
         return False
-    jlog("info", "ollama:pull", "model ready", model=model, elapsed_sec=int(time.time() - started))
+    jlog(
+        "info",
+        "ollama:pull",
+        "model ready",
+        model=model,
+        elapsed_sec=int(time.time() - started),
+    )
     return True
 
 
@@ -191,7 +220,13 @@ def register_http_check(sb_api: str, sb_token: str, ollama_url: str) -> None:
     if status == 200:
         jlog("info", "ollama:health", "registered http check ollama-api")
     else:
-        jlog("warn", "ollama:health", "could not register http check", status=status, body=body.decode("utf-8", errors="replace")[:200])
+        jlog(
+            "warn",
+            "ollama:health",
+            "could not register http check",
+            status=status,
+            body=body.decode("utf-8", errors="replace")[:200],
+        )
 
 
 def gpu_actually_engaged(ollama_url: str) -> bool:
@@ -217,8 +252,20 @@ def gpu_actually_engaged(ollama_url: str) -> bool:
     #   "inference compute" id=cpu library=cpu ...
     try:
         out = subprocess.run(
-            ["journalctl", "--user", "-u", "ollama.service", "--since", "-2 min", "--no-pager", "-o", "cat"],
-            capture_output=True, text=True, timeout=10,
+            [
+                "journalctl",
+                "--user",
+                "-u",
+                "ollama.service",
+                "--since",
+                "-2 min",
+                "--no-pager",
+                "-o",
+                "cat",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if "library=CUDA" in out.stdout or "library=ROCm" in out.stdout:
             return True
@@ -260,11 +307,20 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
     container_path = os.path.join(systemd_dir, "ollama.container")
 
     if os.path.exists(container_path):
-        jlog("info", "ollama:gpu-fallback", "ollama.container already present; skipping re-write", path=container_path)
+        jlog(
+            "info",
+            "ollama:gpu-fallback",
+            "ollama.container already present; skipping re-write",
+            path=container_path,
+        )
         return True
 
     # 1. Stop the broken kube service (best-effort; it may already be down).
-    subprocess.run(["systemctl", "--user", "stop", "ollama.service"], check=False, capture_output=True)
+    subprocess.run(
+        ["systemctl", "--user", "stop", "ollama.service"],
+        check=False,
+        capture_output=True,
+    )
 
     # 2. Remove the .kube file so Quadlet doesn't generate a conflicting
     #    `ollama.service` from both sources at daemon-reload time.
@@ -274,7 +330,13 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
         try:
             os.unlink(kube_path)
         except OSError as e:
-            jlog("warn", "ollama:gpu-fallback", "could not remove ollama.kube — Quadlet may complain", path=kube_path, error=str(e))
+            jlog(
+                "warn",
+                "ollama:gpu-fallback",
+                "could not remove ollama.kube — Quadlet may complain",
+                path=kube_path,
+                error=str(e),
+            )
 
     # 3. Write the .container Quadlet. Mirror the .yml's runtime contract:
     #    image, OLLAMA_HOST env, hostNetwork, the persistent volume mount.
@@ -314,18 +376,32 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
             f.write(container_unit)
         os.chmod(container_path, 0o644)
     except OSError as e:
-        jlog("error", "ollama:gpu-fallback", "could not write ollama.container", path=container_path, error=str(e))
+        jlog(
+            "error",
+            "ollama:gpu-fallback",
+            "could not write ollama.container",
+            path=container_path,
+            error=str(e),
+        )
         return False
 
     # 4. Reload + start. Quadlet regenerates ollama.service from the new
     #    `.container` source on `daemon-reload`.
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
     started = subprocess.run(
         ["systemctl", "--user", "start", "ollama.service"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if started.returncode != 0:
-        jlog("error", "ollama:gpu-fallback", "systemctl start failed", stderr=started.stderr[:400])
+        jlog(
+            "error",
+            "ollama:gpu-fallback",
+            "systemctl start failed",
+            stderr=started.stderr[:400],
+        )
         return False
 
     jlog(
@@ -361,9 +437,17 @@ def main() -> int:
             )
             install_gpu_quadlet_fallback(port, data_dir)
         else:
-            jlog("info", "ollama:bootstrap", "GPU already engaged; no #1026 fixup needed")
+            jlog(
+                "info", "ollama:bootstrap", "GPU already engaged; no #1026 fixup needed"
+            )
 
-    jlog("info", "ollama:bootstrap", "waiting for Ollama API", url=ollama_url, deadline_sec=timeout)
+    jlog(
+        "info",
+        "ollama:bootstrap",
+        "waiting for Ollama API",
+        url=ollama_url,
+        deadline_sec=timeout,
+    )
     if not wait_for_ready(ollama_url, deadline_sec=min(timeout, 120)):
         jlog(
             "warn",
@@ -385,7 +469,8 @@ def main() -> int:
             jlog(
                 "warn",
                 "ollama:pull",
-                "model pull did not complete; the pod is up but the default model is missing. Pull manually with `curl -X POST http://127.0.0.1:%s/api/pull -d '{\"name\":\"%s\"}'`." % (port, model),
+                'model pull did not complete; the pod is up but the default model is missing. Pull manually with `curl -X POST http://127.0.0.1:%s/api/pull -d \'{"name":"%s"}\'`.'
+                % (port, model),
                 model=model,
             )
 
@@ -401,7 +486,8 @@ def main() -> int:
             jlog(
                 "warn",
                 "ollama:pull",
-                "extra-model pull did not complete; it will not be selectable from Hermes' Models tab until pulled manually. Run `curl -X POST http://127.0.0.1:%s/api/pull -d '{\"name\":\"%s\"}'`." % (port, extra),
+                'extra-model pull did not complete; it will not be selectable from Hermes\' Models tab until pulled manually. Run `curl -X POST http://127.0.0.1:%s/api/pull -d \'{"name":"%s"}\'`.'
+                % (port, extra),
                 model=extra,
             )
 
@@ -412,7 +498,8 @@ def main() -> int:
             jlog(
                 "warn",
                 "ollama:pull",
-                "vision-model pull did not complete; OSCAR's media-ingestion-multimodal skill will fall back to text-only. Pull manually with `curl -X POST http://127.0.0.1:%s/api/pull -d '{\"name\":\"%s\"}'` or bump OLLAMA_READINESS_TIMEOUT_SECONDS." % (port, vision_model),
+                'vision-model pull did not complete; OSCAR\'s media-ingestion-multimodal skill will fall back to text-only. Pull manually with `curl -X POST http://127.0.0.1:%s/api/pull -d \'{"name":"%s"}\'` or bump OLLAMA_READINESS_TIMEOUT_SECONDS.'
+                % (port, vision_model),
                 model=vision_model,
             )
 
@@ -423,7 +510,9 @@ def main() -> int:
         print(f"   Extra models pulled: {', '.join(extra_models)}.")
     if vision_model:
         print(f"   Vision model: {vision_model} (multimodal-capable).")
-    print(f"   Other ServiceBay templates (hermes, oscar-household) can reach it at http://127.0.0.1:{port}.")
+    print(
+        f"   Other ServiceBay templates (hermes, oscar-household) can reach it at http://127.0.0.1:{port}."
+    )
     return 0
 
 
