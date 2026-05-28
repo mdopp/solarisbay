@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any
 
 from gatekeeper.logging import log
 from wyoming.asr import Transcribe, Transcript
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncClient
 from wyoming.event import Event
+from wyoming.info import Describe, Info
 from wyoming.server import AsyncEventHandler
 
 from .config import settings
@@ -52,8 +52,14 @@ def client_id_from_peername(peer: object) -> str | None:
 class GatekeeperHandler(AsyncEventHandler):
     """One connection = one pipeline turn."""
 
-    def __init__(self, *args: Any, **kwargs: Any):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        info: Info | None = None,
+    ):
+        super().__init__(reader, writer)
+        self._info = info
         self.trace_id = str(uuid.uuid4())
         self.client_id = self._resolve_client_id()
         self._audio_start: AudioStart | None = None
@@ -73,6 +79,13 @@ class GatekeeperHandler(AsyncEventHandler):
         return client_id_from_peername(peer)
 
     async def handle_event(self, event: Event) -> bool:
+        if Describe.is_type(event.type):
+            # Satellites send Describe to discover the ASR/TTS capabilities
+            # advertised at startup; answer with the Info passed at construction.
+            if self._info is not None:
+                await self.write_event(self._info.event())
+            return True
+
         if AudioStart.is_type(event.type):
             self._audio_start = AudioStart.from_event(event)
             self._audio_buffer = []
