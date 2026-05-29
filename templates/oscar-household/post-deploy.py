@@ -298,6 +298,11 @@ def render_mcp_block(servers: list[tuple[str, str, str]]) -> str:
     auth is conveyed via the `headers` field and works without an explicit
     `auth:` declaration (the `auth: oauth` form in the reference is
     specific to OAuth flows).
+
+    A token-less server (e.g. the pod-internal gatekeeper-mcp) gets NO
+    `headers:` block — emitting `Authorization: "Bearer "` makes Hermes'
+    httpx client reject it with "Illegal header value" and the MCP server
+    never connects (observed live with gatekeeper-mcp).
     """
     if not servers:
         return ""
@@ -305,8 +310,9 @@ def render_mcp_block(servers: list[tuple[str, str, str]]) -> str:
     for name, url, token in servers:
         parts.append(f"  {name}:\n")
         parts.append(f'    url: "{url}"\n')
-        parts.append("    headers:\n")
-        parts.append(f'      Authorization: "Bearer {token}"\n')
+        if token:
+            parts.append("    headers:\n")
+            parts.append(f'      Authorization: "Bearer {token}"\n')
     return "".join(parts)
 
 
