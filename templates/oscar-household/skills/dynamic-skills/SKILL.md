@@ -1,7 +1,7 @@
 ---
 name: oscar-dynamic-skills
 description: Use when the user requests OSCAR to learn a new capability, write down a fact/note, configure an agent, or when OSCAR needs to self-enhance its knowledge, skills, or peer agent behaviors dynamically. Implements the Phase 4 self-improvement loop.
-version: 2.0.0
+version: 2.1.0
 author: OSCAR
 license: MIT
 ---
@@ -29,8 +29,59 @@ When the user shares household facts, preferences, or notes (e.g., "Remember tha
 ### Operating Sequence:
 1. Formulate a clean Markdown block summarizing the new facts, including tags and date updated.
 2. Read the existing note file using `view_file` if it exists.
-3. Append or rewrite the file using `write_to_file` (or `replace_file_content` for edits) under `/opt/data/notes/`.
-4. Inform the user: *"Ich habe mir das notiert in <filename>."*
+3. **Wiki-link the named entities** (see "Wiki-linking facts" below) so the note joins the Obsidian graph instead of sitting isolated.
+4. Append or rewrite the file using `write_to_file` (or `replace_file_content` for edits) under `/opt/data/notes/`.
+5. **Create stub notes** for any new people/places you linked that the vault doesn't have yet (see below).
+6. Inform the user: *"Ich habe mir das notiert in <filename>."*
+
+### Wiki-linking facts
+
+Same idea as the `media-ingestion-multimodal` skill's linking step, applied to
+free-form facts — but **conservative**, because facts are unstructured and
+over-linking turns the graph to noise.
+
+- **Only link clear named entities** a fact is *about*: **people**
+  ("der Schlüssel von [[Oma Erna]]"), **places/rooms** ("[[Garten]]",
+  "[[Gartenhaus]]"), and **named topics that already have a note**
+  (e.g. an existing `fact_network.md` → `[[fact_network]]`). Do **not**
+  link common nouns, verbs, dates, or one-off descriptive words.
+- **Vault existence check first.** Before linking a topic, look for an
+  existing note (`grep -ril "<Entity>" /opt/data/notes/`); link to it if it
+  exists. People/places get linked even when new (the stub step below
+  creates them).
+- **Render links inline in the note body**, not in the YAML frontmatter
+  (keep frontmatter values plain strings).
+- **When in doubt, don't link.** A fact note with one good `[[person]]` link
+  beats one peppered with speculative links.
+
+#### Stub notes for new people and places
+
+When you wiki-link a **person** or **place** that has no note yet, create a
+minimal stub so the link resolves to a real graph node — mirroring the
+media skill's author/genre stubs (#85):
+
+- People → `/opt/data/notes/people/<Name>.md`, places →
+  `/opt/data/notes/places/<Name>.md` (create the folder if missing).
+- **Idempotent**: never overwrite; only write when the existence check
+  found nothing.
+- **Minimal, no fabrication** — name + type only:
+
+  ```markdown
+  ---
+  type: <person|place>
+  tags:
+    - oscar/stub
+    - type/<person|place>
+  created_at: {{timestamp}}
+  ---
+
+  # {{Entity}}
+
+  > Automatisch angelegter Knoten. Wird ergänzt, sobald mehr darüber bekannt ist.
+  ```
+
+- Do **not** stub abstract topics — a `fact_<topic>.md` *is* the topic's
+  note; linking to it is enough.
 
 ---
 
