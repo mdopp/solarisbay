@@ -13,6 +13,10 @@ What it does
    Whether `/health` is auth-exempt is undocumented as of writing; sending
    the bearer either way works as the strict superset.
 
+1b. **Register the daily family-chronicle cron** via Hermes' `POST /api/jobs`
+   (#83) — idempotent by job name. Over HTTP (as the hermes user) so the
+   cron DB stays correctly owned.
+
 2. **Read `${DATA_DIR}/hermes/config.yaml`** — the file ServiceBay's
    `hermes` template's post-deploy wrote with the `model:` block.
 
@@ -167,6 +171,32 @@ def hermes_get(path: str, timeout: float = 5.0) -> int:
         return e.code
     except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
         return 0
+
+
+def hermes_request_json(
+    path: str,
+    method: str = "GET",
+    payload: dict[str, object] | None = None,
+    timeout: float = 10.0,
+) -> tuple[int, object | None]:
+    """Call Hermes' API with bearer auth, returning (status, parsed-body).
+    Status 0 on connection failure."""
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(f"{HERMES_API_URL}{path}", data=data, method=method)
+    req.add_header("Authorization", f"Bearer {HERMES_API_KEY}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            try:
+                return resp.status, json.loads(raw) if raw else None
+            except json.JSONDecodeError:
+                return resp.status, None
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+        return 0, None
 
 
 def sb_post(path: str, payload: dict[str, object], timeout: float = 30.0) -> int:
@@ -472,9 +502,70 @@ def collect_mcp_servers() -> list[tuple[str, str, str]]:
     return servers
 
 
+CHRONICLE_JOB_NAME = "oscar-daily-chronicle"
+
+
+def register_chronicle_cron() -> None:
+    """Register the daily family-chronicle cron job via Hermes' jobs API
+    (#83). Idempotent — skips when a job of the same name already exists.
+
+    Registered over HTTP (not `hermes cron create` via podman) so the
+    write goes through the gateway as the hermes user, keeping
+    /opt/data/cron/jobs.json owned correctly; a root-written jobs.json
+    breaks the gateway's own cron reads.
+    """
+    status, body = hermes_request_json("/api/jobs", "GET")
+    if status == 0:
+        jlog(
+            "warn",
+            "oscar-household:cron",
+            "chronicle cron skipped — Hermes jobs API unreachable",
+        )
+        return
+    jobs = body if isinstance(body, list) else (body or {}).get("jobs", [])
+    if any(isinstance(j, dict) and j.get("name") == CHRONICLE_JOB_NAME for j in jobs):
+        jlog(
+            "info",
+            "oscar-household:cron",
+            "chronicle cron already present",
+            name=CHRONICLE_JOB_NAME,
+        )
+        return
+    payload = {
+        "name": CHRONICLE_JOB_NAME,
+        "schedule": "59 23 * * *",
+        "prompt": (
+            "Write today's family chronicle / journal entry for today. "
+            "This is the unattended daily run — no resident is present, so "
+            "do not ask anyone for highlights; compile from the day's "
+            "ingested notes and household events you can see, and write a "
+            "short honest entry (or skip a section) rather than inventing."
+        ),
+        "skills": [CHRONICLE_JOB_NAME],
+        "deliver": "local",
+    }
+    create_status, _ = hermes_request_json("/api/jobs", "POST", payload)
+    if create_status in (200, 201):
+        jlog(
+            "info",
+            "oscar-household:cron",
+            "registered daily chronicle cron",
+            name=CHRONICLE_JOB_NAME,
+            schedule="59 23 * * *",
+        )
+    else:
+        jlog(
+            "warn",
+            "oscar-household:cron",
+            "chronicle cron registration failed",
+            status=create_status,
+        )
+
+
 def main() -> int:
     init_env()
     wait_for_hermes()
+    register_chronicle_cron()
     servers = collect_mcp_servers()
     if not merge_config_yaml(servers):
         return 0  # config.yaml doesn't exist; nothing to do, not fatal

@@ -1,7 +1,7 @@
 ---
 name: oscar-daily-chronicle
-description: Use when a resident asks OSCAR to write, compile, or update the family journal / household chronicle / diary for a day (e.g. "schreib die Familienchronik für heute", "write today's journal", "Tagebuch-Eintrag für heute"). Compiles the day's highlights into a standardized Obsidian-compatible Markdown file under /opt/data/notes/journal/. Manual invocation only — the automatic daily trigger is a separate, not-yet-shipped slice.
-version: 1.0.0
+description: Use when a resident asks OSCAR to write, compile, or update the family journal / household chronicle / diary for a day (e.g. "schreib die Familienchronik für heute", "write today's journal", "Tagebuch-Eintrag für heute"), and as the daily 23:59 cron job that writes the day's entry unattended. Compiles the day's highlights into a standardized Obsidian-compatible Markdown file under /opt/data/notes/journal/.
+version: 1.1.0
 author: OSCAR
 license: MIT
 ---
@@ -16,9 +16,14 @@ the Syncthing-synchronized Obsidian vault, at
 indexes it, and the Obsidian Daily-Notes / calendar view picks it up on every
 resident's phone.
 
-**This slice is manual only.** A resident explicitly asks for the entry. The
-automatic daily cron trigger and the Honcho aggregated-highlights extraction
-are separate, deferred slices of #83 — do not assume they exist.
+**Two ways this runs:**
+- **On request** — a resident explicitly asks for the entry (interactive).
+- **Unattended daily cron** — `oscar-household`'s post-deploy registers a
+  Hermes job (`59 23 * * *`) that fires this skill at 23:59 with no resident
+  present. In that mode you must **not** ask anyone for input (see step 2).
+
+The Honcho cross-resident aggregated-highlights extraction is still a separate,
+deferred slice of #83 — do not assume it exists.
 
 ---
 
@@ -29,6 +34,7 @@ are separate, deferred slices of #83 — do not assume they exist.
   - "OSCAR, schreib die Familienchronik für heute."
   - "Write today's journal."
   - "Mach einen Tagebuch-Eintrag für heute / für den 27.05."
+- When the daily cron job fires this skill at 23:59 (unattended).
 - Do **not** trigger on a request to write a *general* note or fact — that is
   the `media-ingestion-multimodal` / `oscar-dynamic-skills` path. This skill is
   only for the dated journal/chronicle entry.
@@ -42,21 +48,26 @@ are separate, deferred slices of #83 — do not assume they exist.
   "den 27.05."), use that. Format as `YYYY-MM-DD` for the filename and tags.
 
 ### 2. Gather the day's highlights (from what is available now)
-Compile from the sources you actually have in this manual slice — do **not**
-fabricate events:
-- **This conversation** and what the resident tells you about the day.
+Compile from the sources you actually have — do **not** fabricate events:
 - **Notes added today** — scan the vault for today's ingested items, e.g. with
   the `terminal` tool:
   `grep -rl "added_at: {{date}}" /opt/data/notes/` (and `created_at:`), then
   list the digitized books/albums/documents by title.
-- **Household events** the resident mentions explicitly.
+- **Household events** you can observe or the resident mentions explicitly.
+- **This conversation** (interactive runs only) — what the resident tells you
+  about the day.
 
 > Privacy: record **aggregated highlights**, not verbatim resident chat. Do not
 > transcribe private conversations into the journal. (Cross-resident highlight
 > aggregation via Honcho — privacy-reviewed — is the deferred slice of #83.)
 
-If you have too little to write a meaningful entry, ask the resident for one or
-two highlights rather than padding the file.
+**If there's too little for a meaningful entry:**
+- *Interactive run* — ask the resident for one or two highlights rather than
+  padding the file.
+- *Unattended cron run* — there is **no one to ask**. Write a short, honest
+  entry from the notes/events you do have; if the day is genuinely empty,
+  write a minimal entry (or skip writing entirely) rather than inventing
+  content or blocking on input.
 
 ### 3. Compose the entry from the standard template
 Use the template below. Keep the tone warm but factual; German for a German
@@ -117,8 +128,9 @@ created_at: {{timestamp}}
   files outside `/opt/data/notes/`.
 - **No fabrication**: an empty day gets a short, honest entry — not invented
   events.
-- **No cron, no auto-run**: this skill runs only when a resident asks. Do not
-  schedule it or call `restart_service`.
+- **Don't self-schedule, don't restart services**: the daily cron is
+  registered once by `oscar-household`'s post-deploy. This skill never creates
+  or edits its own cron job, and never calls `restart_service`.
 - **Privacy**: aggregated highlights only; never copy private chat verbatim.
 
 ---
@@ -132,3 +144,7 @@ created_at: {{timestamp}}
 3. Re-run on the same day with a new highlight and confirm the entry is
    *merged*, not overwritten.
 4. Ask Hermes to recall the day's journal and confirm `qmd` retrieves it.
+5. Confirm the daily cron is registered: `hermes cron list` (or
+   `GET /api/jobs`) shows `oscar-daily-chronicle` at `59 23 * * *`. Force a
+   run with `hermes cron run oscar-daily-chronicle` and confirm it writes the
+   entry unattended (no prompt for resident input).
