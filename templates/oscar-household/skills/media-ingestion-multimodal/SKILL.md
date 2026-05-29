@@ -1,7 +1,7 @@
 ---
 name: media-ingestion-multimodal
 description: Triggers automatically when a resident uploads an image or photo attachment (such as a book cover, physical document, receipt, or music album art) via Signal, Telegram, Discord, or any other messaging gateway, or explicitly asks to ingest or scan a photographed item. Extracts structured metadata (ISBN, Title, Author, Artist, Tracklist, or Document Summary) and full OCR transcripts using multimodal LLMs. Writes the formatted, Obsidian-compatible structured Markdown note directly into the '/opt/data/notes/' folder (which is synced via Syncthing) so that the native 'qmd' skill can automatically index and retrieve it.
-version: 1.1.0
+version: 1.2.0
 author: OSCAR
 license: MIT
 ---
@@ -79,13 +79,58 @@ you extracted.
 3. **Write the link either way.** Obsidian renders `[[Entity]]` whether or
    not the target file exists yet (a missing target shows as an unresolved
    link that resolves the moment the note is created). So always emit the
-   wiki-link. **Do not create stub entity notes in this slice** — auto-stubs
-   and the `authors/` / `genres/` folders are a later step of #85.
+   wiki-link.
 4. **Render the links in the document body's metadata block** (not in the
    YAML frontmatter — keep frontmatter values plain strings):
    - `**Author:** [[Frank Herbert]]`
    - `**Genre:** [[Science Fiction]]`
    - `**Related:** [[Dune Messiah]], [[Children of Dune]]`
+
+### 3c. Create stub notes for new authors, artists, and genres
+
+So a wiki-linked author, artist, or genre becomes a real, browsable graph
+node (not a dangling unresolved link), create a **minimal stub note** for
+each **author**, **artist**, and **genre** candidate from 3b that the vault
+existence check found **no** existing note for. This keeps the vault tidy and
+lets backlinks accumulate on that entity over time.
+
+1. **Only authors, artists, and genres get auto-stubs.** Do **not** auto-stub
+   related works (other book/album titles) — those become real notes when the
+   resident actually ingests them; stubbing every mentioned title would
+   litter the vault with orphan nodes. Their `[[…]]` links stay unresolved
+   until then, which is fine.
+2. **Folder convention** — author stubs go in `/opt/data/notes/authors/`,
+   artist stubs in `/opt/data/notes/artists/`, genre stubs in
+   `/opt/data/notes/genres/`. Create the folder if it's missing. Obsidian's
+   link resolver still matches `[[Frank Herbert]]` to
+   `authors/Frank Herbert.md` by basename, so the links from 3b resolve.
+3. **Filename** — `<Entity>.md` with the entity's display name (sanitize only
+   path-unsafe characters `/` and `\`; keep spaces and capitalisation so the
+   basename matches the `[[Entity]]` link).
+4. **Idempotent** — never overwrite. If the existence check in 3b found a note
+   anywhere in the vault, skip; only `write_file` when the target is genuinely
+   absent.
+5. **Minimal content, no fabrication** — write only the name and type; do not
+   invent biography, discography, or dates. Use the stub template below.
+
+#### Author / artist / genre stub template
+
+```markdown
+---
+type: <author|artist|genre>
+tags:
+  - oscar/stub
+  - type/<author|artist|genre>
+created_at: {{timestamp}}
+---
+
+# {{Entity}}
+
+> Automatisch angelegter Knoten. Wird ergänzt, sobald mehr darüber bekannt ist.
+```
+
+Then continue to step 4 and write the ingested item's own note as usual — its
+`[[Author]]` / `[[Artist]]` / `[[Genre]]` links now resolve to these stubs.
 
 ### 4. Write Markdown to the Sync Folder
 - Create a safe, sanitized filename to avoid name collisions:
