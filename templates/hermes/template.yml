@@ -55,6 +55,28 @@ spec:
     volumeMounts:
     - mountPath: /opt/data
       name: hermes-data
+  # The notes vault is the file-share Syncthing share (host uid 1000),
+  # bind-mounted in at /opt/data/notes. The gateway runs as hermes (10000,
+  # a different host subuid), so without this it cannot write — every OSCAR
+  # note-writing skill (media-ingestion, dynamic-skills, daily-chronicle and
+  # its cron) silently fails to persist. We can't chown across the userns to
+  # 10000 without breaking the file-share services (samba/syncthing/
+  # filebrowser, uid 1000), and the hermes pod can't chmod it from the
+  # chown-home init (that init doesn't mount the share). This init does:
+  # it maps to the share owner via the pod userns (runAsUser 0 == host 1000),
+  # so it can open the share's perms to a+rwX, letting hermes create/append
+  # notes while the file-share services keep owning it. (Two-way edit of each
+  # other's files is still umask-limited; the robust shared-RW model is a
+  # file-share-template concern — see the upstream issue.)
+  - name: hermes-notes-perms
+    image: docker.io/nousresearch/hermes-agent:latest
+    command: ["chmod", "-R", "a+rwX", "/opt/data/notes"]
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+    volumeMounts:
+    - mountPath: /opt/data/notes
+      name: syncthing-notes
   containers:
   - name: hermes
     image: docker.io/nousresearch/hermes-agent:latest
