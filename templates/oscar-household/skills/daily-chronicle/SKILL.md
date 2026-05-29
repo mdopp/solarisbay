@@ -1,7 +1,7 @@
 ---
 name: oscar-daily-chronicle
 description: Use when a resident asks OSCAR to write, compile, or update the family journal / household chronicle / diary for a day (e.g. "schreib die Familienchronik für heute", "write today's journal", "Tagebuch-Eintrag für heute"), and as the daily 23:59 cron job that writes the day's entry unattended. Compiles the day's highlights into a standardized Obsidian-compatible Markdown file under /opt/data/notes/journal/.
-version: 1.1.0
+version: 1.2.0
 author: OSCAR
 license: MIT
 ---
@@ -54,12 +54,25 @@ Compile from the sources you actually have — do **not** fabricate events:
   `grep -rl "added_at: {{date}}" /opt/data/notes/` (and `created_at:`), then
   list the digitized books/albums/documents by title.
 - **Household events** you can observe or the resident mentions explicitly.
+- **The day's conversations (from memory)** — recall the day's interactions
+  from your memory provider (whichever is active — built-in plus the
+  configured external provider) and distil them into **group-level**
+  highlights. This is the household chronicle, so summarise what *the
+  household* did, learned, or decided — not what any one person said.
 - **This conversation** (interactive runs only) — what the resident tells you
   about the day.
 
-> Privacy: record **aggregated highlights**, not verbatim resident chat. Do not
-> transcribe private conversations into the journal. (Cross-resident highlight
-> aggregation via Honcho — privacy-reviewed — is the deferred slice of #83.)
+> **Privacy — highlight per group, never per person.** The journal records
+> **group-level aggregated highlights only**. Concretely:
+> - Summarise at the **household/family group** level. Do **not** attribute a
+>   highlight to a named individual, and do **not** quote or paraphrase any one
+>   resident's private conversation.
+> - A thing a single resident told OSCAR in private goes in the journal **only**
+>   if it's a genuinely household-relevant fact (e.g. "the garden was watered"),
+>   stated as a group fact — never as "X said …" or "X is …".
+> - When in doubt, leave it out. A thinner honest entry beats leaking one
+>   resident's private chat into a shared, Syncthing-synced file every family
+>   member reads.
 
 **If there's too little for a meaningful entry:**
 - *Interactive run* — ask the resident for one or two highlights rather than
@@ -131,7 +144,8 @@ created_at: {{timestamp}}
 - **Don't self-schedule, don't restart services**: the daily cron is
   registered once by `oscar-household`'s post-deploy. This skill never creates
   or edits its own cron job, and never calls `restart_service`.
-- **Privacy**: aggregated highlights only; never copy private chat verbatim.
+- **Privacy**: group-level aggregated highlights only — never attribute to a
+  named resident, never copy a private conversation verbatim (see step 2).
 
 ---
 
