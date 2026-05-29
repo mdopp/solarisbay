@@ -120,7 +120,14 @@ def init_env() -> None:
     HA_MCP_TOKEN = os.environ.get("HA_MCP_TOKEN", "")
     SERVICEBAY_MCP_URL = os.environ.get("SERVICEBAY_MCP_URL", "")
     SERVICEBAY_MCP_TOKEN = os.environ.get("SERVICEBAY_MCP_TOKEN", "")
-    GATEKEEPER_MCP_URL = os.environ.get("GATEKEEPER_MCP_URL", "")
+    # The gatekeeper MCP server always listens on the deterministic in-pod
+    # port (gatekeeper container MCP_PORT, hard-coded 10760 in template.yml).
+    # Default the URL when the variable is absent — e.g. a reinstall that
+    # reuses a saved manifest predating this variable won't apply its
+    # variables.json default, and we still want gatekeeper-mcp registered.
+    GATEKEEPER_MCP_URL = (
+        os.environ.get("GATEKEEPER_MCP_URL", "") or "http://127.0.0.1:10760/mcp"
+    )
     GATEKEEPER_MCP_TOKEN = os.environ.get("GATEKEEPER_MCP_TOKEN", "")
 
     CONFIG_PATH = os.path.join(DATA_DIR, "hermes", "config.yaml")
