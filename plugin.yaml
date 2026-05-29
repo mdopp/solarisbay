@@ -3,8 +3,9 @@ version: "0.1.0"
 description: |
   OSCAR — household AI assistant.
 
-  Provides a Hermes skill pack (audit-query, debug-set, dynamic-skills,
-  media-ingestion-multimodal, status) plus the ServiceBay templates and
+  Provides a Hermes skill pack (audit-query, daily-chronicle, debug-set,
+  dynamic-skills, media-ingestion-multimodal, status) plus the ServiceBay
+  templates and
   container images that deploy the household pod (oscar-household)
   alongside Hermes + Ollama. Installable two ways:
 
