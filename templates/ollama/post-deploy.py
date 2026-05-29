@@ -202,14 +202,22 @@ def pull_model(ollama_url: str, model: str, stall_sec: int) -> bool:
                     status != last_status or now - last_log >= PROGRESS_LOG_INTERVAL_SEC
                 ):
                     if total > 0 and completed > 0:
+                        pct = int(completed * 100 / total)
+                        done_mb = completed // (1024 * 1024)
+                        total_mb = total // (1024 * 1024)
+                        # ASCII bar in the message so the log line reads as a
+                        # progress bar wherever it surfaces; structured fields
+                        # stay in args for a future UI bar (servicebay#1288).
+                        filled = pct * 20 // 100
+                        bar = "#" * filled + "-" * (20 - filled)
                         jlog(
                             "info",
                             "ollama:pull",
-                            status,
+                            f"{model} [{bar}] {pct}% ({done_mb}/{total_mb} MB)",
                             model=model,
-                            percent=int(completed * 100 / total),
-                            completed_mb=completed // (1024 * 1024),
-                            total_mb=total // (1024 * 1024),
+                            percent=pct,
+                            completed_mb=done_mb,
+                            total_mb=total_mb,
                         )
                     else:
                         jlog("info", "ollama:pull", status, model=model)
