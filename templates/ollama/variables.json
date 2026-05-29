@@ -26,7 +26,7 @@
   },
   "OLLAMA_READINESS_TIMEOUT_SECONDS": {
     "type": "text",
-    "description": "How long post-deploy waits for the first model pull to finish. Multi-GB models on a slow connection can take 10+ minutes; the default leaves slack. Tune down for tiny models on fast links if you want faster install feedback.",
+    "description": "Stall window for model pulls, in seconds: a pull is abandoned only after this long with NO download progress — not on total elapsed time, so a slow link pulling a multi-GB model for an hour is fine as long as bytes keep flowing. Also caps the initial wait for the Ollama API to answer (at most 120s). Raise it if your connection has long stalls; lower it to fail faster on a dead mirror.",
     "default": "600"
   },
   "OLLAMA_SUBDOMAIN": {

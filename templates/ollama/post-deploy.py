@@ -130,14 +130,21 @@ def model_present(ollama_url: str, model: str) -> bool:
     return False
 
 
-def pull_model(ollama_url: str, model: str, deadline_sec: int) -> bool:
+def pull_model(ollama_url: str, model: str, stall_sec: int) -> bool:
     """Trigger a streaming pull and wait for the done line.
+
+    Fails only after `stall_sec` with no download progress — not on a total
+    wall-clock budget — so a slow link can take as long as it needs as long
+    as bytes keep flowing (#109). Download progress (percent + MB) is logged
+    every PROGRESS_LOG_INTERVAL_SEC so the operator sees movement instead of
+    a silent multi-GB wait.
 
     Post-pull verifies via /api/tags (#1047) — neither the CLI nor the
     HTTP streaming endpoint reliably surfaces manifest-write failures.
     A pull that reports `success` but never lands the model in /api/tags
     is treated as a failure here so callers can fall back / fail loud
     instead of leaving the operator with a 404-on-first-chat box."""
+    PROGRESS_LOG_INTERVAL_SEC = 15
     body = json.dumps({"name": model, "stream": True}).encode("utf-8")
     req = urllib.request.Request(
         f"{ollama_url}/api/pull",
@@ -146,27 +153,21 @@ def pull_model(ollama_url: str, model: str, deadline_sec: int) -> bool:
         method="POST",
     )
     started = time.time()
+    # `stall_sec` doubles as the socket read timeout, so a dead connection
+    # (no bytes at all) raises after the same window the in-loop stall check
+    # uses for a live-but-stuck stream.
     try:
-        with urllib.request.urlopen(req, timeout=deadline_sec) as resp:
+        with urllib.request.urlopen(req, timeout=stall_sec) as resp:
             last_status = ""
+            last_log = 0.0
+            last_progress_at = started
+            last_seen = ""
             for raw in resp:
-                if time.time() - started > deadline_sec:
-                    jlog(
-                        "error",
-                        "ollama:pull",
-                        "model pull exceeded deadline",
-                        model=model,
-                        deadline_sec=deadline_sec,
-                    )
-                    return False
+                now = time.time()
                 try:
                     chunk = json.loads(raw.decode("utf-8").strip())
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     continue
-                status = str(chunk.get("status", ""))
-                if status and status != last_status:
-                    jlog("info", "ollama:pull", status, model=model)
-                    last_status = status
                 if chunk.get("error"):
                     jlog(
                         "error",
@@ -176,6 +177,44 @@ def pull_model(ollama_url: str, model: str, deadline_sec: int) -> bool:
                         error=str(chunk.get("error")),
                     )
                     return False
+                status = str(chunk.get("status", ""))
+                completed = int(chunk.get("completed") or 0)
+                total = int(chunk.get("total") or 0)
+                # Any change in status or downloaded bytes counts as progress;
+                # only a genuinely stuck pull lets `last_progress_at` go stale.
+                fingerprint = f"{status}:{completed}"
+                if fingerprint != last_seen:
+                    last_seen = fingerprint
+                    last_progress_at = now
+                elif now - last_progress_at > stall_sec:
+                    jlog(
+                        "error",
+                        "ollama:pull",
+                        "model pull stalled — no download progress within the stall window",
+                        model=model,
+                        stall_sec=stall_sec,
+                        last_status=status,
+                    )
+                    return False
+                # Log on status change, else throttle to one progress line per
+                # interval so a multi-GB blob shows steady, visible movement.
+                if status and (
+                    status != last_status or now - last_log >= PROGRESS_LOG_INTERVAL_SEC
+                ):
+                    if total > 0 and completed > 0:
+                        jlog(
+                            "info",
+                            "ollama:pull",
+                            status,
+                            model=model,
+                            percent=int(completed * 100 / total),
+                            completed_mb=completed // (1024 * 1024),
+                            total_mb=total // (1024 * 1024),
+                        )
+                    else:
+                        jlog("info", "ollama:pull", status, model=model)
+                    last_status = status
+                    last_log = now
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         jlog("error", "ollama:pull", "pull failed", model=model, error=str(e))
         return False
@@ -466,14 +505,9 @@ def main() -> int:
         )
         return 0
 
-    started = time.time()
-
-    def remaining_budget() -> int:
-        return max(60, timeout - int(time.time() - started))
-
     if model:
         jlog("info", "ollama:pull", "starting model pull", model=model)
-        ok = pull_model(ollama_url, model, deadline_sec=remaining_budget())
+        ok = pull_model(ollama_url, model, stall_sec=timeout)
         if not ok:
             jlog(
                 "warn",
@@ -491,7 +525,7 @@ def main() -> int:
         if extra == model:
             continue  # already covered above
         jlog("info", "ollama:pull", "starting extra-model pull", model=extra)
-        if not pull_model(ollama_url, extra, deadline_sec=remaining_budget()):
+        if not pull_model(ollama_url, extra, stall_sec=timeout):
             jlog(
                 "warn",
                 "ollama:pull",
@@ -502,7 +536,7 @@ def main() -> int:
 
     if vision_model:
         jlog("info", "ollama:pull", "starting vision-model pull", model=vision_model)
-        ok = pull_model(ollama_url, vision_model, deadline_sec=remaining_budget())
+        ok = pull_model(ollama_url, vision_model, stall_sec=timeout)
         if not ok:
             jlog(
                 "warn",
