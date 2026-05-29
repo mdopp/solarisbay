@@ -35,9 +35,26 @@ spec:
   #      that loopback-cross-pod call work.
   #   2. OSCAR's `oscar-household` pod (also hostNetwork) can reach
   #      Hermes' API at 127.0.0.1:{{HERMES_API_PORT}}.
-  #   3. NPM (also hostNetwork) proxies the dashboard container from the
-  #      same host loopback, behind Authelia forward-auth.
+  #   3. NPM (also hostNetwork) proxies the in-container dashboard from
+  #      the same host loopback, behind Authelia forward-auth.
   hostNetwork: true
+  # The image seeds $HERMES_HOME (/opt/data) from a skeleton whose files
+  # (gateway.lock, SOUL.md, kanban.db, …) stay owned by the image build
+  # uid, not the `hermes` runtime user — so `hermes gateway run`, which
+  # runs as `hermes` and opens /opt/data/gateway.lock read-write, dies
+  # with PermissionError and the API server never binds {{HERMES_API_PORT}}.
+  # Chown the whole home to the hermes uid (10000) once, before the
+  # gateway starts. Idempotent; runs as userns-root so it can chown.
+  initContainers:
+  - name: hermes-chown-home
+    image: docker.io/nousresearch/hermes-agent:latest
+    command: ["chown", "-R", "10000:10000", "/opt/data"]
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+    volumeMounts:
+    - mountPath: /opt/data
+      name: hermes-data
   containers:
   - name: hermes
     image: docker.io/nousresearch/hermes-agent:latest
@@ -99,13 +116,39 @@ spec:
       value: "{{HERMES_LLM_PROVIDER_URL}}"
     - name: OPENAI_API_KEY
       value: "ollama"
+    # Web dashboard (config / API-key / session UI). The image runs it as
+    # its own s6 service gated by HERMES_DASHBOARD — designed to run beside
+    # `gateway run` in the same container, so we enable it here rather than
+    # as a second container. A second container from this image can't
+    # coexist on the shared hermes-data volume: each starts a full s6 tree
+    # whose `gateway-default` logger flock()s
+    # $HERMES_HOME/logs/gateways/default/lock, and two of them deadlock that
+    # lock — which left the gateway's API server unable to bind
+    # {{HERMES_API_PORT}}. One container = one s6 tree = no lock fight. Bind
+    # 127.0.0.1 so the dashboard refuses `--insecure` (it exposes API keys)
+    # and is reachable only through NPM + Authelia forward-auth.
+    - name: HERMES_DASHBOARD
+      value: "1"
+    - name: HERMES_DASHBOARD_HOST
+      value: "127.0.0.1"
+    - name: HERMES_DASHBOARD_PORT
+      value: "{{HERMES_DASHBOARD_PORT}}"
     ports:
     - containerPort: {{HERMES_API_PORT}}
+    - containerPort: {{HERMES_DASHBOARD_PORT}}
     volumeMounts:
     - mountPath: /opt/data
       name: hermes-data
+    # Read-only: hermes only *reads* skills (the loader scans them). The
+    # image chowns $HERMES_HOME (/opt/data) to the `hermes` user at init;
+    # a writable bind mount here lets that chown reach the host skills dir
+    # (leaving it owned by a container subuid), so the asset transport —
+    # running as the host user — then hits EACCES writing skills on every
+    # (re)install. A read-only mount can't be chowned, so the host dir
+    # keeps its host-user ownership.
     - mountPath: /opt/data/skills/oscar
       name: oscar-skills
+      readOnly: true
     # Drafted skills go here, NOT under /opt/data/skills/oscar. Hermes'
     # skill loader scans /opt/data/skills/oscar; anything that lands
     # there is live immediately. OSCAR's dynamic-skills SKILL.md writes
@@ -118,32 +161,6 @@ spec:
     - mountPath: /opt/data/notes
       name: syncthing-notes
 
-  # The Hermes web dashboard (config / API-key / session UI) runs as its
-  # own `hermes dashboard` process — the HERMES_DASHBOARD* env vars are
-  # NOT read by `hermes gateway run`, so it cannot share the gateway
-  # container. Both containers share the hermes-data volume (one Hermes
-  # home); upstream supports running the gateway and dashboard together.
-  #   - `hermes dashboard` binds 127.0.0.1:{{HERMES_DASHBOARD_PORT}} (its
-  #     default host). The pod is hostNetwork, so NPM — also hostNetwork —
-  #     proxies hermes.{{PUBLIC_DOMAIN}} to that loopback address behind
-  #     Authelia forward-auth. The dashboard surfaces API keys, so it is
-  #     never bound to a LAN-reachable address (no `--insecure`).
-  #   - `--skip-build` serves the web UI dist bundled in the image
-  #     (/opt/hermes/hermes_cli/web_dist); `--no-open` suppresses the
-  #     browser launch, which is meaningless in a container.
-  - name: hermes-dashboard
-    image: docker.io/nousresearch/hermes-agent:latest
-    args:
-    - dashboard
-    - --port
-    - "{{HERMES_DASHBOARD_PORT}}"
-    - --no-open
-    - --skip-build
-    ports:
-    - containerPort: {{HERMES_DASHBOARD_PORT}}
-    volumeMounts:
-    - mountPath: /opt/data
-      name: hermes-data
   volumes:
   - name: hermes-data
     hostPath:

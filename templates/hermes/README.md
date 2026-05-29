@@ -155,11 +155,14 @@ before the bot is paired with a chat account.
 
 ## Dashboard
 
-The Hermes web dashboard (config, API keys, sessions) runs in its own
-`hermes-dashboard` container and is on by default. It is a separate
-`hermes dashboard` process — `hermes gateway run` does not start it, and
-the `HERMES_DASHBOARD*` env vars are not read — so it cannot share the
-gateway container. Both containers share the `/opt/data` Hermes home.
+The Hermes web dashboard (config, API keys, sessions) runs in the **same**
+container as the gateway, enabled via `HERMES_DASHBOARD=1`. The image runs
+the dashboard as its own s6 service (gated by that env var), so it starts
+alongside `hermes gateway run` without a second container. Running a second
+container from this image is not viable: each starts a full s6 tree whose
+`gateway-default` logger locks `$HERMES_HOME/logs/gateways/default/lock`,
+and two of them on the shared `/opt/data` volume deadlock that lock —
+which previously stopped the gateway's API server from binding.
 
 It binds `127.0.0.1:HERMES_DASHBOARD_PORT` (default `9119`) and is
 reached at `https://<HERMES_SUBDOMAIN>.<PUBLIC_DOMAIN>` (default
