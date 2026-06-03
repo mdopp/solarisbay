@@ -32,6 +32,7 @@ test = [
   "pytest>=7",
   "pytest-asyncio>=0.23",
   "pytest-aiohttp>=1.0",
+  "pytest-cov>=4",
   "numpy>=1.26",
 ]
 # Phase-2 speaker-ID (#937). The stock gatekeeper image does NOT install

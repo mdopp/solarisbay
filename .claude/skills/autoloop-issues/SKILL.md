@@ -1,300 +1,173 @@
 ---
 name: autoloop-issues
-description: Work the open mdopp/oscar issue backlog autonomously, up to 8 PRs per invocation, with mandatory real-box `/verify` on template/skill/service/migration paths. Resumable across /loop firings via .claude/state/autoloop-state.json. Security/privacy-sensitive issues open as draft and wait for human review. Use when the user asks to "burn down the backlog", "work the oscar issues autonomously", or invokes /loop with this skill.
+description: Orchestrates an autonomous issue-resolution pipeline for mdopp/oscar — Planner → Builder → Verify — coordinated through a shared work queue, spawning each stage as a fresh sub-agent so the loop session stays clean. Verify runs in the BACKGROUND (writes its own result file) so the builder keeps build-ahead-ing the next batch while a prior batch is verified on the real ServiceBay box; only the seal→release critical section serializes. Fast per-issue gates, expensive pipeline (CI + real-box /verify) once per batch. Security/privacy-sensitive issues open as a DRAFT PR and wait for human review (pre-merge gate). Resumable via .claude/state/work-queue.json. Use when the user asks to "burn down the backlog", "work the oscar issues autonomously", or invokes /loop with this skill.
 ---
 
-# Autoloop: OSCAR backlog burndown
+# Autoloop orchestrator — mdopp/oscar
 
-You are working a queue of open GitHub issues on the **`mdopp/oscar`** repo, with explicit exit conditions and a resumable state file.
+You are the **coordinator** of an autonomous issue-resolution pipeline. You do **not** write code, groom issues, or verify the environment yourself — you run a tight dispatch loop that **spawns a fresh sub-agent per stage** and routes work between them through one shared file, `.claude/state/work-queue.json`.
 
-**What OSCAR is, and why verification is unusual.** OSCAR is *not* a standalone app. It is a bundle of ServiceBay artifacts:
-
-- `templates/{hermes,hermes-webui,ollama,oscar-household}/` — ServiceBay Pod-YAML templates (`template.yml` + `variables.json` + `post-deploy.py`) installed onto a ServiceBay node.
-- `templates/oscar-household/skills/*/SKILL.md` — Hermes skills, delivered to the node by ServiceBay's asset-transport and loaded by the Hermes container.
-- `voice-gatekeeper/` — a Python Wyoming↔Hermes bridge. **Real service code lives in `voice-gatekeeper/src/gatekeeper/`** (entrypoint `gatekeeper.__main__:main`), with pytest in `voice-gatekeeper/tests/`. Built as Docker image `oscar-gatekeeper`. This is the most code-heavy part of the repo — bug/feature work here is normal Python work (edit `src/gatekeeper/`, extend tests, run pytest).
-- `database/` — alembic schema-init sidecar (Docker image `oscar-household-init`) for `oscar.db`.
-- `stacks/oscar/stack.yml` — the bundled OSCAR stack manifest.
-- `plugin.yaml` + `__init__.py` — Hermes "Install-from-Git" plugin packaging.
-
-OSCAR runs **on ServiceBay**, on the **same box ServiceBay uses: `<SERVICEBAY_BOX>`**. So real-box verification means *deploying the changed OSCAR artifact through ServiceBay onto that box and checking the OSCAR runtime* — the same test procedures the ServiceBay autoloop uses, pointed at OSCAR's pods/skills instead of ServiceBay's own. See Step 3.
-
-This is pre-production, so the loop may merge changes across the repo — but only after CI green (where CI applies) **and**, on the path-mandated list in Step 3, only after real-box `/verify` green. Security/privacy-sensitive issues open as **draft** PRs and wait for human review.
-
-If a project `CLAUDE.md` or user memory conflicts with this skill, those override it. Read them before the first iteration of a fresh `/loop` run.
-
-## Per-invocation budget
-
-- **At most 8 PRs per invocation.** Then exit cleanly. `/loop` re-fires you.
-- A security/privacy-gate draft still counts as one PR's worth of work.
-- If you've spent >40 minutes on a single issue without a green PR, stop, comment on the issue explaining what's blocking, and move on.
-
-## Wakeup cadence (dynamic /loop mode)
-
-Every `ScheduleWakeup` from this skill uses **`delaySeconds: 480` (8 minutes) or less** — including "CI running" / "nothing to do" heartbeats. Keep the backlog draining; long fallbacks stall progress when an external gate clears mid-window.
-
-## State file
-
-Track progress at `.claude/state/autoloop-state.json` (shape in `state-template.json`). Update it at every state transition. If absent, create it with empty arrays. Shape mirrors ServiceBay's:
-
-```json
-{
-  "started": "…", "last_invocation": "…",
-  "completed": [{"issue": 82, "pr": "https://github.com/mdopp/oscar/pull/…", "gate": "normal", "merged_at": "…"}],
-  "in_progress": null,
-  "skipped": [{"issue": 84, "reason": "security/privacy gate; draft PR #… awaiting human review"}],
-  "blocked": [{"issue": 81, "reason": "needs scoping"}],
-  "upstream_waits": [{"issue": 80, "servicebay_issue": "mdopp/servicebay#1234", "reason": "needs SB asset-transport fix before OSCAR side can be verified"}],
-  "notes": [],
-  "last_e2e": null,
-  "last_codebase_eval": null
-}
-```
-
-## Step 0 — Preflight (every invocation)
-
-1. **Working tree clean?** `git status --porcelain`. If not, exit — another session is working here. Do not stash or switch branches.
-2. **On `main` and up to date?** `git fetch origin && git checkout main && git pull --ff-only`. If the FF fails, exit and report.
-3. **No release-please here.** Unlike ServiceBay, `mdopp/oscar` has no release-please workflow — releases are cut by pushing a `v*` tag (which triggers `build-images.yml` to publish images to GHCR). **Do not create or push tags** and do not bump versions in `pyproject.toml` unless the user explicitly asks. There is no release PR to merge in preflight.
-4. **Lock check.** Read `.claude/scheduled_tasks.lock` if present; if another invocation ran within the last 10 minutes, exit.
-5. **Read state file.** Resume from `in_progress` if set; otherwise pick the next issue per the rules below.
-
-## Step 1 — Issue selection
-
-```bash
-gh issue list --repo mdopp/oscar --state open --limit 100 --json number,title,labels,body
-```
-
-### Exclusion filter (drop any issue matching any of these)
-
-- Labels include any of: `postponed`, `wontfix`, `duplicate`, `invalid`, `autoloop-open`.
-- Issue number appears in `state.completed[]`, `state.skipped[]`, or `state.blocked[]`.
-- Title/body is clearly multi-PR scope ("audit", "strategy", "epic", or work spanning many changes). Mark `blocked` with reason `"needs scoping"` and move on — *or*, in a refine pass (track b) or when the user asks, **decompose** it into bite-sized child issues (see track b's "Decomposing an epic") and keep this one open as the tracking umbrella. (Many OSCAR feature issues — daily-journal, wiki-linking, media-availability — are genuinely multi-PR; decomposing them is usually better than parking them.)
-
-### Classification (everything that survives)
-
-- **Security/privacy gate** — the issue touches biometric speaker-ID, gateway credentials (Signal/Telegram/Discord), Honcho per-resident privacy, long-lived HA/MCP tokens, or anything labelled `security`. Open the code PR as **draft**; the loop never merges it. Label the issue `autoloop-open`, add to `state.skipped[]` with reason `"security/privacy gate; draft PR #X awaiting human review"`. (If no `security` label exists yet, create one: `gh label create security --repo mdopp/oscar --color d73a4a`.)
-- **Normal flow** — everything else. Code PR, merged after CI green (where CI applies) + (if path-mandated) real-box `/verify` green.
-
-### Selection order within survivors
-
-1. `good first issue`
-2. `bug`
-3. `phase-0`, then `phase-1` (foundational phases before later enhancements)
-4. `documentation`
-5. Everything else, ascending issue number.
-
-Pick the head. Update state: `in_progress = {issue, branch, gate, started_at}`.
-
-### No eligible issues — choose a track
-
-If Step 1 returns no survivors, **do not exit** and don't blindly default. Decide a track (same three-track model as ServiceBay):
-
-- **a) Code hygiene** — small, focused cleanups: fix a flaky/expanded `voice-gatekeeper` or `database` test, tighten a Dockerfile, validate/normalize a `template.yml` or `SKILL.md` frontmatter, kill dead code. (OSCAR has no ESLint warning-count to drive to zero, so this track is opportunistic hygiene, not a mechanical sweep. If `ruff`/`flake8` is ever added to `voice-gatekeeper`, drive its warnings down here.)
-- **b) Refine & unblock issues** — walk `state.blocked[]` + open issues; re-check whether a recent merge or a smaller scoping makes one actionable; tighten thin issue bodies (symptom + repro + starting-point files). Deliverable: a refreshed queue — then pick the head and work it.
-
-  **Decomposing an epic** is a first-class track-b move (better than parking a multi-PR issue as `needs scoping`): break it into bite-sized child issues so the loop can ship it incrementally. Rules: each child is an independently-shippable PR-unit (foundational modules/templates first, then consumers — no dead-code-only stubs); **file them in dependency order so ascending issue number == dependency order** (the loop works ascending within a bucket, and a child whose `Depends on #N` sibling is still open is skipped until #N merges); each child body gives the deliverable + starting-point files + a `Depends on #N` line; comment the dependency DAG on the parent and keep the parent **open as the tracking epic**.
-- **c) Evaluate the codebase** — run the standing eval prompt (below) against HEAD, then file the **Category 2 (Pragmatic)** findings as new issues to refill the queue (symptom-style: symptom + exact file/line + real-world consequence; no patch plan in the body). Record **Category 1 (Academic)** findings in `state.notes[]` only.
-- **d) End-to-end validation on the box** — run the full "does OSCAR work within the ServiceBay install?" smoke (see the section below) and route any failures cross-repo. This is the ultimate goal of the loop; prefer it after a batch of OSCAR changes has merged.
-
-**How to choose:** interactive → ask the operator via `AskUserQuestion`. Autonomous (`/loop`) → **(d)** if OSCAR artifacts merged since the last recorded E2E (`state.last_e2e`); else **(b)** if `state.blocked[]` is non-empty; else **(c)** if no eval recorded in the last ~5 invocations (`state.last_codebase_eval`); else **(a)**. Record the chosen track (and the E2E/eval date) in `state.notes[]` / `state.last_e2e` / `state.last_codebase_eval`.
-
-#### Codebase-evaluation prompt (track c)
-
-Run verbatim against the current HEAD:
+Why this shape: each sub-agent starts cold and returns only a one-line summary, so the long-lived loop session stays small and every stage reasons in clean context. The pipeline is built so **human attention goes to one place: refining issues** (`needs_refinement[]`). Everything downstream — grouping, building, verifying — runs without you.
 
 ```
-Evaluate the OSCAR codebase across its core areas (ServiceBay Pod-YAML templates, Hermes skills/SKILL.md, the voice-gatekeeper Wyoming bridge, the database/alembic schema, the Hermes plugin packaging in plugin.yaml/__init__.py, the bundled stack manifest, and documentation).
+            ┌──────────────── you (orchestrator, this session) ────────────────┐
+            │ preflight → read queue → dispatch ONE stage agent → re-read → cadence │
+            └──────────────────────────────────────────────────────────────────┘
+ PLANNER ──fills──▶ work-queue.json ──┬─▶ BUILDER ──merges, sets verify=owed──┐
+ groom/cluster/                       │   fast gates, batch seal,             │
+ decompose/refine                     │   push→CI→merge                       ▼
+                                      └─▶ BUILDER build-aheads          VERIFY (BACKGROUND) ──gates──▶ release
+                                          next batch concurrently       deploy through ServiceBay,
+                                          (no main, no release)          /verify on the box, restore
+                                                                         writes verify-result.json
 
-Assume the baseline that OSCAR is a real, deployed homelab AI assistant running on a ServiceBay node. Do not give me generic style-guide complaints unless they have a direct, measurable impact on bugs or developer velocity.
-
-CRITICAL REQUIREMENT: Findings MUST focus exclusively on active, unresolved bugs, logical flaws, security/privacy exploits, or operational dead-ends present in the current state (HEAD commit). Do NOT reference historical issues, resolved bugs, or refactors already fixed/merged in past PRs, commits, changelogs, or audits. Inspect actual active source files to verify each issue is currently live. Pay special attention to: skills whose SKILL.md still carries a TODO/stub banner; template.yml port/volume/hostNetwork wiring; voice-gatekeeper Wyoming version/constructor contracts; alembic migration correctness; and privacy handling of speaker-ID / per-resident memory / gateway credentials.
-
-Group findings into exactly two categories:
-
-1. Academic / Theoretical (Nice-to-Have)
-Changes that satisfy clean-code metrics or theory but whose real-world ROI is near zero at this scale.
-
-2. Pragmatic / Real-World (Should-Do)
-Active, load-bearing flaws in the live code that compromise security/privacy, threaten data integrity, risk runtime/deploy crashes, or are active dead-ends that block or frustrate residents.
-
-For each Category 2 item:
-a) Exact active file(s) and line range.
-b) The real-world consequence of ignoring it.
-c) A brief outline of how to patch the live code.
+  VERIFY runs in the BACKGROUND (Agent run_in_background) and writes its verdict to its OWN file
+  (.claude/state/verify-result.json); the orchestrator folds it into verify_state at preflight
+  (single writer). While it runs, the builder keeps BUILDING the next batch. Only the
+  seal→release critical section serializes; building is concurrent with it.
 ```
 
-After the eval: file each Category 2 finding as its own `mdopp/oscar` issue (symptom-style, no patch plan), labelled appropriately (`bug`/`skill`/`template`/`infrastructure`/`security`) so classification routes it. Then continue this invocation by selecting the head of the refilled queue, budget permitting.
+**What OSCAR is, and why verification is unusual.** OSCAR is *not* a standalone app. It is a bundle of ServiceBay artifacts: `templates/{hermes,hermes-webui,ollama,oscar-household}/` (Pod-YAML templates), `templates/oscar-household/skills/*/SKILL.md` (Hermes skills delivered to the node by ServiceBay's asset-transport), `voice-gatekeeper/` (a Python Wyoming↔Hermes bridge — the code-heavy part, package `voice-gatekeeper/src/gatekeeper/`, pytest in `voice-gatekeeper/tests/`, built as image `oscar-gatekeeper`), `database/` (alembic schema-init sidecar, image `oscar-household-init`), `stacks/oscar/stack.yml`, and `plugin.yaml`/`__init__.py` (Hermes Install-from-Git packaging). OSCAR runs **on ServiceBay**, on the same box ServiceBay uses (`<SERVICEBAY_BOX>`). So real-environment `/verify` means *deploying the changed OSCAR artifact through ServiceBay onto that box and checking the OSCAR runtime* — see `stages/verify.md`.
 
-## Step 2 — Implementation
+Any project `CLAUDE.md` or user memory overrides this skill on conflict. Read them before the first iteration of a fresh `/loop` run.
 
-### Branch
-```bash
-git checkout -b fix/issue-<N>-<kebab-summary>
+## The shared work queue (the only handoff)
+
+`.claude/state/work-queue.json` is the single source of truth between stages. Stage agents read it, do their work, **write results back into it**, and return one line. You re-read it after every spawn. Schema in `work-queue-template.json` (same dir); create from it if absent.
+
+Key fields:
+- `queue[]` — **units** the builder consumes, in selection order. A unit is `{id, kind: "cluster"|"issue"|"lint-sweep", issues[], theme, region, scope, acceptance, gate: "normal"|"verify", security: false, status: "planned"|"in_progress"|"built"|"blocked", pr, notes}`. A cluster is the work-unit; its members never appear standalone. `gate` is the verification level; `security: true` routes the unit to the **pre-merge draft gate** (see below).
+- `batch` — the persistent integration branch: `{branch, units[], count, sealed}`. **Survives across firings.** Reset to `null` after its release/merge completes.
+- `needs_refinement[]` — **the human's worklist.** `{issue, question, comment_url, since}`. The planner parks anything it can't make actionable without a human decision here, with the *specific* question.
+- `awaiting_user[]` — external human comment unanswered; never the pipeline's to reply to.
+- `review[]` — **the human's pre-merge review list**: `{issue, pr, flag, since}` for `security:true` changes opened as **draft** PRs. OSCAR touches biometric speaker-ID, per-resident privacy, and gateway/HA credentials, so security/privacy changes are reviewed **before** they ship (the pre-merge opt-in — see `stages/builder.md`). These are **never auto-merged** by the loop.
+- `verify_state` — `{sha, status: "owed"|"verifying"|"red"|"green", detail, since}`. Gates the release/tag. State machine: `owed` (path-mandated change merged, not yet verified on the box) → `verifying` (a background Verify agent is in flight) → `green`|`red`. You set `verifying` when you launch the background agent; the agent writes its verdict to `.claude/state/verify-result.json` (**its own file, not the shared queue** — avoids a write-race with the concurrent builder), and you fold that verdict back into this field at preflight. A `verifying` entry whose `since` is >20 min old with no result file = the agent died → reset to `owed` (it relaunches).
+- `blocked[]` — parked work, each `{issue, blocked_by, reason, since}` where `blocked_by` is a **machine-checkable unblock condition** (`"#<N>"` dependency · `"capability:<x>"` · `"decomposition"` · `"epic"` · `"servicebay#<N>"` upstream wait) the planner rechecks every run.
+- `upstream_waits[]` — `{issue, servicebay_issue, reason, since}`: a local issue blocked on an unmerged **mdopp/servicebay** platform fix the OSCAR loop can't make itself. The planner re-checks whether the upstream issue closed and unblocks.
+- `completed[]`, `lint_sweep[]`, `release_warnings[]`, `last_codebase_eval`, `last_e2e`, `notes[]`.
+
+**Label mirror (one-way projection).** The queue file is the source of truth; human-facing states are *mirrored* to GitHub labels so a human sees the same worklist: `blocked[]` → `autoloop:blocked`, `needs_refinement[]` → `autoloop:needs-refinement` (both reconciled by the **planner**), and `verify_state` → `autoloop:verify-pending`/`-failed` on the open batch PR (set here in preflight; OSCAR has no release PR — see Step 0.6). Labels are derived from the file every run — never the reverse — so drift is cosmetic and self-heals.
+
+## Batch economy — the prime directive (ENFORCED)
+
+The expensive pipeline — full gates, CI, real-box `/verify` — runs **once per batch (up to 8 closed issues), never once per issue.** All fixes accumulate on ONE long-lived branch `batch/<id>`; it is pushed / PR'd / CI'd / merged / verified **only when it holds 8 closed issues OR the queue of planned units is empty.** Shipping one issue as its own PR while planned units remain is a **failure of this pipeline**.
+
+The builder enforces the per-issue side (fast gates only, commit to the batch branch, no push). You enforce the batch side: **never dispatch a seal step while `batch.count < 8` AND planned units remain.**
+
+**Build-ahead is allowed; seal-ahead is not.** Verify runs in the background (it touches only the box env via ServiceBay and its own result file). The builder may keep **building** the next batch onto a fresh `batch/<id>` branch while a prior batch is being verified — building writes neither `main` nor the box, so it overlaps safely. What must **not** overlap is the singleton critical section: there is one `main`, one box, one `verify_state`, so **a new batch may not be *sealed* while `verify_state.status` is `owed`/`verifying`/`red`** (a prior batch is still in merge/verify). Build up to 8 then *wait* for the verify to clear before sealing.
+
+## Step 0 — Preflight (every firing)
+
+1. **Working tree clean?** `git status --porcelain`. Dirty → exit (another session owns this tree). Don't stash/switch.
+2. **On `main`, current?** `git fetch origin && git checkout main && git pull --ff-only`. FF fails → exit + report.
+3. **Lock check.** `.claude/state/autoloop.lock` mtime < 10 min ⇒ another firing is running → exit. Else touch it.
+4. **Read the work queue.** Create from `work-queue-template.json` if absent. Seed `started`/`last_invocation`.
+5. **Fold in any background Verify result.** If `.claude/state/verify-result.json` exists, the background agent finished: copy its `{sha, status, detail, verified_at}` into `verify_state` (you are the single writer of the shared queue's `verify_state`), then **delete the result file**. If `verify_state.status == "verifying"` but no result file exists and `since` is >20 min old, the agent died — reset `verify_state.status` to `"owed"` so it relaunches.
+6. **Release gate.** **OSCAR has no release-please** — releases are cut by the user pushing a `v*` tag (which triggers `build-images.yml` to publish `oscar-gatekeeper` + `oscar-household-init` to GHCR). There is **no release PR to merge in preflight**, and you **never create/push tags or bump versions in `pyproject.toml`** unless the user explicitly asks. The only gate you enforce here is `verify_state`: a merged batch whose path-mandated changes are `owed`/`verifying`/`red` is **not** clear, and you must not seal the next batch until it goes `green`. If a release is warranted after a green verify, log a suggestion in `release_warnings[]`/`notes[]` — don't tag. Mirror `verify_state` onto the open batch PR as a label if one is still open (`owed`/`verifying` → `autoloop:verify-pending`; `red` → `autoloop:verify-failed`; `green`/`null` → remove both).
+
+## Step 1 — Dispatch (the loop body)
+
+**First, a non-blocking side-action (does NOT consume the tick):** if `verify_state.status == "owed"`, launch Verify **in the background** (Step 2, `run_in_background: true`), set `verify_state.status = "verifying"` and `since = now`, and **fall through** to pick a foreground stage below. If `verify_state.status == "verifying"`, an agent is already in flight — don't relaunch; fall through. The background verify clears the release gate on its own time; you don't wait on it here.
+
+Then pick **exactly one** foreground stage this tick, by the first matching rule, and spawn it (Step 2). Then re-read the queue and loop.
+
+1. **Builder — seal** — if a `batch` exists and (`batch.count >= 8` **or** `queue[]` has no `planned` unit) and it isn't merged yet **and `verify_state.status` is clear** (`green`/`null` — *not* `owed`/`verifying`/`red`). Builder runs full gates + CI (where CI applies), merges, sets `verify_state=owed` if any merged file is path-mandated. **Seal-ahead is forbidden:** if `verify_state` is `owed`/`verifying`/`red`, a prior batch is still in merge/verify — do **not** seal; build-ahead instead (rule 2), or idle-wait (Step 3).
+2. **Builder — build** — if `queue[]` has a `planned` unit and `batch.count < 8`. Builder implements the next unit onto the batch branch with fast gates only. **This is the build-ahead path** — eligible even while a background Verify runs, because building touches neither `main` nor the box.
+3. **Planner** — if there's no actionable unit. Planner refills: groom + cluster open issues, decompose epics, park refinement/awaiting-user/upstream-waits (security issues become `security:true` units that route to the draft gate, not parked), or (queue dry) enqueue lint-sweep units, run a codebase eval, or run **end-to-end validation on the box** + route failures cross-repo to mdopp/servicebay.
+
+Never jump to seal while mid-batch (`count < 8` and planned units remain) — that's the prime-directive violation. Keep building. If the only thing left is to wait on a background Verify (batch built out to 8, nothing to plan), don't dispatch a foreground stage — go to Step 3 and schedule a short wakeup.
+
+## Step 2 — Spawning a stage agent
+
+Use the **Agent** tool, `subagent_type: "general-purpose"` (needs Bash, gh, SSH/MCP env tools, Edit/Write).
+
+**Planner and Builder run foreground (blocking)** — they share `main`, the batch branch, and the shared queue file, so one foreground stage per tick keeps that file single-writer. **Verify runs in the background** (`run_in_background: true`) — it touches only the box (via ServiceBay) and its own result file, so it overlaps with the builder safely.
+
+Foreground (Planner / Builder) prompt — they read & write the shared queue:
+```
+Read .claude/skills/autoloop-issues/stages/<planner|builder>.md and follow it exactly.
+Context for this run: <unit id / batch state to act on>.
+The shared queue is .claude/state/work-queue.json — read it, write results back (unit status,
+completed/review/needs_refinement/upstream_waits/…, set verify_state=owed at seal), and return ONE
+line: what you did + the mutations you made. Do not narrate.
 ```
 
-### Read the issue and referenced files
-- Note the starting-point files; read each fully and ~50 lines around any line reference.
-- If the issue is ambiguous, comment asking the specific question and move on. **Do not guess.**
-
-### Scope discipline
-- Implement the smallest change that closes the ticket. Don't refactor neighbours or add abstractions for non-refactor tickets.
-- `[Refactor]`-titled tickets stay within the file/module they name; a needed neighbouring change goes in a *separate* PR.
-- "audit"/"strategy"/"epic" issues should have been marked `blocked` in Step 1.
-
-## Step 3 — Local verification
-
-Run what applies to the touched paths. Each must pass before the next.
-
-**Python (`voice-gatekeeper/src/gatekeeper/` or `database/`):**
-```bash
-cd voice-gatekeeper && pip install -e '.[test]' >/dev/null && pytest -q   # all tests pass
-# (database/ uses alembic; if it grows a tests/ dir, run it the same way)
+Background (Verify) prompt — it does **NOT** touch the shared queue (avoids a write-race with the concurrent builder); it writes its verdict to its own file:
 ```
-The gatekeeper package is `voice-gatekeeper/src/gatekeeper/` (`__main__.py` is the entrypoint). When a bug/feature touches it, add or extend a test under `voice-gatekeeper/tests/` so the change is covered.
-
-**Templates / skills (`templates/**`, `stacks/**`):** no compiler, so validate by hand:
-- `template.yml` / `stack.yml` / `variables.json` parse as valid YAML/JSON.
-- Any changed `SKILL.md` has valid frontmatter (`name`, `description`, `version`) and no leftover `TODO (rewrite)` banner if the issue was to *finish* that skill.
-- Port/volume/hostNetwork wiring in `template.yml` is internally consistent (mount names match volumes; declared ports don't collide).
-
-**Mandatory real-box `/verify`** — if the PR diff touches *any* of:
-- `templates/**` (any template.yml, variables.json, post-deploy.py, or skills/)
-- `stacks/**`
-- `voice-gatekeeper/**`
-- `database/**`
-- `plugin.yaml` / `__init__.py`
-
-then invoke `/verify` against `<SERVICEBAY_BOX>` **before merge**. OSCAR deploys *through* ServiceBay, so the procedure is:
-
-1. Reach the box via the same SSH / HTTP-API / MCP paths ServiceBay uses (`<SERVICEBAY_BOX>`; host-key, MCP-token, and `Origin`-header gotchas are the same as ServiceBay's reference). The `mdopp/oscar` registry must be enabled in ServiceBay on that box so the changed templates resolve.
-2. **Template / skill change** → install or update the affected template via ServiceBay's install path (API/MCP), then confirm: the pod becomes healthy; for skill changes, `sudo ls /mnt/data/stacks/oscar-household/skills/` is populated and `podman exec hermes-hermes ls /opt/data/skills/oscar/` shows the skill and Hermes' loader log lists it.
-3. **voice-gatekeeper / database change** → the image must exist on the box to run live. CI builds these on PR but only *pushes* on `main`/tags, so a pre-merge live check needs either a locally-built+loaded image or a note that full live verification happens post-merge once GHCR has the new image. Confirm the Wyoming bridge connects (no `AsrModel.__init__()` crash class — see the wyoming pin in `voice-gatekeeper/pyproject.toml`) and the schema-init sidecar runs `alembic upgrade head` cleanly.
-4. **plugin.yaml / __init__.py** → verify Hermes' Install-from-Git path still loads the plugin.
-
-If `/verify` fails, **triage the owner before reacting** — OSCAR runs on ServiceBay, so a failure can be an OSCAR bug *or* a ServiceBay-platform bug (see "Cross-repo issue routing" below). Then: stop, post the failure summary + your owner call on the PR, leave it open, move on. Don't mock around a failing test or skip it — fix the root cause in whichever repo owns it.
-
-**Narrow, deliberately-logged exception to the pre-merge `/verify`.** You MAY merge a path-mandated change on CI-green + a strong unit/pytest test and *defer* the real-box `/verify` — but ONLY when ALL hold: (1) the user has explicitly prioritized it, or a dependent repo is blocked waiting on it (the inverse case ServiceBay sees with OSCAR); (2) the change adds **no new runtime logic** — it reuses an already-tested, pre-existing path (removing a coercion, threading an existing-contract value, a docs/template-comment change); (3) a test covers the new behaviour; (4) you document the deferral in the PR **and** `state`, with the real-environment check to happen at the next natural opportunity (e.g. next OSCAR install on the box). Absent that explicit priority/blocked-dependent signal, the default stands: **path-mandated ⇒ `/verify` before merge.** Never apply it to a security/privacy-gated change. This is a logged judgement call, not a general loosening — when unsure, don't use it.
-
-### Cross-repo issue routing (OSCAR vs ServiceBay upstream)
-
-When a defect surfaces during `/verify` or end-to-end validation, decide which repo owns it:
-
-- **OSCAR-owned** — the bug is in `templates/**`, `templates/oscar-household/skills/**`, `voice-gatekeeper/src/gatekeeper/**`, `database/**`, `stacks/**`, or `plugin.yaml`/`__init__.py`. Fix it here (this loop), or file an `mdopp/oscar` issue if it isn't bite-sized.
-- **ServiceBay-owned (upstream)** — the bug is in the platform OSCAR depends on: the install runner / asset-transport, the agent, MCP wiring, NPM/reverse-proxy, the registry resolver, `config.ts`, the onboarding/portal. The OSCAR loop **cannot** fix ServiceBay from this repo. File an issue in **`mdopp/servicebay`** (symptom-style: symptom + exact file/line in servicebay + the OSCAR-side repro that exposed it), then mark the OSCAR issue `blocked` with reason `"waiting on mdopp/servicebay#<N>"` and record it in `state.blocked[]` (and `state.upstream_waits[]`). **Wait** — re-check on later invocations whether the upstream fix merged; unblock when it does.
-- **Both** — split: the OSCAR-side part is fixed/filed here, the platform-side part is filed upstream and the OSCAR issue notes the dependency.
-
-Use `gh issue create --repo mdopp/servicebay …` for upstream. Don't try to open a PR against ServiceBay from this loop — filing the issue is the handoff; the ServiceBay autoloop (or a human) works it there.
-
-## Step 4 — Open the PR
-
-### Commit
-- Conventional Commits; scope mirrors the path: `fix(gatekeeper):`, `feat(skill):`, `fix(template):`, `feat(oscar-household):`, `chore(db):`, `docs:`.
-- **No parens in the subject beyond the conventional `(scope)`** (parens-heavy subjects can break release tooling).
-- Body: brief summary, then `Closes #<N>`.
-
-### Push
-```bash
-git push -u origin fix/issue-<N>-<slug>
+Read .claude/skills/autoloop-issues/stages/verify.md and follow it exactly.
+Context for this run: verify SHA <verify_state.sha>, path-mandated paths: <verify_state.detail>.
+Box: <SERVICEBAY_BOX> (supply the real address from CLAUDE.md / memory).
+Do NOT write .claude/state/work-queue.json. Write your verdict to .claude/state/verify-result.json as
+{sha, status:"green"|"red"|"owed", detail, verified_at}. The orchestrator folds it into the queue.
+Return ONE line: the verdict + any revert PR or upstream issue you opened. Do not narrate.
 ```
 
-### PR body (write a real body — no `--fill`)
-```markdown
-## What
-<1-2 sentences>
+Builder mode (`build` vs `seal`) and the unit `gate`/`security` go in the context line. After a **foreground** agent returns: **re-read `work-queue.json`** (the file is authoritative, not the summary), append the one-liner to your tally, go back to Step 1. The **background** Verify does not block — proceed immediately; its result is folded in at the next preflight (Step 0.5), and the harness re-invokes the loop when it completes.
 
-## Why
-Closes #<N>.
+### Model per stage — match the model to the cost of being wrong
 
-## Risk
-<low | medium | high — one sentence>
+Set `model` on each Agent call. A weak model on real code *costs* time (rework); don't downgrade where being wrong is expensive — do downgrade mechanical work.
 
-## Rollback
-<git revert is enough | requires X>
+| Stage / unit | Model |
+|---|---|
+| Builder — real code (`cluster`/`issue`) | `opus` |
+| Builder — `lint-sweep` unit | `haiku` |
+| Planner | `sonnet` |
+| Verify | `sonnet` |
 
-## Verification
-- [ ] pytest (if voice-gatekeeper/database touched)
-- [ ] YAML/frontmatter valid (if templates/skills touched)
-- [ ] /verify on <SERVICEBAY_BOX> via ServiceBay (if path-mandated — see Step 3)
+The orchestrator itself is pure dispatch and runs at the session model — a light model is fine for it.
+
+## Step 3 — Cadence (`/loop` dynamic mode)
+
+**Never sleep while there is eligible work** — go straight to the next dispatch. A **background Verify in flight is not a reason to sleep** if there's still a unit to build: leave it running and keep building the next batch. `ScheduleWakeup` only when:
+- **Mid-pipeline waiting on an external gate** (CI on an image-path PR, or a ServiceBay install/deploy on the box) → `delaySeconds ≤ 480`, prefer ~60s if imminent.
+- **Build-ahead exhausted, only a background Verify outstanding** (batch built out to 8, nothing left to plan, can't seal until verify clears) → `≤ 480`. The harness also re-invokes you when the background agent completes, so this is a fallback heartbeat.
+- **Queue empty and planner found nothing** (and an e2e/eval ran recently) → idle heartbeat `≤ 480`.
+
+Pass the same `/loop /autoloop-issues` input back. Don't nap between dispatches when work remains.
+
+## Comment hygiene
+
+Every comment any stage posts is attributable as agent-authored (an AI marker if posted as a human account), and stays short and sharp. **No stage ever replies to an external human commenter** — those tickets are parked on `awaiting_user[]` for a human-confirmed reply.
+
+## End-of-firing summary
+
+```
+Autoloop (oscar) firing complete.
+  Built this firing: <unit ids> → batch/<id> (count N/8)
+  Merged batches:    PR #<n> (closes #a #b …)
+  Verify:            green @ <sha> on the box | verifying (background) | owed | red (<detail>)
+  Review pre-merge:  #<issue> (draft #<pr>) — security/privacy, NOT merged   ← review these
+  Needs refinement:  #<issue> — "<question>"   ← your worklist
+  Upstream waits:    #<issue> → servicebay#<N>
+  Awaiting user:     #<issue> (external comment)
+Next: <building #x | sealing batch | verifying | planner refill | e2e | idle heartbeat>.
 ```
 
-### PR creation — by gate
+The **Needs refinement** line is the point of the pipeline.
 
-**Security/privacy gate:** open `--draft`, label the issue `autoloop-open`, record in `state.skipped[]`, move on. **Do not merge.**
+## Hard exit conditions (stop; do not reschedule)
 
-**Normal flow:** open the PR, then the merge gate below.
+1. A stage reports CI red twice on the same SHA with no change between.
+2. `review[]` shows >3 security/privacy draft PRs accumulated without human review.
+3. Working tree dirty at preflight on two consecutive firings.
+4. A `/verify` failed twice on the same SHA with no change between, or the box was left in a staging state the Verify stage couldn't restore (env must not be left in the test state).
+5. Planner's issue queue and lint set both empty AND a codebase eval ran within the last ~5 firings AND an e2e ran since the last merge.
+6. Every open issue is blocked on an unmerged **mdopp/servicebay** upstream fix (`upstream_waits[]`) — nothing in OSCAR is actionable until ServiceBay ships it. Report the upstream links and wait.
 
-### Merge gate (normal-flow only)
-
-`main` is likely **not** branch-protected (verify: `gh api repos/mdopp/oscar/branches/main/protection` → 404 means unprotected, so `--auto` no-ops). Use the manual gate:
-
-1. **CI applies only to image paths.** If the diff touches `voice-gatekeeper/**`, `database/**`, or `.github/workflows/build-images.yml`, wait for CI: `gh pr checks <PR#> --watch`. **Template-only / skill-only / docs-only PRs trigger no CI** — for those the gate is local verification + `/verify`.
-2. If the diff hit any path in Step 3's mandatory list, run `/verify` on the box. Block merge until green.
-3. If green (CI where applicable + `/verify` where mandated): `gh pr merge <PR#> --merge --delete-branch`.
-4. If CI red twice on the same SHA, or `/verify` red: stop, comment the failing link, leave the PR open, move on. Don't retry indefinitely.
-
-Update state: move issue from `in_progress` to `completed`.
-
-### Post-merge
-```bash
-git checkout main && git pull --ff-only
-```
-No release PR to chase. If a release is warranted, that's the user's call (push a `v*` tag) — log a suggestion in `state.notes[]`, don't tag yourself.
-
-## Step 5 — End of invocation
-
-After 8 PRs (merged + draft), stop. Write a summary to stdout:
-```
-Autoloop (oscar) iteration complete.
-  Merged: #82 (PR #N), …
-  Security/privacy drafts: #84 (PR #M)
-  Skipped / Blocked: …
-Next eligible issue: #NN.
-```
-
-## End-to-end validation: does OSCAR work within the ServiceBay install?
-
-This is the loop's ultimate goal — per-PR `/verify` checks one change; this checks that **OSCAR actually works as a whole on the real ServiceBay box** (`<SERVICEBAY_BOX>`). Run it as track (d), after a batch of OSCAR PRs merges, or whenever the queue drains.
-
-**Procedure (golden-path smoke, on the box via ServiceBay):**
-
-1. Confirm the `mdopp/oscar` registry is enabled in ServiceBay on the box, then install/refresh the OSCAR stack (`stacks/oscar/stack.yml`: `oscar-household` + `hermes` + `hermes-webui` + `ollama`) through ServiceBay's install path. The install completes without errors.
-2. **Skills land + load** — `sudo ls /mnt/data/stacks/oscar-household/skills/` populated; `podman exec hermes-hermes ls /opt/data/skills/oscar/` shows them; Hermes' loader log lists the OSCAR skills (no skill in a `TODO (rewrite)` stub state if the issue was to finish it).
-3. **Schema-init** — the `oscar-household-init` sidecar ran `alembic upgrade head` cleanly; `oscar.db` schema is current.
-4. **voice-gatekeeper up** — the Wyoming bridge connects with no `AsrModel.__init__()`-class crash; STT/TTS handoff to Hermes works.
-5. **Golden path** — exercise what's wired end-to-end: a voice/chat command flows (oscar-voice → gatekeeper → Hermes → HA-MCP / a skill) and returns a sane result; multimodal ingestion writes a note to `/opt/data/notes`; `hermes-webui` is reachable through NPM.
-6. **Observe real behaviour.** Don't claim success from logs alone where you can actually drive the path. If you can't exercise a path (no browser libs, no audio satellite), say so explicitly rather than asserting it works.
-
-**On any failure → route cross-repo** (see "Cross-repo issue routing" in Step 3):
-- OSCAR-owned defect → fix here (bite-sized) or file an `mdopp/oscar` issue and work it.
-- ServiceBay-platform defect → file an `mdopp/servicebay` issue (symptom + servicebay file/line + the OSCAR repro), mark the related OSCAR item `blocked` `"waiting on mdopp/servicebay#<N>"`, record in `state.upstream_waits[]`, and **wait** — re-check on later invocations and unblock when upstream merges.
-- Mixed → split across both repos and note the dependency.
-
-Record the run + outcome + date in `state.last_e2e` and `state.notes[]`. A fully-green E2E with the issue queue empty is the one clean place to **stop** the loop and report.
-
-## Hard exit conditions (stop the loop entirely)
-
-1. CI red on the same PR twice without code changes in between.
-2. `state` shows >3 security/privacy-gate drafts accumulated without human review.
-3. Working tree dirty at preflight on two consecutive invocations.
-4. `/verify` failed against the box twice on the same PR without code changes in between.
-5. **Both** the issue queue (after exclusion) **and** the track-(a)/(c) work are empty/exhausted — but prefer track (c)/(d) over exiting (they refill the queue / are the goal), so this is rare.
-6. Every remaining open issue is `blocked` on an unmerged `mdopp/servicebay` upstream fix (`state.upstream_waits[]`) — nothing in OSCAR is actionable until ServiceBay ships it. Report the upstream issue links and wait for the next firing.
-
-## Things this skill explicitly does NOT do
-
-- Does not bump versions in `pyproject.toml` or push `v*` tags — releases are the user's call.
-- Does not run `gh pr merge --auto` (no branch protection).
-- Does not write `--fill`-only PR bodies.
-- Does not refactor beyond ticket scope.
-- Does not auto-merge any security/privacy-gated issue — those open as draft.
-- Does not skip real-box `/verify` on path-mandated PRs (templates/skills/services/migrations/plugin).
-- Does not assume CI gates a template-only or skill-only PR — those have no CI; `/verify` is the gate.
-- Does not file new issues except in track (c) (codebase eval); otherwise comments on the existing issue.
+## Things this orchestrator does NOT do
+- Write code / groom / `/verify` itself — only dispatches stage agents.
+- Bump versions in `pyproject.toml` or create/push `v*` tags — releases are the user's call.
+- `gh pr merge --auto` (no branch protection → silent no-op); reply to external commenters.
+- Dispatch a seal step while mid-batch (prime directive).
+- **Seal** a new batch while a prior batch's `verify_state` is `owed`/`verifying`/`red` (seal-ahead forbidden — one batch in the merge/verify critical section at a time). It *may* build-ahead.
+- Block the loop on Verify — that runs in the background; the builder keeps building while it does.
+- Ship/merge a path-mandated change without a green real-box `/verify` (gate via `verify_state`).
+- Auto-merge a `security:true` change — those open as draft and wait for human review.
 
 ## Reference
-
-- Repo: `mdopp/oscar`. Labels: `bug`, `enhancement`, `skill`, `template`, `infrastructure`, `phase-0`, `phase-1`, `documentation`, `good first issue`, `help wanted`, `question`.
-- Real-box access: `<SERVICEBAY_BOX>` — the **same** box and access paths ServiceBay uses (SSH / HTTP API / MCP; host-key-change, stale-MCP-token, and `Origin`-header gotchas all apply). OSCAR is deployed onto it *through* ServiceBay, so its `mdopp/oscar` registry must be enabled there. `<SERVICEBAY_BOX>` is a placeholder for the box's actual SSH/HTTP/MCP address — supply it from local config (project `CLAUDE.md` or memory), not committed to this public repo.
-- Relationship: OSCAR templates/skills are ServiceBay Pod-YAML artifacts; `voice-gatekeeper`/`database` are containers inside the `oscar-household` pod (hostNetwork) that reach ServiceBay's `voice` template via host loopback.
-- CI: `.github/workflows/build-images.yml` builds `oscar-gatekeeper` + `oscar-household-init` images (PR = build-only on `voice-gatekeeper/**`+`database/**` paths; push/tag = publish to GHCR).
-- Python gates: `voice-gatekeeper` has pytest (`pip install -e '.[test]' && pytest`); `database` is alembic.
+- Stages: `stages/planner.md`, `stages/builder.md`, `stages/verify.md` (this dir; Verify runs in the background and writes `.claude/state/verify-result.json`). Queue schema: `work-queue-template.json`. How to run: `USAGE.md`.
+- Repo: `mdopp/oscar`. Upstream platform: `mdopp/servicebay` (cross-repo routing — see `stages/{planner,verify}.md`).
+- Real-box access: `<SERVICEBAY_BOX>` — the **same** box and access paths ServiceBay uses (SSH / HTTP API / MCP; host-key-change, stale-MCP-token, and `Origin`-header gotchas all apply). The `mdopp/oscar` registry must be enabled in ServiceBay on that box so changed templates resolve. `<SERVICEBAY_BOX>` is a placeholder — supply the real SSH/HTTP/MCP address from local config (project `CLAUDE.md` or memory), **never** commit it to this public repo.
+- CI: `.github/workflows/ci.yml` (ruff + pytest + semgrep + pip-audit + diff-coverage, path-filtered to Python/config paths) and `build-images.yml` (builds the two images on PR for image paths, publishes on `main`/tags). **Template-only / skill-only / docs-only PRs trigger no CI** — for those the gate is local validation + real-box `/verify`.
+- Worked example: `mdopp/servicebay` (`.claude/skills/autoloop-issues/`) — its Verify stage is `box-verify.md` (a `:dev`/`:latest` channel flip); OSCAR's Verify deploys the changed artifact through ServiceBay instead.
