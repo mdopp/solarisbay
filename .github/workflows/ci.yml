@@ -32,8 +32,8 @@ jobs:
     name: lint (ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install ruff==0.15.12
@@ -44,12 +44,12 @@ jobs:
     name: pytest + diff-coverage (voice-gatekeeper)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # full history + main ref so check-diff-coverage.py can diff vs the merge base
           fetch-depth: 0
       - run: git fetch origin main:refs/remotes/origin/main || true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install -e '.[test]'
@@ -68,8 +68,8 @@ jobs:
     # triaged (add suppressions / a .semgrep.yml), then pin the semgrep version.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install semgrep
@@ -84,8 +84,8 @@ jobs:
     # update PRs the autoloop routes as a filler track.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install pip-audit
