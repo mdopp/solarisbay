@@ -55,16 +55,14 @@ spec:
     # The container's entrypoint chowns the mounted .hermes dir to
     # match (WANTED_UID, WANTED_GID) so files written by either
     # hermes-webui or hermes itself stay readable across both pods.
-    # Hermes runs as uid=2 (`hermes` user) inside its own container;
-    # nesquena/hermes-webui inside its container runs as uid=1000
-    # (`hermeswebui`). We point both at the same `hermes` host uid
-    # mapping (which is what podman's rootless namespace already does
-    # for the `hermes-data` volume), but we still set WANTED_UID so
-    # the container's runtime chown matches.
+    # The gateway image (nousresearch/hermes-agent) runs as uid=10000
+    # and its initContainer chowns /opt/data to 10000:10000; we must
+    # match that uid here or the webui's entrypoint re-chowns the shared
+    # dir out from under the gateway, breaking its kanban lock/db writes.
     - name: WANTED_UID
-      value: "2"
+      value: "10000"
     - name: WANTED_GID
-      value: "2"
+      value: "10000"
     ports:
     - containerPort: {{HERMES_WEBUI_PORT}}
     volumeMounts:
