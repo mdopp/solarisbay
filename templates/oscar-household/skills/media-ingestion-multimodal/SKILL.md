@@ -1,7 +1,7 @@
 ---
 name: media-ingestion-multimodal
 description: Triggers automatically when a resident uploads an image or photo attachment (such as a book cover, physical document, receipt, or music album art) via Signal, Telegram, Discord, or any other messaging gateway, or explicitly asks to ingest or scan a photographed item. Extracts structured metadata (ISBN, Title, Author, Artist, Tracklist, or Document Summary) and full OCR transcripts using multimodal LLMs. Writes the formatted, Obsidian-compatible structured Markdown note directly into the '/opt/data/notes/' folder (which is synced via Syncthing) so that the native 'qmd' skill can automatically index and retrieve it.
-version: 1.2.0
+version: 1.3.0
 author: OSCAR
 license: MIT
 ---
@@ -140,10 +140,36 @@ Then continue to step 4 and write the ingested item's own note as usual — its
 - Write the compiled Markdown note into `/opt/data/notes/<filename>` using the file system `write_file` or `terminal` tool.
 - Ensure the `/opt/data/notes` parent directory is created if not already present.
 
+### 4b. Audiobookshelf Availability Check (books and albums only)
+
+For **book** and **album** items, after the note is written, check whether the
+title is already in the household's Audiobookshelf library so you can tell the
+resident in the confirmation. **Skip this for `document` and `receipt`** items.
+
+- Call the `abs_availability` MCP tool with the title and author you already
+  extracted in step 2 — for books pass the `Title` + `Author`, for albums pass
+  the `Album Title` + `Artist`:
+  ```
+  abs_availability(title="<title>", author="<author or artist>")
+  ```
+- The tool returns `{ok, title, available, matches}`, where `matches` is a list
+  of `{title, author, library}`. Use the result in the step 5 confirmation:
+  - `available: true` → it's already in the collection (mention the matched
+    title(s) from `matches`).
+  - `available: false` → it's not in Audiobookshelf.
+  - `ok: false` (ABS unavailable/not configured) → just omit the availability
+    line; don't surface an error to the resident.
+
 ### 5. Proactive Resident Confirmation
 - Summarize the extraction results to the user in a natural, premium tone.
+- For **books and albums**, append a natural-language line about the
+  Audiobookshelf result from step 4b:
+  - Found (`available: true`):
+    > "… Übrigens: '**Dune**' ist bereits in deiner Audiobookshelf-Sammlung."
+  - Not found (`available: false`):
+    > "… '**Dune**' ist noch nicht in deiner Audiobookshelf-Sammlung."
 - **Example**:
-  > "Ich habe das Buch '**Dune**' von **Frank Herbert** (ISBN: 978-0441172719) erkannt und als Notiz `book_dune.md` in deinen Syncthing-Notizen abgelegt. Es wurde sofort indexiert und steht dir im Langzeitgedächtnis zur Verfügung."
+  > "Ich habe das Buch '**Dune**' von **Frank Herbert** (ISBN: 978-0441172719) erkannt und als Notiz `book_dune.md` in deinen Syncthing-Notizen abgelegt. Es wurde sofort indexiert und steht dir im Langzeitgedächtnis zur Verfügung. Übrigens: '**Dune**' ist bereits in deiner Audiobookshelf-Sammlung."
 
 ### 6. Automatic Indexing
 - The native `qmd` skill periodically (or on reload) scans `/opt/data/notes/` using its BM25 hybrid-retrieval engine. The note is now searchable across all channels!
