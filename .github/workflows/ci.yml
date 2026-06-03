@@ -1,6 +1,6 @@
 name: ci
 
-# Lint + test the Python in OSCAR (voice-gatekeeper bridge, database/alembic,
+# Lint + test + scan the Python in OSCAR (voice-gatekeeper bridge, database/alembic,
 # the Hermes plugin entrypoint, ServiceBay post-deploy scripts). Image builds
 # live in build-images.yml; template-/skill-/docs-only changes are gated by
 # real-box /verify, not CI.
@@ -12,6 +12,7 @@ on:
       - '**/pyproject.toml'
       - 'ruff.toml'
       - '.pre-commit-config.yaml'
+      - 'scripts/**'
       - '.github/workflows/ci.yml'
   push:
     branches: [main]
@@ -20,6 +21,7 @@ on:
       - '**/pyproject.toml'
       - 'ruff.toml'
       - '.pre-commit-config.yaml'
+      - 'scripts/**'
       - '.github/workflows/ci.yml'
 
 permissions:
@@ -39,15 +41,56 @@ jobs:
       - run: ruff format --check .
 
   test:
-    name: pytest (voice-gatekeeper)
+    name: pytest + diff-coverage (voice-gatekeeper)
     runs-on: ubuntu-latest
-    defaults:
-      run:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # full history + main ref so check-diff-coverage.py can diff vs the merge base
+          fetch-depth: 0
+      - run: git fetch origin main:refs/remotes/origin/main || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e '.[test]'
         working-directory: voice-gatekeeper
+      - run: pytest -q --cov=gatekeeper --cov-report=xml
+        working-directory: voice-gatekeeper
+      # Gate 2: new-code coverage only (changed gatekeeper lines ≥ floor). No-op
+      # when a PR changes no gatekeeper source. Ratchet the floor up in the script.
+      - run: python scripts/check-diff-coverage.py
+
+  semgrep:
+    name: semgrep (report-only)
+    runs-on: ubuntu-latest
+    # Report-only first (gate 1): findings surface in the log but don't block.
+    # Promote to blocking by removing continue-on-error once the baseline is
+    # triaged (add suppressions / a .semgrep.yml), then pin the semgrep version.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -e '.[test]'
-      - run: pytest -q
+      - run: pip install semgrep
+      - run: semgrep scan --config p/python --config p/security-audit --severity ERROR --error --metrics off
+
+  audit:
+    name: pip-audit (report-only)
+    runs-on: ubuntu-latest
+    # Gates 1+4: CVE scan of declared deps. Report-only first; ratchet to
+    # blocking on high/critical (remove continue-on-error, add --vulnerability-service)
+    # once the baseline is clean. Dependabot (.github/dependabot.yml) opens the
+    # update PRs the autoloop routes as a filler track.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pip-audit
+      - run: pip install -e .
+        working-directory: voice-gatekeeper
+      - run: pip install -e .
+        working-directory: database
+      - run: pip-audit --desc

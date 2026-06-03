@@ -1,0 +1,29 @@
+# Dependency-update PRs (gates 1+4). pip ecosystems for the two installable
+# Python projects, plus the GitHub Actions used in the workflows. Grouped to
+# keep PR volume low (design pref: few knobs). The autoloop routes these PRs
+# as a filler track; security updates surface even between schedules.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /voice-gatekeeper
+    schedule:
+      interval: weekly
+    groups:
+      gatekeeper-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /database
+    schedule:
+      interval: weekly
+    groups:
+      database-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
