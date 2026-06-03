@@ -134,6 +134,34 @@ spec:
     # both the servicebay.ports annotation + NPM proxy host and the
     # GATEKEEPER_URI / healthcheck port above, so they stay in lockstep.
 
+  # abs-mcp — read-only Audiobookshelf->MCP shim (#105). Exposes
+  #    abs_search/abs_availability to Hermes so a skill can check whether a
+  #    just-ingested book is already in the library (#89), without the ABS
+  #    credential ever entering a skill prompt. Talks HTTP to Audiobookshelf
+  #    over host loopback; Hermes reaches this server's MCP endpoint over
+  #    loopback too. post-deploy registers it only when ABS_API_KEY is set.
+  - name: oscar-abs-mcp
+    image: "{{ABS_MCP_IMAGE}}"
+    env:
+    - name: OSCAR_COMPONENT
+      value: "abs-mcp"
+    - name: ABS_BASE_URL
+      value: "{{ABS_BASE_URL}}"
+    - name: ABS_API_KEY
+      value: "{{ABS_API_KEY}}"
+    # Loopback bind (#116) — only Hermes on the shared host netns calls it.
+    - name: MCP_HOST
+      value: "127.0.0.1"
+    - name: MCP_PORT
+      value: "10770"
+    - name: ABS_MCP_TOKEN
+      value: "{{ABS_MCP_TOKEN}}"
+    - name: TZ
+      value: "{{TZ}}"
+    # No `ports:` block — hostNetwork pod, the listener binds the host
+    # directly (loopback:10770); a ports mapping would make podman reject
+    # the spec (same constraint as the gatekeeper above).
+
   volumes:
   # The OSCAR data volume holds:
   #   - oscar.db   (SQLite, populated by the init container, read by the

@@ -20,9 +20,9 @@ What it does
 2. **Read `${DATA_DIR}/hermes/config.yaml`** — the file ServiceBay's
    `hermes` template's post-deploy wrote with the `model:` block.
 
-3. **Splice in our `mcp_servers:` block** with HA-MCP, ServiceBay-MCP and
-   the gatekeeper room-MCP entries (and the cloud-LLM audit-proxy once that
-   package ships).
+3. **Splice in our `mcp_servers:` block** with HA-MCP, ServiceBay-MCP, the
+   gatekeeper room-MCP, and the Audiobookshelf shim (when ABS_API_KEY is
+   set) entries (and the cloud-LLM audit-proxy once that package ships).
    Remote-MCP shape per the
    https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference:
 
@@ -58,7 +58,8 @@ From our variables.json:
   HERMES_API_PORT, HERMES_API_KEY,
   HA_MCP_URL, HA_MCP_TOKEN,
   SERVICEBAY_MCP_URL, SERVICEBAY_MCP_TOKEN,
-  GATEKEEPER_MCP_URL, GATEKEEPER_MCP_TOKEN
+  GATEKEEPER_MCP_URL, GATEKEEPER_MCP_TOKEN,
+  ABS_MCP_URL, ABS_MCP_TOKEN, ABS_API_KEY
 
 From the ServiceBay platform:
   DATA_DIR, SB_API_URL, HOST, SB_API_TOKEN
@@ -90,6 +91,9 @@ SERVICEBAY_MCP_URL = ""
 SERVICEBAY_MCP_TOKEN = ""
 GATEKEEPER_MCP_URL = ""
 GATEKEEPER_MCP_TOKEN = ""
+ABS_MCP_URL = ""
+ABS_MCP_TOKEN = ""
+ABS_API_KEY = ""
 CONFIG_PATH = os.path.join(DATA_DIR, "hermes", "config.yaml")
 READINESS_TIMEOUT_S = 120
 
@@ -109,6 +113,9 @@ def init_env() -> None:
         SERVICEBAY_MCP_TOKEN, \
         GATEKEEPER_MCP_URL, \
         GATEKEEPER_MCP_TOKEN, \
+        ABS_MCP_URL, \
+        ABS_MCP_TOKEN, \
+        ABS_API_KEY, \
         CONFIG_PATH, \
         READINESS_TIMEOUT_S
 
@@ -133,6 +140,14 @@ def init_env() -> None:
         os.environ.get("GATEKEEPER_MCP_URL", "") or "http://127.0.0.1:10760/mcp"
     )
     GATEKEEPER_MCP_TOKEN = os.environ.get("GATEKEEPER_MCP_TOKEN", "")
+    # The abs-mcp shim also listens on a deterministic in-pod port
+    # (MCP_PORT 10770 in template.yml); default the URL for the same
+    # saved-manifest-reinstall reason as gatekeeper-mcp above. ABS_API_KEY
+    # gates registration — a keyless shim 401s on every ABS call, so
+    # there's no point registering it until the key is set.
+    ABS_MCP_URL = os.environ.get("ABS_MCP_URL", "") or "http://127.0.0.1:10770/mcp"
+    ABS_MCP_TOKEN = os.environ.get("ABS_MCP_TOKEN", "")
+    ABS_API_KEY = os.environ.get("ABS_API_KEY", "")
 
     CONFIG_PATH = os.path.join(DATA_DIR, "hermes", "config.yaml")
     READINESS_TIMEOUT_S = int(os.environ.get("HERMES_READINESS_TIMEOUT_S", "120"))
@@ -498,6 +513,18 @@ def collect_mcp_servers() -> list[tuple[str, str, str]]:
             "oscar-household:mcp",
             "gatekeeper-mcp skipped",
             reason="missing url",
+        )
+    if ABS_API_KEY:
+        # Only register the Audiobookshelf shim once it has a credential —
+        # without ABS_API_KEY every tool call returns abs_unavailable, so a
+        # keyless registration is just dead surface in Hermes.
+        servers.append(("abs-mcp", ABS_MCP_URL, ABS_MCP_TOKEN))
+    else:
+        jlog(
+            "info",
+            "oscar-household:mcp",
+            "abs-mcp skipped",
+            reason="no ABS_API_KEY (shim runs inert until set)",
         )
     return servers
 

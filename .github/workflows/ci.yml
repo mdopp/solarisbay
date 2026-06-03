@@ -60,6 +60,20 @@ jobs:
       # when a PR changes no gatekeeper source. Ratchet the floor up in the script.
       - run: python scripts/check-diff-coverage.py
 
+  test-abs-mcp:
+    name: pytest (abs-mcp)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: abs-mcp
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install -e '.[test]'
+      - run: pytest -q
+
   semgrep:
     name: semgrep (report-only)
     runs-on: ubuntu-latest

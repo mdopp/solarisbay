@@ -9,6 +9,29 @@
     "description": "Image tag for OSCAR's gatekeeper container. Leave default unless you're running a fork PoC.",
     "default": "ghcr.io/mdopp/oscar-gatekeeper:latest"
   },
+  "ABS_MCP_IMAGE": {
+    "type": "text",
+    "description": "Image tag for OSCAR's read-only Audiobookshelf MCP shim (#105). Leave default unless running a fork PoC.",
+    "default": "ghcr.io/mdopp/oscar-abs-mcp:latest"
+  },
+  "ABS_BASE_URL": {
+    "type": "text",
+    "description": "Audiobookshelf base URL the MCP shim queries. Reached via host loopback (the media pod publishes :13378 and oscar-household is hostNetwork).",
+    "default": "http://127.0.0.1:13378"
+  },
+  "ABS_API_KEY": {
+    "type": "secret",
+    "description": "Audiobookshelf API key (Audiobookshelf → Settings → Users → API Keys, or a user token) the shim uses for its read-only library queries. Leave blank to deploy the shim inert; the availability check (#89) stays off until it's set. The key lives only in the shim container, never in a skill prompt."
+  },
+  "ABS_MCP_URL": {
+    "type": "text",
+    "description": "URL of OSCAR's Audiobookshelf MCP shim (abs_search/abs_availability over streamable HTTP). The post-deploy hook registers it with Hermes when ABS_API_KEY is set. Reached via host loopback; the port matches the shim's MCP_PORT (10770).",
+    "default": "http://127.0.0.1:10770/mcp"
+  },
+  "ABS_MCP_TOKEN": {
+    "type": "secret",
+    "description": "Optional bearer protecting the Audiobookshelf MCP shim endpoint. The shim binds loopback (127.0.0.1) so only Hermes on the same host reaches it; a blank token disables auth, which is fine for that loopback-only default. Set a value only if you change the shim's MCP_HOST off loopback."
+  },
   "GATEKEEPER_PORT": {
     "type": "text",
     "description": "Host port the gatekeeper listens on for incoming Wyoming-satellite connections (HA Voice PE devices, wyoming-satellite CLI).",

@@ -13,11 +13,13 @@ on:
     paths:
       - 'voice-gatekeeper/**'
       - 'database/**'
+      - 'abs-mcp/**'
       - '.github/workflows/build-images.yml'
   pull_request:
     paths:
       - 'voice-gatekeeper/**'
       - 'database/**'
+      - 'abs-mcp/**'
       - '.github/workflows/build-images.yml'
 
 permissions:
@@ -38,6 +40,9 @@ jobs:
           - image: oscar-household-init
             context: database
             description: "OSCAR schema-init sidecar — runs alembic upgrade head against oscar-household's local SQLite (oscar.db) on every pod start. Idempotent."
+          - image: oscar-abs-mcp
+            context: abs-mcp
+            description: "OSCAR Audiobookshelf MCP shim — read-only library search/availability over the Audiobookshelf REST API, exposed to Hermes as a streamable-HTTP MCP server. Runs as a container inside oscar-household."
     steps:
       - name: Checkout
         uses: actions/checkout@v6

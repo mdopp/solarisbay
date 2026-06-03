@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oscar-abs-mcp"
+version = "0.1.0"
+description = "OSCAR Audiobookshelf MCP shim — read-only library search/availability over the Audiobookshelf REST API, exposed to Hermes as a streamable-HTTP MCP server."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
+dependencies = [
+  "httpx>=0.27",
+  # Same MCP + ASGI stack the gatekeeper room-MCP uses (#104), so the
+  # transport contract Hermes already speaks is identical here.
+  "mcp>=1.2",
+  "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7",
+  "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+abs-mcp = "abs_mcp.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/mdopp/oscar"
+Spec = "https://github.com/mdopp/oscar/blob/main/abs-mcp/README.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["abs_mcp*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
