@@ -17,8 +17,11 @@ What it does
    (#83) — idempotent by job name. Over HTTP (as the hermes user) so the
    cron DB stays correctly owned.
 
-2. **Read `${DATA_DIR}/hermes/config.yaml`** — the file ServiceBay's
-   `hermes` template's post-deploy wrote with the `model:` block.
+2. **Read `config.yaml`** — the file ServiceBay's `hermes` template's
+   post-deploy wrote with the `model:` block. Read via `podman exec`
+   into the hermes container (`/opt/data/config.yaml`): the host file is
+   owned by the hermes user with mode 640, so a direct host-path open as
+   `core` gets EACCES/ENOENT.
 
 3. **Splice in our `mcp_servers:` block** with HA-MCP, ServiceBay-MCP, the
    gatekeeper room-MCP, and the Audiobookshelf shim (when ABS_API_KEY is
@@ -36,7 +39,9 @@ What it does
    no PyYAML dependency. Re-running the script replaces the existing
    mcp_servers block in-place (idempotent).
 
-4. **Write the merged file back.**
+4. **Write the merged file back** via `podman exec -i` into the hermes
+   container, so it lands owned by the hermes user (same reason as the
+   read in step 2).
 
 5. **POST `/api/services/hermes/action {action: "restart"}`** via
    `SB_API_URL` so Hermes picks up the new mcp_servers block on next
@@ -70,6 +75,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -94,8 +100,14 @@ GATEKEEPER_MCP_TOKEN = ""
 ABS_MCP_URL = ""
 ABS_MCP_TOKEN = ""
 ABS_API_KEY = ""
-CONFIG_PATH = os.path.join(DATA_DIR, "hermes", "config.yaml")
 READINESS_TIMEOUT_S = 120
+
+# The host file <DATA_DIR>/hermes/config.yaml lives on a volume the hermes
+# image chowns to its own user (UID 10000 → host UID 534287, mode 640), so a
+# direct open() as `core` gets EACCES/ENOENT. We read+write it through the
+# hermes container instead, where /opt/data is config.yaml's home.
+HERMES_CONTAINER = "hermes-hermes"
+CONTAINER_CONFIG_PATH = "/opt/data/config.yaml"
 
 
 def init_env() -> None:
@@ -116,8 +128,8 @@ def init_env() -> None:
         ABS_MCP_URL, \
         ABS_MCP_TOKEN, \
         ABS_API_KEY, \
-        CONFIG_PATH, \
-        READINESS_TIMEOUT_S
+        READINESS_TIMEOUT_S, \
+        HERMES_CONTAINER
 
     DATA_DIR = os.environ.get("DATA_DIR", "/mnt/data")
     SB_API_URL = os.environ.get("SB_API_URL", "http://127.0.0.1:3000").rstrip("/")
@@ -149,8 +161,8 @@ def init_env() -> None:
     ABS_MCP_TOKEN = os.environ.get("ABS_MCP_TOKEN", "")
     ABS_API_KEY = os.environ.get("ABS_API_KEY", "")
 
-    CONFIG_PATH = os.path.join(DATA_DIR, "hermes", "config.yaml")
     READINESS_TIMEOUT_S = int(os.environ.get("HERMES_READINESS_TIMEOUT_S", "120"))
+    HERMES_CONTAINER = os.environ.get("HERMES_CONTAINER", "hermes-hermes")
 
 
 # ───── helpers ─────────────────────────────────────────────────────────────
@@ -301,6 +313,84 @@ def mint_servicebay_mcp_token() -> str | None:
 # ───── config.yaml merge ───────────────────────────────────────────────────
 
 
+def read_config_via_container() -> str | None:
+    """Read /opt/data/config.yaml from inside the hermes container.
+
+    The host file is owned by the hermes user (mode 640), unreadable to
+    `core`; reading it through `podman exec` runs as the container user,
+    which owns it. Returns the content, or None when the file is absent
+    or the exec fails (caller treats that as "no config to merge into").
+    """
+    try:
+        proc = subprocess.run(
+            ["podman", "exec", HERMES_CONTAINER, "cat", CONTAINER_CONFIG_PATH],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        jlog(
+            "warn",
+            "oscar-household:config",
+            "could not exec into hermes container to read config.yaml",
+            container=HERMES_CONTAINER,
+            error=str(e),
+        )
+        return None
+    if proc.returncode != 0:
+        jlog(
+            "warn",
+            "oscar-household:config",
+            "config.yaml not found",
+            path=f"{HERMES_CONTAINER}:{CONTAINER_CONFIG_PATH}",
+            stderr=proc.stderr.strip(),
+        )
+        return None
+    return proc.stdout
+
+
+def write_config_via_container(content: str) -> bool:
+    """Write config.yaml inside the hermes container via `podman exec -i`.
+
+    Piped on stdin to `cat > <path>` so the file lands owned by the
+    hermes user with its existing perms. Returns True on success."""
+    try:
+        proc = subprocess.run(
+            [
+                "podman",
+                "exec",
+                "-i",
+                HERMES_CONTAINER,
+                "sh",
+                "-c",
+                f"cat > {CONTAINER_CONFIG_PATH}",
+            ],
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        jlog(
+            "error",
+            "oscar-household:config",
+            "could not exec into hermes container to write config.yaml",
+            container=HERMES_CONTAINER,
+            error=str(e),
+        )
+        return False
+    if proc.returncode != 0:
+        jlog(
+            "error",
+            "oscar-household:config",
+            "writing config.yaml in hermes container failed",
+            container=HERMES_CONTAINER,
+            stderr=proc.stderr.strip(),
+        )
+        return False
+    return True
+
+
 def strip_mcp_servers_block(content: str) -> str:
     """Remove an existing `mcp_servers:` top-level block from the file.
 
@@ -364,27 +454,26 @@ def render_mcp_block(servers: list[tuple[str, str, str]]) -> str:
 def merge_config_yaml(servers: list[tuple[str, str, str]]) -> bool:
     """Read config.yaml, strip any existing mcp_servers block, append the
     rendered one. Returns True on write, False if config.yaml doesn't
-    exist yet (caller decides whether that's fatal)."""
-    if not os.path.exists(CONFIG_PATH):
-        jlog(
-            "warn", "oscar-household:config", "config.yaml not found", path=CONFIG_PATH
-        )
+    exist yet or the write failed (caller decides whether that's fatal).
+
+    Read+write go through the hermes container (its user owns the file,
+    mode 640 — `core` can't open it on the host)."""
+    existing = read_config_via_container()
+    if existing is None:
         return False
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        existing = f.read()
     stripped = strip_mcp_servers_block(existing)
     block = render_mcp_block(servers)
     # Append separator if there's preceding content
     if stripped and not stripped.endswith("\n"):
         stripped += "\n"
     merged = stripped + ("\n" + block if block else "")
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        f.write(merged)
+    if not write_config_via_container(merged):
+        return False
     jlog(
         "info",
         "oscar-household:config",
         "config.yaml mcp_servers block updated",
-        path=CONFIG_PATH,
+        path=f"{HERMES_CONTAINER}:{CONTAINER_CONFIG_PATH}",
         mcp_servers=[name for name, _, _ in servers],
     )
     return True
