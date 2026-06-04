@@ -27,7 +27,7 @@ metadata:
     servicebay.healthcheck: |
       kind: tcp
       host: 127.0.0.1
-      port: {{GATEKEEPER_PORT}}
+      port: 10700
       interval: 30s
       timeout: 5s
       startup_timeout: 3m
@@ -131,8 +131,14 @@ spec:
     # spec with "PortMappings can only be used with Bridge, slirp4netns,
     # or pasta networking" — observed during a household-stack install
     # 2026-05-25. GATEKEEPER_PORT remains in variables.json and drives
-    # both the servicebay.ports annotation + NPM proxy host and the
-    # GATEKEEPER_URI / healthcheck port above, so they stay in lockstep.
+    # the servicebay.ports annotation, the NPM proxy host, and the
+    # GATEKEEPER_URI env above via {{VAR}} substitution. The
+    # servicebay.healthcheck annotation port is a literal 10700, NOT the
+    # variable: ServiceBay can't substitute {{VAR}} inside an annotation
+    # block scalar (it renders as {"[object Object]":null} and SB skips
+    # the capability emit, #136). So if an operator changes
+    # GATEKEEPER_PORT they must also update that literal by hand, or the
+    # healthcheck probes the wrong port.
 
   # abs-mcp — read-only Audiobookshelf->MCP shim (#105). Exposes
   #    abs_search/abs_availability to Hermes so a skill can check whether a
