@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSCAR — Chat</title>
+  <style>
+    :root {
+      --bg: #f6f6f4;
+      --panel: #ffffff;
+      --ink: #1f2227;
+      --muted: #6b7079;
+      --line: #e4e4e0;
+      --accent: #3a6ea5;
+      --bubble-me: #eef2f7;
+      --bubble-oscar: #f3f3f0;
+      --radius: 12px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16181c;
+        --panel: #1d2025;
+        --ink: #e8e9ea;
+        --muted: #9aa0a8;
+        --line: #2a2e34;
+        --accent: #7aa7d6;
+        --bubble-me: #25303d;
+        --bubble-oscar: #232730;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      display: flex;
+      justify-content: center;
+    }
+    .app {
+      width: 100%;
+      max-width: 760px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    header .sub { font-weight: 400; color: var(--muted); font-size: 13px; }
+    #log {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .msg { max-width: 80%; padding: 10px 13px; border-radius: var(--radius); white-space: pre-wrap; word-wrap: break-word; }
+    .msg.me { align-self: flex-end; background: var(--bubble-me); }
+    .msg.oscar { align-self: flex-start; background: var(--bubble-oscar); }
+    .msg.system { align-self: center; color: var(--muted); background: none; font-size: 13px; padding: 4px; }
+    .role { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+    form {
+      display: flex;
+      gap: 8px;
+      padding: 14px 18px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
+    textarea {
+      flex: 1;
+      resize: none;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      font: inherit;
+      background: var(--bg);
+      color: var(--ink);
+      max-height: 140px;
+    }
+    textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    button {
+      border: none;
+      border-radius: var(--radius);
+      padding: 0 18px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>OSCAR <span class="sub">household chat</span></header>
+    <div id="log" aria-live="polite"></div>
+    <form id="composer">
+      <textarea id="input" rows="1" placeholder="Message OSCAR…" autofocus></textarea>
+      <button id="send" type="submit">Send</button>
+    </form>
+  </div>
+  <script>
+    (function () {
+      var log = document.getElementById("log");
+      var form = document.getElementById("composer");
+      var input = document.getElementById("input");
+      var send = document.getElementById("send");
+      var sessionId = null;
+
+      function add(role, text) {
+        var el = document.createElement("div");
+        el.className = "msg " + role;
+        if (role !== "system") {
+          var label = document.createElement("span");
+          label.className = "role";
+          label.textContent = role === "me" ? "You" : "OSCAR";
+          el.appendChild(label);
+        }
+        el.appendChild(document.createTextNode(text));
+        log.appendChild(el);
+        log.scrollTop = log.scrollHeight;
+        return el;
+      }
+
+      function autosize() {
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 140) + "px";
+      }
+      input.addEventListener("input", autosize);
+
+      input.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          form.requestSubmit();
+        }
+      });
+
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var text = input.value.trim();
+        if (!text) return;
+        add("me", text);
+        input.value = "";
+        autosize();
+        send.disabled = true;
+        var pending = add("system", "…");
+
+        fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ input: text, session_id: sessionId })
+        })
+          .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+          .then(function (res) {
+            pending.remove();
+            if (res.ok && res.body.ok) {
+              sessionId = res.body.session_id;
+              add("oscar", res.body.reply || "(no reply)");
+            } else {
+              add("system", "OSCAR is unavailable right now. Please try again.");
+            }
+          })
+          .catch(function () {
+            pending.remove();
+            add("system", "Network error. Please try again.");
+          })
+          .finally(function () {
+            send.disabled = false;
+            input.focus();
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

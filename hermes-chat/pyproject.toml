@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oscar-chat"
+version = "0.1.0"
+description = "OSCAR household chat — stateless aiohttp proxy serving a static chat page over Hermes' native session API."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
+dependencies = [
+  "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7",
+  "pytest-asyncio>=0.23",
+  "pytest-aiohttp>=1.0",
+]
+
+[project.scripts]
+oscar-chat = "oscar_chat.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/mdopp/oscar"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["oscar_chat*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.package-data]
+oscar_chat = ["static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

@@ -74,6 +74,20 @@ jobs:
       - run: pip install -e '.[test]'
       - run: pytest -q
 
+  test-hermes-chat:
+    name: pytest (hermes-chat)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hermes-chat
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install -e '.[test]'
+      - run: pytest -q
+
   semgrep:
     name: semgrep (report-only)
     runs-on: ubuntu-latest

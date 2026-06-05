@@ -1,0 +1,45 @@
+{
+  "HERMES_CHAT_IMAGE": {
+    "type": "text",
+    "description": "Image tag for OSCAR's stateless chat proxy. Leave default unless you're running a fork PoC.",
+    "default": "ghcr.io/mdopp/oscar-chat:latest"
+  },
+  "HERMES_CHAT_PORT": {
+    "type": "text",
+    "description": "Host loopback port the chat proxy binds on. NPM proxies the public `chat.<publicDomain>` down to this port behind Authelia forward-auth. Default 8787; pick something else only if it's taken. NB: the servicebay.healthcheck annotation uses the literal 8787 — change it there too if you change this.",
+    "default": "8787"
+  },
+  "HERMES_CHAT_SUBDOMAIN": {
+    "type": "subdomain",
+    "description": "Subdomain for the chat surface. `chat` matches what the household stack already points at (#1044); keeping it the same so existing bookmarks / family-portal links don't break. Authelia forward-auth gates every request before it lands on the chat proxy, which then folds the Remote-User identity into the Hermes uid (no second login).",
+    "default": "chat",
+    "exposure": "internal",
+    "proxyPort": "HERMES_CHAT_PORT",
+    "loopbackOnly": true,
+    "proxyConfig": {
+      "allow_websocket_upgrade": true,
+      "block_exploits": true,
+      "ssl_forced": true,
+      "advanced_config": "__authelia_forward_auth__"
+    }
+  },
+  "HERMES_API_PORT": {
+    "type": "text",
+    "description": "Port the ServiceBay `hermes` template's API server listens on (its `HERMES_API_PORT`). Default `8642` matches that template's default. The chat proxy reaches Hermes at `http://127.0.0.1:<this>` via host loopback (both pods are hostNetwork).",
+    "default": "8642"
+  },
+  "HERMES_API_KEY": {
+    "type": "secret",
+    "description": "Bearer token the chat proxy presents when calling Hermes' native session API. Held server-side only — never sent to the browser. Surfaced as `__SB_CREDENTIAL__` by the ServiceBay `hermes` template's post-deploy; paste that value here (same name on both sides to avoid lookup confusion)."
+  },
+  "DEFAULT_UID": {
+    "type": "text",
+    "description": "Hermes uid used when the Authelia `Remote-User` header is absent (e.g. direct loopback access for offline testing). Normal requests through NPM+Authelia carry the header and key off the SSO identity instead.",
+    "default": "household"
+  },
+  "TZ": {
+    "type": "text",
+    "description": "IANA time zone for log timestamps.",
+    "default": "Europe/Berlin"
+  }
+}

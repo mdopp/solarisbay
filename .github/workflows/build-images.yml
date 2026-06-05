@@ -14,12 +14,14 @@ on:
       - 'voice-gatekeeper/**'
       - 'database/**'
       - 'abs-mcp/**'
+      - 'hermes-chat/**'
       - '.github/workflows/build-images.yml'
   pull_request:
     paths:
       - 'voice-gatekeeper/**'
       - 'database/**'
       - 'abs-mcp/**'
+      - 'hermes-chat/**'
       - '.github/workflows/build-images.yml'
 
 permissions:
@@ -43,6 +45,9 @@ jobs:
           - image: oscar-abs-mcp
             context: abs-mcp
             description: "OSCAR Audiobookshelf MCP shim — read-only library search/availability over the Audiobookshelf REST API, exposed to Hermes as a streamable-HTTP MCP server. Runs as a container inside oscar-household."
+          - image: oscar-chat
+            context: hermes-chat
+            description: "OSCAR household chat — stateless aiohttp proxy serving a static chat page over Hermes' native session API. Reads the Authelia Remote-User header for SSO; holds API_SERVER_KEY server-side. Replaces the fragile in-process hermes-webui."
     steps:
       - name: Checkout
         uses: actions/checkout@v6

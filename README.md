@@ -8,7 +8,7 @@ one click and Hermes can consume as a skill pack independently.
 - **Hermes skills** (`templates/oscar-household/skills/`) — five
   procedures Hermes loads at runtime: `audit-query`, `debug-set`,
   `dynamic-skills`, `media-ingestion-multimodal`, `status`.
-- **ServiceBay templates** (`templates/{ollama,hermes,hermes-webui,oscar-household}/`)
+- **ServiceBay templates** (`templates/{ollama,hermes,hermes-chat,oscar-household}/`)
   — the four-pod deployment recipe that wires local LLM, agent
   runtime, chat UI, and the OSCAR-specific glue (skill mount, voice
   bridge, DB init).
@@ -22,6 +22,10 @@ one click and Hermes can consume as a skill pack independently.
   container that runs `alembic upgrade head` against the OSCAR pod's
   local SQLite (`oscar.db`) on every pod start. Built into
   `ghcr.io/mdopp/oscar-household-init:latest`.
+- **Chat proxy image source** (`hermes-chat/`) — a small, stateless
+  aiohttp proxy serving a static chat page over Hermes' native session
+  API, built into `ghcr.io/mdopp/oscar-chat:latest` and deployed by the
+  `hermes-chat` template at `chat.<publicDomain>`.
 
 ## Two install paths
 
@@ -57,7 +61,7 @@ oscar/
 ├── templates/                       # ServiceBay templates (legacy layout)
 │   ├── ollama/
 │   ├── hermes/
-│   ├── hermes-webui/
+│   ├── hermes-chat/
 │   └── oscar-household/
 │       ├── template.yml
 │       ├── post-deploy.py
@@ -79,12 +83,17 @@ oscar/
 │   ├── Dockerfile
 │   ├── alembic.ini
 │   └── migrations/
+├── hermes-chat/                    # Docker image source (chat proxy)
+│   ├── Dockerfile
+│   ├── pyproject.toml
+│   ├── src/
+│   └── tests/
 ├── stacks/
 │   └── oscar/
-│       ├── stack.yml               # templates: [ollama, hermes, hermes-webui, oscar-household]
+│       ├── stack.yml               # templates: [ollama, hermes, hermes-chat, oscar-household]
 │       └── README.md
 └── .github/workflows/
-    └── build-images.yml            # publishes the two GHCR images
+    └── build-images.yml            # publishes the GHCR images
 ```
 
 ## Image build

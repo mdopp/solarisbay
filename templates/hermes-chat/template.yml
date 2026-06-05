@@ -1,0 +1,64 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hermes-chat
+  labels:
+    app: hermes-chat
+  annotations:
+    servicebay.label: "Chat"
+    servicebay.schema-version: "1"
+    servicebay.ports: "{{HERMES_CHAT_PORT}}/tcp"
+    # Stateless household chat surface (#140). A tiny own image serving a
+    # static chat page over Hermes' native session API — replaces the
+    # fragile in-process nesquena/hermes-webui (#139), which ran the agent
+    # in-process and broke on :latest drift. No own data store; all
+    # chat/session/memory lives in Hermes (~/.hermes). Behind Authelia
+    # forward-auth, the proxy reads the Remote-User header → Hermes uid so
+    # there's no second login (#134); API_SERVER_KEY stays server-side.
+    servicebay.dependencies: "ollama,hermes,nginx,auth"
+    # HTTP health probe — the proxy serves /health (200, no auth) once up.
+    # ServiceBay can't substitute {{VAR}} inside an annotation block scalar
+    # (#136), so the port is the literal default; an operator changing
+    # HERMES_CHAT_PORT must update this literal by hand too.
+    servicebay.healthcheck: |
+      url: http://127.0.0.1:8787/health
+      interval: 30s
+      timeout: 5s
+      startup_timeout: 2m
+spec:
+  # hostNetwork so the proxy reaches Hermes' API at
+  # 127.0.0.1:{{HERMES_API_PORT}} (two hostNetwork pods share the host
+  # netns). NPM (also hostNetwork) proxies the public chat.<publicDomain>
+  # down to our loopback bind behind Authelia forward-auth.
+  hostNetwork: true
+  restartPolicy: Always
+  containers:
+  - name: hermes-chat
+    image: "{{HERMES_CHAT_IMAGE}}"
+    env:
+    - name: OSCAR_COMPONENT
+      value: "chat"
+    # Bind loopback only — a 0.0.0.0 bind under hostNetwork would put the
+    # chat surface on the LAN, bypassing Authelia. Only NPM reaches it.
+    - name: CHAT_HOST
+      value: "127.0.0.1"
+    - name: CHAT_PORT
+      value: "{{HERMES_CHAT_PORT}}"
+    - name: HERMES_URL
+      value: "http://127.0.0.1:{{HERMES_API_PORT}}"
+    # Bearer for Hermes' native API — held server-side, never in browser JS.
+    - name: API_SERVER_KEY
+      value: "{{HERMES_API_KEY}}"
+    # Authelia forwards the authenticated identity on Remote-User via NPM;
+    # the proxy folds it into the Hermes uid (#134). Absent header (direct
+    # loopback offline test) falls back to DEFAULT_UID.
+    - name: REMOTE_USER_HEADER
+      value: "Remote-User"
+    - name: DEFAULT_UID
+      value: "{{DEFAULT_UID}}"
+    - name: TZ
+      value: "{{TZ}}"
+    # No `ports:` block — hostNetwork pod, the listener binds the host
+    # directly (loopback:{{HERMES_CHAT_PORT}}); a ports mapping alongside
+    # hostNetwork makes `podman kube play` reject the spec (same constraint
+    # as the gatekeeper).

@@ -7,11 +7,11 @@ metadata:
     servicebay.tier: "feature"
 spec:
   # Full OSCAR deployment: local LLM (ollama) + agent runtime (hermes)
-  # + chat UI (hermes-webui) + the household-specific glue + skills +
+  # + chat UI (hermes-chat) + the household-specific glue + skills +
   # voice bridge (oscar-household).
   #
   # NOT included: home-assistant and voice — those live in ServiceBay's
   # default registry. The household-stack composition (smart home +
   # OSCAR) is up to the operator: enable both registries and tick what
   # they want.
-  templates: [ollama, hermes, hermes-webui, oscar-household]
+  templates: [ollama, hermes, hermes-chat, oscar-household]
