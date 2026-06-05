@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
-from oscar_chat.config import settings
-from oscar_chat.hermes import HermesClient
-from oscar_chat.logging import log
-from oscar_chat.server import serve
+from solilos_chat.config import settings
+from solilos_chat.hermes import HermesClient
+from solilos_chat.logging import log
+from solilos_chat.server import serve
 
 
 def main() -> None:

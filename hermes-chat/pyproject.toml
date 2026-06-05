@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "oscar-chat"
+name = "solilos-chat"
 version = "0.1.0"
-description = "OSCAR household chat — stateless aiohttp proxy serving a static chat page over Hermes' native session API."
+description = "Solilos household chat — stateless aiohttp proxy serving a static chat page over Hermes' native session API."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -22,20 +22,20 @@ test = [
 ]
 
 [project.scripts]
-oscar-chat = "oscar_chat.__main__:main"
+solilos-chat = "solilos_chat.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/mdopp/oscar"
+Homepage = "https://github.com/mdopp/solbay"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["oscar_chat*"]
+include = ["solilos_chat*"]
 
 [tool.setuptools.package-dir]
 "" = "src"
 
 [tool.setuptools.package-data]
-oscar_chat = ["static/*"]
+solilos_chat = ["static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

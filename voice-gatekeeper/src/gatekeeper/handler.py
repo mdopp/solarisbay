@@ -184,7 +184,7 @@ class GatekeeperHandler(AsyncEventHandler):
                 error=str(exc),
             )
             return settings.default_uid
-        candidates = await asyncio.to_thread(list_embeddings, settings.oscar_db_path)
+        candidates = await asyncio.to_thread(list_embeddings, settings.solilos_db_path)
         uid, match = resolve_speaker(
             query,
             candidates,
@@ -201,7 +201,7 @@ class GatekeeperHandler(AsyncEventHandler):
                 above_threshold=match.above_threshold,
             )
         if uid != settings.default_uid:
-            await asyncio.to_thread(touch_last_seen, settings.oscar_db_path, uid)
+            await asyncio.to_thread(touch_last_seen, settings.solilos_db_path, uid)
         return uid
 
     async def _resolve_location(self) -> str | None:
@@ -212,7 +212,7 @@ class GatekeeperHandler(AsyncEventHandler):
             return None
         try:
             return await asyncio.to_thread(
-                get_room, settings.oscar_db_path, self.client_id
+                get_room, settings.solilos_db_path, self.client_id
             )
         except Exception:  # noqa: BLE001 — room lookup is best-effort
             return None

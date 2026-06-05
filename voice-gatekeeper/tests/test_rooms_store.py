@@ -19,7 +19,7 @@ CREATE TABLE voice_pe_rooms (
 
 @pytest.fixture
 def db(tmp_path):
-    path = str(tmp_path / "oscar.db")
+    path = str(tmp_path / "solilos.db")
     conn = sqlite3.connect(path)
     conn.execute(_DDL)
     conn.commit()

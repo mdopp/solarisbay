@@ -1,16 +1,16 @@
-# Migration sidecar for the oscar-household ServiceBay template.
-# Runs `alembic upgrade head` against /var/lib/oscar/oscar.db on every
+# Migration sidecar for the solbay ServiceBay template.
+# Runs `alembic upgrade head` against /var/lib/solilos/solilos.db on every
 # pod start. Idempotent.
 #
-# Image: ghcr.io/mdopp/oscar-household-init
+# Image: ghcr.io/mdopp/solilos-schema-init
 
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    OSCAR_DB_URL=sqlite:////var/lib/oscar/oscar.db
+    SOLILOS_DB_URL=sqlite:////var/lib/solilos/solilos.db
 
-WORKDIR /opt/oscar-schema
+WORKDIR /opt/solilos-schema
 
 # Install runtime deps. No application package — we only need Alembic +
 # SQLAlchemy to drive op.execute() against SQLite. The migration files

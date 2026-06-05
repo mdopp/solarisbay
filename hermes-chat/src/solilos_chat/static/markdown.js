@@ -1,5 +1,5 @@
 /*
- * Tiny self-contained markdown -> HTML renderer for the OSCAR chat page.
+ * Tiny self-contained markdown -> HTML renderer for the Solilos chat page.
  * Offline, no dependencies. Escapes all HTML first, then applies a small
  * subset: fenced + inline code, headings, lists, blockquotes, bold/italic,
  * links, horizontal rules. Inline markup never runs inside code spans.

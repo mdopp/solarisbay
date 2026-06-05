@@ -1,5 +1,5 @@
 """Tests for the ServiceBay-MCP token self-heal in the hermes /
-oscar-household post-deploy scripts (#126).
+solbay post-deploy scripts (#126).
 
 These post-deploy files have hyphenated names and live under templates/,
 so they're loaded via importlib rather than a normal import. The tests
@@ -33,9 +33,7 @@ def hermes():
 
 @pytest.fixture(scope="module")
 def household():
-    return _load(
-        "household_post_deploy", TEMPLATES / "oscar-household" / "post-deploy.py"
-    )
+    return _load("household_post_deploy", TEMPLATES / "solbay" / "post-deploy.py")
 
 
 GOOD = "sb_0a1b2c3d_ABCDEF234567"
@@ -140,7 +138,7 @@ def test_first_install_appends_block(hermes, tmp_path, monkeypatch):
     assert "mcp_servers:" in out and f"Bearer {GOOD}" in out
 
 
-# ── oscar-household: never persist junk, self-heal via rewrite ────────────
+# ── solbay: never persist junk, self-heal via rewrite ────────────
 
 
 def test_household_collect_skips_when_mint_fails(household, monkeypatch):

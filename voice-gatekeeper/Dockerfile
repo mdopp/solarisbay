@@ -13,7 +13,7 @@ COPY src /app/src
 RUN pip install --no-cache-dir /app
 
 ENV PYTHONUNBUFFERED=1 \
-    OSCAR_COMPONENT=gatekeeper
+    SOLILOS_COMPONENT=gatekeeper
 
 # Wyoming pipeline endpoint that satellites (HA Voice PE, wyoming-satellite
 # CLI, etc.) connect to. The Wyoming-internal whisper/piper services are

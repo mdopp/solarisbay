@@ -10,7 +10,7 @@ There is deliberately no write/destructive tool here — the shim only ever
 issues GETs against Audiobookshelf, so even though it holds the ABS
 credential, a prompt-injected agent cannot mutate the library through it.
 
-Runs as a streamable-HTTP ASGI app on `MCP_PORT`. `oscar-household`'s
+Runs as a streamable-HTTP ASGI app on `MCP_PORT`. `solbay`'s
 post-deploy registers it in Hermes' `mcp_servers:` block.
 """
 
@@ -29,7 +29,7 @@ _MAX_LIMIT = 25
 def build_mcp(*, client: AbsClient) -> FastMCP:
     """Construct the FastMCP server with the lookup tools. Pure factory so
     tests can drive the tools against a fake client without binding a port."""
-    mcp = FastMCP("oscar-abs")
+    mcp = FastMCP("solilos-abs")
 
     @mcp.tool()
     async def abs_search(query: str, limit: int = 5) -> dict:

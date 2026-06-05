@@ -1,4 +1,4 @@
-"""SQLite-backed satellite->room mapping for OSCAR voice control.
+"""SQLite-backed satellite->room mapping for Solilos voice control.
 
 The `voice_pe_rooms` table (`satellite_id` PK -> `room`) is provisioned by
 the alembic migration `0003_voice_pe_rooms`. The gatekeeper reads it on
@@ -6,7 +6,7 @@ each turn to attach `location` to the Hermes payload; the `POST /room`
 endpoint writes it (rooms are self-enrolled by conversation — see #94).
 
 Sync sqlite3, like `embeddings_store`: each op is millisecond-cheap and the
-table holds one row per satellite. If oscar.db or the table is missing
+table holds one row per satellite. If solilos.db or the table is missing
 (init container hasn't migrated yet), reads return None/{} and callers
 degrade to "room unknown".
 

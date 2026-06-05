@@ -1,6 +1,6 @@
-# OSCAR schema
+# Solilos schema
 
-Alembic migrations for the three OSCAR-owned tables, kept in a single SQLite file (`oscar.db`) in the `oscar-household` template's volume.
+Alembic migrations for the three Solilos-owned tables, kept in a single SQLite file (`solilos.db`) in the `solbay` template's volume.
 
 | Table | Purpose | Phase |
 |---|---|---|
@@ -10,21 +10,21 @@ Alembic migrations for the three OSCAR-owned tables, kept in a single SQLite fil
 
 ## Storage choice
 
-SQLite. Rationale: OSCAR's tables are a few-rows-of-config job (tens of audit rows per day; one settings row; ten embedding rows). Hermes itself uses SQLite for Honcho + FTS5. Phase 3a re-opens the storage choice when domain collections (`books`, `records`, `documents`, `audiobooks`, `experiences`) land. See [`../oscar-architecture.md`](../oscar-architecture.md) → "The schema".
+SQLite. Rationale: Solilos's tables are a few-rows-of-config job (tens of audit rows per day; one settings row; ten embedding rows). Hermes itself uses SQLite for Honcho + FTS5. Phase 3a re-opens the storage choice when domain collections (`books`, `records`, `documents`, `audiobooks`, `experiences`) land. See [`../solilos-architecture.md`](../solilos-architecture.md) → "The schema".
 
 Migrations are written with hand-rolled SQL via `op.execute(...)`, so a future move to Postgres (if Phase 3a calls for it) is a one-day swap of the DDL strings.
 
 ## Running the migration
 
-The `oscar-household` ServiceBay template runs the migration container on every pod start, against `/var/lib/oscar/oscar.db` in the bind-mounted volume. Idempotent.
+The `solbay` ServiceBay template runs the migration container on every pod start, against `/var/lib/solilos/solilos.db` in the bind-mounted volume. Idempotent.
 
 Manual run (development):
 
 ```bash
 cd schema
-alembic -x dburl=sqlite:////tmp/oscar.db upgrade head
+alembic -x dburl=sqlite:////tmp/solilos.db upgrade head
 ```
 
 ## Image
 
-Built from `Dockerfile`; published as `ghcr.io/mdopp/oscar-household-init:latest` by `.github/workflows/build-images.yml`.
+Built from `Dockerfile`; published as `ghcr.io/mdopp/solilos-schema-init:latest` by `.github/workflows/build-images.yml`.

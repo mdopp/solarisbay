@@ -14,8 +14,8 @@ from typing import Any
 
 from aiohttp import web
 
-from oscar_chat.hermes import HermesClient, HermesError
-from oscar_chat.logging import log
+from solilos_chat.hermes import HermesClient, HermesError
+from solilos_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OSCAR — Chat</title>
+  <title>Solilos — Chat</title>
   <style>
     :root {
       --bg: #f6f6f4;
@@ -13,7 +13,7 @@
       --line: #e4e4e0;
       --accent: #3a6ea5;
       --bubble-me: #eef2f7;
-      --bubble-oscar: #f3f3f0;
+      --bubble-sol: #f3f3f0;
       --radius: 12px;
     }
     @media (prefers-color-scheme: dark) {
@@ -25,7 +25,7 @@
         --line: #2a2e34;
         --accent: #7aa7d6;
         --bubble-me: #25303d;
-        --bubble-oscar: #232730;
+        --bubble-sol: #232730;
       }
     }
     * { box-sizing: border-box; }
@@ -74,7 +74,7 @@
       cursor: pointer;
       margin-bottom: 2px;
     }
-    .session:hover { background: var(--bubble-oscar); }
+    .session:hover { background: var(--bubble-sol); }
     .session.active { background: var(--bubble-me); }
     .session .title {
       font-size: 14px;
@@ -150,7 +150,7 @@
     }
     .msg { max-width: 80%; padding: 10px 13px; border-radius: var(--radius); word-wrap: break-word; overflow-wrap: anywhere; }
     .msg.me { align-self: flex-end; background: var(--bubble-me); white-space: pre-wrap; }
-    .msg.oscar { align-self: flex-start; background: var(--bubble-oscar); }
+    .msg.sol { align-self: flex-start; background: var(--bubble-sol); }
     .msg.system { align-self: center; color: var(--muted); background: none; font-size: 13px; padding: 4px; }
     .role { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
 
@@ -243,11 +243,11 @@
     <div class="app">
       <header>
         <button id="sidebar-toggle" type="button" aria-label="Toggle sessions">☰</button>
-        OSCAR <span class="sub">household chat</span>
+        Solilos <span class="sub">household chat</span>
       </header>
       <div id="log" aria-live="polite"></div>
       <form id="composer">
-        <textarea id="input" rows="1" placeholder="Message OSCAR…" autofocus></textarea>
+        <textarea id="input" rows="1" placeholder="Message Solilos…" autofocus></textarea>
         <button id="send" type="submit">Send</button>
       </form>
     </div>
@@ -284,7 +284,7 @@
         if (role !== "system") {
           var label = document.createElement("span");
           label.className = "role";
-          label.textContent = role === "me" ? "You" : "OSCAR";
+          label.textContent = role === "me" ? "You" : "Solilos";
           el.appendChild(label);
         }
         el.appendChild(document.createTextNode(text));
@@ -298,10 +298,10 @@
       // first token, then a `.md` body.
       function addAssistant() {
         var el = document.createElement("div");
-        el.className = "msg oscar";
+        el.className = "msg.sol";
         var label = document.createElement("span");
         label.className = "role";
-        label.textContent = "OSCAR";
+        label.textContent = "Solilos";
         el.appendChild(label);
 
         var activity = document.createElement("div");
@@ -381,7 +381,7 @@
               if (d.phase === "started") msg.setActivity("using " + (d.name || "tool") + "…");
               else msg.setActivity("thinking…");
             } else if (event === "error") {
-              msg.fail("OSCAR is unavailable right now. Please try again.");
+              msg.fail("Solilos is unavailable right now. Please try again.");
             }
           }
 
@@ -497,10 +497,10 @@
                 addText("me", m.content);
               } else if (m.role === "assistant") {
                 var el = document.createElement("div");
-                el.className = "msg oscar";
+                el.className = "msg.sol";
                 var label = document.createElement("span");
                 label.className = "role";
-                label.textContent = "OSCAR";
+                label.textContent = "Solilos";
                 el.appendChild(label);
                 var body = document.createElement("div");
                 body.className = "md";

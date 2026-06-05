@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "oscar-gatekeeper"
+name = "solilos-gatekeeper"
 version = "0.1.0"
-description = "OSCAR Wyoming-to-Hermes bridge — Wyoming server that drives Whisper/Piper and hands off conversation to Hermes."
+description = "Solilos Wyoming-to-Hermes bridge — Wyoming server that drives Whisper/Piper and hands off conversation to Hermes."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -39,7 +39,7 @@ test = [
 # these — SpeechBrain pulls in torch, which adds ~1 GB to the image and
 # needs a separate CI build. Operators wanting Speaker-ID build a custom
 # image with `pip install /app[speaker-id]` and set
-# OSCAR_SPEAKER_ID_ENABLED=1 in the wizard. With the deps absent the
+# SOLILOS_SPEAKER_ID_ENABLED=1 in the wizard. With the deps absent the
 # resolver short-circuits to DEFAULT_UID so the conversation pipeline
 # stays unaffected.
 speaker-id = [
@@ -52,8 +52,8 @@ speaker-id = [
 gatekeeper = "gatekeeper.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/mdopp/oscar"
-Spec = "https://github.com/mdopp/oscar/blob/main/voice-gatekeeper/README.md"
+Homepage = "https://github.com/mdopp/solbay"
+Spec = "https://github.com/mdopp/solbay/blob/main/voice-gatekeeper/README.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

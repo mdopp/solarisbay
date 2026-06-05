@@ -1,6 +1,6 @@
 name: build-images
 
-# Build and publish container images for OSCAR.
+# Build and publish container images for Solilos.
 #
 # - On push to `main` and tags `v*`: builds + pushes to GHCR.
 # - On pull requests touching image sources: builds without pushing,
@@ -36,18 +36,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: oscar-gatekeeper
+          - image: solilos-gatekeeper
             context: voice-gatekeeper
-            description: "OSCAR Wyoming-to-Hermes bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Runs as a container inside oscar-household; reaches ServiceBay's voice template via host loopback (both pods hostNetwork)."
-          - image: oscar-household-init
+            description: "Solilos Wyoming-to-Hermes bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Runs as a container inside the SolBay pod; reaches ServiceBay's voice template via host loopback (both pods hostNetwork)."
+          - image: solilos-schema-init
             context: database
-            description: "OSCAR schema-init sidecar — runs alembic upgrade head against oscar-household's local SQLite (oscar.db) on every pod start. Idempotent."
-          - image: oscar-abs-mcp
+            description: "Solilos schema-init sidecar — runs alembic upgrade head against the SolBay pod's local SQLite (solilos.db) on every pod start. Idempotent."
+          - image: solilos-abs-mcp
             context: abs-mcp
-            description: "OSCAR Audiobookshelf MCP shim — read-only library search/availability over the Audiobookshelf REST API, exposed to Hermes as a streamable-HTTP MCP server. Runs as a container inside oscar-household."
-          - image: oscar-chat
+            description: "Solilos Audiobookshelf MCP shim — read-only library search/availability over the Audiobookshelf REST API, exposed to Hermes as a streamable-HTTP MCP server. Runs as a container inside the SolBay pod."
+          - image: solilos-chat
             context: hermes-chat
-            description: "OSCAR household chat — stateless aiohttp proxy serving a static chat page over Hermes' native session API. Reads the Authelia Remote-User header for SSO; holds API_SERVER_KEY server-side. Replaces the fragile in-process hermes-webui."
+            description: "Solilos chat — stateless aiohttp proxy serving a static chat page over Hermes' native session API. Reads the Authelia Remote-User header for SSO; holds API_SERVER_KEY server-side. Replaces the fragile in-process hermes-webui."
     steps:
       - name: Checkout
         uses: actions/checkout@v6

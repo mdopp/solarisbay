@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from oscar_chat.hermes import (
+from solilos_chat.hermes import (
     _extract_messages,
     _extract_reply,
     _extract_session_id,
@@ -11,7 +11,7 @@ from oscar_chat.hermes import (
     _session_owner,
     _session_summary,
 )
-from oscar_chat.server import _normalize, _title_from, build_app, resolve_uid
+from solilos_chat.server import _normalize, _title_from, build_app, resolve_uid
 
 
 class _FakeRequest:

@@ -1,4 +1,4 @@
-# oscar-chat
+# solilos-chat
 
 A small, stateless, offline-capable household chat proxy. Serves a static
 chat page and forwards turns to Hermes' **native session API**. Replaces
@@ -71,5 +71,5 @@ another resident's session by guessing its id (returns 404).
 
 ```
 pip install -e .
-HERMES_URL=http://127.0.0.1:8642 API_SERVER_KEY=… python -m oscar_chat
+HERMES_URL=http://127.0.0.1:8642 API_SERVER_KEY=… python -m solilos_chat
 ```

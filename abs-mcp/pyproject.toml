@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "oscar-abs-mcp"
+name = "solilos-abs-mcp"
 version = "0.1.0"
-description = "OSCAR Audiobookshelf MCP shim — read-only library search/availability over the Audiobookshelf REST API, exposed to Hermes as a streamable-HTTP MCP server."
+description = "Solilos Audiobookshelf MCP shim — read-only library search/availability over the Audiobookshelf REST API, exposed to Hermes as a streamable-HTTP MCP server."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -28,8 +28,8 @@ test = [
 abs-mcp = "abs_mcp.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/mdopp/oscar"
-Spec = "https://github.com/mdopp/oscar/blob/main/abs-mcp/README.md"
+Homepage = "https://github.com/mdopp/solbay"
+Spec = "https://github.com/mdopp/solbay/blob/main/abs-mcp/README.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

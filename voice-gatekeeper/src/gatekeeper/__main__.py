@@ -36,19 +36,19 @@ def _info() -> Info:
     return Info(
         asr=[
             AsrProgram(
-                name="oscar-gatekeeper-asr",
-                description="OSCAR gatekeeper — ASR via internal Whisper",
+                name="solilos-gatekeeper-asr",
+                description="Solilos gatekeeper — ASR via internal Whisper",
                 attribution=Attribution(
-                    name="OSCAR", url="https://github.com/mdopp/servicebay"
+                    name="Solilos", url="https://github.com/mdopp/servicebay"
                 ),
                 installed=True,
                 version=GATEKEEPER_VERSION,
                 models=[
                     AsrModel(
-                        name="oscar-gatekeeper",
+                        name="solilos-gatekeeper",
                         description="Gatekeeper pipeline (Whisper -> HERMES -> Piper)",
                         attribution=Attribution(
-                            name="OSCAR", url="https://github.com/mdopp/servicebay"
+                            name="Solilos", url="https://github.com/mdopp/servicebay"
                         ),
                         installed=True,
                         version=GATEKEEPER_VERSION,
@@ -59,10 +59,10 @@ def _info() -> Info:
         ],
         tts=[
             TtsProgram(
-                name="oscar-gatekeeper-tts",
-                description="OSCAR gatekeeper — TTS via internal Piper",
+                name="solilos-gatekeeper-tts",
+                description="Solilos gatekeeper — TTS via internal Piper",
                 attribution=Attribution(
-                    name="OSCAR", url="https://github.com/mdopp/servicebay"
+                    name="Solilos", url="https://github.com/mdopp/servicebay"
                 ),
                 installed=True,
                 version=GATEKEEPER_VERSION,
@@ -90,14 +90,14 @@ async def _serve() -> None:
             piper_uri=settings.piper_uri,
             devices=settings.voice_pe_devices,
             push_token=settings.push_token,
-            db_path=settings.oscar_db_path,
+            db_path=settings.solilos_db_path,
             speaker_id_enabled=settings.speaker_id_enabled,
         ),
         name="push",
     )
     mcp = asyncio.create_task(
         serve_mcp(
-            db_path=settings.oscar_db_path,
+            db_path=settings.solilos_db_path,
             host=settings.mcp_host,
             port=settings.mcp_port,
             token=settings.mcp_token,

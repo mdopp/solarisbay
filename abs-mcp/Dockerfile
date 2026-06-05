@@ -12,7 +12,7 @@ COPY src /app/src
 RUN pip install --no-cache-dir /app
 
 ENV PYTHONUNBUFFERED=1 \
-    OSCAR_COMPONENT=abs-mcp
+    SOLILOS_COMPONENT=abs-mcp
 
 # Streamable-HTTP MCP endpoint Hermes registers (loopback by default).
 EXPOSE 10770

@@ -33,5 +33,5 @@ def downgrade() -> None:
     # or using a temporary table would be needed. Since this is a lightweight schema,
     # raising NotImplementedError matches the baseline's pattern.
     raise NotImplementedError(
-        "Downgrade is not supported. Delete oscar.db and re-run upgrade if needed."
+        "Downgrade is not supported. Delete solilos.db and re-run upgrade if needed."
     )

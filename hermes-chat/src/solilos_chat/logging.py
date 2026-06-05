@@ -42,4 +42,4 @@ class _Logger:
         self._emit("error", message, **args)
 
 
-log = _Logger(os.environ.get("OSCAR_COMPONENT", "chat"))
+log = _Logger(os.environ.get("SOLILOS_COMPONENT", "chat"))

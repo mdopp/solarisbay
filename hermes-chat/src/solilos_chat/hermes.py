@@ -21,7 +21,7 @@ from typing import Any
 
 import aiohttp
 
-from oscar_chat.logging import log
+from solilos_chat.logging import log
 
 
 class HermesError(Exception):

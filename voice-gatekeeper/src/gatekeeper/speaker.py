@@ -20,8 +20,8 @@ gatekeeper image with the `speaker-id` extras installed:
 
     pip install /app[speaker-id]
 
-and flip `OSCAR_SPEAKER_ID_ENABLED=1`. Future work: a CI-built
-`oscar-gatekeeper-ml` image that bakes SpeechBrain in. See #937
+and flip `SOLILOS_SPEAKER_ID_ENABLED=1`. Future work: a CI-built
+`solilos-gatekeeper-ml` image that bakes SpeechBrain in. See #937
 follow-up notes in the gatekeeper README.
 """
 
@@ -153,7 +153,7 @@ class SpeechBrainExtractor:
             source="speechbrain/spkrec-ecapa-voxceleb",
             savedir=savedir
             or os.environ.get(
-                "OSCAR_SPEAKER_MODEL_CACHE", "/var/lib/oscar/models/spkrec-ecapa"
+                "SOLILOS_SPEAKER_MODEL_CACHE", "/var/lib/solilos/models/spkrec-ecapa"
             ),
             run_opts={"device": "cpu"},  # gatekeeper sidecar has no GPU contract
         )
@@ -211,7 +211,7 @@ def get_extractor() -> EmbeddingExtractor | None:
     global _extractor_singleton
     if _extractor_singleton is not None:
         return _extractor_singleton
-    if os.environ.get("OSCAR_SPEAKER_ID_ENABLED", "").strip().lower() not in {
+    if os.environ.get("SOLILOS_SPEAKER_ID_ENABLED", "").strip().lower() not in {
         "1",
         "true",
         "yes",

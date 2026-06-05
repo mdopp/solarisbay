@@ -1,12 +1,12 @@
-# oscar-abs-mcp
+# solilos-abs-mcp
 
 A small read-only **Audiobookshelf → MCP** shim. It runs as a container in
-the `oscar-household` pod and exposes the household's Audiobookshelf library
+the `solbay` pod and exposes the household's Audiobookshelf library
 to Hermes as MCP tools, so a skill can answer "do we already own this book?"
 right after a note is ingested (#89) — **without** a wizard-managed ABS REST
 token living in the skill.
 
-Image: `ghcr.io/mdopp/oscar-abs-mcp`.
+Image: `ghcr.io/mdopp/solilos-abs-mcp`.
 
 ## Why a shim (and why read-only)
 

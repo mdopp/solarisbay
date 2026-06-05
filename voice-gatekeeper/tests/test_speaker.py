@@ -40,7 +40,7 @@ def _emb(seed: int) -> bytes:
 
 
 def _seed_db(tmp_path: Path) -> str:
-    db = tmp_path / "oscar.db"
+    db = tmp_path / "solilos.db"
     with sqlite3.connect(db) as conn:
         conn.execute(
             """

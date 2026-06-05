@@ -9,7 +9,7 @@ MCP server keeps room enrolment reachable while the push credential stays
 out of the agent.
 
 Runs as its own streamable-HTTP ASGI app on `MCP_PORT` (a third listener
-beside the Wyoming server and the push/HTTP app). `oscar-household`'s
+beside the Wyoming server and the push/HTTP app). `solbay`'s
 post-deploy registers it in Hermes' `mcp_servers:` block.
 """
 
@@ -34,7 +34,7 @@ _MAX_SAT_LEN = 128
 def build_mcp(*, db_path: str) -> FastMCP:
     """Construct the FastMCP server with the room tools. Pure factory so
     tests can drive the tools without binding a port."""
-    mcp = FastMCP("oscar-gatekeeper-rooms")
+    mcp = FastMCP("solilos-gatekeeper-rooms")
 
     @mcp.tool()
     async def set_room(room: str, satellite_id: str = "", endpoint: str = "") -> dict:

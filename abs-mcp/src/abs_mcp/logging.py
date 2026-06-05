@@ -1,6 +1,6 @@
 """Minimal structured logger — one JSON object per line on stdout.
 
-Matches the gatekeeper's logging shape so the two OSCAR Python containers
+Matches the gatekeeper's logging shape so the two Solilos Python containers
 read the same way in `podman logs` / ServiceBay's log view.
 """
 
