@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from oscar_chat.hermes import _extract_reply, _extract_session_id, _maybe_json
+from oscar_chat.hermes import (
+    _extract_messages,
+    _extract_reply,
+    _extract_session_id,
+    _iter_session_items,
+    _maybe_json,
+    _session_owner,
+    _session_summary,
+)
 from oscar_chat.server import _normalize, build_app, resolve_uid
 
 
@@ -51,10 +59,12 @@ def test_extract_reply_shapes():
 
 
 class _FakeHermes:
-    def __init__(self, events=None):
+    def __init__(self, events=None, store=None):
         self.created = []
         self.turns = []
         self._events = events or []
+        # store: list of {id, user_id, title, last_activity, messages}
+        self._store = store or []
 
     async def create_session(self, uid):
         self.created.append(uid)
@@ -68,6 +78,65 @@ class _FakeHermes:
         self.turns.append((session_id, text))
         for event in self._events:
             yield event
+
+    async def list_sessions(self, uid):
+        # Mirror the real client's scoping invariant: only this uid's sessions.
+        return [
+            {
+                "id": s["id"],
+                "title": s.get("title", ""),
+                "last_activity": s.get("last_activity", ""),
+            }
+            for s in self._store
+            if s.get("user_id") == uid
+        ]
+
+    async def get_session(self, session_id, uid):
+        for s in self._store:
+            if s["id"] == session_id and s.get("user_id") == uid:
+                return {
+                    "id": s["id"],
+                    "title": s.get("title", ""),
+                    "last_activity": s.get("last_activity", ""),
+                    "messages": s.get("messages", []),
+                }
+        return None
+
+
+def test_iter_session_items_envelopes():
+    assert _iter_session_items([{"id": "a"}]) == [{"id": "a"}]
+    assert _iter_session_items({"sessions": [{"id": "b"}]}) == [{"id": "b"}]
+    assert _iter_session_items({"items": [{"id": "c"}]}) == [{"id": "c"}]
+    assert _iter_session_items({"nope": 1}) == []
+
+
+def test_session_owner_and_summary():
+    assert _session_owner({"user_id": "mdopp"}) == "mdopp"
+    assert _session_owner({"owner": "lena"}) == "lena"
+    assert _session_owner({}) == ""
+    summ = _session_summary(
+        {"id": "x", "title": "Trip", "last_activity": "2026-06-05T10:00:00Z"}
+    )
+    assert summ == {
+        "id": "x",
+        "title": "Trip",
+        "last_activity": "2026-06-05T10:00:00Z",
+    }
+
+
+def test_extract_messages_shapes():
+    raw = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [{"text": "he"}, {"text": "llo"}]},
+            {"role": "system", "content": ""},
+        ]
+    }
+    assert _extract_messages(raw) == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    assert _extract_messages({}) == []
 
 
 def test_normalize_assistant_delta():
@@ -197,3 +266,88 @@ async def test_stream_empty_input_rejected(aiohttp_client):
     resp = await client.post("/api/chat/stream", json={"input": "  "})
     assert resp.status == 400
     assert fake.created == []
+
+
+def _two_user_store():
+    return [
+        {
+            "id": "s-mdopp",
+            "user_id": "mdopp",
+            "title": "Groceries",
+            "last_activity": "2026-06-05T10:00:00Z",
+            "messages": [
+                {"role": "user", "content": "buy milk"},
+                {"role": "assistant", "content": "added"},
+            ],
+        },
+        {
+            "id": "s-lena",
+            "user_id": "lena",
+            "title": "Lena private",
+            "last_activity": "2026-06-05T11:00:00Z",
+            "messages": [{"role": "user", "content": "secret"}],
+        },
+    ]
+
+
+async def test_list_sessions_scoped_to_user(aiohttp_client):
+    fake = _FakeHermes(store=_two_user_store())
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/sessions", headers={"Remote-User": "mdopp"})
+    body = await resp.json()
+    assert resp.status == 200
+    ids = [s["id"] for s in body["sessions"]]
+    assert ids == ["s-mdopp"]
+    assert "s-lena" not in ids
+
+
+async def test_create_session_returns_id(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post("/api/sessions", headers={"Remote-User": "mdopp"})
+    body = await resp.json()
+    assert resp.status == 200
+    assert body["session_id"] == "sess-1"
+    assert fake.created == ["mdopp"]
+
+
+async def test_get_own_session_returns_history(aiohttp_client):
+    fake = _FakeHermes(store=_two_user_store())
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/sessions/s-mdopp", headers={"Remote-User": "mdopp"})
+    body = await resp.json()
+    assert resp.status == 200
+    assert body["session"]["id"] == "s-mdopp"
+    assert body["session"]["messages"][0]["content"] == "buy milk"
+
+
+async def test_cannot_open_other_users_session(aiohttp_client):
+    """PRIVACY INVARIANT: user A must not open user B's session by id."""
+    fake = _FakeHermes(store=_two_user_store())
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    # mdopp tries to open lena's session by guessing its id.
+    resp = await client.get("/api/sessions/s-lena", headers={"Remote-User": "mdopp"})
+    body = await resp.json()
+    assert resp.status == 404
+    assert body["ok"] is False
+
+    # And lena's session never shows in mdopp's list.
+    resp = await client.get("/api/sessions", headers={"Remote-User": "mdopp"})
+    listed = await resp.json()
+    assert all(s["id"] != "s-lena" for s in listed["sessions"])

@@ -28,11 +28,21 @@ to `DEFAULT_UID`.
 
 ## Hermes contract
 
+- `GET /api/sessions?user_id={uid}` — list the uid's sessions.
 - `POST /api/sessions` — create a session bound to the uid.
+- `GET /api/sessions/{id}` — get a session + its message history.
 - `POST /api/sessions/{id}/chat` — body `{"input": …}`, returns the reply.
 
 (Not the gatekeeper's placeholder `/converse`, which does not exist in the
 real Hermes API.)
+
+## Per-user privacy
+
+Every session is created with `user_id: uid` (the SSO identity). The proxy
+scopes both the list and single-session fetch to the caller's uid — it
+passes `user_id` to Hermes **and** re-filters by each session's own
+`user_id`, so a resident sees only their own sessions and cannot open
+another resident's session by guessing its id (returns 404).
 
 ## Environment
 
@@ -49,6 +59,11 @@ real Hermes API.)
 
 - `GET /` — the chat page.
 - `GET /health` — `{"ok": true}`.
+- `GET /api/sessions` — `{"ok": true, "sessions": [{id, title, last_activity}]}`
+  (the caller's own sessions only).
+- `POST /api/sessions` — `{"ok": true, "session_id": …}` (new session for the uid).
+- `GET /api/sessions/{id}` — `{"ok": true, "session": {id, title, last_activity, messages}}`
+  or `404` if it isn't the caller's session.
 - `POST /api/chat` — `{"input": …, "session_id": …?}` →
   `{"ok": true, "session_id": …, "reply": …}`.
 

@@ -43,6 +43,40 @@ def build_app(
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
 
+    async def list_sessions(request: web.Request) -> web.Response:
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            sessions = await hermes.list_sessions(uid)
+        except HermesError:
+            return web.json_response(
+                {"ok": False, "reason": "hermes_unavailable"}, status=502
+            )
+        return web.json_response({"ok": True, "sessions": sessions})
+
+    async def create_session(request: web.Request) -> web.Response:
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            session_id = await hermes.create_session(uid)
+        except HermesError:
+            return web.json_response(
+                {"ok": False, "reason": "hermes_unavailable"}, status=502
+            )
+        log.info("chat.session.created", uid=uid, session_id=session_id)
+        return web.json_response({"ok": True, "session_id": session_id})
+
+    async def get_session(request: web.Request) -> web.Response:
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        session_id = request.match_info["session_id"]
+        try:
+            session = await hermes.get_session(session_id, uid)
+        except HermesError:
+            return web.json_response(
+                {"ok": False, "reason": "hermes_unavailable"}, status=502
+            )
+        if session is None:
+            return web.json_response({"ok": False, "reason": "not_found"}, status=404)
+        return web.json_response({"ok": True, "session": session})
+
     async def chat(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
@@ -107,6 +141,9 @@ def build_app(
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
+    app.router.add_get("/api/sessions", list_sessions)
+    app.router.add_post("/api/sessions", create_session)
+    app.router.add_get("/api/sessions/{session_id}", get_session)
     app.router.add_post("/api/chat", chat)
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_static("/static/", STATIC_DIR)

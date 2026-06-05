@@ -49,6 +49,48 @@ class HermesClient:
             raise HermesError("create_session: no session id in response")
         return session_id
 
+    async def list_sessions(self, uid: str) -> list[dict[str, Any]]:
+        """List sessions owned by `uid`.
+
+        We pass `user_id` as a query param so Hermes scopes server-side, then
+        re-filter the returned list by each session's own `user_id` so a
+        resident can never see another resident's sessions even if Hermes
+        ignored the param. Each item is `{id, title, last_activity}`.
+        """
+        url = f"{self._base_url}/api/sessions"
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.get(
+                url, params={"user_id": uid}, headers=self._headers()
+            ) as resp:
+                body = await self._json_or_raise(resp, "list_sessions")
+        out: list[dict[str, Any]] = []
+        for raw in _iter_session_items(body):
+            if _session_owner(raw) != uid:
+                continue
+            out.append(_session_summary(raw))
+        return out
+
+    async def get_session(self, session_id: str, uid: str) -> dict[str, Any] | None:
+        """Fetch a session + its message history, scoped to `uid`.
+
+        Returns `None` if the session does not belong to `uid` (so the proxy
+        can 404 it) — a resident must not open another resident's session by
+        guessing its id.
+        """
+        url = f"{self._base_url}/api/sessions/{session_id}"
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.get(url, headers=self._headers()) as resp:
+                if resp.status == 404:
+                    return None
+                body = await self._json_or_raise(resp, "get_session")
+        session = body.get("session") if isinstance(body, dict) else None
+        raw = session if isinstance(session, dict) else body
+        if not isinstance(raw, dict) or _session_owner(raw) != uid:
+            return None
+        summary = _session_summary(raw)
+        summary["messages"] = _extract_messages(raw)
+        return summary
+
     async def chat(self, session_id: str, text: str) -> str:
         """Send one turn to an existing session; return the reply text."""
         url = f"{self._base_url}/api/sessions/{session_id}/chat"
@@ -137,6 +179,59 @@ def _extract_session_id(body: Any) -> str:
     # Tolerate a couple of envelope shapes Hermes may use.
     session = body.get("session") if isinstance(body.get("session"), dict) else body
     return str(session.get("id") or session.get("session_id") or "")
+
+
+def _iter_session_items(body: Any) -> list[Any]:
+    """Pull the session list out of whatever envelope Hermes returns."""
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        for key in ("sessions", "items", "data", "results"):
+            value = body.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _session_owner(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("user_id") or raw.get("owner") or raw.get("source") or "")
+
+
+def _session_summary(raw: dict[str, Any]) -> dict[str, Any]:
+    sid = str(raw.get("id") or raw.get("session_id") or "")
+    title = str(raw.get("title") or raw.get("name") or "").strip()
+    last = (
+        raw.get("last_activity")
+        or raw.get("updated_at")
+        or raw.get("last_activity_at")
+        or raw.get("created_at")
+        or ""
+    )
+    return {"id": sid, "title": title, "last_activity": str(last or "")}
+
+
+def _extract_messages(raw: dict[str, Any]) -> list[dict[str, str]]:
+    """Normalise a session's message history to `[{role, content}]`."""
+    messages = raw.get("messages")
+    if not isinstance(messages, list):
+        return []
+    out: list[dict[str, str]] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "")
+        content = m.get("content")
+        if isinstance(content, list):
+            content = "".join(
+                str(p.get("text") or "") if isinstance(p, dict) else str(p)
+                for p in content
+            )
+        text = str(content or "")
+        if role and text:
+            out.append({"role": role, "content": text})
+    return out
 
 
 def _extract_reply(body: Any) -> str:
