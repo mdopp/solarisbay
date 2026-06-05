@@ -43,7 +43,10 @@ def test_extract_reply_shapes():
     assert _extract_reply({"output": "hi"}) == "hi"
     assert _extract_reply({"reply": "yo"}) == "yo"
     assert _extract_reply({"response": "ok"}) == "ok"
-    assert _extract_reply({"message": {"role": "assistant", "content": "hello"}}) == "hello"
+    assert (
+        _extract_reply({"message": {"role": "assistant", "content": "hello"}})
+        == "hello"
+    )
     assert _extract_reply({}) == ""
 
 
