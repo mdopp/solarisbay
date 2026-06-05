@@ -1,8 +1,9 @@
 """Thin client for Hermes' native session API.
 
 Contract (NOT the gatekeeper's placeholder `/converse`):
-  - `POST /api/sessions`            -> create a session, returns `{"id": ...}`
-  - `POST /api/sessions/{id}/chat`  -> body `{"input": ...}`, returns the reply
+  - `POST /api/sessions`                 -> create a session, returns `{"id": ...}`
+  - `POST /api/sessions/{id}/chat`       -> body `{"input": ...}`, returns the reply
+  - `POST /api/sessions/{id}/chat/stream`-> body `{"input": ...}`, SSE event stream
 
 Auth is a bearer token (`API_SERVER_KEY`) held server-side; the browser
 never sees it.
@@ -10,6 +11,8 @@ never sees it.
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import aiohttp
@@ -56,6 +59,32 @@ class HermesClient:
                 body = await self._json_or_raise(resp, "chat")
         return _extract_reply(body)
 
+    async def chat_stream(
+        self, session_id: str, text: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream one turn; yield parsed Hermes SSE events as dicts.
+
+        Each yielded event is `{"type": <event>, "data": <decoded payload>}`.
+        The `assistant.delta` event carries token deltas; `tool.started`/
+        `tool.completed` carry tool names; `run.completed` ends the turn.
+        """
+        url = f"{self._base_url}/api/sessions/{session_id}/chat/stream"
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.post(
+                url, json={"input": text}, headers=self._headers()
+            ) as resp:
+                if resp.status >= 400:
+                    detail = (await resp.text())[:500]
+                    log.error(
+                        "chat.hermes.error",
+                        op="chat_stream",
+                        status=resp.status,
+                        body=detail,
+                    )
+                    raise HermesError(f"chat_stream: Hermes returned {resp.status}")
+                async for event in _iter_sse(resp.content):
+                    yield event
+
     @staticmethod
     async def _json_or_raise(resp: aiohttp.ClientResponse, op: str) -> Any:
         if resp.status >= 400:
@@ -63,6 +92,43 @@ class HermesClient:
             log.error("chat.hermes.error", op=op, status=resp.status, body=detail)
             raise HermesError(f"{op}: Hermes returned {resp.status}")
         return await resp.json()
+
+
+async def _iter_sse(stream: aiohttp.StreamReader) -> AsyncIterator[dict[str, Any]]:
+    """Parse an SSE byte stream into `{"type", "data"}` events.
+
+    Frames are blank-line separated; we collect `event:` and (possibly
+    multi-line) `data:` fields, JSON-decoding the data when it parses.
+    """
+    event = ""
+    data_lines: list[str] = []
+    async for raw in stream:
+        line = raw.decode("utf-8", "replace").rstrip("\r\n")
+        if line == "":
+            if data_lines or event:
+                payload = "\n".join(data_lines)
+                yield {"type": event or "message", "data": _maybe_json(payload)}
+            event = ""
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        field, _, value = line.partition(":")
+        value = value[1:] if value.startswith(" ") else value
+        if field == "event":
+            event = value
+        elif field == "data":
+            data_lines.append(value)
+    if data_lines or event:
+        payload = "\n".join(data_lines)
+        yield {"type": event or "message", "data": _maybe_json(payload)}
+
+
+def _maybe_json(payload: str) -> Any:
+    try:
+        return json.loads(payload)
+    except (ValueError, TypeError):
+        return payload
 
 
 def _extract_session_id(body: Any) -> str:

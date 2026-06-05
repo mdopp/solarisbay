@@ -29,7 +29,7 @@
       }
     }
     * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
     body {
       font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
@@ -43,6 +43,7 @@
       display: flex;
       flex-direction: column;
       height: 100vh;
+      min-height: 0;
     }
     header {
       padding: 14px 18px;
@@ -55,18 +56,63 @@
     }
     header .sub { font-weight: 400; color: var(--muted); font-size: 13px; }
     #log {
-      flex: 1;
+      flex: 1 1 auto;
+      min-height: 0;
       overflow-y: auto;
       padding: 18px;
       display: flex;
       flex-direction: column;
       gap: 12px;
     }
-    .msg { max-width: 80%; padding: 10px 13px; border-radius: var(--radius); white-space: pre-wrap; word-wrap: break-word; }
-    .msg.me { align-self: flex-end; background: var(--bubble-me); }
+    .msg { max-width: 80%; padding: 10px 13px; border-radius: var(--radius); word-wrap: break-word; overflow-wrap: anywhere; }
+    .msg.me { align-self: flex-end; background: var(--bubble-me); white-space: pre-wrap; }
     .msg.oscar { align-self: flex-start; background: var(--bubble-oscar); }
     .msg.system { align-self: center; color: var(--muted); background: none; font-size: 13px; padding: 4px; }
     .role { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    /* Rendered-markdown spacing inside an assistant bubble. */
+    .md > :first-child { margin-top: 0; }
+    .md > :last-child { margin-bottom: 0; }
+    .md p { margin: 0 0 8px; }
+    .md ul, .md ol { margin: 0 0 8px; padding-left: 22px; }
+    .md li { margin: 2px 0; }
+    .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 10px 0 6px; line-height: 1.3; }
+    .md h1 { font-size: 1.4em; } .md h2 { font-size: 1.25em; } .md h3 { font-size: 1.1em; }
+    .md a { color: var(--accent); }
+    .md code {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.92em;
+      background: rgba(127, 127, 127, 0.18);
+      padding: 1px 5px;
+      border-radius: 5px;
+    }
+    .md pre {
+      margin: 0 0 8px;
+      padding: 10px 12px;
+      background: rgba(127, 127, 127, 0.14);
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    .md pre code { background: none; padding: 0; font-size: 0.9em; }
+    .md blockquote {
+      margin: 0 0 8px;
+      padding: 2px 12px;
+      border-left: 3px solid var(--line);
+      color: var(--muted);
+    }
+    .md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+
+    /* Activity / thinking indicator. */
+    .activity { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .dots { display: inline-flex; gap: 3px; }
+    .dots span {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--muted); opacity: 0.4;
+      animation: blink 1.2s infinite ease-in-out;
+    }
+    .dots span:nth-child(2) { animation-delay: 0.2s; }
+    .dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
     form {
       display: flex;
       gap: 8px;
@@ -81,9 +127,11 @@
       border-radius: var(--radius);
       padding: 10px 12px;
       font: inherit;
+      line-height: 1.4;
       background: var(--bg);
       color: var(--ink);
-      max-height: 140px;
+      max-height: 168px;
+      overflow-y: auto;
     }
     textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     button {
@@ -108,6 +156,7 @@
       <button id="send" type="submit">Send</button>
     </form>
   </div>
+  <script src="/static/markdown.js"></script>
   <script>
     (function () {
       var log = document.getElementById("log");
@@ -116,7 +165,14 @@
       var send = document.getElementById("send");
       var sessionId = null;
 
-      function add(role, text) {
+      function atBottom() {
+        return log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+      }
+      function scrollDown(stick) {
+        if (stick) log.scrollTop = log.scrollHeight;
+      }
+
+      function addText(role, text) {
         var el = document.createElement("div");
         el.className = "msg " + role;
         if (role !== "system") {
@@ -127,13 +183,64 @@
         }
         el.appendChild(document.createTextNode(text));
         log.appendChild(el);
-        log.scrollTop = log.scrollHeight;
+        scrollDown(true);
         return el;
+      }
+
+      // An assistant bubble that accumulates streamed text and re-renders it
+      // as markdown. Holds a role label + a thinking indicator until the
+      // first token, then a `.md` body.
+      function addAssistant() {
+        var el = document.createElement("div");
+        el.className = "msg oscar";
+        var label = document.createElement("span");
+        label.className = "role";
+        label.textContent = "OSCAR";
+        el.appendChild(label);
+
+        var activity = document.createElement("div");
+        activity.className = "activity";
+        activity.innerHTML =
+          '<span class="dots"><span></span><span></span><span></span></span>' +
+          '<span class="activity-text">thinking…</span>';
+        el.appendChild(activity);
+
+        var body = document.createElement("div");
+        body.className = "md";
+        el.appendChild(body);
+        log.appendChild(el);
+        scrollDown(true);
+
+        var buffer = "";
+        return {
+          setActivity: function (txt) {
+            var t = activity.querySelector(".activity-text");
+            if (t) t.textContent = txt;
+          },
+          append: function (delta) {
+            var stick = atBottom();
+            if (activity.parentNode) el.removeChild(activity);
+            buffer += delta;
+            body.innerHTML = window.renderMarkdown(buffer);
+            scrollDown(stick);
+          },
+          finish: function () {
+            if (activity.parentNode) el.removeChild(activity);
+            if (!buffer) body.textContent = "(no reply)";
+            else body.innerHTML = window.renderMarkdown(buffer);
+            scrollDown(atBottom());
+          },
+          fail: function (msg) {
+            el.removeChild(activity);
+            el.className = "msg system";
+            body.textContent = msg;
+          }
+        };
       }
 
       function autosize() {
         input.style.height = "auto";
-        input.style.height = Math.min(input.scrollHeight, 140) + "px";
+        input.style.height = Math.min(input.scrollHeight, 168) + "px";
       }
       input.addEventListener("input", autosize);
 
@@ -144,35 +251,73 @@
         }
       });
 
+      // Parse the proxy's SSE stream incrementally (fetch + ReadableStream;
+      // EventSource can't POST a body).
+      function streamChat(text, msg) {
+        return fetch("/api/chat/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ input: text, session_id: sessionId })
+        }).then(function (r) {
+          if (!r.ok || !r.body) throw new Error("bad response");
+          var reader = r.body.getReader();
+          var decoder = new TextDecoder();
+          var buf = "";
+
+          function handle(event, data) {
+            var d = {};
+            try { d = JSON.parse(data); } catch (e) {}
+            if (event === "session") {
+              if (d.session_id) sessionId = d.session_id;
+            } else if (event === "delta") {
+              if (d.text) msg.append(d.text);
+            } else if (event === "tool") {
+              if (d.phase === "started") msg.setActivity("using " + (d.name || "tool") + "…");
+              else msg.setActivity("thinking…");
+            } else if (event === "error") {
+              msg.fail("OSCAR is unavailable right now. Please try again.");
+            }
+          }
+
+          function flush() {
+            var frames = buf.split("\n\n");
+            buf = frames.pop();
+            frames.forEach(function (frame) {
+              var event = "message";
+              var data = "";
+              frame.split("\n").forEach(function (line) {
+                if (line.indexOf("event:") === 0) event = line.slice(6).trim();
+                else if (line.indexOf("data:") === 0) data += line.slice(5).replace(/^ /, "");
+              });
+              handle(event, data);
+            });
+          }
+
+          function pump() {
+            return reader.read().then(function (res) {
+              if (res.done) { buf += "\n\n"; flush(); return; }
+              buf += decoder.decode(res.value, { stream: true });
+              flush();
+              return pump();
+            });
+          }
+          return pump();
+        });
+      }
+
       form.addEventListener("submit", function (e) {
         e.preventDefault();
         var text = input.value.trim();
         if (!text) return;
-        add("me", text);
+        addText("me", text);
         input.value = "";
         autosize();
         send.disabled = true;
-        var pending = add("system", "…");
+        var msg = addAssistant();
 
-        fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ input: text, session_id: sessionId })
-        })
-          .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
-          .then(function (res) {
-            pending.remove();
-            if (res.ok && res.body.ok) {
-              sessionId = res.body.session_id;
-              add("oscar", res.body.reply || "(no reply)");
-            } else {
-              add("system", "OSCAR is unavailable right now. Please try again.");
-            }
-          })
-          .catch(function () {
-            pending.remove();
-            add("system", "Network error. Please try again.");
-          })
+        streamChat(text, msg)
+          .then(function () { msg.finish(); })
+          .catch(function () { msg.fail("Network error. Please try again."); })
           .finally(function () {
             send.disabled = false;
             input.focus();

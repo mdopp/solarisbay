@@ -8,7 +8,9 @@ returns the id. All chat/session state lives in Hermes (`~/.hermes`).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 
@@ -67,12 +69,78 @@ def build_app(
 
         return web.json_response({"ok": True, "session_id": session_id, "reply": reply})
 
+    async def chat_stream(request: web.Request) -> web.StreamResponse:
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+
+        text = str(body.get("input") or "").strip()
+        if not text:
+            return web.json_response({"ok": False, "reason": "empty_input"}, status=400)
+        session_id = str(body.get("session_id") or "")
+
+        resp = web.StreamResponse(
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            }
+        )
+        await resp.prepare(request)
+
+        try:
+            if not session_id:
+                session_id = await hermes.create_session(uid)
+                log.info("chat.session.created", uid=uid, session_id=session_id)
+            await _send_event(resp, "session", {"session_id": session_id})
+            async for event in hermes.chat_stream(session_id, text):
+                await _send_event(resp, *_normalize(event))
+        except HermesError:
+            await _send_event(resp, "error", {"reason": "hermes_unavailable"})
+        await _send_event(resp, "done", {})
+        return resp
+
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_post("/api/chat", chat)
+    app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_static("/static/", STATIC_DIR)
     return app
+
+
+async def _send_event(
+    resp: web.StreamResponse, event: str, data: dict[str, Any]
+) -> None:
+    frame = f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    await resp.write(frame.encode("utf-8"))
+
+
+def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Fold a Hermes SSE event into a browser-facing `(event, data)` pair.
+
+    The browser only needs four shapes: a token delta, a tool start/stop
+    hint, and an end marker. Anything else collapses to a no-op `keepalive`.
+    """
+    etype = str(event.get("type") or "")
+    data = event.get("data")
+    payload = data if isinstance(data, dict) else {}
+    if etype == "assistant.delta":
+        text = payload.get("delta") or payload.get("text") or payload.get("content")
+        if not text and isinstance(data, str):
+            text = data
+        return "delta", {"text": str(text or "")}
+    if etype in ("tool.started", "tool.completed"):
+        name = payload.get("tool") or payload.get("name") or ""
+        phase = "started" if etype == "tool.started" else "completed"
+        return "tool", {"name": str(name), "phase": phase}
+    if etype == "run.completed":
+        return "completed", {}
+    return "keepalive", {}
 
 
 async def serve(
