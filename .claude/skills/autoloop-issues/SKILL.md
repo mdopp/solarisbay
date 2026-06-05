@@ -1,9 +1,9 @@
 ---
 name: autoloop-issues
-description: Orchestrates an autonomous issue-resolution pipeline for mdopp/oscar — Planner → Builder → Verify — coordinated through a shared work queue, spawning each stage as a fresh sub-agent so the loop session stays clean. Verify runs in the BACKGROUND (writes its own result file) so the builder keeps build-ahead-ing the next batch while a prior batch is verified on the real ServiceBay box; only the seal→release critical section serializes. Fast per-issue gates, expensive pipeline (CI + real-box /verify) once per batch. Security/privacy-sensitive issues open as a DRAFT PR and wait for human review (pre-merge gate). Resumable via .claude/state/work-queue.json. Use when the user asks to "burn down the backlog", "work the oscar issues autonomously", or invokes /loop with this skill.
+description: Orchestrates an autonomous issue-resolution pipeline for mdopp/solbay — Planner → Builder → Verify — coordinated through a shared work queue, spawning each stage as a fresh sub-agent so the loop session stays clean. Verify runs in the BACKGROUND (writes its own result file) so the builder keeps build-ahead-ing the next batch while a prior batch is verified on the real ServiceBay box; only the seal→release critical section serializes. Fast per-issue gates, expensive pipeline (CI + real-box /verify) once per batch. Security/privacy-sensitive issues open as a DRAFT PR and wait for human review (pre-merge gate). Resumable via .claude/state/work-queue.json. Use when the user asks to "burn down the backlog", "work the solbay issues autonomously", or invokes /loop with this skill.
 ---
 
-# Autoloop orchestrator — mdopp/oscar
+# Autoloop orchestrator — mdopp/solbay
 
 You are the **coordinator** of an autonomous issue-resolution pipeline. You do **not** write code, groom issues, or verify the environment yourself — you run a tight dispatch loop that **spawns a fresh sub-agent per stage** and routes work between them through one shared file, `.claude/state/work-queue.json`.
 
@@ -27,7 +27,7 @@ Why this shape: each sub-agent starts cold and returns only a one-line summary, 
   seal→release critical section serializes; building is concurrent with it.
 ```
 
-**What OSCAR is, and why verification is unusual.** OSCAR is *not* a standalone app. It is a bundle of ServiceBay artifacts: `templates/{hermes,hermes-webui,ollama,oscar-household}/` (Pod-YAML templates), `templates/oscar-household/skills/*/SKILL.md` (Hermes skills delivered to the node by ServiceBay's asset-transport), `voice-gatekeeper/` (a Python Wyoming↔Hermes bridge — the code-heavy part, package `voice-gatekeeper/src/gatekeeper/`, pytest in `voice-gatekeeper/tests/`, built as image `oscar-gatekeeper`), `database/` (alembic schema-init sidecar, image `oscar-household-init`), `stacks/oscar/stack.yml`, and `plugin.yaml`/`__init__.py` (Hermes Install-from-Git packaging). OSCAR runs **on ServiceBay**, on the same box ServiceBay uses (`<SERVICEBAY_BOX>`). So real-environment `/verify` means *deploying the changed OSCAR artifact through ServiceBay onto that box and checking the OSCAR runtime* — see `stages/verify.md`.
+**What Solilos is, and why verification is unusual.** Solilos is *not* a standalone app. It is a bundle of ServiceBay artifacts: `templates/{hermes,hermes-webui,ollama,solbay}/` (Pod-YAML templates), `templates/solbay/skills/*/SKILL.md` (Hermes skills delivered to the node by ServiceBay's asset-transport), `voice-gatekeeper/` (a Python Wyoming↔Hermes bridge — the code-heavy part, package `voice-gatekeeper/src/gatekeeper/`, pytest in `voice-gatekeeper/tests/`, built as image `solilos-gatekeeper`), `database/` (alembic schema-init sidecar, image `schema-init`), `stacks/solbay/stack.yml`, and `plugin.yaml`/`__init__.py` (Hermes Install-from-Git packaging). Solilos runs **on ServiceBay**, on the same box ServiceBay uses (`<SERVICEBAY_BOX>`). So real-environment `/verify` means *deploying the changed Solilos artifact through ServiceBay onto that box and checking the Solilos runtime* — see `stages/verify.md`.
 
 Any project `CLAUDE.md` or user memory overrides this skill on conflict. Read them before the first iteration of a fresh `/loop` run.
 
@@ -40,13 +40,13 @@ Key fields:
 - `batch` — the persistent integration branch: `{branch, units[], count, sealed}`. **Survives across firings.** Reset to `null` after its release/merge completes.
 - `needs_refinement[]` — **the human's worklist.** `{issue, question, comment_url, since}`. The planner parks anything it can't make actionable without a human decision here, with the *specific* question.
 - `awaiting_user[]` — external human comment unanswered; never the pipeline's to reply to.
-- `review[]` — **the human's pre-merge review list**: `{issue, pr, flag, since}` for `security:true` changes opened as **draft** PRs. OSCAR touches biometric speaker-ID, per-resident privacy, and gateway/HA credentials, so security/privacy changes are reviewed **before** they ship (the pre-merge opt-in — see `stages/builder.md`). These are **never auto-merged** by the loop.
+- `review[]` — **the human's pre-merge review list**: `{issue, pr, flag, since}` for `security:true` changes opened as **draft** PRs. Solilos touches biometric speaker-ID, per-resident privacy, and gateway/HA credentials, so security/privacy changes are reviewed **before** they ship (the pre-merge opt-in — see `stages/builder.md`). These are **never auto-merged** by the loop.
 - `verify_state` — `{sha, status: "owed"|"verifying"|"red"|"green", detail, since}`. Gates the release/tag. State machine: `owed` (path-mandated change merged, not yet verified on the box) → `verifying` (a background Verify agent is in flight) → `green`|`red`. You set `verifying` when you launch the background agent; the agent writes its verdict to `.claude/state/verify-result.json` (**its own file, not the shared queue** — avoids a write-race with the concurrent builder), and you fold that verdict back into this field at preflight. A `verifying` entry whose `since` is >20 min old with no result file = the agent died → reset to `owed` (it relaunches).
 - `blocked[]` — parked work, each `{issue, blocked_by, reason, since}` where `blocked_by` is a **machine-checkable unblock condition** (`"#<N>"` dependency · `"capability:<x>"` · `"decomposition"` · `"epic"` · `"servicebay#<N>"` upstream wait) the planner rechecks every run.
-- `upstream_waits[]` — `{issue, servicebay_issue, reason, since}`: a local issue blocked on an unmerged **mdopp/servicebay** platform fix the OSCAR loop can't make itself. The planner re-checks whether the upstream issue closed and unblocks.
+- `upstream_waits[]` — `{issue, servicebay_issue, reason, since}`: a local issue blocked on an unmerged **mdopp/servicebay** platform fix the Solilos loop can't make itself. The planner re-checks whether the upstream issue closed and unblocks.
 - `completed[]`, `lint_sweep[]`, `release_warnings[]`, `last_codebase_eval`, `last_e2e`, `notes[]`.
 
-**Label mirror (one-way projection).** The queue file is the source of truth; human-facing states are *mirrored* to GitHub labels so a human sees the same worklist: `blocked[]` → `autoloop:blocked`, `needs_refinement[]` → `autoloop:needs-refinement` (both reconciled by the **planner**), and `verify_state` → `autoloop:verify-pending`/`-failed` on the open batch PR (set here in preflight; OSCAR has no release PR — see Step 0.6). Labels are derived from the file every run — never the reverse — so drift is cosmetic and self-heals.
+**Label mirror (one-way projection).** The queue file is the source of truth; human-facing states are *mirrored* to GitHub labels so a human sees the same worklist: `blocked[]` → `autoloop:blocked`, `needs_refinement[]` → `autoloop:needs-refinement` (both reconciled by the **planner**), and `verify_state` → `autoloop:verify-pending`/`-failed` on the open batch PR (set here in preflight; Solilos has no release PR — see Step 0.6). Labels are derived from the file every run — never the reverse — so drift is cosmetic and self-heals.
 
 ## Batch economy — the prime directive (ENFORCED)
 
@@ -63,7 +63,7 @@ The builder enforces the per-issue side (fast gates only, commit to the batch br
 3. **Lock check.** `.claude/state/autoloop.lock` mtime < 10 min ⇒ another firing is running → exit. Else touch it.
 4. **Read the work queue.** Create from `work-queue-template.json` if absent. Seed `started`/`last_invocation`.
 5. **Fold in any background Verify result.** If `.claude/state/verify-result.json` exists, the background agent finished: copy its `{sha, status, detail, verified_at}` into `verify_state` (you are the single writer of the shared queue's `verify_state`), then **delete the result file**. If `verify_state.status == "verifying"` but no result file exists and `since` is >20 min old, the agent died — reset `verify_state.status` to `"owed"` so it relaunches.
-6. **Release gate.** **OSCAR has no release-please** — releases are cut by the user pushing a `v*` tag (which triggers `build-images.yml` to publish `oscar-gatekeeper` + `oscar-household-init` to GHCR). There is **no release PR to merge in preflight**, and you **never create/push tags or bump versions in `pyproject.toml`** unless the user explicitly asks. The only gate you enforce here is `verify_state`: a merged batch whose path-mandated changes are `owed`/`verifying`/`red` is **not** clear, and you must not seal the next batch until it goes `green`. If a release is warranted after a green verify, log a suggestion in `release_warnings[]`/`notes[]` — don't tag. Mirror `verify_state` onto the open batch PR as a label if one is still open (`owed`/`verifying` → `autoloop:verify-pending`; `red` → `autoloop:verify-failed`; `green`/`null` → remove both).
+6. **Release gate.** **Solilos has no release-please** — releases are cut by the user pushing a `v*` tag (which triggers `build-images.yml` to publish `solilos-gatekeeper` + `schema-init` to GHCR). There is **no release PR to merge in preflight**, and you **never create/push tags or bump versions in `pyproject.toml`** unless the user explicitly asks. The only gate you enforce here is `verify_state`: a merged batch whose path-mandated changes are `owed`/`verifying`/`red` is **not** clear, and you must not seal the next batch until it goes `green`. If a release is warranted after a green verify, log a suggestion in `release_warnings[]`/`notes[]` — don't tag. Mirror `verify_state` onto the open batch PR as a label if one is still open (`owed`/`verifying` → `autoloop:verify-pending`; `red` → `autoloop:verify-failed`; `green`/`null` → remove both).
 
 ## Step 1 — Dispatch (the loop body)
 
@@ -133,7 +133,7 @@ Every comment any stage posts is attributable as agent-authored (an AI marker if
 ## End-of-firing summary
 
 ```
-Autoloop (oscar) firing complete.
+Autoloop (solbay) firing complete.
   Built this firing: <unit ids> → batch/<id> (count N/8)
   Merged batches:    PR #<n> (closes #a #b …)
   Verify:            green @ <sha> on the box | verifying (background) | owed | red (<detail>)
@@ -153,7 +153,7 @@ The **Needs refinement** line is the point of the pipeline.
 3. Working tree dirty at preflight on two consecutive firings.
 4. A `/verify` failed twice on the same SHA with no change between, or the box was left in a staging state the Verify stage couldn't restore (env must not be left in the test state).
 5. Planner's issue queue and lint set both empty AND a codebase eval ran within the last ~5 firings AND an e2e ran since the last merge.
-6. Every open issue is blocked on an unmerged **mdopp/servicebay** upstream fix (`upstream_waits[]`) — nothing in OSCAR is actionable until ServiceBay ships it. Report the upstream links and wait.
+6. Every open issue is blocked on an unmerged **mdopp/servicebay** upstream fix (`upstream_waits[]`) — nothing in Solilos is actionable until ServiceBay ships it. Report the upstream links and wait.
 
 ## Things this orchestrator does NOT do
 - Write code / groom / `/verify` itself — only dispatches stage agents.
@@ -167,7 +167,7 @@ The **Needs refinement** line is the point of the pipeline.
 
 ## Reference
 - Stages: `stages/planner.md`, `stages/builder.md`, `stages/verify.md` (this dir; Verify runs in the background and writes `.claude/state/verify-result.json`). Queue schema: `work-queue-template.json`. How to run: `USAGE.md`.
-- Repo: `mdopp/oscar`. Upstream platform: `mdopp/servicebay` (cross-repo routing — see `stages/{planner,verify}.md`).
-- Real-box access: `<SERVICEBAY_BOX>` — the **same** box and access paths ServiceBay uses (SSH / HTTP API / MCP; host-key-change, stale-MCP-token, and `Origin`-header gotchas all apply). The `mdopp/oscar` registry must be enabled in ServiceBay on that box so changed templates resolve. `<SERVICEBAY_BOX>` is a placeholder — supply the real SSH/HTTP/MCP address from local config (project `CLAUDE.md` or memory), **never** commit it to this public repo.
+- Repo: `mdopp/solbay`. Upstream platform: `mdopp/servicebay` (cross-repo routing — see `stages/{planner,verify}.md`).
+- Real-box access: `<SERVICEBAY_BOX>` — the **same** box and access paths ServiceBay uses (SSH / HTTP API / MCP; host-key-change, stale-MCP-token, and `Origin`-header gotchas all apply). The `mdopp/solbay` registry must be enabled in ServiceBay on that box so changed templates resolve. `<SERVICEBAY_BOX>` is a placeholder — supply the real SSH/HTTP/MCP address from local config (project `CLAUDE.md` or memory), **never** commit it to this public repo.
 - CI: `.github/workflows/ci.yml` (ruff + pytest + semgrep + pip-audit + diff-coverage, path-filtered to Python/config paths) and `build-images.yml` (builds the two images on PR for image paths, publishes on `main`/tags). **Template-only / skill-only / docs-only PRs trigger no CI** — for those the gate is local validation + real-box `/verify`.
-- Worked example: `mdopp/servicebay` (`.claude/skills/autoloop-issues/`) — its Verify stage is `box-verify.md` (a `:dev`/`:latest` channel flip); OSCAR's Verify deploys the changed artifact through ServiceBay instead.
+- Worked example: `mdopp/servicebay` (`.claude/skills/autoloop-issues/`) — its Verify stage is `box-verify.md` (a `:dev`/`:latest` channel flip); Solilos's Verify deploys the changed artifact through ServiceBay instead.

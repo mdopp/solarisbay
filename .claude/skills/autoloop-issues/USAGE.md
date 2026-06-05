@@ -1,6 +1,6 @@
-# autoloop-issues — how to run (mdopp/oscar)
+# autoloop-issues — how to run (mdopp/solbay)
 
-`autoloop-issues` is the **orchestrator** of a multi-agent pipeline. It spawns a fresh sub-agent per stage (Planner → Builder → Verify), coordinated through `.claude/state/work-queue.json`, so the loop session stays clean. OSCAR is a bundle of ServiceBay artifacts (templates, Hermes skills, the `voice-gatekeeper` Python service, the `database` schema-init, the Hermes plugin) that runs **on ServiceBay** at `<SERVICEBAY_BOX>`.
+`autoloop-issues` is the **orchestrator** of a multi-agent pipeline. It spawns a fresh sub-agent per stage (Planner → Builder → Verify), coordinated through `.claude/state/work-queue.json`, so the loop session stays clean. Solilos is a bundle of ServiceBay artifacts (templates, Hermes skills, the `voice-gatekeeper` Python service, the `database` schema-init, the Hermes plugin) that runs **on ServiceBay** at `<SERVICEBAY_BOX>`.
 
 ## Self-paced loop (recommended)
 ```
@@ -19,10 +19,10 @@
 Everything else runs without you.
 
 ## Releases
-OSCAR has **no release-please** — a release is cut by pushing a `v*` tag (triggers `build-images.yml`). The loop never tags or bumps versions; it logs a suggestion in `release_warnings[]` when a green-verified batch is worth releasing. Cutting the tag is your call.
+Solilos has **no release-please** — a release is cut by pushing a `v*` tag (triggers `build-images.yml`). The loop never tags or bumps versions; it logs a suggestion in `release_warnings[]` when a green-verified batch is worth releasing. Cutting the tag is your call.
 
 ## Cross-repo
-OSCAR runs **on** ServiceBay. Platform bugs found during `/verify` or the e2e smoke are filed in **mdopp/servicebay** (issue, not PR) and tracked in `upstream_waits[]`; the local issue is marked blocked and unblocked when the upstream fix closes.
+Solilos runs **on** ServiceBay. Platform bugs found during `/verify` or the e2e smoke are filed in **mdopp/servicebay** (issue, not PR) and tracked in `upstream_waits[]`; the local issue is marked blocked and unblocked when the upstream fix closes.
 
 ## Stop / reset
 Interrupt the session (the queue persists; mid-batch builds resume on the same branch). Reset: `rm .claude/state/work-queue.json` (recreated from `work-queue-template.json`).
