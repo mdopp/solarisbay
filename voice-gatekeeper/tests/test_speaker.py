@@ -170,3 +170,51 @@ def test_delete_embedding_roundtrip(tmp_path: Path):
     assert delete_embedding(db, "alice") is True
     assert delete_embedding(db, "alice") is False  # idempotent second call
     assert list_uids(db) == []
+
+
+def test_get_extractor_disabled_via_renamed_env(monkeypatch):
+    """SOLILOS_SPEAKER_ID_ENABLED unset/false -> no extractor (speaker.py:214)."""
+    import gatekeeper.speaker as speaker
+
+    monkeypatch.setattr(speaker, "_extractor_singleton", None)
+    monkeypatch.setenv("SOLILOS_SPEAKER_ID_ENABLED", "off")
+    assert speaker.get_extractor() is None
+
+
+async def test_resolve_uid_matches_and_touches_last_seen(tmp_path, monkeypatch):
+    """A populated buffer + enrolled speaker exercises the resolver's
+    list_embeddings / touch_last_seen calls against solilos_db_path
+    (handler.py:187 and :204)."""
+    import gatekeeper.handler as handler
+    from wyoming.audio import AudioChunk, AudioStart
+
+    db = _seed_db(tmp_path)
+    alice = _emb(7)
+    upsert_embedding(db, "alice", alice, sample_count=1, enrolled_via="test")
+
+    monkeypatch.setattr(handler.settings, "speaker_id_enabled", True)
+    monkeypatch.setattr(handler.settings, "default_uid", "guest")
+    monkeypatch.setattr(handler.settings, "speaker_id_threshold", 0.5)
+    monkeypatch.setattr(handler.settings, "solilos_db_path", db)
+
+    class _StubExtractor:
+        def extract(self, pcm, *, rate, width, channels):
+            return alice
+
+    monkeypatch.setattr(handler, "get_extractor", lambda: _StubExtractor())
+
+    h = handler.GatekeeperHandler(None, None, object())
+    h._audio_start = AudioStart(rate=16000, width=2, channels=1)
+    h._audio_buffer = [
+        AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
+    ]
+
+    uid = await h._resolve_uid()
+    assert uid == "alice"
+
+    # touch_last_seen must have stamped last_seen_at for the matched uid
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT last_seen_at FROM voice_embeddings WHERE uid = ?", ("alice",)
+        ).fetchone()
+    assert row is not None and row[0] is not None
