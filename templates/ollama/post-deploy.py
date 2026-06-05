@@ -323,6 +323,50 @@ def gpu_actually_engaged(ollama_url: str) -> bool:
     return False
 
 
+def render_gpu_container_unit(port: str, data_dir: str) -> str:
+    """Render the `.container` Quadlet text for the GPU fixup. Mirrors the
+    .yml's runtime contract (image, OLLAMA_HOST, hostNetwork, the volume
+    mount) plus AddDevice + SecurityLabelDisable for CDI passthrough, and
+    OLLAMA_CONTEXT_LENGTH so the GPU path honors the same default load
+    context as the .kube render path (#146). Kept pure so the
+    needs-rewrite comparison and the write share one source of truth."""
+    context_length = env("OLLAMA_CONTEXT_LENGTH", "131072")
+    return (
+        "[Unit]\n"
+        "Description=Ollama (Local LLM Server, GPU passthrough #1026 fixup)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Container]\n"
+        "Image=docker.io/ollama/ollama:latest\n"
+        "ContainerName=ollama\n"
+        "Network=host\n"
+        f"Environment=OLLAMA_HOST=127.0.0.1:{port}\n"
+        "# Force Ollama's DEFAULT load context. /v1/chat/completions ignores\n"
+        "# per-request num_ctx, so only this env-set default lands — without\n"
+        "# it the GPU Quadlet stays at 4096 and Hermes loops at 1 token (#146).\n"
+        f"Environment=OLLAMA_CONTEXT_LENGTH={context_length}\n"
+        "# CDI device — verified working on rootless podman 5.8 + nvidia-ctk\n"
+        "# 1.19. podman kube play silently drops this when expressed as\n"
+        "# resources.limits.nvidia.com/gpu, which is why the .yml-based\n"
+        "# deploy falls through to CPU. See #1026.\n"
+        "AddDevice=nvidia.com/gpu=all\n"
+        "# SELinux relaxation is required for NVML init on FCoS — without\n"
+        "# it the container starts, sees the devices, but NVML returns\n"
+        "# 'Insufficient Permissions' on every nvmlInit call.\n"
+        "SecurityLabelDisable=true\n"
+        f"Volume={data_dir}/ollama:/root/.ollama:Z\n"
+        "AutoUpdate=registry\n"
+        "\n"
+        "[Service]\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
 def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
     """#1026 — Replace the just-deployed rootless `.kube` ollama unit
     with a `.container` Quadlet that uses `AddDevice=nvidia.com/gpu=all`
@@ -333,8 +377,10 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
     library=cpu with total_vram=0; with it, library=CUDA + 16 GiB
     VRAM and 78% GPU offload on gemma4:26b.
 
-    Idempotent — re-running on an already-fixed install detects the
-    presence of `ollama.container` and skips.
+    Idempotent — re-running re-writes the Quadlet only when its content
+    drifts from what we'd render now (#146: an existing install written
+    before OLLAMA_CONTEXT_LENGTH support skips here forever otherwise,
+    so a re-deploy never heals it). An already-correct unit is a no-op.
 
     Caveat: ServiceBay's discovery still tags `.container`-backed
     units as "unmanaged" (see agent.py — `is_managed` only when
@@ -353,14 +399,28 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
     kube_path = os.path.join(systemd_dir, "ollama.kube")
     container_path = os.path.join(systemd_dir, "ollama.container")
 
+    container_unit = render_gpu_container_unit(port, data_dir)
+
     if os.path.exists(container_path):
+        try:
+            with open(container_path) as f:
+                existing = f.read()
+        except OSError:
+            existing = ""
+        if existing == container_unit:
+            jlog(
+                "info",
+                "ollama:gpu-fallback",
+                "ollama.container already up to date; skipping re-write",
+                path=container_path,
+            )
+            return True
         jlog(
             "info",
             "ollama:gpu-fallback",
-            "ollama.container already present; skipping re-write",
+            "ollama.container present but stale (missing/old OLLAMA_CONTEXT_LENGTH #146); re-writing",
             path=container_path,
         )
-        return True
 
     # 1. Stop the broken kube service (best-effort; it may already be down).
     subprocess.run(
@@ -385,39 +445,7 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
                 error=str(e),
             )
 
-    # 3. Write the .container Quadlet. Mirror the .yml's runtime contract:
-    #    image, OLLAMA_HOST env, hostNetwork, the persistent volume mount.
-    #    The two new lines are AddDevice + SecurityLabelDisable.
-    container_unit = (
-        "[Unit]\n"
-        "Description=Ollama (Local LLM Server, GPU passthrough #1026 fixup)\n"
-        "Wants=network-online.target\n"
-        "After=network-online.target\n"
-        "\n"
-        "[Container]\n"
-        "Image=docker.io/ollama/ollama:latest\n"
-        "ContainerName=ollama\n"
-        "Network=host\n"
-        f"Environment=OLLAMA_HOST=127.0.0.1:{port}\n"
-        "# CDI device — verified working on rootless podman 5.8 + nvidia-ctk\n"
-        "# 1.19. podman kube play silently drops this when expressed as\n"
-        "# resources.limits.nvidia.com/gpu, which is why the .yml-based\n"
-        "# deploy falls through to CPU. See #1026.\n"
-        "AddDevice=nvidia.com/gpu=all\n"
-        "# SELinux relaxation is required for NVML init on FCoS — without\n"
-        "# it the container starts, sees the devices, but NVML returns\n"
-        "# 'Insufficient Permissions' on every nvmlInit call.\n"
-        "SecurityLabelDisable=true\n"
-        f"Volume={data_dir}/ollama:/root/.ollama:Z\n"
-        "AutoUpdate=registry\n"
-        "\n"
-        "[Service]\n"
-        "Restart=on-failure\n"
-        "RestartSec=5\n"
-        "\n"
-        "[Install]\n"
-        "WantedBy=default.target\n"
-    )
+    # 3. Write the .container Quadlet (rendered above).
     try:
         with open(container_path, "w") as f:
             f.write(container_unit)
