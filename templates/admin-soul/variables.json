@@ -1,0 +1,17 @@
+{
+  "ADMIN_SOUL_IMAGE": {
+    "type": "text",
+    "description": "Image used as the admin-soul pod's idle presence container (run as `sleep infinity`); the operator soul itself runs inside the shared Hermes, so this is only here to hold the pod open. Defaults to a stock minimal busybox image. Leave default unless running a fork PoC.",
+    "default": "docker.io/library/busybox:latest"
+  },
+  "SERVICEBAY_MCP_URL": {
+    "type": "text",
+    "description": "ServiceBay MCP control-surface URL the operator soul reaches with full-admin scopes (read+lifecycle+mutate). Reached via host loopback.",
+    "default": "http://127.0.0.1:5888/mcp"
+  },
+  "TZ": {
+    "type": "text",
+    "description": "IANA time zone for log timestamps.",
+    "default": "Europe/Berlin"
+  }
+}

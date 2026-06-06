@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: admin-soul
+  labels:
+    app: admin-soul
+  annotations:
+    servicebay.label: "AI Skills (Solilos/operator)"
+    servicebay.schema-version: "1"
+    # No host port: the admin soul is realised inside the shared Hermes
+    # (its skills + a distinct `servicebay_admin` MCP entry the post-deploy
+    # splices into Hermes' config.yaml). This pod only carries the wiring
+    # hook and the admin-skills bind-mount; it exposes nothing on the LAN.
+    #
+    # Deploy order: hermes must exist first — the post-deploy reads/writes
+    # its config.yaml through the hermes-hermes container and restarts it
+    # via the ServiceBay API.
+    servicebay.dependencies: "hermes"
+    # TCP probe against Hermes' API port (shared host loopback, same netns
+    # via hostNetwork). Once it accepts, the Hermes this soul is wired into
+    # is reachable — a meaningful ready signal for a config-only pod.
+    servicebay.healthcheck: |
+      kind: tcp
+      host: 127.0.0.1
+      port: 8642
+      interval: 30s
+      timeout: 5s
+      startup_timeout: 3m
+spec:
+  # hostNetwork so the post-deploy reaches Hermes' API and ServiceBay's
+  # MCP/token API at 127.0.0.1 (every cooperating pod shares the host
+  # netns), same as the solbay pod.
+  hostNetwork: true
+  restartPolicy: Always
+  containers:
+  # The admin soul ships no service of its own — the operator persona lives
+  # in the shared Hermes (skills + the mutate-scoped servicebay_admin MCP
+  # entry). This pod still needs one long-lived container to stay Ready;
+  # run a stock minimal busybox image as an idle presence rather than
+  # pulling a second Hermes/LLM just to hold the pod open. The admin skill
+  # pack (#176) lands in the bind-mount below; this container never reads it.
+  - name: admin-soul
+    image: "{{ADMIN_SOUL_IMAGE}}"
+    command: ["sleep", "infinity"]
+    env:
+    - name: SOLILOS_COMPONENT
+      value: "admin-soul"
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /opt/data/skills/admin-soul
+      name: admin-skills
+
+  volumes:
+  # Admin skill pack target (#176 populates it; the hermes template mounts
+  # it read-only so Hermes' loader discovers the operator skills). Created
+  # here so the directory exists before #176's skills are synced in.
+  - name: admin-skills
+    hostPath:
+      path: {{DATA_DIR}}/admin-soul/skills
+      type: DirectoryOrCreate
+
+# Post-deploy: ./post-deploy.py
+#
+# Mints a ServiceBay-MCP token with scopes [read, lifecycle, mutate] and
+# splices it into the shared Hermes config.yaml as a distinct
+# `servicebay_admin` mcp_servers entry, then restarts Hermes. Idempotent —
+# a still-valid existing entry is left untouched; a junk/stale one is
+# re-minted. See post-deploy.py for the flow.
