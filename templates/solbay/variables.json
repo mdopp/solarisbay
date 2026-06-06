@@ -70,15 +70,6 @@
     "type": "secret",
     "description": "Bearer token Hermes presents on the gatekeeper's `POST /push` endpoint. The listener binds loopback (127.0.0.1) so only Hermes on the same host reaches it; a blank token disables auth, which is fine for that loopback-only default. Set a value only if you change PUSH_HOST to expose the endpoint beyond loopback."
   },
-  "HA_MCP_URL": {
-    "type": "text",
-    "description": "Home Assistant MCP server URL. Default matches the full-stack `home-assistant` template's reachable endpoint via host loopback.",
-    "default": "http://127.0.0.1:8123/mcp_server/sse"
-  },
-  "HA_MCP_TOKEN": {
-    "type": "secret",
-    "description": "Long-lived access token from Home Assistant (Profile → Long-lived access tokens) **or** an Authelia OIDC client secret. Used by the post-deploy hook to register HA-MCP with Hermes."
-  },
   "SERVICEBAY_MCP_URL": {
     "type": "text",
     "description": "ServiceBay MCP control surface URL. Used by the post-deploy hook to register ServiceBay-MCP with Hermes.",

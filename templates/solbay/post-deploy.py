@@ -61,7 +61,6 @@ Variables (ServiceBay substitutes them)
 
 From our variables.json:
   HERMES_API_PORT, HERMES_API_KEY,
-  HA_MCP_URL, HA_MCP_TOKEN,
   SERVICEBAY_MCP_URL, SERVICEBAY_MCP_TOKEN,
   GATEKEEPER_MCP_URL, GATEKEEPER_MCP_TOKEN,
   ABS_MCP_URL, ABS_MCP_TOKEN, ABS_API_KEY
@@ -99,8 +98,6 @@ SB_API_TOKEN = ""
 HERMES_API_PORT = "8642"
 HERMES_API_KEY = ""
 HERMES_API_URL = f"http://127.0.0.1:{HERMES_API_PORT}"
-HA_MCP_URL = ""
-HA_MCP_TOKEN = ""
 SERVICEBAY_MCP_URL = ""
 SERVICEBAY_MCP_TOKEN = ""
 GATEKEEPER_MCP_URL = ""
@@ -127,8 +124,6 @@ def init_env() -> None:
         HERMES_API_KEY, \
         HERMES_API_URL
     global \
-        HA_MCP_URL, \
-        HA_MCP_TOKEN, \
         SERVICEBAY_MCP_URL, \
         SERVICEBAY_MCP_TOKEN, \
         GATEKEEPER_MCP_URL, \
@@ -147,8 +142,6 @@ def init_env() -> None:
     HERMES_API_KEY = os.environ.get("HERMES_API_KEY", "")
     HERMES_API_URL = f"http://127.0.0.1:{HERMES_API_PORT}"
 
-    HA_MCP_URL = os.environ.get("HA_MCP_URL", "")
-    HA_MCP_TOKEN = os.environ.get("HA_MCP_TOKEN", "")
     SERVICEBAY_MCP_URL = os.environ.get("SERVICEBAY_MCP_URL", "")
     SERVICEBAY_MCP_TOKEN = os.environ.get("SERVICEBAY_MCP_TOKEN", "")
     # The gatekeeper MCP server always listens on the deterministic in-pod
@@ -597,49 +590,15 @@ def restart_hermes_via_sb_api() -> bool:
     return False
 
 
-def _ha_long_lived_token() -> str | None:
-    """When `home-assistant`'s post-deploy auto-onboarded HA (#934), it
-    leaves a long-lived access token at
-    `<DATA_DIR>/home-assistant/homeassistant/.solilos-long-lived-token`.
-    Prefer that over HA_MCP_TOKEN from assemble (random placeholder)."""
-    path = os.path.join(
-        DATA_DIR, "home-assistant", "homeassistant", ".solilos-long-lived-token"
-    )
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            token = f.read().strip()
-    except OSError:
-        return None
-    return token or None
 
 
 def collect_mcp_servers() -> list[tuple[str, str, str]]:
     """Pair each MCP with its token; skip empty entries."""
     servers: list[tuple[str, str, str]] = []
-    if HA_MCP_URL:
-        # HA_MCP_TOKEN from `assemble` is the random placeholder; if HA was
-        # auto-onboarded, the home-assistant post-deploy left a real token
-        # at a known path and we prefer that. Without the file the random
-        # value would just yield 401 from HA.
-        ha_token = _ha_long_lived_token() or HA_MCP_TOKEN
-        if ha_token:
-            servers.append(("ha-mcp", HA_MCP_URL, ha_token))
-        else:
-            jlog(
-                "info",
-                "solbay:mcp",
-                "ha-mcp skipped",
-                reason="no token (neither file nor env)",
-            )
-    else:
-        jlog(
-            "info",
-            "solbay:mcp",
-            "ha-mcp skipped",
-            reason="missing url",
-        )
+    # ha-mcp intentionally not wired: Home Assistant is served by Hermes'
+    # native `homeassistant` toolset (ha_call_service / ha_get_state / ...).
+    # HA's own /mcp_server/sse endpoint was redundant and flaky (Session
+    # terminated), so it is not added. (HA_MCP_* template vars removed.)
     if SERVICEBAY_MCP_URL:
         # SERVICEBAY_MCP_TOKEN from `assemble` is a random value that nothing
         # registered against ServiceBay's mcp-tokens table — splicing it in
