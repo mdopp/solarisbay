@@ -127,7 +127,11 @@
     }
     .rail-nav button:hover { background: var(--bubble-sol); color: var(--ink); }
     .rail-nav button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-    .ic { width: 18px; text-align: center; font-size: 15px; flex: 0 0 18px; }
+    /* monochrome line icons (ServiceBay-style; orange only on hover/active) */
+    .ic { width: 18px; height: 18px; flex: 0 0 18px; display: inline-block; vertical-align: -3px;
+          fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-btn .ic { width: 20px; height: 20px; }
+    .back { display: inline-flex; align-items: center; gap: 5px; }
 
     .rail-sessions {
       flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
@@ -144,7 +148,7 @@
       display: flex; align-items: center; justify-content: center;
       color: var(--muted); font-size: 16px;
     }
-    .icon-btn:hover { background: var(--bubble-sol); color: var(--ink); }
+    .icon-btn:hover { background: var(--bubble-sol); color: var(--accent); }
     #sessions { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 8px; }
     .session {
       display: flex; align-items: center; gap: 6px;
@@ -459,6 +463,16 @@
   </style>
 </head>
 <body>
+  <!-- monochrome line-icon sprite (Feather/Lucide-style); colour = currentColor -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  </svg>
+
   <aside class="rail">
     <div class="rail-head brand-home" id="brand-home" title="Back to chat">
       <div class="logo"><img src="/static/sol-mark.svg" alt="Sol" /></div>
@@ -471,14 +485,14 @@
     <div class="rail-sessions">
       <div class="rs-head">
         <span>Chats</span><span class="grow"></span>
-        <button class="icon-btn" id="new-session" type="button" title="New chat" aria-label="New chat">＋</button>
+        <button class="icon-btn" id="new-session" type="button" title="New chat" aria-label="New chat"><svg class="ic"><use href="#i-plus"></use></svg></button>
       </div>
       <div id="sessions"></div>
     </div>
 
     <div class="rail-foot">
       <button class="settings-btn" id="open-settings" type="button">
-        <span class="ic">⚙</span> Settings
+        <svg class="ic"><use href="#i-settings"></use></svg> Settings
       </button>
       <div class="rail-user">
         <span class="avatar" id="avatar">·</span>
@@ -500,16 +514,16 @@
 
   <div class="main">
     <div class="topbar">
-      <button class="icon-btn" id="rail-toggle" type="button" aria-label="Menu">☰</button>
+      <button class="icon-btn" id="rail-toggle" type="button" aria-label="Menu"><svg class="ic"><use href="#i-menu"></use></svg></button>
       <img class="topbar-logo" src="/static/sol-mark.svg" alt="" />
       <span class="brand-name">Solilos</span>
       <span class="grow"></span>
-      <button class="icon-btn" id="topbar-settings" type="button" title="Settings" aria-label="Settings">⚙</button>
-      <button class="icon-btn" id="chats-toggle" type="button" title="Chats" aria-label="Chats">💬</button>
+      <button class="icon-btn" id="topbar-settings" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"></use></svg></button>
+      <button class="icon-btn" id="chats-toggle" type="button" title="Chats" aria-label="Chats"><svg class="ic"><use href="#i-chat"></use></svg></button>
     </div>
 
     <div class="settings-bar" id="settings-bar" hidden>
-      <button class="back" id="settings-back" type="button">← Chat</button>
+      <button class="back" id="settings-back" type="button"><svg class="ic"><use href="#i-back"></use></svg> Chat</button>
       <nav class="seg" id="settings-nav">
         <button type="button" data-view="skills" class="active">Skills</button>
         <button type="button" data-view="soul">Soul</button>
@@ -549,7 +563,7 @@
       </div>
       <div id="skill-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
         <div class="reader-bar">
-          <button class="back" id="skill-back" type="button">← Skills</button>
+          <button class="back" id="skill-back" type="button"><svg class="ic"><use href="#i-back"></use></svg> Skills</button>
           <span class="name" id="skill-name"></span>
           <span class="grow"></span>
           <button class="edit-btn" id="skill-edit" type="button" hidden>Edit</button>
@@ -869,7 +883,7 @@
           var del = document.createElement("button");
           del.className = "trash"; del.type = "button"; del.title = "Delete chat";
           del.setAttribute("aria-label", "Delete chat");
-          del.textContent = "🗑";
+          del.innerHTML = '<svg class="ic"><use href="#i-trash"></use></svg>';
           del.addEventListener("click", function (e) { e.stopPropagation(); deleteSession(s.id); });
           row.appendChild(del);
           row.addEventListener("click", function () { openSession(s.id); });
