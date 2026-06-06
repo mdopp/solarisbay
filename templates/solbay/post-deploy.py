@@ -590,8 +590,6 @@ def restart_hermes_via_sb_api() -> bool:
     return False
 
 
-
-
 def collect_mcp_servers() -> list[tuple[str, str, str]]:
     """Pair each MCP with its token; skip empty entries."""
     servers: list[tuple[str, str, str]] = []
