@@ -4,58 +4,99 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Solilos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
+    /* ServiceBay design language (dark-first glassmorphism), with Solilos's
+       Sol-orange accent tuned to ServiceBay's blue palette: the accent is
+       Tailwind orange-500 (#f97316), the palette-sibling of ServiceBay's
+       blue-500 (#3b82f6), so it reads as intentional inside the cool dark
+       glass. See mdopp/servicebay packages/frontend globals.css + the
+       (dashboard) shell (floating rounded-2xl panels on a near-black desk). */
     :root {
-      --bg: #f6f7f8;
-      --panel: #ffffff;
-      --rail: #ffffff;
-      --ink: #1f2733;
-      --muted: #6b7280;
-      --line: #e6e8eb;
-      --accent: #e07a35;          /* orange accent */
+      /* Dark-first (ServiceBay default). Light override below. */
+      --bg: #070709;                 /* the "desktop" behind the floating panels */
+      --panel-solid: #0c0c0e;        /* floating rail/main panels (rounded-2xl) */
+      --panel: rgba(255, 255, 255, 0.03); /* inner glass: composer, bars, cards */
+      --rail: #0c0c0e;
+      --ink: #f0f0f0;
+      --muted: #94a3b8;              /* slate-400 */
+      --line: rgba(255, 255, 255, 0.06);
+      /* Sol orange, tuned to ServiceBay blue-500 (Tailwind orange-500/400/600) */
+      --accent: #f97316;
+      --accent-2: #fb923c;
       --accent-ink: #ffffff;
-      --accent-soft: rgba(224, 122, 53, 0.12);
-      --bubble-me: #eef1f4;
-      --bubble-sol: #f4f5f6;
-      --ok: #2e9b5b;
-      --ok-soft: rgba(46, 155, 91, 0.13);
-      --danger: #d0473a;
+      --accent-soft: rgba(249, 115, 22, 0.15);
+      --accent-grad: linear-gradient(135deg, #f97316, #fbbf24); /* warm Sol gradient */
+      --bubble-me: rgba(249, 115, 22, 0.16);  /* user message — accent tint, readable */
+      --bubble-sol: rgba(255, 255, 255, 0.04); /* Sol message — neutral glass */
+      --ok: #10b981;
+      --ok-soft: rgba(16, 185, 129, 0.15);
+      --danger: #ef4444;
       --radius: 12px;
+      --radius-lg: 16px;            /* rounded-2xl — the elevated panels/cards */
+      --glass: blur(12px) saturate(180%);
+      --shadow-card: 0 4px 6px -1px rgba(0,0,0,0.35), 0 2px 4px -2px rgba(0,0,0,0.25);
+      --shadow-panel: 0 20px 40px -16px rgba(0,0,0,0.7), 0 2px 8px -2px rgba(0,0,0,0.4);
+      --shadow-lift: 0 14px 28px -12px rgba(0,0,0,0.6);
+      --ease: cubic-bezier(0.16, 1, 0.3, 1);
     }
-    @media (prefers-color-scheme: dark) {
+    @media (prefers-color-scheme: light) {
       :root {
-        --bg: #15171b;
-        --panel: #1c1f24;
-        --rail: #181a1e;
-        --ink: #e7e8ea;
-        --muted: #969ca5;
-        --line: #2a2e34;
-        --accent: #ef8b46;
-        --accent-ink: #1a1205;
-        --accent-soft: rgba(239, 139, 70, 0.16);
-        --bubble-me: #262b33;
-        --bubble-sol: #21252b;
-        --ok: #6cc48a;
-        --ok-soft: rgba(108, 196, 138, 0.16);
-        --danger: #e08585;
+        --bg: #f1f5f9;
+        --panel-solid: #ffffff;
+        --panel: rgba(15, 23, 42, 0.03);
+        --rail: #ffffff;
+        --ink: #0f172a;
+        --muted: #64748b;
+        --line: rgba(15, 23, 42, 0.10);
+        --accent: #ea580c;          /* orange-600 — contrast on light */
+        --accent-2: #f97316;
+        --accent-ink: #ffffff;
+        --accent-soft: rgba(234, 88, 12, 0.10);
+        --bubble-me: rgba(234, 88, 12, 0.12);
+        --bubble-sol: rgba(15, 23, 42, 0.04);
+        --ok: #059669;
+        --ok-soft: rgba(5, 150, 105, 0.12);
+        --danger: #dc2626;
+        --shadow-card: 0 4px 6px -1px rgba(0,0,0,0.10), 0 2px 4px -2px rgba(0,0,0,0.06);
+        --shadow-panel: 0 20px 40px -20px rgba(0,0,0,0.20), 0 2px 8px -2px rgba(0,0,0,0.08);
+        --shadow-lift: 0 14px 24px -12px rgba(0,0,0,0.16);
       }
     }
     * { box-sizing: border-box; }
+    /* Honor the hidden attribute even when a class sets display (settings-bar,
+       Model tab, panes) — Skills/Soul/Tools live in Settings, not the chat top. */
+    [hidden] { display: none !important; }
     html, body { height: 100%; margin: 0; overflow: hidden; }
     body {
-      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font: 15px/1.5 "Geist", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
+      /* subtle Sol-orange glow top-right + a cool blue counterpoint bottom-left,
+         so the warm accent reads as tuned to ServiceBay's blue palette */
+      background-image:
+        radial-gradient(1100px 560px at 78% -12%, rgba(249, 115, 22, 0.07), transparent 60%),
+        radial-gradient(900px 520px at -5% 108%, rgba(59, 130, 246, 0.06), transparent 55%);
+      background-attachment: fixed;
       color: var(--ink);
       display: flex;
       min-height: 0;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    /* Floating-panel shell (ServiceBay (dashboard) layout: md:p-4 md:gap-4). */
+    @media (min-width: 761px) {
+      body { padding: 16px; gap: 16px; }
     }
     button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
 
     /* ---------- Left rail (ServiceBay-style) ---------- */
     .rail {
+      /* Flat on the desktop background — NOT a floating panel (ServiceBay's
+         sidebar has no bg/border/radius/shadow; only .main floats). */
       width: 264px; flex: 0 0 264px;
-      background: var(--rail);
-      border-right: 1px solid var(--line);
+      background: transparent;
       display: flex; flex-direction: column;
       min-height: 0;
     }
@@ -64,8 +105,11 @@
       padding: 15px 16px; border-bottom: 1px solid var(--line);
     }
     .logo {
-      width: 30px; height: 30px; border-radius: 8px; flex: 0 0 30px;
-      background: var(--accent); color: var(--accent-ink);
+      /* Soft-tinted square (ServiceBay sidebar logo: bg-accent/10 + border-accent/20). */
+      width: 34px; height: 34px; border-radius: 10px; flex: 0 0 34px;
+      background: var(--accent-soft); color: var(--accent);
+      border: 1px solid rgba(249, 115, 22, 0.22);
+      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
       display: flex; align-items: center; justify-content: center;
       font-weight: 800; font-size: 16px; letter-spacing: -0.5px;
     }
@@ -101,10 +145,11 @@
     #sessions { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 8px; }
     .session {
       display: flex; align-items: center; gap: 6px;
-      padding: 8px 8px 8px 11px; border-radius: 9px; cursor: pointer; margin-bottom: 2px;
+      padding: 8px 8px 8px 11px; border-radius: 10px; cursor: pointer; margin-bottom: 2px;
+      border: 1px solid transparent;
     }
     .session:hover { background: var(--bubble-sol); }
-    .session.active { background: var(--accent-soft); }
+    .session.active { background: var(--accent-soft); border-color: rgba(249, 115, 22, 0.22); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); }
     .session .body { flex: 1 1 auto; min-width: 0; }
     .session .title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .session.active .title { color: var(--accent); font-weight: 600; }
@@ -132,7 +177,15 @@
     .rail-links a:hover, .rail-links button:hover { color: var(--accent); }
 
     /* ---------- Main (the embeddable chat / panel component) ---------- */
-    .main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; height: 100vh; min-height: 0; }
+    .main {
+      flex: 1 1 auto; min-width: 0; min-height: 0;
+      display: flex; flex-direction: column;
+      background: var(--panel-solid);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-panel);
+      overflow: hidden;
+    }
 
     /* Mobile top bar — hidden on desktop. */
     .topbar { display: none; }
@@ -142,7 +195,7 @@
 
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto;
-      padding: 20px; display: flex; flex-direction: column; gap: 12px;
+      padding: 24px 16px; display: flex; flex-direction: column; gap: 12px;
       max-width: 900px; width: 100%; margin: 0 auto;
     }
     .msg { max-width: 84%; padding: 10px 13px; border-radius: var(--radius); word-wrap: break-word; overflow-wrap: anywhere; }
@@ -178,7 +231,8 @@
 
     form#composer {
       display: flex; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line);
-      background: var(--panel); max-width: 900px; width: 100%; margin: 0 auto;
+      background: var(--panel); backdrop-filter: var(--glass); -webkit-backdrop-filter: var(--glass);
+      max-width: 900px; width: 100%; margin: 0 auto;
     }
     textarea#input {
       flex: 1; resize: none; border: 1px solid var(--line); border-radius: var(--radius);
@@ -193,15 +247,23 @@
       border-radius: 8px; background: var(--bg); color: var(--ink);
     }
     .composer-row .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
-    .btn-primary { border-radius: var(--radius); padding: 0 18px; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
-    .btn-primary:disabled { opacity: 0.5; cursor: default; }
+    .btn-primary { border-radius: var(--radius); padding: 0 18px; background: var(--accent-grad); color: var(--accent-ink); font-weight: 600; box-shadow: 0 6px 16px -4px rgba(249, 115, 22, 0.4); transition: transform .25s var(--ease), box-shadow .25s var(--ease), opacity .2s; }
+    .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 22px -6px rgba(249, 115, 22, 0.5); }
+    .btn-primary:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
 
-    .pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 20px; }
+    .pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 24px 16px; }
+    .pane > * { max-width: 1024px; margin-left: auto; margin-right: auto; }
     .pane h2 { margin: 0 0 4px; font-size: 18px; }
     .pane .lead { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
 
-    .skill-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; cursor: pointer; background: var(--panel); }
-    .skill-card:hover { border-color: var(--accent); }
+    .skill-card {
+      border: 1px solid var(--line); border-radius: var(--radius-lg);
+      padding: 14px 16px; margin-bottom: 10px; cursor: pointer;
+      background: var(--panel); backdrop-filter: var(--glass); -webkit-backdrop-filter: var(--glass);
+      box-shadow: var(--shadow-card);
+      transition: transform .3s var(--ease), box-shadow .3s var(--ease), border-color .3s var(--ease);
+    }
+    .skill-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-lift); }
     .skill-card .name { font-weight: 600; font-size: 14px; }
     .skill-card .desc { color: var(--muted); font-size: 13px; margin-top: 3px; }
     .reader-bar { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
@@ -241,21 +303,23 @@
     /* Settings: skills/soul/model live behind one entry, not in the main nav. */
     .rail-foot .settings-btn {
       display: flex; align-items: center; gap: 9px; width: 100%;
-      padding: 9px 11px; border-radius: 9px; color: var(--muted);
+      padding: 9px 11px; border-radius: 10px; color: var(--muted);
       font-weight: 500; font-size: 14px; margin-bottom: 8px;
+      border: 1px solid transparent;
     }
     .rail-foot .settings-btn:hover { background: var(--bubble-sol); color: var(--ink); }
-    .rail-foot .settings-btn.active { background: var(--accent-soft); color: var(--accent); }
+    .rail-foot .settings-btn.active { background: var(--accent-soft); color: var(--accent); border-color: rgba(249, 115, 22, 0.22); }
     .settings-bar {
       display: flex; align-items: center; gap: 12px;
       padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+      backdrop-filter: var(--glass); -webkit-backdrop-filter: var(--glass);
     }
     .settings-bar .back { color: var(--accent); font-weight: 500; padding: 4px 8px; border-radius: 8px; font-size: 13px; }
     .settings-bar .back:hover { background: var(--accent-soft); }
     .seg { display: flex; gap: 4px; }
-    .seg button { color: var(--muted); font-weight: 500; padding: 5px 12px; border-radius: 8px; font-size: 13px; }
+    .seg button { color: var(--muted); font-weight: 500; padding: 5px 12px; border-radius: 9px; font-size: 13px; border: 1px solid transparent; }
     .seg button:hover { background: var(--bubble-sol); color: var(--ink); }
-    .seg button.active { background: var(--accent-soft); color: var(--accent); }
+    .seg button.active { background: var(--accent-soft); color: var(--accent); border-color: rgba(249, 115, 22, 0.22); }
     .brand-home { cursor: pointer; }
 
     /* Sidebar user block (avatar + name + role), ServiceBay-style. */
@@ -272,9 +336,13 @@
 
     /* Tools / toolsets cards. */
     .tool-card {
-      border: 1px solid var(--line); border-radius: 10px;
-      padding: 12px 14px; margin-bottom: 8px; background: var(--panel);
+      border: 1px solid var(--line); border-radius: var(--radius-lg);
+      padding: 14px 16px; margin-bottom: 10px; background: var(--panel);
+      backdrop-filter: var(--glass); -webkit-backdrop-filter: var(--glass);
+      box-shadow: var(--shadow-card);
+      transition: transform .3s var(--ease), box-shadow .3s var(--ease), border-color .3s var(--ease);
     }
+    .tool-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); border-color: rgba(249, 115, 22, 0.4); }
     .tool-card .head { display: flex; align-items: center; gap: 8px; }
     .tool-card .label { font-weight: 600; font-size: 14px; flex: 1 1 auto; min-width: 0; }
     .tool-card .desc { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
@@ -309,6 +377,81 @@
       }
       body.rail-open .rail { transform: translateX(0); }
       body.rail-open #backdrop { display: block; position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,0.4); }
+    }
+    /* ---------- ServiceBay finish: depth, fonts, scrollbar, motion ---------- */
+    /* Messages read as lifted cards (rounded + soft depth). */
+    .msg.me, .msg.sol, .msg.info { border: 1px solid var(--line); box-shadow: var(--shadow-card); }
+    .msg.sol { backdrop-filter: var(--glass); -webkit-backdrop-filter: var(--glass); }
+
+    /* Geist Mono everywhere code shows up. */
+    code, pre, .code-editor, .chip, kbd {
+      font-family: "Geist Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    /* px-4 md:px-8 py-6 — wider gutters on desktop. */
+    @media (min-width: 761px) {
+      #log { padding: 24px 32px; }
+      .pane { padding: 24px 32px; }
+    }
+
+    /* On phones the panels go full-bleed (no float), like ServiceBay's mobile shell. */
+    @media (max-width: 760px) {
+      .main { border-radius: 0; border-width: 0; box-shadow: none; }
+    }
+
+    /* Chat header: name (left) · in-chat search + persona (right). */
+    .chat-header {
+      display: flex; align-items: center; gap: 12px; flex: 0 0 auto;
+      padding: 12px 18px; border-bottom: 1px solid var(--line);
+    }
+    .chat-title {
+      font-weight: 600; font-size: 15px; color: var(--ink);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 38%;
+    }
+    .chat-head-grow { flex: 1 1 auto; }
+    .chat-search-wrap { position: relative; display: flex; align-items: center; }
+    .chat-search {
+      width: 210px; max-width: 34vw; font: inherit; font-size: 13px;
+      padding: 7px 12px; border: 1px solid var(--line); border-radius: 10px;
+      background: var(--panel); color: var(--ink);
+    }
+    .chat-search::placeholder { color: var(--muted); }
+    .chat-search:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+    .chat-search-count {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      font-size: 11px; color: var(--muted); pointer-events: none;
+    }
+    .chat-header .persona { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .chat-header select {
+      font: inherit; font-size: 13px; padding: 5px 9px; border: 1px solid var(--line);
+      border-radius: 9px; background: var(--panel); color: var(--ink);
+    }
+    @media (min-width: 761px) { .chat-header { padding-left: 32px; padding-right: 32px; } }
+    @media (max-width: 760px) {
+      .chat-header { gap: 8px; padding: 10px 14px; }
+      .chat-title { max-width: 30%; }
+      .chat-search { width: 120px; }
+      .chat-header .persona label { display: none; }
+    }
+    /* Search highlight + the currently-focused jump target. */
+    .msg.search-hit { box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.3), var(--shadow-card); }
+    .msg.search-current { box-shadow: 0 0 0 2px var(--accent), var(--shadow-lift); }
+
+    /* Scrollbars — match ServiceBay's slim slate look (globals.css) + Firefox. */
+    * { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.06) transparent; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.06); border-radius: 99px; transition: background 250ms ease; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.16); }
+    @media (prefers-color-scheme: light) {
+      * { scrollbar-color: rgba(148, 163, 184, 0.4) transparent; }
+      ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.25); }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.5); }
+    }
+
+    /* Fluid theme/state transitions (ServiceBay globals.css). */
+    *, *::before, *::after {
+      transition: background-color 300ms var(--ease), border-color 300ms var(--ease), box-shadow 300ms var(--ease);
     }
   </style>
 </head>
@@ -372,12 +515,20 @@
     </div>
 
     <section id="view-chat" class="view active">
-      <div id="log" aria-live="polite"></div>
-      <div class="composer-row">
+      <header class="chat-header">
+        <span class="chat-title" id="chat-title">Neuer Chat</span>
+        <span class="chat-head-grow"></span>
+        <span class="chat-search-wrap">
+          <input class="chat-search" id="chat-search" type="search" placeholder="In Chat suchen…" aria-label="In Chat suchen" autocomplete="off" />
+          <span class="chat-search-count" id="chat-search-count" hidden></span>
+        </span>
         <span class="persona">
           <label for="personality">Persona</label>
           <select id="personality" aria-label="Personality for new sessions"></select>
         </span>
+      </header>
+      <div id="log" aria-live="polite"></div>
+      <div class="composer-row">
         <span class="hint">Type <code>/help</code> for commands</span>
       </div>
       <form id="composer">
@@ -687,6 +838,10 @@
       }
 
       function renderSessions(list) {
+        // Mirror the active session's name into the chat header.
+        var activeS = (list || []).find(function (s) { return s.id === sessionId; });
+        var ct = document.getElementById("chat-title");
+        if (ct) { ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat"; }
         sessionsEl.textContent = "";
         if (!list.length) {
           var empty = document.createElement("div");
@@ -861,6 +1016,56 @@
       document.getElementById("topbar-settings").addEventListener("click", openSettings);
       document.getElementById("settings-back").addEventListener("click", function () { showView("chat"); });
       document.getElementById("brand-home").addEventListener("click", function () { showView("chat"); });
+
+      // ---- In-chat word search (header): highlight matches, Enter jumps to the
+      //      next one, Esc clears. Operates on the rendered .msg nodes in #log. ----
+      (function () {
+        var searchEl = document.getElementById("chat-search");
+        var countEl = document.getElementById("chat-search-count");
+        if (!searchEl) return;
+        var matches = [], idx = -1;
+        function clearMarks() {
+          var hits = log.querySelectorAll(".msg.search-hit, .msg.search-current");
+          for (var i = 0; i < hits.length; i++) { hits[i].classList.remove("search-hit", "search-current"); }
+        }
+        function showCount() {
+          if (!countEl) return;
+          if (!matches.length) { countEl.hidden = true; countEl.textContent = ""; return; }
+          countEl.hidden = false;
+          countEl.textContent = (idx >= 0 ? (idx + 1) + "/" : "") + matches.length;
+        }
+        function focusMatch() {
+          var m = matches[idx];
+          if (!m) return;
+          var cur = log.querySelector(".msg.search-current");
+          if (cur) cur.classList.remove("search-current");
+          m.classList.add("search-current");
+          m.scrollIntoView({ block: "center", behavior: "smooth" });
+          showCount();
+        }
+        function run(jump) {
+          var q = (searchEl.value || "").trim().toLowerCase();
+          clearMarks(); matches = []; idx = -1;
+          if (!q) { showCount(); return; }
+          var msgs = log.querySelectorAll(".msg");
+          for (var i = 0; i < msgs.length; i++) {
+            if ((msgs[i].textContent || "").toLowerCase().indexOf(q) !== -1) {
+              msgs[i].classList.add("search-hit"); matches.push(msgs[i]);
+            }
+          }
+          if (jump && matches.length) { idx = 0; focusMatch(); } else { showCount(); }
+        }
+        searchEl.addEventListener("input", function () { run(false); });
+        searchEl.addEventListener("keydown", function (e) {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (!matches.length) { run(true); }
+            else { idx = (idx + 1) % matches.length; focusMatch(); }
+          } else if (e.key === "Escape") {
+            searchEl.value = ""; clearMarks(); matches = []; idx = -1; showCount(); searchEl.blur();
+          }
+        });
+      })();
 
       // ---- Tools / toolsets ----
       var toolsCards = document.getElementById("tools-cards");
