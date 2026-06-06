@@ -22,6 +22,10 @@ def main() -> None:
             hermes=hermes,
             remote_user_header=settings.remote_user_header,
             default_uid=settings.default_uid,
+            remote_groups_header=settings.remote_groups_header,
+            admin_group=settings.admin_group,
+            skills_dir=settings.skills_dir,
+            soul_path=settings.soul_path,
         )
     )
 

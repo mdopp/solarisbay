@@ -14,6 +14,7 @@ from typing import Any
 
 from aiohttp import web
 
+from solilos_chat import personalities, skills
 from solilos_chat.hermes import HermesClient, HermesError
 from solilos_chat.logging import log
 
@@ -41,17 +42,61 @@ def resolve_uid(request: web.Request, header: str, default_uid: str) -> str:
     return value or default_uid
 
 
+def is_admin(request: web.Request, header: str, admin_group: str) -> bool:
+    """True when the Authelia groups header lists `admin_group`.
+
+    Authelia forwards `Remote-Groups` as a comma-separated list through the
+    trusted proxy. Panel writes (phase 2) gate on this; phase-1 reads use it
+    only to tell the browser which controls to surface.
+    """
+    raw = request.headers.get(header, "")
+    groups = {g.strip() for g in raw.split(",") if g.strip()}
+    return admin_group in groups
+
+
 def build_app(
     *,
     hermes: HermesClient,
     remote_user_header: str,
     default_uid: str,
+    remote_groups_header: str = "Remote-Groups",
+    admin_group: str = "admins",
+    skills_dir: str = "/data/skills",
+    soul_path: str = "/data/SOUL.md",
 ) -> web.Application:
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
 
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
+
+    async def whoami(request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "ok": True,
+                "uid": resolve_uid(request, remote_user_header, default_uid),
+                "is_admin": is_admin(request, remote_groups_header, admin_group),
+            }
+        )
+
+    async def list_personalities(_request: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "personalities": personalities.catalog()})
+
+    async def list_skills(_request: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "skills": skills.list_skills(skills_dir)})
+
+    async def get_skill(request: web.Request) -> web.Response:
+        skill = skills.read_skill(skills_dir, request.match_info["skill_id"])
+        if skill is None:
+            return web.json_response({"ok": False, "reason": "not_found"}, status=404)
+        return web.json_response({"ok": True, "skill": skill})
+
+    async def get_soul(_request: web.Request) -> web.Response:
+        try:
+            content = Path(soul_path).read_text(encoding="utf-8")
+        except OSError:
+            return web.json_response({"ok": False, "reason": "not_found"}, status=404)
+        return web.json_response({"ok": True, "soul": {"content": content}})
 
     async def list_sessions(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
@@ -65,13 +110,20 @@ def build_app(
 
     async def create_session(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
+        personality_id = await _personality_from(request)
+        system_prompt = personalities.system_prompt_for(personality_id)
         try:
-            session_id = await hermes.create_session(uid)
+            session_id = await hermes.create_session(uid, system_prompt)
         except HermesError:
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
-        log.info("chat.session.created", uid=uid, session_id=session_id)
+        log.info(
+            "chat.session.created",
+            uid=uid,
+            session_id=session_id,
+            personality=personality_id or "",
+        )
         return web.json_response({"ok": True, "session_id": session_id})
 
     async def get_session(request: web.Request) -> web.Response:
@@ -100,10 +152,11 @@ def build_app(
         if not text:
             return web.json_response({"ok": False, "reason": "empty_input"}, status=400)
         session_id = str(body.get("session_id") or "")
+        system_prompt = personalities.system_prompt_for(body.get("personality"))
 
         try:
             if not session_id:
-                session_id = await hermes.create_session(uid)
+                session_id = await hermes.create_session(uid, system_prompt)
                 log.info("chat.session.created", uid=uid, session_id=session_id)
                 await hermes.set_title(session_id, _title_from(text))
             reply = await hermes.chat(session_id, text)
@@ -127,6 +180,7 @@ def build_app(
         if not text:
             return web.json_response({"ok": False, "reason": "empty_input"}, status=400)
         session_id = str(body.get("session_id") or "")
+        system_prompt = personalities.system_prompt_for(body.get("personality"))
 
         resp = web.StreamResponse(
             headers={
@@ -139,7 +193,7 @@ def build_app(
 
         try:
             if not session_id:
-                session_id = await hermes.create_session(uid)
+                session_id = await hermes.create_session(uid, system_prompt)
                 log.info("chat.session.created", uid=uid, session_id=session_id)
                 await hermes.set_title(session_id, _title_from(text))
             await _send_event(resp, "session", {"session_id": session_id})
@@ -153,6 +207,11 @@ def build_app(
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
+    app.router.add_get("/api/whoami", whoami)
+    app.router.add_get("/api/personalities", list_personalities)
+    app.router.add_get("/api/skills", list_skills)
+    app.router.add_get("/api/skills/{skill_id}", get_skill)
+    app.router.add_get("/api/soul", get_soul)
     app.router.add_get("/api/sessions", list_sessions)
     app.router.add_post("/api/sessions", create_session)
     app.router.add_get("/api/sessions/{session_id}", get_session)
@@ -160,6 +219,19 @@ def build_app(
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_static("/static/", STATIC_DIR)
     return app
+
+
+async def _personality_from(request: web.Request) -> str | None:
+    """Pull an optional `personality` id from a JSON body (POST create).
+
+    Create is a body-less POST in the normal flow, so a missing/!JSON body
+    is fine — it just means the default personality.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — body-less or malformed = default
+        return None
+    return body.get("personality") if isinstance(body, dict) else None
 
 
 async def _send_event(
@@ -199,11 +271,19 @@ async def serve(
     hermes: HermesClient,
     remote_user_header: str,
     default_uid: str,
+    remote_groups_header: str = "Remote-Groups",
+    admin_group: str = "admins",
+    skills_dir: str = "/data/skills",
+    soul_path: str = "/data/SOUL.md",
 ) -> None:
     app = build_app(
         hermes=hermes,
         remote_user_header=remote_user_header,
         default_uid=default_uid,
+        remote_groups_header=remote_groups_header,
+        admin_group=admin_group,
+        skills_dir=skills_dir,
+        soul_path=soul_path,
     )
     runner = web.AppRunner(app)
     await runner.setup()

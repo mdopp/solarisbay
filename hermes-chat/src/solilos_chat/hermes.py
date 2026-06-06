@@ -40,13 +40,19 @@ class HermesClient:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
 
-    async def create_session(self, uid: str) -> str:
-        """Create a session bound to `uid`; return its id."""
+    async def create_session(self, uid: str, system_prompt: str | None = None) -> str:
+        """Create a session bound to `uid`; return its id.
+
+        `system_prompt` is the chosen personality's overlay (see
+        `personalities.py`); Hermes accepts it only at create time (PATCH
+        rejects it). Empty/None => no overlay, pure SOUL.md.
+        """
         url = f"{self._base_url}/api/sessions"
+        payload: dict[str, Any] = {"user_id": uid}
+        if system_prompt:
+            payload["system_prompt"] = system_prompt
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
-            async with client.post(
-                url, json={"user_id": uid}, headers=self._headers()
-            ) as resp:
+            async with client.post(url, json=payload, headers=self._headers()) as resp:
                 body = await self._json_or_raise(resp, "create_session")
         session_id = _extract_session_id(body)
         if not session_id:
