@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from solilos_chat import personalities, skills
 from solilos_chat.hermes import (
     _extract_messages,
     _extract_reply,
@@ -11,7 +12,13 @@ from solilos_chat.hermes import (
     _session_owner,
     _session_summary,
 )
-from solilos_chat.server import _normalize, _title_from, build_app, resolve_uid
+from solilos_chat.server import (
+    _normalize,
+    _title_from,
+    build_app,
+    is_admin,
+    resolve_uid,
+)
 
 
 class _FakeRequest:
@@ -61,14 +68,16 @@ def test_extract_reply_shapes():
 class _FakeHermes:
     def __init__(self, events=None, store=None):
         self.created = []
+        self.created_prompts = []
         self.turns = []
         self.titles = []
         self._events = events or []
         # store: list of {id, user_id, title, last_activity, messages}
         self._store = store or []
 
-    async def create_session(self, uid):
+    async def create_session(self, uid, system_prompt=None):
         self.created.append(uid)
+        self.created_prompts.append(system_prompt or "")
         return "sess-1"
 
     async def set_title(self, session_id, title):
@@ -395,4 +404,208 @@ async def test_open_any_session_single_resident(aiohttp_client):
 
     # An unknown id still 404s (Hermes itself doesn't have it).
     resp = await client.get("/api/sessions/nope", headers={"Remote-User": "mdopp"})
+    assert resp.status == 404
+
+
+# --- Admin gate -----------------------------------------------------------
+
+
+def test_is_admin_membership():
+    req = _FakeRequest({"Remote-Groups": "family,admins"})
+    assert is_admin(req, "Remote-Groups", "admins") is True
+
+
+def test_is_admin_absent_or_other_group():
+    assert is_admin(_FakeRequest({}), "Remote-Groups", "admins") is False
+    assert (
+        is_admin(_FakeRequest({"Remote-Groups": "family"}), "Remote-Groups", "admins")
+        is False
+    )
+    # Substring of another group must not match (set membership, not `in`).
+    assert (
+        is_admin(
+            _FakeRequest({"Remote-Groups": "superadmins"}), "Remote-Groups", "admins"
+        )
+        is False
+    )
+
+
+async def test_whoami_reports_uid_and_admin(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get(
+        "/api/whoami", headers={"Remote-User": "mdopp", "Remote-Groups": "admins"}
+    )
+    body = await resp.json()
+    assert body == {"ok": True, "uid": "mdopp", "is_admin": True}
+
+    resp = await client.get(
+        "/api/whoami", headers={"Remote-User": "cdopp", "Remote-Groups": "family"}
+    )
+    body = await resp.json()
+    assert body["uid"] == "cdopp" and body["is_admin"] is False
+
+
+# --- Personalities --------------------------------------------------------
+
+
+def test_personalities_catalog_hides_prompts():
+    cat = personalities.catalog()
+    assert any(p["id"] == "sol" for p in cat)
+    for p in cat:
+        assert set(p) == {"id", "label", "description"}  # no system_prompt leaked
+
+
+def test_system_prompt_for():
+    assert personalities.system_prompt_for("sol") == ""  # default = no overlay
+    assert personalities.system_prompt_for(None) == ""
+    assert personalities.system_prompt_for("concise")  # non-empty overlay
+    assert personalities.system_prompt_for("nope") == ""  # unknown = default
+
+
+async def test_list_personalities_endpoint(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/personalities")
+    body = await resp.json()
+    assert resp.status == 200
+    assert {p["id"] for p in body["personalities"]} >= {"sol", "concise"}
+
+
+async def test_chat_passes_personality_system_prompt(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat", json={"input": "hi", "personality": "concise"}
+    )
+    assert resp.status == 200
+    assert fake.created_prompts == [personalities.system_prompt_for("concise")]
+
+
+async def test_chat_default_personality_no_overlay(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post("/api/chat", json={"input": "hi"})
+    assert resp.status == 200
+    assert fake.created_prompts == [""]
+
+
+async def test_create_session_with_personality(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post("/api/sessions", json={"personality": "teacher"})
+    assert resp.status == 200
+    assert fake.created_prompts == [personalities.system_prompt_for("teacher")]
+
+
+# --- Skills (filesystem) --------------------------------------------------
+
+
+def _write_skill(root, dir_name, name, description, body):
+    d = root / dir_name
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\nversion: 1\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def test_skills_list_and_read_from_disk(tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health at a glance", "# Status\nok")
+    _write_skill(tmp_path, "notes", "sol-notes", "Search notes", "# Notes\nbody")
+    (tmp_path / "README.md").write_text("not a skill", encoding="utf-8")  # ignored
+
+    listed = skills.list_skills(tmp_path)
+    assert [s["id"] for s in listed] == ["notes", "status"]  # sorted by name
+    assert listed[1] == {
+        "id": "status",
+        "name": "sol-status",
+        "description": "Health at a glance",
+    }
+
+    one = skills.read_skill(tmp_path, "status")
+    assert one["name"] == "sol-status"
+    assert one["body"].strip() == "# Status\nok"
+
+
+def test_skills_missing_dir_and_traversal(tmp_path):
+    assert skills.list_skills(tmp_path / "nope") == []
+    assert skills.read_skill(tmp_path, "../etc") is None
+    assert skills.read_skill(tmp_path, "nope") is None
+
+
+async def test_skills_endpoints(aiohttp_client, tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health", "# Status\nrendered me")
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        skills_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/skills")
+    body = await resp.json()
+    assert resp.status == 200
+    assert body["skills"][0]["name"] == "sol-status"
+
+    resp = await client.get("/api/skills/status")
+    body = await resp.json()
+    assert "rendered me" in body["skill"]["body"]
+
+    resp = await client.get("/api/skills/missing")
+    assert resp.status == 404
+
+
+# --- Soul -----------------------------------------------------------------
+
+
+async def test_soul_endpoint(aiohttp_client, tmp_path):
+    soul = tmp_path / "SOUL.md"
+    soul.write_text("# Sol\nI am the soul.", encoding="utf-8")
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        soul_path=str(soul),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/soul")
+    body = await resp.json()
+    assert resp.status == 200
+    assert body["soul"]["content"] == "# Sol\nI am the soul."
+
+
+async def test_soul_endpoint_missing(aiohttp_client, tmp_path):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        soul_path=str(tmp_path / "absent.md"),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/soul")
     assert resp.status == 404

@@ -229,6 +229,62 @@
       cursor: pointer;
     }
     button:disabled { opacity: 0.5; cursor: default; }
+
+    /* Header nav + personality picker. */
+    header .grow { flex: 1 1 auto; }
+    .nav { display: flex; gap: 4px; }
+    .nav button {
+      background: none; color: var(--muted); font-weight: 500;
+      padding: 5px 11px; border-radius: 8px; font-size: 13px;
+    }
+    .nav button:hover { background: var(--bubble-sol); color: var(--ink); }
+    .nav button.active { background: var(--bubble-me); color: var(--ink); }
+    .persona {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--muted);
+    }
+    .persona select {
+      font: inherit; font-size: 13px; padding: 4px 8px;
+      border: 1px solid var(--line); border-radius: 8px;
+      background: var(--bg); color: var(--ink);
+    }
+    .admin-badge {
+      font-size: 10px; letter-spacing: 0.5px; text-transform: uppercase;
+      color: var(--accent); border: 1px solid var(--accent);
+      border-radius: 6px; padding: 1px 6px;
+    }
+
+    /* View switching: only one of chat/skills/soul is shown. */
+    .view { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
+    .view.active { display: flex; }
+    .pane {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 18px;
+    }
+    .pane h2 { margin: 0 0 4px; font-size: 18px; }
+    .pane .lead { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+
+    /* Skill list cards. */
+    .skill-card {
+      border: 1px solid var(--line); border-radius: 10px;
+      padding: 12px 14px; margin-bottom: 8px; cursor: pointer;
+      background: var(--panel);
+    }
+    .skill-card:hover { border-color: var(--accent); }
+    .skill-card .name { font-weight: 600; font-size: 14px; }
+    .skill-card .desc { color: var(--muted); font-size: 13px; margin-top: 3px; }
+    .reader-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 18px; border-bottom: 1px solid var(--line);
+    }
+    .reader-bar .back {
+      background: none; color: var(--accent); font-weight: 500;
+      padding: 4px 8px; font-size: 13px;
+    }
+    .reader-bar .name { font-weight: 600; }
+    /* The rendered markdown body in a reading pane (skill / soul). */
+    .doc { max-width: 760px; }
+    .doc .md { font-size: 15px; line-height: 1.6; }
+    .empty-note { color: var(--muted); font-size: 13px; }
   </style>
 </head>
 <body>
@@ -243,13 +299,51 @@
     <div class="app">
       <header>
         <button id="sidebar-toggle" type="button" aria-label="Toggle sessions">☰</button>
-        Solilos <span class="sub">household chat</span>
+        <nav class="nav" id="nav">
+          <button type="button" data-view="chat" class="active">Chat</button>
+          <button type="button" data-view="skills">Skills</button>
+          <button type="button" data-view="soul">Soul</button>
+        </nav>
+        <span class="grow"></span>
+        <span class="persona">
+          <label for="personality">Persona</label>
+          <select id="personality" aria-label="Personality for new sessions"></select>
+        </span>
+        <span id="admin-badge" class="admin-badge" hidden>Admin</span>
       </header>
-      <div id="log" aria-live="polite"></div>
-      <form id="composer">
-        <textarea id="input" rows="1" placeholder="Message Solilos…" autofocus></textarea>
-        <button id="send" type="submit">Send</button>
-      </form>
+
+      <section id="view-chat" class="view active">
+        <div id="log" aria-live="polite"></div>
+        <form id="composer">
+          <textarea id="input" rows="1" placeholder="Message Solilos…" autofocus></textarea>
+          <button id="send" type="submit">Send</button>
+        </form>
+      </section>
+
+      <section id="view-skills" class="view">
+        <div id="skills-list" class="pane">
+          <h2>Skills</h2>
+          <p class="lead">The standard set Sol draws on. Everyone can read them; editing is for admins.</p>
+          <div id="skills-cards"></div>
+        </div>
+        <div id="skill-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
+          <div class="reader-bar">
+            <button class="back" id="skill-back" type="button">← Skills</button>
+            <span class="name" id="skill-name"></span>
+          </div>
+          <div class="pane"><div class="doc"><div class="md" id="skill-body"></div></div></div>
+        </div>
+      </section>
+
+      <section id="view-soul" class="view">
+        <div class="pane">
+          <div class="doc">
+            <h2>Soul</h2>
+            <p class="lead">Sol's durable identity (SOUL.md). One soul — personalities are per-session overlays on top of it.</p>
+            <div class="md" id="soul-body"></div>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
   <script src="/static/markdown.js"></script>
@@ -263,7 +357,11 @@
       var newBtn = document.getElementById("new-session");
       var sidebarToggle = document.getElementById("sidebar-toggle");
       var backdrop = document.getElementById("backdrop");
+      var personalitySel = document.getElementById("personality");
+      var adminBadge = document.getElementById("admin-badge");
       var sessionId = null;
+
+      function currentPersonality() { return personalitySel.value || "sol"; }
 
       function closeSidebar() { document.body.classList.remove("sidebar-open"); }
       sidebarToggle.addEventListener("click", function () {
@@ -363,7 +461,7 @@
         return fetch("/api/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ input: text, session_id: sessionId })
+          body: JSON.stringify({ input: text, session_id: sessionId, personality: currentPersonality() })
         }).then(function (r) {
           if (!r.ok || !r.body) throw new Error("bad response");
           var reader = r.body.getReader();
@@ -528,6 +626,140 @@
       }
       newBtn.addEventListener("click", newSession);
 
+      // --- Personality ----------------------------------------------------
+      // Chosen per session and applied when a session is born (Hermes sets the
+      // overlay only at create time), so changing it takes effect on the next
+      // new session. Stored locally so the choice survives a reload.
+      function loadPersonalities() {
+        return fetch("/api/personalities")
+          .then(function (r) { return r.ok ? r.json() : { personalities: [] }; })
+          .then(function (j) {
+            var list = (j && j.personalities) || [];
+            var saved = localStorage.getItem("sol.personality") || "sol";
+            personalitySel.textContent = "";
+            list.forEach(function (p) {
+              var opt = document.createElement("option");
+              opt.value = p.id;
+              opt.textContent = p.label;
+              opt.title = p.description;
+              if (p.id === saved) opt.selected = true;
+              personalitySel.appendChild(opt);
+            });
+            personalitySel.title = "Applies to the next new session";
+          })
+          .catch(function () {});
+      }
+      personalitySel.addEventListener("change", function () {
+        localStorage.setItem("sol.personality", personalitySel.value);
+      });
+
+      // --- Identity (admin badge) ----------------------------------------
+      function loadWhoami() {
+        return fetch("/api/whoami")
+          .then(function (r) { return r.ok ? r.json() : {}; })
+          .then(function (j) { if (j && j.is_admin) adminBadge.hidden = false; })
+          .catch(function () {});
+      }
+
+      // --- View switching -------------------------------------------------
+      var views = {
+        chat: document.getElementById("view-chat"),
+        skills: document.getElementById("view-skills"),
+        soul: document.getElementById("view-soul")
+      };
+      var navBtns = document.querySelectorAll("#nav button");
+      var skillsLoaded = false, soulLoaded = false;
+
+      function showView(name) {
+        Object.keys(views).forEach(function (k) {
+          views[k].classList.toggle("active", k === name);
+        });
+        navBtns.forEach(function (b) {
+          b.classList.toggle("active", b.getAttribute("data-view") === name);
+        });
+        if (name === "skills" && !skillsLoaded) { skillsLoaded = true; loadSkills(); }
+        if (name === "soul" && !soulLoaded) { soulLoaded = true; loadSoul(); }
+        closeSidebar();
+      }
+      navBtns.forEach(function (b) {
+        b.addEventListener("click", function () { showView(b.getAttribute("data-view")); });
+      });
+
+      // --- Skills ---------------------------------------------------------
+      var skillsCards = document.getElementById("skills-cards");
+      var skillsList = document.getElementById("skills-list");
+      var skillReader = document.getElementById("skill-reader");
+      var skillName = document.getElementById("skill-name");
+      var skillBody = document.getElementById("skill-body");
+
+      function loadSkills() {
+        return fetch("/api/skills")
+          .then(function (r) { return r.ok ? r.json() : { skills: [] }; })
+          .then(function (j) {
+            var list = (j && j.skills) || [];
+            skillsCards.textContent = "";
+            if (!list.length) {
+              var note = document.createElement("div");
+              note.className = "empty-note";
+              note.textContent = "No skills found.";
+              skillsCards.appendChild(note);
+              return;
+            }
+            list.forEach(function (s) {
+              var card = document.createElement("div");
+              card.className = "skill-card";
+              var name = document.createElement("div");
+              name.className = "name";
+              name.textContent = s.name;
+              card.appendChild(name);
+              if (s.description) {
+                var desc = document.createElement("div");
+                desc.className = "desc";
+                desc.textContent = s.description;
+                card.appendChild(desc);
+              }
+              card.addEventListener("click", function () { openSkill(s.id); });
+              skillsCards.appendChild(card);
+            });
+          })
+          .catch(function () {});
+      }
+
+      function openSkill(id) {
+        fetch("/api/skills/" + encodeURIComponent(id))
+          .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
+          .then(function (j) {
+            var s = (j && j.skill) || {};
+            skillName.textContent = s.name || id;
+            skillBody.innerHTML = window.renderMarkdown(s.body || "");
+            skillsList.style.display = "none";
+            skillReader.style.display = "flex";
+          })
+          .catch(function () {});
+      }
+      document.getElementById("skill-back").addEventListener("click", function () {
+        skillReader.style.display = "none";
+        skillsList.style.display = "block";
+      });
+
+      // --- Soul -----------------------------------------------------------
+      function loadSoul() {
+        var body = document.getElementById("soul-body");
+        return fetch("/api/soul")
+          .then(function (r) { return r.ok ? r.json() : { soul: { content: "" } }; })
+          .then(function (j) {
+            var content = (j && j.soul && j.soul.content) || "";
+            body.innerHTML = content
+              ? window.renderMarkdown(content)
+              : '<p class="empty-note">No soul document found.</p>';
+          })
+          .catch(function () {
+            body.innerHTML = '<p class="empty-note">Could not load the soul document.</p>';
+          });
+      }
+
+      loadPersonalities();
+      loadWhoami();
       loadSessions();
     })();
   </script>

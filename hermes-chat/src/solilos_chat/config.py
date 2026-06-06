@@ -18,7 +18,11 @@ class Settings:
     hermes_url: str
     hermes_token: str
     remote_user_header: str
+    remote_groups_header: str
+    admin_group: str
     default_uid: str
+    skills_dir: str
+    soul_path: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -32,9 +36,21 @@ class Settings:
             # untrusted source: the pod binds loopback and only NPM
             # (which sets the header after Authelia) can reach it.
             remote_user_header=os.environ.get("REMOTE_USER_HEADER", "Remote-User"),
+            # Authelia also forwards the user's groups (comma-separated) on
+            # this header. Panel writes (skills/soul/model — phase 2) gate on
+            # membership of `admin_group`; same trusted-proxy trust as above.
+            remote_groups_header=os.environ.get(
+                "REMOTE_GROUPS_HEADER", "Remote-Groups"
+            ),
+            admin_group=os.environ.get("ADMIN_GROUP", "admins"),
             # Fallback uid when the header is absent (e.g. offline test
             # access straight to the loopback port, no Authelia in front).
             default_uid=os.environ.get("DEFAULT_UID", "household"),
+            # Read-only bind mount of the Solilos skill pack (host
+            # solbay/skills) and the global SOUL.md — the panel renders both
+            # from disk because Hermes exposes no body/soul API.
+            skills_dir=os.environ.get("SKILLS_DIR", "/data/skills"),
+            soul_path=os.environ.get("SOUL_PATH", "/data/SOUL.md"),
         )
 
 

@@ -54,11 +54,44 @@ spec:
     # loopback offline test) falls back to DEFAULT_UID.
     - name: REMOTE_USER_HEADER
       value: "Remote-User"
+    # Authelia also forwards the user's groups (comma-separated). The panel
+    # surfaces admin-only controls (skill/soul/model edits — phase 2) when
+    # this header lists ADMIN_GROUP.
+    - name: REMOTE_GROUPS_HEADER
+      value: "Remote-Groups"
+    - name: ADMIN_GROUP
+      value: "admins"
     - name: DEFAULT_UID
       value: "{{DEFAULT_UID}}"
+    # Where the read-only skill pack and the global SOUL.md are mounted (see
+    # volumeMounts). Hermes exposes no skill-body / soul API, so the panel
+    # renders both from disk.
+    - name: SKILLS_DIR
+      value: "/data/skills"
+    - name: SOUL_PATH
+      value: "/data/SOUL.md"
     - name: TZ
       value: "{{TZ}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{HERMES_CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint
     # as the gatekeeper).
+    # Read-only: the panel only *reads* the standard skill set and the soul.
+    # These are the same host paths the hermes template mounts; editing is
+    # admin-gated and lands in phase 2 (a writable mount + a restart hook).
+    volumeMounts:
+    - mountPath: /data/skills
+      name: solilos-skills
+      readOnly: true
+    - mountPath: /data/SOUL.md
+      name: solilos-soul
+      readOnly: true
+  volumes:
+  - name: solilos-skills
+    hostPath:
+      path: {{DATA_DIR}}/solbay/skills
+      type: DirectoryOrCreate
+  - name: solilos-soul
+    hostPath:
+      path: {{DATA_DIR}}/hermes/SOUL.md
+      type: FileOrCreate
