@@ -6,18 +6,20 @@
   <title>Solilos</title>
   <style>
     :root {
-      --bg: #f3f4f3;
+      --bg: #f6f7f8;
       --panel: #ffffff;
-      --rail: #fbfbfa;
-      --ink: #1c1f24;
-      --muted: #6a7079;
-      --line: #e4e4e0;
+      --rail: #ffffff;
+      --ink: #1f2733;
+      --muted: #6b7280;
+      --line: #e6e8eb;
       --accent: #e07a35;          /* orange accent */
       --accent-ink: #ffffff;
       --accent-soft: rgba(224, 122, 53, 0.12);
-      --bubble-me: #eceef0;
-      --bubble-sol: #f4f4f1;
-      --danger: #c2483a;
+      --bubble-me: #eef1f4;
+      --bubble-sol: #f4f5f6;
+      --ok: #2e9b5b;
+      --ok-soft: rgba(46, 155, 91, 0.13);
+      --danger: #d0473a;
       --radius: 12px;
     }
     @media (prefers-color-scheme: dark) {
@@ -33,6 +35,8 @@
         --accent-soft: rgba(239, 139, 70, 0.16);
         --bubble-me: #262b33;
         --bubble-sol: #21252b;
+        --ok: #6cc48a;
+        --ok-soft: rgba(108, 196, 138, 0.16);
         --danger: #e08585;
       }
     }
@@ -234,6 +238,59 @@
     .model-row .btn-primary { padding: 7px 16px; }
     .model-current { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
 
+    /* Settings: skills/soul/model live behind one entry, not in the main nav. */
+    .rail-foot .settings-btn {
+      display: flex; align-items: center; gap: 9px; width: 100%;
+      padding: 9px 11px; border-radius: 9px; color: var(--muted);
+      font-weight: 500; font-size: 14px; margin-bottom: 8px;
+    }
+    .rail-foot .settings-btn:hover { background: var(--bubble-sol); color: var(--ink); }
+    .rail-foot .settings-btn.active { background: var(--accent-soft); color: var(--accent); }
+    .settings-bar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+    }
+    .settings-bar .back { color: var(--accent); font-weight: 500; padding: 4px 8px; border-radius: 8px; font-size: 13px; }
+    .settings-bar .back:hover { background: var(--accent-soft); }
+    .seg { display: flex; gap: 4px; }
+    .seg button { color: var(--muted); font-weight: 500; padding: 5px 12px; border-radius: 8px; font-size: 13px; }
+    .seg button:hover { background: var(--bubble-sol); color: var(--ink); }
+    .seg button.active { background: var(--accent-soft); color: var(--accent); }
+    .brand-home { cursor: pointer; }
+
+    /* Sidebar user block (avatar + name + role), ServiceBay-style. */
+    .rail-user { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+    .avatar {
+      width: 30px; height: 30px; flex: 0 0 30px; border-radius: 50%;
+      background: var(--accent-soft); color: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 13px; text-transform: uppercase;
+    }
+    .who-wrap { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+    .rail-user .who { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rail-user .who-sub { font-size: 11px; color: var(--muted); }
+
+    /* Tools / toolsets cards. */
+    .tool-card {
+      border: 1px solid var(--line); border-radius: 10px;
+      padding: 12px 14px; margin-bottom: 8px; background: var(--panel);
+    }
+    .tool-card .head { display: flex; align-items: center; gap: 8px; }
+    .tool-card .label { font-weight: 600; font-size: 14px; flex: 1 1 auto; min-width: 0; }
+    .tool-card .desc { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+    .tool-card .tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .chip {
+      font-size: 11px; color: var(--muted); background: var(--bubble-sol);
+      border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+    }
+    .pill {
+      font-size: 10px; letter-spacing: 0.4px; text-transform: uppercase;
+      border-radius: 20px; padding: 2px 9px; font-weight: 600; flex: 0 0 auto;
+    }
+    .pill.on { color: var(--ok); background: var(--ok-soft); }
+    .pill.off { color: var(--muted); background: var(--bubble-sol); }
+
     #backdrop { display: none; }
 
     /* ---------- Mobile ---------- */
@@ -257,20 +314,13 @@
 </head>
 <body>
   <aside class="rail">
-    <div class="rail-head">
+    <div class="rail-head brand-home" id="brand-home" title="Back to chat">
       <div class="logo">S</div>
       <div>
         <div class="brand-name">Solilos</div>
         <div class="brand-ver" id="brand-ver"></div>
       </div>
     </div>
-
-    <nav class="rail-nav" id="nav">
-      <button type="button" data-view="chat" class="active"><span class="ic">💬</span> Chat</button>
-      <button type="button" data-view="skills"><span class="ic">🧩</span> Skills</button>
-      <button type="button" data-view="soul"><span class="ic">✦</span> Soul</button>
-      <button type="button" data-view="model" id="nav-model" hidden><span class="ic">⚙</span> Model</button>
-    </nav>
 
     <div class="rail-sessions">
       <div class="rs-head">
@@ -281,8 +331,15 @@
     </div>
 
     <div class="rail-foot">
+      <button class="settings-btn" id="open-settings" type="button">
+        <span class="ic">⚙</span> Settings
+      </button>
       <div class="rail-user">
-        <span class="who" id="whoami-user">…</span>
+        <span class="avatar" id="avatar">·</span>
+        <span class="who-wrap">
+          <span class="who" id="whoami-user">…</span>
+          <span class="who-sub" id="whoami-sub">Solilos</span>
+        </span>
         <span class="admin-badge" id="admin-badge" hidden>Admin</span>
       </div>
       <div class="rail-links">
@@ -300,7 +357,18 @@
       <button class="icon-btn" id="rail-toggle" type="button" aria-label="Menu">☰</button>
       <span class="brand-name">Solilos</span>
       <span class="grow"></span>
+      <button class="icon-btn" id="topbar-settings" type="button" title="Settings" aria-label="Settings">⚙</button>
       <button class="icon-btn" id="chats-toggle" type="button" title="Chats" aria-label="Chats">💬</button>
+    </div>
+
+    <div class="settings-bar" id="settings-bar" hidden>
+      <button class="back" id="settings-back" type="button">← Chat</button>
+      <nav class="seg" id="settings-nav">
+        <button type="button" data-view="skills" class="active">Skills</button>
+        <button type="button" data-view="soul">Soul</button>
+        <button type="button" data-view="tools">Tools</button>
+        <button type="button" data-view="model" id="nav-model" hidden>Model</button>
+      </nav>
     </div>
 
     <section id="view-chat" class="view active">
@@ -382,6 +450,14 @@
           <p class="model-current" id="model-current"></p>
           <span class="editor-status" id="model-status"></span>
         </div>
+      </div>
+    </section>
+
+    <section id="view-tools" class="view">
+      <div class="pane">
+        <h2>Tools</h2>
+        <p class="lead">What Sol can do — the toolsets and MCP servers Hermes has loaded, and whether they're active.</p>
+        <div id="tools-cards"></div>
       </div>
     </section>
   </div>
@@ -535,9 +611,11 @@
         ["/help", "Show this list of commands"],
         ["/new", "Start a new chat"],
         ["/delete", "Delete the current chat"],
-        ["/skills", "Open the Skills panel"],
-        ["/soul", "Open the Soul panel"],
-        ["/model", "Open the Model panel (admins)"]
+        ["/context", "Show this chat's token usage"],
+        ["/skills", "Open Skills (Settings)"],
+        ["/soul", "Open Soul (Settings)"],
+        ["/tools", "Open Tools — what Sol can do (Settings)"],
+        ["/model", "Open Model (Settings, admins)"]
       ];
       function helpMarkdown() {
         var lines = ["**Commands** — type these in the message box:", ""];
@@ -554,12 +632,33 @@
           if (!sessionId) { addText("system", "No chat to delete yet."); return; }
           deleteSession(sessionId); return;
         }
-        if (cmd === "skills" || cmd === "soul") { showView(cmd); return; }
+        if (cmd === "skills" || cmd === "soul" || cmd === "tools") { showView(cmd); return; }
         if (cmd === "model") {
           if (isAdmin) { showView("model"); } else { addText("system", "The model switch is for admins."); }
           return;
         }
+        if (cmd === "context") { showContext(); return; }
         addInfo("Unknown command `/" + cmd + "`.\n\n" + helpMarkdown());
+      }
+
+      function showContext() {
+        if (!sessionId) { addText("system", "Start a chat first — then /context shows its usage."); return; }
+        fetch("/api/sessions/" + encodeURIComponent(sessionId))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            var s = (j && j.session) || {};
+            var fmt = function (n) { return Number(n || 0).toLocaleString(); };
+            var lines = ["**Context usage** — this chat", "",
+              "- Context window: ~" + fmt(contextWindow) + " tokens",
+              "- Input tokens (session total): " + fmt(s.input_tokens),
+              "- Generated tokens (session total): " + fmt(s.output_tokens)];
+            if (s.message_count != null) lines.push("- Messages: " + fmt(s.message_count));
+            if (s.estimated_cost_usd != null) lines.push("- Est. cost: $" + Number(s.estimated_cost_usd).toFixed(4));
+            lines.push("");
+            lines.push("_Hermes reports per-session totals, not a live window-fill figure — treat this as an approximation._");
+            addInfo(lines.join("\n"));
+          })
+          .catch(function () { addText("system", "Couldn't read context info."); });
       }
 
       form.addEventListener("submit", function (e) {
@@ -703,17 +802,22 @@
 
       // ---- Identity (footer + admin affordances) ----
       var isAdmin = false;
+      var contextWindow = 131072;
       function loadWhoami() {
         return fetch("/api/whoami")
           .then(function (r) { return r.ok ? r.json() : {}; })
           .then(function (j) {
-            document.getElementById("whoami-user").textContent = (j && j.uid) || "guest";
+            var uid = (j && j.uid) || "guest";
+            document.getElementById("whoami-user").textContent = uid;
+            document.getElementById("avatar").textContent = uid.charAt(0) || "·";
             document.getElementById("brand-ver").textContent = j && j.version ? "v" + j.version : "";
+            if (j && j.context_window) contextWindow = j.context_window;
             if (j && j.logout_url) {
               var lo = document.getElementById("logout-link");
               lo.href = j.logout_url; lo.hidden = false;
             }
             isAdmin = !!(j && j.is_admin);
+            document.getElementById("whoami-sub").textContent = isAdmin ? "Admin" : "Resident";
             if (isAdmin) {
               adminBadge.hidden = false;
               var navModel = document.getElementById("nav-model");
@@ -723,27 +827,79 @@
           .catch(function () {});
       }
 
-      // ---- View switching ----
+      // ---- View switching (chat is primary; skills/soul/tools/model live
+      //      behind Settings) ----
       var views = {
         chat: document.getElementById("view-chat"),
         skills: document.getElementById("view-skills"),
         soul: document.getElementById("view-soul"),
+        tools: document.getElementById("view-tools"),
         model: document.getElementById("view-model")
       };
-      var navBtns = document.querySelectorAll("#nav button");
+      var settingsBar = document.getElementById("settings-bar");
+      var openSettingsBtn = document.getElementById("open-settings");
+      var navBtns = document.querySelectorAll("#settings-nav button");
       var skillsLoaded = false, soulLoaded = false;
 
       function showView(name) {
         Object.keys(views).forEach(function (k) { views[k].classList.toggle("active", k === name); });
+        var inSettings = name !== "chat";
+        settingsBar.hidden = !inSettings;
+        openSettingsBtn.classList.toggle("active", inSettings);
         navBtns.forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-view") === name); });
         if (name === "skills" && !skillsLoaded) { skillsLoaded = true; loadSkills(); }
         if (name === "soul" && !soulLoaded) { soulLoaded = true; loadSoul(); }
+        if (name === "tools") { loadTools(); }
         if (name === "model") { loadModel(); }
         closeRail();
       }
       navBtns.forEach(function (b) {
         b.addEventListener("click", function () { showView(b.getAttribute("data-view")); });
       });
+      function openSettings() { showView("skills"); }
+      openSettingsBtn.addEventListener("click", openSettings);
+      document.getElementById("topbar-settings").addEventListener("click", openSettings);
+      document.getElementById("settings-back").addEventListener("click", function () { showView("chat"); });
+      document.getElementById("brand-home").addEventListener("click", function () { showView("chat"); });
+
+      // ---- Tools / toolsets ----
+      var toolsCards = document.getElementById("tools-cards");
+      function loadTools() {
+        return fetch("/api/toolsets")
+          .then(function (r) { return r.ok ? r.json() : { toolsets: [] }; })
+          .then(function (j) {
+            var list = (j && j.toolsets) || [];
+            toolsCards.textContent = "";
+            if (!list.length) {
+              var n = document.createElement("div"); n.className = "empty-note";
+              n.textContent = "No toolsets reported."; toolsCards.appendChild(n); return;
+            }
+            list.forEach(function (t) {
+              var card = document.createElement("div"); card.className = "tool-card";
+              var head = document.createElement("div"); head.className = "head";
+              var label = document.createElement("span"); label.className = "label";
+              label.textContent = t.label || t.name; head.appendChild(label);
+              var on = t.enabled && t.configured;
+              var pill = document.createElement("span");
+              pill.className = "pill " + (on ? "on" : "off");
+              pill.textContent = on ? "active" : (t.configured ? "off" : "not set up");
+              head.appendChild(pill);
+              card.appendChild(head);
+              if (t.description) {
+                var d = document.createElement("div"); d.className = "desc"; d.textContent = t.description; card.appendChild(d);
+              }
+              if (t.tools && t.tools.length) {
+                var tw = document.createElement("div"); tw.className = "tools";
+                t.tools.forEach(function (name) {
+                  var chip = document.createElement("span"); chip.className = "chip"; chip.textContent = name; tw.appendChild(chip);
+                });
+                card.appendChild(tw);
+              }
+              toolsCards.appendChild(card);
+            });
+          })
+          .catch(function () { toolsCards.textContent = ""; });
+      }
 
       // ---- Skills ----
       var skillsCards = document.getElementById("skills-cards");

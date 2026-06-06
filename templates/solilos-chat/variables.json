@@ -37,6 +37,11 @@
     "description": "URL of the config sidecar running in the hermes pod (host loopback; both pods are hostNetwork). The panel proxies admin soul/model edits here because the chat pod can't write Hermes' own data dir. Must match the hermes template's CONFIG_AGENT_PORT (default 8650).",
     "default": "http://127.0.0.1:8650"
   },
+  "CONTEXT_WINDOW": {
+    "type": "text",
+    "description": "Model context window in tokens, shown by the chat's /context command. Match the ollama template's OLLAMA_CONTEXT_LENGTH (default 131072).",
+    "default": "131072"
+  },
   "LOGOUT_URL": {
     "type": "text",
     "description": "Optional logout URL shown in the chat sidebar footer (e.g. your Authelia logout endpoint like https://auth.<domain>/logout). Leave empty to hide the logout link.",

@@ -59,6 +59,26 @@ class HermesClient:
             raise HermesError("create_session: no session id in response")
         return session_id
 
+    async def list_toolsets(self) -> list[dict[str, Any]]:
+        """List Hermes' toolsets (`GET /v1/toolsets`) — built-ins + MCP
+        servers, each `{name, label, description, enabled, configured,
+        tools[]}`. Empty list on failure."""
+        url = f"{self._base_url}/v1/toolsets"
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.get(url, headers=self._headers()) as resp:
+                if resp.status >= 400:
+                    detail = (await resp.text())[:300]
+                    log.error(
+                        "chat.hermes.error",
+                        op="list_toolsets",
+                        status=resp.status,
+                        body=detail,
+                    )
+                    return []
+                body = await resp.json()
+        data = body.get("data") if isinstance(body, dict) else None
+        return data if isinstance(data, list) else []
+
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session. True on 2xx (or 404 — already gone is fine)."""
         url = f"{self._base_url}/api/sessions/{session_id}"
@@ -269,6 +289,12 @@ def _session_summary(raw: dict[str, Any]) -> dict[str, Any]:
         "title": title,
         "preview": preview,
         "last_activity": str(last or ""),
+        # Token/cost accounting for the /context command (Hermes per-session
+        # totals; absent on list items, present on the single-session fetch).
+        "input_tokens": raw.get("input_tokens"),
+        "output_tokens": raw.get("output_tokens"),
+        "message_count": raw.get("message_count"),
+        "estimated_cost_usd": raw.get("estimated_cost_usd"),
     }
 
 

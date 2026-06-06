@@ -80,6 +80,7 @@ def build_app(
     config_agent_url: str = "http://127.0.0.1:8650",
     agent_token: str = "",
     logout_url: str = "",
+    context_window: int = 131072,
 ) -> web.Application:
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
@@ -95,8 +96,18 @@ def build_app(
                 "is_admin": is_admin(request, remote_groups_header, admin_group),
                 "version": VERSION,
                 "logout_url": logout_url,
+                "context_window": context_window,
             }
         )
+
+    async def list_toolsets(_request: web.Request) -> web.Response:
+        try:
+            toolsets = await hermes.list_toolsets()
+        except HermesError:
+            return web.json_response(
+                {"ok": False, "reason": "hermes_unavailable"}, status=502
+            )
+        return web.json_response({"ok": True, "toolsets": toolsets})
 
     async def list_personalities(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "personalities": personalities.catalog()})
@@ -144,10 +155,14 @@ def build_app(
         )
 
     async def get_soul(_request: web.Request) -> web.Response:
-        try:
-            content = Path(soul_path).read_text(encoding="utf-8")
-        except OSError:
-            return web.json_response({"ok": False, "reason": "not_found"}, status=404)
+        # Read through the sidecar (single source of truth), not a local
+        # mount: the agent's atomic writes swap the file inode, which a
+        # single-file bind mount in this pod wouldn't track (stale reads).
+        content = await _agent_get_soul(config_agent_url, agent_token)
+        if content is None:
+            return web.json_response(
+                {"ok": False, "reason": "agent_unavailable"}, status=502
+            )
         return web.json_response({"ok": True, "soul": {"content": content}})
 
     async def put_soul(request: web.Request) -> web.Response:
@@ -355,6 +370,7 @@ def build_app(
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", whoami)
+    app.router.add_get("/api/toolsets", list_toolsets)
     app.router.add_get("/api/personalities", list_personalities)
     app.router.add_get("/api/skills", list_skills)
     app.router.add_get("/api/skills/{skill_id}", get_skill)
@@ -412,6 +428,22 @@ async def _agent_put_soul(agent_url: str, token: str, content: str) -> bool:
     except (aiohttp.ClientError, TimeoutError, OSError) as e:
         log.error("chat.agent.unreachable", op="put_soul", error=str(e))
         return False
+
+
+async def _agent_get_soul(agent_url: str, token: str) -> str | None:
+    """Read SOUL.md content from the sidecar. None on failure."""
+    url = f"{agent_url.rstrip('/')}/soul"
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.get(url, headers=_agent_headers(token)) as r:
+                if r.status >= 400:
+                    return None
+                body = await r.json()
+        return str(body.get("content", "")) if isinstance(body, dict) else None
+    except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as e:
+        log.error("chat.agent.unreachable", op="get_soul", error=str(e))
+        return None
 
 
 async def _agent_get_model(agent_url: str, token: str) -> dict[str, Any] | None:
@@ -497,6 +529,7 @@ async def serve(
     config_agent_url: str = "http://127.0.0.1:8650",
     agent_token: str = "",
     logout_url: str = "",
+    context_window: int = 131072,
 ) -> None:
     app = build_app(
         hermes=hermes,
@@ -509,6 +542,7 @@ async def serve(
         config_agent_url=config_agent_url,
         agent_token=agent_token,
         logout_url=logout_url,
+        context_window=context_window,
     )
     runner = web.AppRunner(app)
     await runner.setup()

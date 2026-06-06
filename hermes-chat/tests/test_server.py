@@ -88,6 +88,18 @@ class _FakeHermes:
         self.deleted.append(session_id)
         return True
 
+    async def list_toolsets(self):
+        return [
+            {
+                "name": "web",
+                "label": "Web",
+                "description": "search",
+                "enabled": True,
+                "configured": True,
+                "tools": ["web_search"],
+            }
+        ]
+
     async def chat(self, session_id, text):
         self.turns.append((session_id, text))
         return f"echo: {text}"
@@ -147,6 +159,10 @@ def test_session_owner_and_summary():
         "title": "Trip",
         "preview": "plan the trip",
         "last_activity": "1780677907.7",
+        "input_tokens": None,
+        "output_tokens": None,
+        "message_count": None,
+        "estimated_cost_usd": None,
     }
 
 
@@ -611,35 +627,58 @@ async def test_skills_endpoints(aiohttp_client, tmp_path):
 # --- Soul -----------------------------------------------------------------
 
 
-async def test_soul_endpoint(aiohttp_client, tmp_path):
-    soul = tmp_path / "SOUL.md"
-    soul.write_text("# Sol\nI am the soul.", encoding="utf-8")
-    fake = _FakeHermes()
+async def test_soul_endpoint_reads_via_agent(aiohttp_client, monkeypatch):
+    from solilos_chat import server as server_mod
+
+    async def fake_get(url, token):
+        return "# Sol\nI am the soul."
+
+    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_get)
     app = build_app(
-        hermes=fake,
-        remote_user_header="Remote-User",
-        default_uid="household",
-        soul_path=str(soul),
+        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
-
     resp = await client.get("/api/soul")
     body = await resp.json()
     assert resp.status == 200
     assert body["soul"]["content"] == "# Sol\nI am the soul."
 
 
-async def test_soul_endpoint_missing(aiohttp_client, tmp_path):
-    fake = _FakeHermes()
+async def test_soul_endpoint_agent_unavailable(aiohttp_client, monkeypatch):
+    from solilos_chat import server as server_mod
+
+    async def fake_get(url, token):
+        return None
+
+    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_get)
     app = build_app(
-        hermes=fake,
-        remote_user_header="Remote-User",
-        default_uid="household",
-        soul_path=str(tmp_path / "absent.md"),
+        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
     resp = await client.get("/api/soul")
-    assert resp.status == 404
+    assert resp.status == 502
+
+
+async def test_toolsets_endpoint(aiohttp_client):
+    app = build_app(
+        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+    body = await (await client.get("/api/toolsets")).json()
+    assert body["ok"] is True
+    assert body["toolsets"][0]["name"] == "web"
+
+
+async def test_whoami_reports_context_window(aiohttp_client):
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        context_window=4096,
+    )
+    client = await aiohttp_client(app)
+    body = await (await client.get("/api/whoami")).json()
+    assert body["context_window"] == 4096
 
 
 # --- Soul edit (admin, proxied to the config sidecar) ---------------------

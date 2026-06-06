@@ -25,6 +25,7 @@ class Settings:
     soul_path: str
     config_agent_url: str
     logout_url: str
+    context_window: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -62,6 +63,9 @@ class Settings:
             # Optional Authelia logout URL for the sidebar footer. Empty ⇒ the
             # panel hides the logout link (avoids a dead link when unset).
             logout_url=os.environ.get("LOGOUT_URL", ""),
+            # Model context window (tokens) shown by the /context command.
+            # Matches the ollama template's OLLAMA_CONTEXT_LENGTH default.
+            context_window=int(os.environ.get("CONTEXT_WINDOW", "131072")),
         )
 
 

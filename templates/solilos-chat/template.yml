@@ -63,18 +63,22 @@ spec:
       value: "admins"
     - name: DEFAULT_UID
       value: "{{DEFAULT_UID}}"
-    # Where the read-only skill pack and the global SOUL.md are mounted (see
-    # volumeMounts). Hermes exposes no skill-body / soul API, so the panel
-    # renders both from disk.
+    # Read-write mount of the skill pack so admins can edit the standard set
+    # from the panel (Hermes exposes no skill-body API). Soul + model are
+    # read AND written through the config sidecar, so the chat pod needs no
+    # SOUL.md / config mount of its own.
     - name: SKILLS_DIR
       value: "/data/skills"
-    - name: SOUL_PATH
-      value: "/data/SOUL.md"
     # The config sidecar in the hermes pod (loopback; both pods hostNetwork).
-    # Admin soul/model writes proxy here because the chat pod can't write
-    # Hermes' own data dir. Auth reuses API_SERVER_KEY (above).
+    # The panel reads + writes the soul and switches the model through it,
+    # because the chat pod can't touch Hermes' own data dir. Auth reuses
+    # API_SERVER_KEY (above).
     - name: CONFIG_AGENT_URL
       value: "{{CONFIG_AGENT_URL}}"
+    # Model context window (tokens) the /context command reports; match the
+    # ollama template's OLLAMA_CONTEXT_LENGTH.
+    - name: CONTEXT_WINDOW
+      value: "{{CONTEXT_WINDOW}}"
     # Optional Authelia logout URL for the sidebar footer; empty hides the
     # link (no dead link when unset).
     - name: LOGOUT_URL
@@ -85,25 +89,16 @@ spec:
     # directly (loopback:{{HERMES_CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint
     # as the gatekeeper).
-    # Skills mount read-write so admins can edit the standard set from the
-    # panel: the skills host dir is owned by the host user and this pod is
-    # rootless (container-root maps to that user), so it can replace files
-    # there. Hermes reads a skill body live; a frontmatter change needs a
-    # restart, which the panel surfaces. SOUL.md stays read-only — it lives
-    # in Hermes' own 0700 data dir (a foreign subuid owns it), so soul edits
-    # go through a privileged lever, not this mount (phase 2b).
+    # Skills mount read-write so admins can edit the standard set: the skills
+    # host dir is owned by the host user and this pod is rootless
+    # (container-root maps to that user), so it can replace files there. A
+    # body edit is live; a frontmatter change needs a Hermes restart, which
+    # the panel surfaces.
     volumeMounts:
     - mountPath: /data/skills
       name: solilos-skills
-    - mountPath: /data/SOUL.md
-      name: solilos-soul
-      readOnly: true
   volumes:
   - name: solilos-skills
     hostPath:
       path: {{DATA_DIR}}/solbay/skills
       type: DirectoryOrCreate
-  - name: solilos-soul
-    hostPath:
-      path: {{DATA_DIR}}/hermes/SOUL.md
-      type: FileOrCreate

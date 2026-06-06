@@ -29,6 +29,7 @@ def main() -> None:
             config_agent_url=settings.config_agent_url,
             agent_token=settings.hermes_token,
             logout_url=settings.logout_url,
+            context_window=settings.context_window,
         )
     )
 
