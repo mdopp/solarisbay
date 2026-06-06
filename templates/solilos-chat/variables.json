@@ -37,6 +37,11 @@
     "description": "URL of the config sidecar running in the hermes pod (host loopback; both pods are hostNetwork). The panel proxies admin soul/model edits here because the chat pod can't write Hermes' own data dir. Must match the hermes template's CONFIG_AGENT_PORT (default 8650).",
     "default": "http://127.0.0.1:8650"
   },
+  "LOGOUT_URL": {
+    "type": "text",
+    "description": "Optional logout URL shown in the chat sidebar footer (e.g. your Authelia logout endpoint like https://auth.<domain>/logout). Leave empty to hide the logout link.",
+    "default": ""
+  },
   "DEFAULT_UID": {
     "type": "text",
     "description": "Hermes uid used when the Authelia `Remote-User` header is absent (e.g. direct loopback access for offline testing). Normal requests through NPM+Authelia carry the header and key off the SSO identity instead.",

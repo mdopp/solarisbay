@@ -24,6 +24,7 @@ class Settings:
     skills_dir: str
     soul_path: str
     config_agent_url: str
+    logout_url: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -58,6 +59,9 @@ class Settings:
             config_agent_url=os.environ.get(
                 "CONFIG_AGENT_URL", "http://127.0.0.1:8650"
             ),
+            # Optional Authelia logout URL for the sidebar footer. Empty ⇒ the
+            # panel hides the logout link (avoids a dead link when unset).
+            logout_url=os.environ.get("LOGOUT_URL", ""),
         )
 
 

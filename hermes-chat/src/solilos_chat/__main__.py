@@ -28,6 +28,7 @@ def main() -> None:
             soul_path=settings.soul_path,
             config_agent_url=settings.config_agent_url,
             agent_token=settings.hermes_token,
+            logout_url=settings.logout_url,
         )
     )
 

@@ -59,6 +59,22 @@ class HermesClient:
             raise HermesError("create_session: no session id in response")
         return session_id
 
+    async def delete_session(self, session_id: str) -> bool:
+        """Delete a session. True on 2xx (or 404 — already gone is fine)."""
+        url = f"{self._base_url}/api/sessions/{session_id}"
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.delete(url, headers=self._headers()) as resp:
+                if resp.status < 400 or resp.status == 404:
+                    return True
+                detail = (await resp.text())[:300]
+                log.error(
+                    "chat.hermes.error",
+                    op="delete_session",
+                    status=resp.status,
+                    body=detail,
+                )
+                return False
+
     async def list_sessions(self, uid: str) -> list[dict[str, Any]]:
         """List all sessions (single-resident: no per-resident filter).
 

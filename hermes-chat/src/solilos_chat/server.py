@@ -22,6 +22,19 @@ from solilos_chat.logging import log
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+def _version() -> str:
+    """The chat package version, for the sidebar footer. '' if unavailable."""
+    try:
+        from importlib.metadata import version
+
+        return version("solilos-chat")
+    except Exception:  # noqa: BLE001 — metadata absent in some run contexts
+        return ""
+
+
+VERSION = _version()
+
+
 def _title_from(text: str) -> str:
     """Derive a short session title from the first user message.
 
@@ -66,6 +79,7 @@ def build_app(
     soul_path: str = "/data/SOUL.md",
     config_agent_url: str = "http://127.0.0.1:8650",
     agent_token: str = "",
+    logout_url: str = "",
 ) -> web.Application:
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
@@ -79,6 +93,8 @@ def build_app(
                 "ok": True,
                 "uid": resolve_uid(request, remote_user_header, default_uid),
                 "is_admin": is_admin(request, remote_groups_header, admin_group),
+                "version": VERSION,
+                "logout_url": logout_url,
             }
         )
 
@@ -248,6 +264,28 @@ def build_app(
             return web.json_response({"ok": False, "reason": "not_found"}, status=404)
         return web.json_response({"ok": True, "session": session})
 
+    async def delete_session(request: web.Request) -> web.Response:
+        # No ownership gate (single-resident reality — list-all/open-any until
+        # per-resident isolation, #153). Deleting a session just removes it
+        # from the shared household list.
+        session_id = request.match_info["session_id"]
+        try:
+            ok = await hermes.delete_session(session_id)
+        except HermesError:
+            return web.json_response(
+                {"ok": False, "reason": "hermes_unavailable"}, status=502
+            )
+        if not ok:
+            return web.json_response(
+                {"ok": False, "reason": "delete_failed"}, status=502
+            )
+        log.info(
+            "chat.session.deleted",
+            uid=resolve_uid(request, remote_user_header, default_uid),
+            session_id=session_id,
+        )
+        return web.json_response({"ok": True})
+
     async def chat(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
@@ -328,6 +366,7 @@ def build_app(
     app.router.add_get("/api/sessions", list_sessions)
     app.router.add_post("/api/sessions", create_session)
     app.router.add_get("/api/sessions/{session_id}", get_session)
+    app.router.add_delete("/api/sessions/{session_id}", delete_session)
     app.router.add_post("/api/chat", chat)
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_static("/static/", STATIC_DIR)
@@ -457,6 +496,7 @@ async def serve(
     soul_path: str = "/data/SOUL.md",
     config_agent_url: str = "http://127.0.0.1:8650",
     agent_token: str = "",
+    logout_url: str = "",
 ) -> None:
     app = build_app(
         hermes=hermes,
@@ -468,6 +508,7 @@ async def serve(
         soul_path=soul_path,
         config_agent_url=config_agent_url,
         agent_token=agent_token,
+        logout_url=logout_url,
     )
     runner = web.AppRunner(app)
     await runner.setup()

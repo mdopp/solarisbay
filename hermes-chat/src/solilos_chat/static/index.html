@@ -3,29 +3,37 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Solilos — Chat</title>
+  <title>Solilos</title>
   <style>
     :root {
-      --bg: #f6f6f4;
+      --bg: #f3f4f3;
       --panel: #ffffff;
-      --ink: #1f2227;
-      --muted: #6b7079;
+      --rail: #fbfbfa;
+      --ink: #1c1f24;
+      --muted: #6a7079;
       --line: #e4e4e0;
-      --accent: #3a6ea5;
-      --bubble-me: #eef2f7;
-      --bubble-sol: #f3f3f0;
+      --accent: #e07a35;          /* orange accent */
+      --accent-ink: #ffffff;
+      --accent-soft: rgba(224, 122, 53, 0.12);
+      --bubble-me: #eceef0;
+      --bubble-sol: #f4f4f1;
+      --danger: #c2483a;
       --radius: 12px;
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #16181c;
-        --panel: #1d2025;
-        --ink: #e8e9ea;
-        --muted: #9aa0a8;
+        --bg: #15171b;
+        --panel: #1c1f24;
+        --rail: #181a1e;
+        --ink: #e7e8ea;
+        --muted: #969ca5;
         --line: #2a2e34;
-        --accent: #7aa7d6;
-        --bubble-me: #25303d;
-        --bubble-sol: #232730;
+        --accent: #ef8b46;
+        --accent-ink: #1a1205;
+        --accent-soft: rgba(239, 139, 70, 0.16);
+        --bubble-me: #262b33;
+        --bubble-sol: #21252b;
+        --danger: #e08585;
       }
     }
     * { box-sizing: border-box; }
@@ -35,126 +43,111 @@
       background: var(--bg);
       color: var(--ink);
       display: flex;
-      justify-content: center;
-    }
-    .shell {
-      width: 100%;
-      max-width: 1040px;
-      display: flex;
-      height: 100vh;
       min-height: 0;
     }
-    .sidebar {
-      width: 260px;
-      flex: 0 0 260px;
+    button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+
+    /* ---------- Left rail (ServiceBay-style) ---------- */
+    .rail {
+      width: 264px; flex: 0 0 264px;
+      background: var(--rail);
       border-right: 1px solid var(--line);
-      background: var(--panel);
-      display: flex;
-      flex-direction: column;
+      display: flex; flex-direction: column;
       min-height: 0;
     }
-    .sidebar .top {
-      padding: 14px;
-      border-bottom: 1px solid var(--line);
+    .rail-head {
+      display: flex; align-items: center; gap: 10px;
+      padding: 15px 16px; border-bottom: 1px solid var(--line);
     }
-    #new-session {
-      width: 100%;
-      padding: 9px 12px;
-      text-align: center;
+    .logo {
+      width: 30px; height: 30px; border-radius: 8px; flex: 0 0 30px;
+      background: var(--accent); color: var(--accent-ink);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 16px; letter-spacing: -0.5px;
     }
-    #sessions {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow-y: auto;
-      padding: 6px;
+    .brand-name { font-weight: 700; font-size: 16px; letter-spacing: 0.2px; }
+    .brand-ver { font-size: 11px; color: var(--muted); }
+
+    .rail-nav { padding: 10px 10px 4px; display: flex; flex-direction: column; gap: 2px; }
+    .rail-nav button {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%; text-align: left; padding: 9px 11px;
+      border-radius: 9px; color: var(--muted); font-weight: 500; font-size: 14px;
     }
+    .rail-nav button:hover { background: var(--bubble-sol); color: var(--ink); }
+    .rail-nav button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .ic { width: 18px; text-align: center; font-size: 15px; flex: 0 0 18px; }
+
+    .rail-sessions {
+      flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+      border-top: 1px solid var(--line); margin-top: 8px;
+    }
+    .rs-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 14px 6px; color: var(--muted);
+      font-size: 11px; letter-spacing: 0.6px; text-transform: uppercase;
+    }
+    .rs-head .grow { flex: 1 1 auto; }
+    .icon-btn {
+      width: 26px; height: 26px; border-radius: 7px; flex: 0 0 26px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 16px;
+    }
+    .icon-btn:hover { background: var(--bubble-sol); color: var(--ink); }
+    #sessions { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 8px; }
     .session {
-      padding: 9px 11px;
-      border-radius: 9px;
-      cursor: pointer;
-      margin-bottom: 2px;
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 8px 8px 11px; border-radius: 9px; cursor: pointer; margin-bottom: 2px;
     }
     .session:hover { background: var(--bubble-sol); }
-    .session.active { background: var(--bubble-me); }
-    .session .title {
-      font-size: 14px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+    .session.active { background: var(--accent-soft); }
+    .session .body { flex: 1 1 auto; min-width: 0; }
+    .session .title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session.active .title { color: var(--accent); font-weight: 600; }
+    .session .when { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .trash {
+      flex: 0 0 26px; width: 26px; height: 26px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 14px; opacity: 0; transition: opacity .12s;
     }
-    .session .when { font-size: 11px; color: var(--muted); margin-top: 2px; }
-    .sessions-empty { padding: 12px; color: var(--muted); font-size: 13px; }
-    .app {
-      flex: 1 1 auto;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      height: 100vh;
-      min-height: 0;
-    }
-    header {
-      padding: 14px 18px;
-      border-bottom: 1px solid var(--line);
-      font-weight: 600;
-      letter-spacing: 0.2px;
-      display: flex;
-      align-items: baseline;
-      gap: 8px;
-    }
-    #sidebar-toggle {
-      display: none;
-      padding: 0;
-      width: 34px;
-      height: 30px;
-      background: none;
-      color: var(--ink);
-      font-size: 18px;
-      align-self: center;
-    }
-    #backdrop { display: none; }
+    .session:hover .trash { opacity: 1; }
+    .trash:hover { background: rgba(194,72,58,.14); color: var(--danger); }
+    .sessions-empty { padding: 12px 14px; color: var(--muted); font-size: 13px; }
 
-    /* Mobile: the sidebar overlays the chat instead of stealing width, and
-       is collapsed by default — a hamburger in the header toggles it. */
-    @media (max-width: 720px) {
-      #sidebar-toggle { display: inline-block; }
-      .sidebar {
-        position: fixed;
-        top: 0;
-        left: 0;
-        bottom: 0;
-        z-index: 20;
-        width: 78%;
-        max-width: 300px;
-        flex-basis: auto;
-        transform: translateX(-100%);
-        transition: transform 0.2s ease;
-      }
-      body.sidebar-open .sidebar { transform: translateX(0); }
-      body.sidebar-open #backdrop {
-        display: block;
-        position: fixed;
-        inset: 0;
-        z-index: 10;
-        background: rgba(0, 0, 0, 0.35);
-      }
+    .rail-foot { border-top: 1px solid var(--line); padding: 10px 12px; }
+    .rail-user { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 6px; }
+    .rail-user .who { font-weight: 600; }
+    .rail-user .admin-badge {
+      font-size: 9px; letter-spacing: .5px; text-transform: uppercase;
+      color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 0 5px;
     }
-    header .sub { font-weight: 400; color: var(--muted); font-size: 13px; }
+    .rail-links { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+    .rail-links a, .rail-links button {
+      color: var(--muted); font-size: 12px; text-decoration: none; padding: 2px 0;
+    }
+    .rail-links a:hover, .rail-links button:hover { color: var(--accent); }
+
+    /* ---------- Main (the embeddable chat / panel component) ---------- */
+    .main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; height: 100vh; min-height: 0; }
+
+    /* Mobile top bar — hidden on desktop. */
+    .topbar { display: none; }
+
+    .view { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
+    .view.active { display: flex; }
+
     #log {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow-y: auto;
-      padding: 18px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
+      flex: 1 1 auto; min-height: 0; overflow-y: auto;
+      padding: 20px; display: flex; flex-direction: column; gap: 12px;
+      max-width: 900px; width: 100%; margin: 0 auto;
     }
-    .msg { max-width: 80%; padding: 10px 13px; border-radius: var(--radius); word-wrap: break-word; overflow-wrap: anywhere; }
+    .msg { max-width: 84%; padding: 10px 13px; border-radius: var(--radius); word-wrap: break-word; overflow-wrap: anywhere; }
     .msg.me { align-self: flex-end; background: var(--bubble-me); white-space: pre-wrap; }
     .msg.sol { align-self: flex-start; background: var(--bubble-sol); }
     .msg.system { align-self: center; color: var(--muted); background: none; font-size: 13px; padding: 4px; }
+    .msg.info { align-self: flex-start; background: var(--accent-soft); }
     .role { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
 
-    /* Rendered-markdown spacing inside an assistant bubble. */
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
     .md p { margin: 0 0 8px; }
@@ -165,269 +158,234 @@
     .md a { color: var(--accent); }
     .md code {
       font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-      font-size: 0.92em;
-      background: rgba(127, 127, 127, 0.18);
-      padding: 1px 5px;
-      border-radius: 5px;
+      font-size: 0.92em; background: rgba(127,127,127,0.18); padding: 1px 5px; border-radius: 5px;
     }
-    .md pre {
-      margin: 0 0 8px;
-      padding: 10px 12px;
-      background: rgba(127, 127, 127, 0.14);
-      border-radius: 8px;
-      overflow-x: auto;
-    }
+    .md pre { margin: 0 0 8px; padding: 10px 12px; background: rgba(127,127,127,0.14); border-radius: 8px; overflow-x: auto; }
     .md pre code { background: none; padding: 0; font-size: 0.9em; }
-    .md blockquote {
-      margin: 0 0 8px;
-      padding: 2px 12px;
-      border-left: 3px solid var(--line);
-      color: var(--muted);
-    }
+    .md blockquote { margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
     .md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
 
-    /* Activity / thinking indicator. */
     .activity { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .dots { display: inline-flex; gap: 3px; }
-    .dots span {
-      width: 6px; height: 6px; border-radius: 50%;
-      background: var(--muted); opacity: 0.4;
-      animation: blink 1.2s infinite ease-in-out;
-    }
+    .dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); opacity: 0.4; animation: blink 1.2s infinite ease-in-out; }
     .dots span:nth-child(2) { animation-delay: 0.2s; }
     .dots span:nth-child(3) { animation-delay: 0.4s; }
     @keyframes blink { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
-    form {
-      display: flex;
-      gap: 8px;
-      padding: 14px 18px;
-      border-top: 1px solid var(--line);
-      background: var(--panel);
-    }
-    textarea {
-      flex: 1;
-      resize: none;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      padding: 10px 12px;
-      font: inherit;
-      line-height: 1.4;
-      background: var(--bg);
-      color: var(--ink);
-      max-height: 168px;
-      overflow-y: auto;
-    }
-    textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-    button {
-      border: none;
-      border-radius: var(--radius);
-      padding: 0 18px;
-      background: var(--accent);
-      color: #fff;
-      font: inherit;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    button:disabled { opacity: 0.5; cursor: default; }
 
-    /* Header nav + personality picker. */
-    header .grow { flex: 1 1 auto; }
-    .nav { display: flex; gap: 4px; }
-    .nav button {
-      background: none; color: var(--muted); font-weight: 500;
-      padding: 5px 11px; border-radius: 8px; font-size: 13px;
+    form#composer {
+      display: flex; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line);
+      background: var(--panel); max-width: 900px; width: 100%; margin: 0 auto;
     }
-    .nav button:hover { background: var(--bubble-sol); color: var(--ink); }
-    .nav button.active { background: var(--bubble-me); color: var(--ink); }
-    .persona {
-      display: flex; align-items: center; gap: 6px;
-      font-size: 12px; color: var(--muted);
+    textarea#input {
+      flex: 1; resize: none; border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 10px 12px; font: inherit; line-height: 1.4; background: var(--bg); color: var(--ink);
+      max-height: 168px; overflow-y: auto;
     }
-    .persona select {
-      font: inherit; font-size: 13px; padding: 4px 8px;
-      border: 1px solid var(--line); border-radius: 8px;
-      background: var(--bg); color: var(--ink);
+    textarea#input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    .composer-row { display: flex; align-items: center; gap: 10px; max-width: 900px; width: 100%; margin: 0 auto; padding: 0 18px 8px; }
+    .composer-row .persona { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .composer-row select {
+      font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--line);
+      border-radius: 8px; background: var(--bg); color: var(--ink);
     }
-    .admin-badge {
-      font-size: 10px; letter-spacing: 0.5px; text-transform: uppercase;
-      color: var(--accent); border: 1px solid var(--accent);
-      border-radius: 6px; padding: 1px 6px;
-    }
+    .composer-row .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+    .btn-primary { border-radius: var(--radius); padding: 0 18px; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    .btn-primary:disabled { opacity: 0.5; cursor: default; }
 
-    /* View switching: only one of chat/skills/soul is shown. */
-    .view { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
-    .view.active { display: flex; }
-    .pane {
-      flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 18px;
-    }
+    .pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 20px; }
     .pane h2 { margin: 0 0 4px; font-size: 18px; }
     .pane .lead { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
 
-    /* Skill list cards. */
-    .skill-card {
-      border: 1px solid var(--line); border-radius: 10px;
-      padding: 12px 14px; margin-bottom: 8px; cursor: pointer;
-      background: var(--panel);
-    }
+    .skill-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; cursor: pointer; background: var(--panel); }
     .skill-card:hover { border-color: var(--accent); }
     .skill-card .name { font-weight: 600; font-size: 14px; }
     .skill-card .desc { color: var(--muted); font-size: 13px; margin-top: 3px; }
-    .reader-bar {
-      display: flex; align-items: center; gap: 10px;
-      padding: 12px 18px; border-bottom: 1px solid var(--line);
-    }
-    .reader-bar .back {
-      background: none; color: var(--accent); font-weight: 500;
-      padding: 4px 8px; font-size: 13px;
-    }
+    .reader-bar { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+    .reader-bar .back { color: var(--accent); font-weight: 500; padding: 4px 8px; font-size: 13px; border-radius: 8px; }
+    .reader-bar .back:hover { background: var(--accent-soft); }
     .reader-bar .name { font-weight: 600; }
-    /* The rendered markdown body in a reading pane (skill / soul). */
+    .reader-bar .grow { flex: 1 1 auto; }
     .doc { max-width: 760px; }
     .doc .md { font-size: 15px; line-height: 1.6; }
     .empty-note { color: var(--muted); font-size: 13px; }
 
-    /* Admin edit affordance + monospace editor. */
-    .edit-btn {
-      background: none; color: var(--accent); font-weight: 500;
-      padding: 4px 11px; font-size: 13px; border-radius: 8px;
-    }
-    .edit-btn:hover { background: var(--bubble-sol); }
+    .edit-btn { color: var(--accent); font-weight: 500; padding: 4px 11px; font-size: 13px; border-radius: 8px; }
+    .edit-btn:hover { background: var(--accent-soft); }
     .editor-wrap { display: flex; flex-direction: column; height: 100%; gap: 10px; }
     .code-editor {
       flex: 1 1 auto; min-height: 0; width: 100%; resize: none;
       font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
       font-size: 13px; line-height: 1.55; tab-size: 2;
-      border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
-      background: var(--bg); color: var(--ink);
+      border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: var(--bg); color: var(--ink);
     }
     .code-editor:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     .editor-bar { display: flex; align-items: center; gap: 10px; }
-    .editor-bar .secondary {
-      background: none; color: var(--muted); border: 1px solid var(--line);
-    }
+    .editor-bar .btn-primary { padding: 7px 16px; }
+    .editor-bar .secondary { color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 14px; }
     .editor-status { font-size: 13px; color: var(--muted); }
     .editor-status.ok { color: #2e7d32; }
     .editor-status.warn { color: #b26a00; }
-    .editor-status.err { color: #c33; }
-    @media (prefers-color-scheme: dark) {
-      .editor-status.ok { color: #7bc47f; }
-      .editor-status.warn { color: #e0a458; }
-      .editor-status.err { color: #e08585; }
-    }
+    .editor-status.err { color: var(--danger); }
+    @media (prefers-color-scheme: dark) { .editor-status.ok { color: #7bc47f; } .editor-status.warn { color: #e0a458; } }
 
-    /* Model switch. */
     .model-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
     .model-row label { color: var(--muted); font-size: 13px; }
-    .model-row select {
-      font: inherit; font-size: 14px; padding: 6px 9px;
-      border: 1px solid var(--line); border-radius: 8px;
-      background: var(--bg); color: var(--ink); min-width: 220px;
-    }
+    .model-row select { font: inherit; font-size: 14px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); min-width: 220px; }
+    .model-row .btn-primary { padding: 7px 16px; }
     .model-current { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
+
+    #backdrop { display: none; }
+
+    /* ---------- Mobile ---------- */
+    @media (max-width: 760px) {
+      .topbar {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--rail);
+      }
+      .topbar .brand-name { font-size: 15px; }
+      .topbar .grow { flex: 1 1 auto; }
+      .topbar .icon-btn { width: 34px; height: 32px; font-size: 18px; }
+      .rail {
+        position: fixed; top: 0; left: 0; bottom: 0; z-index: 30;
+        width: 80%; max-width: 310px; flex-basis: auto;
+        transform: translateX(-100%); transition: transform 0.2s ease;
+      }
+      body.rail-open .rail { transform: translateX(0); }
+      body.rail-open #backdrop { display: block; position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,0.4); }
+    }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="top">
-        <button id="new-session" type="button">+ New session</button>
+  <aside class="rail">
+    <div class="rail-head">
+      <div class="logo">S</div>
+      <div>
+        <div class="brand-name">Solilos</div>
+        <div class="brand-ver" id="brand-ver"></div>
+      </div>
+    </div>
+
+    <nav class="rail-nav" id="nav">
+      <button type="button" data-view="chat" class="active"><span class="ic">💬</span> Chat</button>
+      <button type="button" data-view="skills"><span class="ic">🧩</span> Skills</button>
+      <button type="button" data-view="soul"><span class="ic">✦</span> Soul</button>
+      <button type="button" data-view="model" id="nav-model" hidden><span class="ic">⚙</span> Model</button>
+    </nav>
+
+    <div class="rail-sessions">
+      <div class="rs-head">
+        <span>Chats</span><span class="grow"></span>
+        <button class="icon-btn" id="new-session" type="button" title="New chat" aria-label="New chat">＋</button>
       </div>
       <div id="sessions"></div>
-    </aside>
-    <div id="backdrop"></div>
-    <div class="app">
-      <header>
-        <button id="sidebar-toggle" type="button" aria-label="Toggle sessions">☰</button>
-        <nav class="nav" id="nav">
-          <button type="button" data-view="chat" class="active">Chat</button>
-          <button type="button" data-view="skills">Skills</button>
-          <button type="button" data-view="soul">Soul</button>
-          <button type="button" data-view="model" id="nav-model" hidden>Model</button>
-        </nav>
-        <span class="grow"></span>
+    </div>
+
+    <div class="rail-foot">
+      <div class="rail-user">
+        <span class="who" id="whoami-user">…</span>
+        <span class="admin-badge" id="admin-badge" hidden>Admin</span>
+      </div>
+      <div class="rail-links">
+        <a id="release-link" href="https://github.com/mdopp/solbay/releases" target="_blank" rel="noopener">Release news</a>
+        <a href="https://github.com/mdopp/solbay" target="_blank" rel="noopener">GitHub</a>
+        <a id="logout-link" href="#" hidden>Log out</a>
+      </div>
+    </div>
+  </aside>
+
+  <div id="backdrop"></div>
+
+  <div class="main">
+    <div class="topbar">
+      <button class="icon-btn" id="rail-toggle" type="button" aria-label="Menu">☰</button>
+      <span class="brand-name">Solilos</span>
+      <span class="grow"></span>
+      <button class="icon-btn" id="chats-toggle" type="button" title="Chats" aria-label="Chats">💬</button>
+    </div>
+
+    <section id="view-chat" class="view active">
+      <div id="log" aria-live="polite"></div>
+      <div class="composer-row">
         <span class="persona">
           <label for="personality">Persona</label>
           <select id="personality" aria-label="Personality for new sessions"></select>
         </span>
-        <span id="admin-badge" class="admin-badge" hidden>Admin</span>
-      </header>
+        <span class="hint">Type <code>/help</code> for commands</span>
+      </div>
+      <form id="composer">
+        <textarea id="input" rows="1" placeholder="Message Sol…  (/help for commands)" autofocus></textarea>
+        <button id="send" class="btn-primary" type="submit">Send</button>
+      </form>
+    </section>
 
-      <section id="view-chat" class="view active">
-        <div id="log" aria-live="polite"></div>
-        <form id="composer">
-          <textarea id="input" rows="1" placeholder="Message Solilos…" autofocus></textarea>
-          <button id="send" type="submit">Send</button>
-        </form>
-      </section>
-
-      <section id="view-skills" class="view">
-        <div id="skills-list" class="pane">
-          <h2>Skills</h2>
-          <p class="lead">The standard set Sol draws on. Everyone can read them; editing is for admins.</p>
-          <div id="skills-cards"></div>
-        </div>
-        <div id="skill-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
-          <div class="reader-bar">
-            <button class="back" id="skill-back" type="button">← Skills</button>
-            <span class="name" id="skill-name"></span>
-            <span class="grow"></span>
-            <button class="edit-btn" id="skill-edit" type="button" hidden>Edit</button>
-          </div>
-          <div class="pane" id="skill-view"><div class="doc"><div class="md" id="skill-body"></div></div></div>
-          <div class="pane" id="skill-edit-pane" style="display:none;">
-            <div class="editor-wrap">
-              <textarea id="skill-editor" class="code-editor" spellcheck="false" aria-label="Skill source"></textarea>
-              <div class="editor-bar">
-                <button id="skill-save" type="button">Save</button>
-                <button id="skill-cancel" class="secondary" type="button">Cancel</button>
-                <span id="skill-status" class="editor-status"></span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="view-soul" class="view">
+    <section id="view-skills" class="view">
+      <div id="skills-list" class="pane">
+        <h2>Skills</h2>
+        <p class="lead">The standard set Sol draws on. Everyone can read them; editing is for admins.</p>
+        <div id="skills-cards"></div>
+      </div>
+      <div id="skill-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
         <div class="reader-bar">
-          <span class="name">Soul</span>
+          <button class="back" id="skill-back" type="button">← Skills</button>
+          <span class="name" id="skill-name"></span>
           <span class="grow"></span>
-          <button class="edit-btn" id="soul-edit" type="button" hidden>Edit</button>
+          <button class="edit-btn" id="skill-edit" type="button" hidden>Edit</button>
         </div>
-        <div class="pane" id="soul-view">
-          <div class="doc">
-            <p class="lead">Sol's durable identity (SOUL.md). One soul — personalities are per-session overlays on top of it. Edits apply live, no restart.</p>
-            <div class="md" id="soul-body"></div>
-          </div>
-        </div>
-        <div class="pane" id="soul-edit-pane" style="display:none;">
+        <div class="pane" id="skill-view"><div class="doc"><div class="md" id="skill-body"></div></div></div>
+        <div class="pane" id="skill-edit-pane" style="display:none;">
           <div class="editor-wrap">
-            <textarea id="soul-editor" class="code-editor" spellcheck="false" aria-label="Soul source"></textarea>
+            <textarea id="skill-editor" class="code-editor" spellcheck="false" aria-label="Skill source"></textarea>
             <div class="editor-bar">
-              <button id="soul-save" type="button">Save</button>
-              <button id="soul-cancel" class="secondary" type="button">Cancel</button>
-              <span id="soul-status" class="editor-status"></span>
+              <button id="skill-save" class="btn-primary" type="button">Save</button>
+              <button id="skill-cancel" class="secondary" type="button">Cancel</button>
+              <span id="skill-status" class="editor-status"></span>
             </div>
           </div>
         </div>
-      </section>
+      </div>
+    </section>
 
-      <section id="view-model" class="view">
-        <div class="pane">
-          <div class="doc">
-            <h2>Model</h2>
-            <p class="lead">The language model Sol runs on (admin only). Switching it is persistent and restarts Hermes — Sol is briefly unavailable while it reloads.</p>
-            <div class="model-row">
-              <label for="model-select">Model</label>
-              <select id="model-select"></select>
-              <button id="model-apply" type="button">Apply</button>
-            </div>
-            <p class="model-current" id="model-current"></p>
-            <span class="editor-status" id="model-status"></span>
+    <section id="view-soul" class="view">
+      <div class="reader-bar">
+        <span class="name">Soul</span>
+        <span class="grow"></span>
+        <button class="edit-btn" id="soul-edit" type="button" hidden>Edit</button>
+      </div>
+      <div class="pane" id="soul-view">
+        <div class="doc">
+          <p class="lead">Sol's durable identity (SOUL.md). One soul — personalities are per-session overlays on top of it. Edits apply live, no restart.</p>
+          <div class="md" id="soul-body"></div>
+        </div>
+      </div>
+      <div class="pane" id="soul-edit-pane" style="display:none;">
+        <div class="editor-wrap">
+          <textarea id="soul-editor" class="code-editor" spellcheck="false" aria-label="Soul source"></textarea>
+          <div class="editor-bar">
+            <button id="soul-save" class="btn-primary" type="button">Save</button>
+            <button id="soul-cancel" class="secondary" type="button">Cancel</button>
+            <span id="soul-status" class="editor-status"></span>
           </div>
         </div>
-      </section>
-    </div>
+      </div>
+    </section>
+
+    <section id="view-model" class="view">
+      <div class="pane">
+        <div class="doc">
+          <h2>Model</h2>
+          <p class="lead">The language model Sol runs on (admin only). Switching it is persistent and restarts Hermes — Sol is briefly unavailable while it reloads.</p>
+          <div class="model-row">
+            <label for="model-select">Model</label>
+            <select id="model-select"></select>
+            <button id="model-apply" class="btn-primary" type="button">Apply</button>
+          </div>
+          <p class="model-current" id="model-current"></p>
+          <span class="editor-status" id="model-status"></span>
+        </div>
+      </div>
+    </section>
   </div>
+
   <script src="/static/markdown.js"></script>
   <script>
     (function () {
@@ -437,7 +395,6 @@
       var send = document.getElementById("send");
       var sessionsEl = document.getElementById("sessions");
       var newBtn = document.getElementById("new-session");
-      var sidebarToggle = document.getElementById("sidebar-toggle");
       var backdrop = document.getElementById("backdrop");
       var personalitySel = document.getElementById("personality");
       var adminBadge = document.getElementById("admin-badge");
@@ -445,18 +402,15 @@
 
       function currentPersonality() { return personalitySel.value || "sol"; }
 
-      function closeSidebar() { document.body.classList.remove("sidebar-open"); }
-      sidebarToggle.addEventListener("click", function () {
-        document.body.classList.toggle("sidebar-open");
-      });
-      backdrop.addEventListener("click", closeSidebar);
+      // ---- Mobile drawer ----
+      function openRail() { document.body.classList.add("rail-open"); }
+      function closeRail() { document.body.classList.remove("rail-open"); }
+      document.getElementById("rail-toggle").addEventListener("click", openRail);
+      document.getElementById("chats-toggle").addEventListener("click", openRail);
+      backdrop.addEventListener("click", closeRail);
 
-      function atBottom() {
-        return log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-      }
-      function scrollDown(stick) {
-        if (stick) log.scrollTop = log.scrollHeight;
-      }
+      function atBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 40; }
+      function scrollDown(stick) { if (stick) log.scrollTop = log.scrollHeight; }
 
       function addText(role, text) {
         var el = document.createElement("div");
@@ -464,7 +418,7 @@
         if (role !== "system") {
           var label = document.createElement("span");
           label.className = "role";
-          label.textContent = role === "me" ? "You" : "Solilos";
+          label.textContent = role === "me" ? "You" : "Sol";
           el.appendChild(label);
         }
         el.appendChild(document.createTextNode(text));
@@ -473,36 +427,39 @@
         return el;
       }
 
-      // An assistant bubble that accumulates streamed text and re-renders it
-      // as markdown. Holds a role label + a thinking indicator until the
-      // first token, then a `.md` body.
+      // A local (non-Hermes) info bubble — used by slash commands like /help.
+      function addInfo(markdown) {
+        var el = document.createElement("div");
+        el.className = "msg info";
+        var body = document.createElement("div");
+        body.className = "md";
+        body.innerHTML = window.renderMarkdown(markdown);
+        el.appendChild(body);
+        log.appendChild(el);
+        scrollDown(true);
+      }
+
       function addAssistant() {
         var el = document.createElement("div");
-        el.className = "msg.sol";
+        el.className = "msg sol";
         var label = document.createElement("span");
         label.className = "role";
-        label.textContent = "Solilos";
+        label.textContent = "Sol";
         el.appendChild(label);
-
         var activity = document.createElement("div");
         activity.className = "activity";
         activity.innerHTML =
           '<span class="dots"><span></span><span></span><span></span></span>' +
           '<span class="activity-text">thinking…</span>';
         el.appendChild(activity);
-
         var body = document.createElement("div");
         body.className = "md";
         el.appendChild(body);
         log.appendChild(el);
         scrollDown(true);
-
         var buffer = "";
         return {
-          setActivity: function (txt) {
-            var t = activity.querySelector(".activity-text");
-            if (t) t.textContent = txt;
-          },
+          setActivity: function (txt) { var t = activity.querySelector(".activity-text"); if (t) t.textContent = txt; },
           append: function (delta) {
             var stick = atBottom();
             if (activity.parentNode) el.removeChild(activity);
@@ -516,11 +473,7 @@
             else body.innerHTML = window.renderMarkdown(buffer);
             scrollDown(atBottom());
           },
-          fail: function (msg) {
-            el.removeChild(activity);
-            el.className = "msg system";
-            body.textContent = msg;
-          }
+          fail: function (msg) { el.removeChild(activity); el.className = "msg system"; body.textContent = msg; }
         };
       }
 
@@ -529,16 +482,10 @@
         input.style.height = Math.min(input.scrollHeight, 168) + "px";
       }
       input.addEventListener("input", autosize);
-
       input.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          form.requestSubmit();
-        }
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
       });
 
-      // Parse the proxy's SSE stream incrementally (fetch + ReadableStream;
-      // EventSource can't POST a body).
       function streamChat(text, msg) {
         return fetch("/api/chat/stream", {
           method: "POST",
@@ -549,28 +496,21 @@
           var reader = r.body.getReader();
           var decoder = new TextDecoder();
           var buf = "";
-
           function handle(event, data) {
             var d = {};
             try { d = JSON.parse(data); } catch (e) {}
-            if (event === "session") {
-              if (d.session_id) sessionId = d.session_id;
-            } else if (event === "delta") {
-              if (d.text) msg.append(d.text);
-            } else if (event === "tool") {
+            if (event === "session") { if (d.session_id) sessionId = d.session_id; }
+            else if (event === "delta") { if (d.text) msg.append(d.text); }
+            else if (event === "tool") {
               if (d.phase === "started") msg.setActivity("using " + (d.name || "tool") + "…");
               else msg.setActivity("thinking…");
-            } else if (event === "error") {
-              msg.fail("Solilos is unavailable right now. Please try again.");
-            }
+            } else if (event === "error") { msg.fail("Sol is unavailable right now. Please try again."); }
           }
-
           function flush() {
             var frames = buf.split("\n\n");
             buf = frames.pop();
             frames.forEach(function (frame) {
-              var event = "message";
-              var data = "";
+              var event = "message", data = "";
               frame.split("\n").forEach(function (line) {
                 if (line.indexOf("event:") === 0) event = line.slice(6).trim();
                 else if (line.indexOf("data:") === 0) data += line.slice(5).replace(/^ /, "");
@@ -578,7 +518,6 @@
               handle(event, data);
             });
           }
-
           function pump() {
             return reader.read().then(function (res) {
               if (res.done) { buf += "\n\n"; flush(); return; }
@@ -591,36 +530,61 @@
         });
       }
 
+      // ---- Slash commands (handled in the browser, not sent to Sol) ----
+      var COMMANDS = [
+        ["/help", "Show this list of commands"],
+        ["/new", "Start a new chat"],
+        ["/delete", "Delete the current chat"],
+        ["/skills", "Open the Skills panel"],
+        ["/soul", "Open the Soul panel"],
+        ["/model", "Open the Model panel (admins)"]
+      ];
+      function helpMarkdown() {
+        var lines = ["**Commands** — type these in the message box:", ""];
+        COMMANDS.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
+        lines.push("");
+        lines.push("Anything not starting with `/` is sent to Sol.");
+        return lines.join("\n");
+      }
+      function handleCommand(raw) {
+        var cmd = raw.slice(1).split(/\s+/)[0].toLowerCase();
+        if (cmd === "help" || cmd === "") { addInfo(helpMarkdown()); return; }
+        if (cmd === "new") { newSession(); addText("system", "Started a new chat."); return; }
+        if (cmd === "delete") {
+          if (!sessionId) { addText("system", "No chat to delete yet."); return; }
+          deleteSession(sessionId); return;
+        }
+        if (cmd === "skills" || cmd === "soul") { showView(cmd); return; }
+        if (cmd === "model") {
+          if (isAdmin) { showView("model"); } else { addText("system", "The model switch is for admins."); }
+          return;
+        }
+        addInfo("Unknown command `/" + cmd + "`.\n\n" + helpMarkdown());
+      }
+
       form.addEventListener("submit", function (e) {
         e.preventDefault();
         var text = input.value.trim();
         if (!text) return;
+        if (text.charAt(0) === "/") { input.value = ""; autosize(); handleCommand(text); return; }
         var firstTurn = !sessionId;
         addText("me", text);
-        input.value = "";
-        autosize();
+        input.value = ""; autosize();
         send.disabled = true;
         var msg = addAssistant();
-
         streamChat(text, msg)
           .then(function () { msg.finish(); if (firstTurn) loadSessions(); })
           .catch(function () { msg.fail("Network error. Please try again."); })
-          .finally(function () {
-            send.disabled = false;
-            input.focus();
-          });
+          .finally(function () { send.disabled = false; input.focus(); });
       });
 
-      // --- Session list ---------------------------------------------------
+      // ---- Session list ----
       function fmtWhen(ts) {
         if (!ts) return "";
-        // Hermes emits an epoch float (seconds); also tolerate an ISO string.
         var num = Number(ts);
         var d = isNaN(num) ? new Date(ts) : new Date(num * 1000);
         if (isNaN(d.getTime())) return "";
-        return d.toLocaleString([], {
-          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
-        });
+        return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
       }
 
       function renderSessions(list) {
@@ -628,24 +592,28 @@
         if (!list.length) {
           var empty = document.createElement("div");
           empty.className = "sessions-empty";
-          empty.textContent = "No sessions yet.";
+          empty.textContent = "No chats yet.";
           sessionsEl.appendChild(empty);
           return;
         }
         list.forEach(function (s) {
           var row = document.createElement("div");
           row.className = "session" + (s.id === sessionId ? " active" : "");
+          var body = document.createElement("div");
+          body.className = "body";
           var title = document.createElement("div");
           title.className = "title";
-          title.textContent = s.title || s.preview || "New session";
-          row.appendChild(title);
+          title.textContent = s.title || s.preview || "New chat";
+          body.appendChild(title);
           var when = fmtWhen(s.last_activity);
-          if (when) {
-            var w = document.createElement("div");
-            w.className = "when";
-            w.textContent = when;
-            row.appendChild(w);
-          }
+          if (when) { var w = document.createElement("div"); w.className = "when"; w.textContent = when; body.appendChild(w); }
+          row.appendChild(body);
+          var del = document.createElement("button");
+          del.className = "trash"; del.type = "button"; del.title = "Delete chat";
+          del.setAttribute("aria-label", "Delete chat");
+          del.textContent = "🗑";
+          del.addEventListener("click", function (e) { e.stopPropagation(); deleteSession(s.id); });
+          row.appendChild(del);
           row.addEventListener("click", function () { openSession(s.id); });
           sessionsEl.appendChild(row);
         });
@@ -658,29 +626,33 @@
           .catch(function () {});
       }
 
+      function deleteSession(id) {
+        if (!window.confirm("Delete this chat? This can't be undone.")) return;
+        fetch("/api/sessions/" + encodeURIComponent(id), { method: "DELETE" })
+          .then(function (r) { if (!r.ok) throw new Error("failed"); })
+          .then(function () { if (id === sessionId) newSession(); else loadSessions(); })
+          .catch(function () { addText("system", "Could not delete that chat."); });
+      }
+
       function clearLog() { log.textContent = ""; }
 
       function openSession(id) {
         if (send.disabled) return;
-        closeSidebar();
+        closeRail();
+        showView("chat");
         fetch("/api/sessions/" + encodeURIComponent(id))
-          .then(function (r) {
-            if (!r.ok) throw new Error("not found");
-            return r.json();
-          })
+          .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
           .then(function (j) {
             var s = (j && j.session) || {};
             sessionId = s.id || id;
             clearLog();
             (s.messages || []).forEach(function (m) {
-              if (m.role === "user") {
-                addText("me", m.content);
-              } else if (m.role === "assistant") {
+              if (m.role === "user") { addText("me", m.content); }
+              else if (m.role === "assistant") {
                 var el = document.createElement("div");
-                el.className = "msg.sol";
+                el.className = "msg sol";
                 var label = document.createElement("span");
-                label.className = "role";
-                label.textContent = "Solilos";
+                label.className = "role"; label.textContent = "Sol";
                 el.appendChild(label);
                 var body = document.createElement("div");
                 body.className = "md";
@@ -693,9 +665,7 @@
             loadSessions();
             input.focus();
           })
-          .catch(function () {
-            addText("system", "Could not open that session.");
-          });
+          .catch(function () { addText("system", "Could not open that chat."); });
       }
 
       function newSession() {
@@ -703,15 +673,13 @@
         sessionId = null;
         clearLog();
         loadSessions();
-        closeSidebar();
+        closeRail();
+        showView("chat");
         input.focus();
       }
       newBtn.addEventListener("click", newSession);
 
-      // --- Personality ----------------------------------------------------
-      // Chosen per session and applied when a session is born (Hermes sets the
-      // overlay only at create time), so changing it takes effect on the next
-      // new session. Stored locally so the choice survives a reload.
+      // ---- Personality ----
       function loadPersonalities() {
         return fetch("/api/personalities")
           .then(function (r) { return r.ok ? r.json() : { personalities: [] }; })
@@ -721,13 +689,11 @@
             personalitySel.textContent = "";
             list.forEach(function (p) {
               var opt = document.createElement("option");
-              opt.value = p.id;
-              opt.textContent = p.label;
-              opt.title = p.description;
+              opt.value = p.id; opt.textContent = p.label; opt.title = p.description;
               if (p.id === saved) opt.selected = true;
               personalitySel.appendChild(opt);
             });
-            personalitySel.title = "Applies to the next new session";
+            personalitySel.title = "Applies to the next new chat";
           })
           .catch(function () {});
       }
@@ -735,12 +701,18 @@
         localStorage.setItem("sol.personality", personalitySel.value);
       });
 
-      // --- Identity (admin badge + edit affordances) ---------------------
+      // ---- Identity (footer + admin affordances) ----
       var isAdmin = false;
       function loadWhoami() {
         return fetch("/api/whoami")
           .then(function (r) { return r.ok ? r.json() : {}; })
           .then(function (j) {
+            document.getElementById("whoami-user").textContent = (j && j.uid) || "guest";
+            document.getElementById("brand-ver").textContent = j && j.version ? "v" + j.version : "";
+            if (j && j.logout_url) {
+              var lo = document.getElementById("logout-link");
+              lo.href = j.logout_url; lo.hidden = false;
+            }
             isAdmin = !!(j && j.is_admin);
             if (isAdmin) {
               adminBadge.hidden = false;
@@ -751,7 +723,7 @@
           .catch(function () {});
       }
 
-      // --- View switching -------------------------------------------------
+      // ---- View switching ----
       var views = {
         chat: document.getElementById("view-chat"),
         skills: document.getElementById("view-skills"),
@@ -762,22 +734,18 @@
       var skillsLoaded = false, soulLoaded = false;
 
       function showView(name) {
-        Object.keys(views).forEach(function (k) {
-          views[k].classList.toggle("active", k === name);
-        });
-        navBtns.forEach(function (b) {
-          b.classList.toggle("active", b.getAttribute("data-view") === name);
-        });
+        Object.keys(views).forEach(function (k) { views[k].classList.toggle("active", k === name); });
+        navBtns.forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-view") === name); });
         if (name === "skills" && !skillsLoaded) { skillsLoaded = true; loadSkills(); }
         if (name === "soul" && !soulLoaded) { soulLoaded = true; loadSoul(); }
-        if (name === "model") { loadModel(); }  // always refresh (current can change)
-        closeSidebar();
+        if (name === "model") { loadModel(); }
+        closeRail();
       }
       navBtns.forEach(function (b) {
         b.addEventListener("click", function () { showView(b.getAttribute("data-view")); });
       });
 
-      // --- Skills ---------------------------------------------------------
+      // ---- Skills ----
       var skillsCards = document.getElementById("skills-cards");
       var skillsList = document.getElementById("skills-list");
       var skillReader = document.getElementById("skill-reader");
@@ -790,18 +758,14 @@
       var skillSave = document.getElementById("skill-save");
       var skillCancel = document.getElementById("skill-cancel");
       var skillStatus = document.getElementById("skill-status");
-      var currentSkillId = null;
-      var currentSkillRaw = "";
+      var currentSkillId = null, currentSkillRaw = "";
 
       function skillViewMode() {
         skillEditPane.style.display = "none";
         skillView.style.display = "block";
         skillEditBtn.hidden = !isAdmin;
       }
-      function setStatus(msg, kind) {
-        skillStatus.className = "editor-status" + (kind ? " " + kind : "");
-        skillStatus.textContent = msg || "";
-      }
+      function setStatus(msg, kind) { skillStatus.className = "editor-status" + (kind ? " " + kind : ""); skillStatus.textContent = msg || ""; }
 
       function loadSkills() {
         return fetch("/api/skills")
@@ -810,25 +774,13 @@
             var list = (j && j.skills) || [];
             skillsCards.textContent = "";
             if (!list.length) {
-              var note = document.createElement("div");
-              note.className = "empty-note";
-              note.textContent = "No skills found.";
-              skillsCards.appendChild(note);
-              return;
+              var note = document.createElement("div"); note.className = "empty-note"; note.textContent = "No skills found.";
+              skillsCards.appendChild(note); return;
             }
             list.forEach(function (s) {
-              var card = document.createElement("div");
-              card.className = "skill-card";
-              var name = document.createElement("div");
-              name.className = "name";
-              name.textContent = s.name;
-              card.appendChild(name);
-              if (s.description) {
-                var desc = document.createElement("div");
-                desc.className = "desc";
-                desc.textContent = s.description;
-                card.appendChild(desc);
-              }
+              var card = document.createElement("div"); card.className = "skill-card";
+              var name = document.createElement("div"); name.className = "name"; name.textContent = s.name; card.appendChild(name);
+              if (s.description) { var desc = document.createElement("div"); desc.className = "desc"; desc.textContent = s.description; card.appendChild(desc); }
               card.addEventListener("click", function () { openSkill(s.id); });
               skillsCards.appendChild(card);
             });
@@ -858,7 +810,6 @@
         skillViewMode();
       });
 
-      // Edit / Save / Cancel (admins only — the server enforces it too).
       skillEditBtn.addEventListener("click", function () {
         skillEditor.value = currentSkillRaw;
         setStatus("");
@@ -874,37 +825,19 @@
         skillSave.disabled = true;
         setStatus("Saving…");
         fetch("/api/skills/" + encodeURIComponent(currentSkillId), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: content })
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: content })
         })
-          .then(function (r) {
-            if (r.status === 403) throw new Error("forbidden");
-            if (!r.ok) throw new Error("save failed");
-            return r.json();
-          })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("save failed"); return r.json(); })
           .then(function (j) {
             return openSkill(currentSkillId).then(function () {
-              setStatus(
-                j.restart_needed
-                  ? "Saved. Frontmatter changed — restart Hermes to re-register this skill."
-                  : "Saved.",
-                j.restart_needed ? "warn" : "ok"
-              );
+              setStatus(j.restart_needed ? "Saved. Frontmatter changed — restart Hermes to re-register this skill." : "Saved.", j.restart_needed ? "warn" : "ok");
             });
           })
-          .catch(function (e) {
-            setStatus(
-              e.message === "forbidden"
-                ? "Only admins can edit skills."
-                : "Could not save. Please try again.",
-              "err"
-            );
-          })
+          .catch(function (e) { setStatus(e.message === "forbidden" ? "Only admins can edit skills." : "Could not save. Please try again.", "err"); })
           .finally(function () { skillSave.disabled = false; });
       });
 
-      // --- Soul -----------------------------------------------------------
+      // ---- Soul ----
       var soulBody = document.getElementById("soul-body");
       var soulView = document.getElementById("soul-view");
       var soulEditPane = document.getElementById("soul-edit-pane");
@@ -920,25 +853,18 @@
         soulView.style.display = "block";
         soulEditBtn.hidden = !isAdmin;
       }
-      function setSoulStatus(msg, kind) {
-        soulStatus.className = "editor-status" + (kind ? " " + kind : "");
-        soulStatus.textContent = msg || "";
-      }
+      function setSoulStatus(msg, kind) { soulStatus.className = "editor-status" + (kind ? " " + kind : ""); soulStatus.textContent = msg || ""; }
 
       function loadSoul() {
         return fetch("/api/soul")
           .then(function (r) { return r.ok ? r.json() : { soul: { content: "" } }; })
           .then(function (j) {
             currentSoulRaw = (j && j.soul && j.soul.content) || "";
-            soulBody.innerHTML = currentSoulRaw
-              ? window.renderMarkdown(currentSoulRaw)
-              : '<p class="empty-note">No soul document found.</p>';
+            soulBody.innerHTML = currentSoulRaw ? window.renderMarkdown(currentSoulRaw) : '<p class="empty-note">No soul document found.</p>';
             setSoulStatus("");
             soulViewMode();
           })
-          .catch(function () {
-            soulBody.innerHTML = '<p class="empty-note">Could not load the soul document.</p>';
-          });
+          .catch(function () { soulBody.innerHTML = '<p class="empty-note">Could not load the soul document.</p>'; });
       }
 
       soulEditBtn.addEventListener("click", function () {
@@ -955,55 +881,29 @@
         if (!content.trim()) { setSoulStatus("Can't save an empty soul.", "err"); return; }
         soulSave.disabled = true;
         setSoulStatus("Saving…");
-        fetch("/api/soul", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: content })
-        })
-          .then(function (r) {
-            if (r.status === 403) throw new Error("forbidden");
-            if (!r.ok) throw new Error("save failed");
-            return r.json();
-          })
-          .then(function () {
-            return loadSoul().then(function () {
-              setSoulStatus("Saved. Live now — Sol uses it on the next message.", "ok");
-            });
-          })
-          .catch(function (e) {
-            setSoulStatus(
-              e.message === "forbidden"
-                ? "Only admins can edit the soul."
-                : "Could not save. Please try again.",
-              "err"
-            );
-          })
+        fetch("/api/soul", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: content }) })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("save failed"); return r.json(); })
+          .then(function () { return loadSoul().then(function () { setSoulStatus("Saved. Live now — Sol uses it on the next message.", "ok"); }); })
+          .catch(function (e) { setSoulStatus(e.message === "forbidden" ? "Only admins can edit the soul." : "Could not save. Please try again.", "err"); })
           .finally(function () { soulSave.disabled = false; });
       });
 
-      // --- Model (admin) --------------------------------------------------
+      // ---- Model (admin) ----
       var modelSelect = document.getElementById("model-select");
       var modelApply = document.getElementById("model-apply");
       var modelCurrent = document.getElementById("model-current");
       var modelStatus = document.getElementById("model-status");
 
       function loadModel() {
-        modelStatus.className = "editor-status";
-        modelStatus.textContent = "";
+        modelStatus.className = "editor-status"; modelStatus.textContent = "";
         return fetch("/api/model")
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) {
-            if (!j) {
-              modelCurrent.textContent = "Could not reach the config service.";
-              return;
-            }
+            if (!j) { modelCurrent.textContent = "Could not reach the config service."; return; }
             var current = j.current || "";
             var avail = j.available || [];
-            modelCurrent.textContent = current
-              ? "Current: " + current
-              : "Current model unknown.";
+            modelCurrent.textContent = current ? "Current: " + current : "Current model unknown.";
             modelSelect.textContent = "";
-            // Always include the current model even if Ollama didn't list it.
             if (current && avail.indexOf(current) === -1) avail = [current].concat(avail);
             if (!avail.length) avail = current ? [current] : [];
             avail.forEach(function (m) {
@@ -1014,38 +914,23 @@
             });
             modelApply.disabled = avail.length < 2;
           })
-          .catch(function () {
-            modelCurrent.textContent = "Could not reach the config service.";
-          });
+          .catch(function () { modelCurrent.textContent = "Could not reach the config service."; });
       }
 
       modelApply.addEventListener("click", function () {
         var model = modelSelect.value;
         if (!model) return;
         modelApply.disabled = true;
-        modelStatus.className = "editor-status";
-        modelStatus.textContent = "Applying…";
-        fetch("/api/model", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: model })
-        })
-          .then(function (r) {
-            if (r.status === 403) throw new Error("forbidden");
-            if (!r.ok) throw new Error("failed");
-            return r.json();
-          })
+        modelStatus.className = "editor-status"; modelStatus.textContent = "Applying…";
+        fetch("/api/model", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: model }) })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("failed"); return r.json(); })
           .then(function (j) {
             modelStatus.className = "editor-status warn";
-            modelStatus.textContent = j.restarted
-              ? "Set to " + model + ". Hermes is restarting — Sol is back in a moment."
-              : "Set to " + model + ".";
+            modelStatus.textContent = j.restarted ? "Set to " + model + ". Hermes is restarting — Sol is back in a moment." : "Set to " + model + ".";
           })
           .catch(function (e) {
             modelStatus.className = "editor-status err";
-            modelStatus.textContent = e.message === "forbidden"
-              ? "Only admins can switch the model."
-              : "Could not switch the model. Please try again.";
+            modelStatus.textContent = e.message === "forbidden" ? "Only admins can switch the model." : "Could not switch the model. Please try again.";
           })
           .finally(function () { modelApply.disabled = false; });
       });

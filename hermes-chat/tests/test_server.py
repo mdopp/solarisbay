@@ -71,6 +71,7 @@ class _FakeHermes:
         self.created_prompts = []
         self.turns = []
         self.titles = []
+        self.deleted = []
         self._events = events or []
         # store: list of {id, user_id, title, last_activity, messages}
         self._store = store or []
@@ -82,6 +83,10 @@ class _FakeHermes:
 
     async def set_title(self, session_id, title):
         self.titles.append((session_id, title))
+
+    async def delete_session(self, session_id):
+        self.deleted.append(session_id)
+        return True
 
     async def chat(self, session_id, text):
         self.turns.append((session_id, text))
@@ -357,6 +362,32 @@ async def test_list_sessions_returns_all(aiohttp_client):
     assert ids == {"s-mdopp", "s-lena"}
 
 
+async def test_delete_session(aiohttp_client):
+    fake = _FakeHermes(store=_two_user_store())
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.delete(
+        "/api/sessions/s-mdopp", headers={"Remote-User": "mdopp"}
+    )
+    body = await resp.json()
+    assert resp.status == 200
+    assert body == {"ok": True}
+    assert fake.deleted == ["s-mdopp"]
+
+
+async def test_whoami_reports_version(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+    body = await (await client.get("/api/whoami")).json()
+    assert "version" in body  # may be '' offline, but the key is always present
+
+
 async def test_create_session_returns_id(aiohttp_client):
     fake = _FakeHermes()
     app = build_app(
@@ -441,7 +472,7 @@ async def test_whoami_reports_uid_and_admin(aiohttp_client):
         "/api/whoami", headers={"Remote-User": "mdopp", "Remote-Groups": "admins"}
     )
     body = await resp.json()
-    assert body == {"ok": True, "uid": "mdopp", "is_admin": True}
+    assert body["ok"] is True and body["uid"] == "mdopp" and body["is_admin"] is True
 
     resp = await client.get(
         "/api/whoami", headers={"Remote-User": "cdopp", "Remote-Groups": "family"}

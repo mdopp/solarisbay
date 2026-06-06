@@ -75,6 +75,10 @@ spec:
     # Hermes' own data dir. Auth reuses API_SERVER_KEY (above).
     - name: CONFIG_AGENT_URL
       value: "{{CONFIG_AGENT_URL}}"
+    # Optional Authelia logout URL for the sidebar footer; empty hides the
+    # link (no dead link when unset).
+    - name: LOGOUT_URL
+      value: "{{LOGOUT_URL}}"
     - name: TZ
       value: "{{TZ}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host
