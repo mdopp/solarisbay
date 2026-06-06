@@ -91,6 +91,39 @@ def build_app(
             return web.json_response({"ok": False, "reason": "not_found"}, status=404)
         return web.json_response({"ok": True, "skill": skill})
 
+    async def put_skill(request: web.Request) -> web.Response:
+        if not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        skill_id = request.match_info["skill_id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        content = body.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return web.json_response(
+                {"ok": False, "reason": "empty_content"}, status=400
+            )
+        try:
+            result = skills.write_skill(skills_dir, skill_id, content)
+        except OSError:
+            return web.json_response(
+                {"ok": False, "reason": "write_failed"}, status=500
+            )
+        if result is None:
+            return web.json_response({"ok": False, "reason": "not_found"}, status=404)
+        log.info(
+            "chat.skill.edited",
+            uid=resolve_uid(request, remote_user_header, default_uid),
+            skill=skill_id,
+            frontmatter_changed=result["frontmatter_changed"],
+        )
+        return web.json_response(
+            {"ok": True, "restart_needed": result["frontmatter_changed"]}
+        )
+
     async def get_soul(_request: web.Request) -> web.Response:
         try:
             content = Path(soul_path).read_text(encoding="utf-8")
@@ -211,6 +244,7 @@ def build_app(
     app.router.add_get("/api/personalities", list_personalities)
     app.router.add_get("/api/skills", list_skills)
     app.router.add_get("/api/skills/{skill_id}", get_skill)
+    app.router.add_put("/api/skills/{skill_id}", put_skill)
     app.router.add_get("/api/soul", get_soul)
     app.router.add_get("/api/sessions", list_sessions)
     app.router.add_post("/api/sessions", create_session)

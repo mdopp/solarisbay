@@ -285,6 +285,35 @@
     .doc { max-width: 760px; }
     .doc .md { font-size: 15px; line-height: 1.6; }
     .empty-note { color: var(--muted); font-size: 13px; }
+
+    /* Admin edit affordance + monospace editor. */
+    .edit-btn {
+      background: none; color: var(--accent); font-weight: 500;
+      padding: 4px 11px; font-size: 13px; border-radius: 8px;
+    }
+    .edit-btn:hover { background: var(--bubble-sol); }
+    .editor-wrap { display: flex; flex-direction: column; height: 100%; gap: 10px; }
+    .code-editor {
+      flex: 1 1 auto; min-height: 0; width: 100%; resize: none;
+      font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: 13px; line-height: 1.55; tab-size: 2;
+      border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+      background: var(--bg); color: var(--ink);
+    }
+    .code-editor:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    .editor-bar { display: flex; align-items: center; gap: 10px; }
+    .editor-bar .secondary {
+      background: none; color: var(--muted); border: 1px solid var(--line);
+    }
+    .editor-status { font-size: 13px; color: var(--muted); }
+    .editor-status.ok { color: #2e7d32; }
+    .editor-status.warn { color: #b26a00; }
+    .editor-status.err { color: #c33; }
+    @media (prefers-color-scheme: dark) {
+      .editor-status.ok { color: #7bc47f; }
+      .editor-status.warn { color: #e0a458; }
+      .editor-status.err { color: #e08585; }
+    }
   </style>
 </head>
 <body>
@@ -330,8 +359,20 @@
           <div class="reader-bar">
             <button class="back" id="skill-back" type="button">← Skills</button>
             <span class="name" id="skill-name"></span>
+            <span class="grow"></span>
+            <button class="edit-btn" id="skill-edit" type="button" hidden>Edit</button>
           </div>
-          <div class="pane"><div class="doc"><div class="md" id="skill-body"></div></div></div>
+          <div class="pane" id="skill-view"><div class="doc"><div class="md" id="skill-body"></div></div></div>
+          <div class="pane" id="skill-edit-pane" style="display:none;">
+            <div class="editor-wrap">
+              <textarea id="skill-editor" class="code-editor" spellcheck="false" aria-label="Skill source"></textarea>
+              <div class="editor-bar">
+                <button id="skill-save" type="button">Save</button>
+                <button id="skill-cancel" class="secondary" type="button">Cancel</button>
+                <span id="skill-status" class="editor-status"></span>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -653,11 +694,15 @@
         localStorage.setItem("sol.personality", personalitySel.value);
       });
 
-      // --- Identity (admin badge) ----------------------------------------
+      // --- Identity (admin badge + edit affordances) ---------------------
+      var isAdmin = false;
       function loadWhoami() {
         return fetch("/api/whoami")
           .then(function (r) { return r.ok ? r.json() : {}; })
-          .then(function (j) { if (j && j.is_admin) adminBadge.hidden = false; })
+          .then(function (j) {
+            isAdmin = !!(j && j.is_admin);
+            if (isAdmin) adminBadge.hidden = false;
+          })
           .catch(function () {});
       }
 
@@ -691,6 +736,25 @@
       var skillReader = document.getElementById("skill-reader");
       var skillName = document.getElementById("skill-name");
       var skillBody = document.getElementById("skill-body");
+      var skillView = document.getElementById("skill-view");
+      var skillEditPane = document.getElementById("skill-edit-pane");
+      var skillEditBtn = document.getElementById("skill-edit");
+      var skillEditor = document.getElementById("skill-editor");
+      var skillSave = document.getElementById("skill-save");
+      var skillCancel = document.getElementById("skill-cancel");
+      var skillStatus = document.getElementById("skill-status");
+      var currentSkillId = null;
+      var currentSkillRaw = "";
+
+      function skillViewMode() {
+        skillEditPane.style.display = "none";
+        skillView.style.display = "block";
+        skillEditBtn.hidden = !isAdmin;
+      }
+      function setStatus(msg, kind) {
+        skillStatus.className = "editor-status" + (kind ? " " + kind : "");
+        skillStatus.textContent = msg || "";
+      }
 
       function loadSkills() {
         return fetch("/api/skills")
@@ -726,12 +790,16 @@
       }
 
       function openSkill(id) {
-        fetch("/api/skills/" + encodeURIComponent(id))
+        return fetch("/api/skills/" + encodeURIComponent(id))
           .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
           .then(function (j) {
             var s = (j && j.skill) || {};
+            currentSkillId = s.id || id;
+            currentSkillRaw = s.raw || "";
             skillName.textContent = s.name || id;
             skillBody.innerHTML = window.renderMarkdown(s.body || "");
+            setStatus("");
+            skillViewMode();
             skillsList.style.display = "none";
             skillReader.style.display = "flex";
           })
@@ -740,6 +808,53 @@
       document.getElementById("skill-back").addEventListener("click", function () {
         skillReader.style.display = "none";
         skillsList.style.display = "block";
+        skillViewMode();
+      });
+
+      // Edit / Save / Cancel (admins only — the server enforces it too).
+      skillEditBtn.addEventListener("click", function () {
+        skillEditor.value = currentSkillRaw;
+        setStatus("");
+        skillView.style.display = "none";
+        skillEditBtn.hidden = true;
+        skillEditPane.style.display = "block";
+        skillEditor.focus();
+      });
+      skillCancel.addEventListener("click", skillViewMode);
+      skillSave.addEventListener("click", function () {
+        var content = skillEditor.value;
+        if (!content.trim()) { setStatus("Can't save an empty skill.", "err"); return; }
+        skillSave.disabled = true;
+        setStatus("Saving…");
+        fetch("/api/skills/" + encodeURIComponent(currentSkillId), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: content })
+        })
+          .then(function (r) {
+            if (r.status === 403) throw new Error("forbidden");
+            if (!r.ok) throw new Error("save failed");
+            return r.json();
+          })
+          .then(function (j) {
+            return openSkill(currentSkillId).then(function () {
+              setStatus(
+                j.restart_needed
+                  ? "Saved. Frontmatter changed — restart Hermes to re-register this skill."
+                  : "Saved.",
+                j.restart_needed ? "warn" : "ok"
+              );
+            });
+          })
+          .catch(function (e) {
+            setStatus(
+              e.message === "forbidden"
+                ? "Only admins can edit skills."
+                : "Could not save. Please try again.",
+              "err"
+            );
+          })
+          .finally(function () { skillSave.disabled = false; });
       });
 
       // --- Soul -----------------------------------------------------------

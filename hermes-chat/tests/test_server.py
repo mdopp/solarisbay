@@ -609,3 +609,107 @@ async def test_soul_endpoint_missing(aiohttp_client, tmp_path):
     client = await aiohttp_client(app)
     resp = await client.get("/api/soul")
     assert resp.status == 404
+
+
+# --- Skill edit (admin) ---------------------------------------------------
+
+
+def test_read_skill_exposes_raw(tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health", "# Status\nok")
+    one = skills.read_skill(tmp_path, "status")
+    # raw is the full file (frontmatter + body) the editor loads.
+    assert one["raw"].startswith("---\nname: sol-status")
+    assert "# Status" in one["raw"]
+
+
+def test_write_skill_body_only_no_restart(tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health", "# Status\nold")
+    new = (
+        "---\nname: sol-status\ndescription: Health\nversion: 1\n---\n\n# Status\nnew\n"
+    )
+    result = skills.write_skill(tmp_path, "status", new)
+    assert result == {"id": "status", "frontmatter_changed": False}
+    assert skills.read_skill(tmp_path, "status")["body"].strip() == "# Status\nnew"
+
+
+def test_write_skill_frontmatter_change_flags_restart(tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health", "# Status\nok")
+    new = (
+        "---\nname: sol-status\ndescription: Changed\nversion: 1\n---\n\n# Status\nok\n"
+    )
+    result = skills.write_skill(tmp_path, "status", new)
+    assert result["frontmatter_changed"] is True
+    assert skills.read_skill(tmp_path, "status")["description"] == "Changed"
+
+
+def test_write_skill_rejects_missing_and_traversal(tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health", "# Status\nok")
+    assert skills.write_skill(tmp_path, "nope", "x") is None
+    assert skills.write_skill(tmp_path, "../etc", "x") is None
+
+
+def _skill_app(fake, tmp_path):
+    return build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        skills_dir=str(tmp_path),
+    )
+
+
+async def test_put_skill_admin_saves(aiohttp_client, tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health", "# Status\nold")
+    client = await aiohttp_client(_skill_app(_FakeHermes(), tmp_path))
+    new = (
+        "---\nname: sol-status\ndescription: Health\nversion: 1\n---\n\n# Status\nnew\n"
+    )
+
+    resp = await client.put(
+        "/api/skills/status",
+        json={"content": new},
+        headers={"Remote-User": "mdopp", "Remote-Groups": "admins"},
+    )
+    body = await resp.json()
+    assert resp.status == 200
+    assert body == {"ok": True, "restart_needed": False}
+    assert skills.read_skill(tmp_path, "status")["body"].strip() == "# Status\nnew"
+
+
+async def test_put_skill_frontmatter_change_signals_restart(aiohttp_client, tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health", "# Status\nok")
+    client = await aiohttp_client(_skill_app(_FakeHermes(), tmp_path))
+    new = "---\nname: sol-status\ndescription: New\nversion: 1\n---\n\n# Status\nok\n"
+
+    resp = await client.put(
+        "/api/skills/status",
+        json={"content": new},
+        headers={"Remote-Groups": "admins"},
+    )
+    body = await resp.json()
+    assert body["restart_needed"] is True
+
+
+async def test_put_skill_non_admin_forbidden_and_unchanged(aiohttp_client, tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health", "# Status\nkeep")
+    client = await aiohttp_client(_skill_app(_FakeHermes(), tmp_path))
+
+    resp = await client.put(
+        "/api/skills/status",
+        json={"content": "---\nname: x\n---\nhacked"},
+        headers={"Remote-User": "cdopp", "Remote-Groups": "family"},
+    )
+    assert resp.status == 403
+    # The file must be untouched by a rejected write.
+    assert skills.read_skill(tmp_path, "status")["body"].strip() == "# Status\nkeep"
+
+
+async def test_put_skill_missing_and_empty(aiohttp_client, tmp_path):
+    _write_skill(tmp_path, "status", "sol-status", "Health", "# Status\nok")
+    client = await aiohttp_client(_skill_app(_FakeHermes(), tmp_path))
+    admin = {"Remote-Groups": "admins"}
+
+    resp = await client.put("/api/skills/missing", json={"content": "x"}, headers=admin)
+    assert resp.status == 404
+
+    resp = await client.put("/api/skills/status", json={"content": "  "}, headers=admin)
+    assert resp.status == 400

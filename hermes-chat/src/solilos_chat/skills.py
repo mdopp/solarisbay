@@ -3,9 +3,15 @@
 Hermes' `/v1/skills` lists name + description only; `/v1/skills/{name}`
 404s — there is no body API — so the panel reads the markdown straight off
 the bind-mounted pack (`SKILLS_DIR`, the host `solbay/skills` dir mounted
-read-only). This is the shipped *standard set*: everyone reads, only admins
-edit (edit lands in phase 2). Each skill is `<dir>/<name>/SKILL.md` with a
-YAML frontmatter block (name/description/version) and a markdown body.
+read-only for reads). This is the shipped *standard set*: everyone reads,
+only admins edit. Each skill is `<dir>/<name>/SKILL.md` with a YAML
+frontmatter block (name/description/version) and a markdown body.
+
+Admin edits write the raw SKILL.md back through a read-write mount of the
+same pack (the skills dir is host-owned, so the chat pod — rootless,
+container-root → the host user — can replace files there). Hermes reads a
+skill *body* live; a frontmatter change (name/description) needs a Hermes
+restart to re-register, which the caller surfaces.
 
 A skill id is its directory name (filesystem-safe, stable). We never accept
 a path separator in an id, so a request can't escape the pack.
@@ -13,6 +19,8 @@ a path separator in an id, so a request can't escape the pack.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -71,19 +79,59 @@ def list_skills(skills_dir: str | Path) -> list[dict[str, str]]:
 
 
 def read_skill(skills_dir: str | Path, skill_id: str) -> dict[str, Any] | None:
-    """Return `{id, name, description, body}` for one skill, or None.
+    """Return `{id, name, description, body, raw}` for one skill, or None.
 
     `body` is the markdown after the frontmatter — what the panel renders.
+    `raw` is the full SKILL.md (frontmatter + body) — what the editor loads.
     """
     if not _is_valid_id(skill_id):
         return None
     skill_file = Path(skills_dir) / skill_id / "SKILL.md"
     if not skill_file.is_file():
         return None
-    meta, body = _split_frontmatter(skill_file.read_text(encoding="utf-8"))
+    raw = skill_file.read_text(encoding="utf-8")
+    meta, body = _split_frontmatter(raw)
     return {
         "id": skill_id,
         "name": meta.get("name") or skill_id,
         "description": meta.get("description", ""),
         "body": body,
+        "raw": raw,
     }
+
+
+def write_skill(
+    skills_dir: str | Path, skill_id: str, content: str
+) -> dict[str, Any] | None:
+    """Replace an existing skill's SKILL.md with `content` (the full raw
+    markdown). Returns `{id, frontmatter_changed}` or None when the id is
+    invalid or the skill doesn't exist (we only edit the shipped set, never
+    create arbitrary files).
+
+    `frontmatter_changed` is True when name/description/version differs from
+    the old file — the signal that Hermes needs a restart to re-register the
+    skill (a body-only edit is picked up live). The write is atomic (temp in
+    the same dir + os.replace) so a reader never sees a half-written file.
+    """
+    if not _is_valid_id(skill_id):
+        return None
+    skill_file = Path(skills_dir) / skill_id / "SKILL.md"
+    if not skill_file.is_file():
+        return None
+    old_meta, _ = _split_frontmatter(skill_file.read_text(encoding="utf-8"))
+    new_meta, _ = _split_frontmatter(content)
+
+    fd, tmp = tempfile.mkstemp(
+        dir=str(skill_file.parent), prefix=".SKILL.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, skill_file)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return {"id": skill_id, "frontmatter_changed": new_meta != old_meta}

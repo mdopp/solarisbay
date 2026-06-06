@@ -76,13 +76,16 @@ spec:
     # directly (loopback:{{HERMES_CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint
     # as the gatekeeper).
-    # Read-only: the panel only *reads* the standard skill set and the soul.
-    # These are the same host paths the hermes template mounts; editing is
-    # admin-gated and lands in phase 2 (a writable mount + a restart hook).
+    # Skills mount read-write so admins can edit the standard set from the
+    # panel: the skills host dir is owned by the host user and this pod is
+    # rootless (container-root maps to that user), so it can replace files
+    # there. Hermes reads a skill body live; a frontmatter change needs a
+    # restart, which the panel surfaces. SOUL.md stays read-only — it lives
+    # in Hermes' own 0700 data dir (a foreign subuid owns it), so soul edits
+    # go through a privileged lever, not this mount (phase 2b).
     volumeMounts:
     - mountPath: /data/skills
       name: solilos-skills
-      readOnly: true
     - mountPath: /data/SOUL.md
       name: solilos-soul
       readOnly: true
