@@ -22,6 +22,7 @@ again, no new credential.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import tempfile
@@ -113,6 +114,101 @@ def _servicebay_mcp_creds(text: str) -> tuple[str, str]:
             if a:
                 token = a.group(1)
     return url, token
+
+
+def _parse_mcp_servers(text: str) -> list[dict[str, str]]:
+    """All `mcp_servers:` entries from config.yaml as [{name,url,token}]."""
+    servers: list[dict[str, str]] = []
+    in_block = False
+    cur: dict[str, str] | None = None
+    for line in text.splitlines():
+        if line[:1] not in (" ", "\t"):
+            if cur:
+                servers.append(cur)
+                cur = None
+            in_block = line.strip() == "mcp_servers:"
+            continue
+        if not in_block:
+            continue
+        if re.match(r"^ {2}\S", line) and line.strip().endswith(":"):
+            if cur:
+                servers.append(cur)
+            cur = {"name": line.strip()[:-1], "url": "", "token": ""}
+            continue
+        if cur is not None:
+            u = re.match(r'^\s*url:\s*"?([^"\s]+)"?', line)
+            if u:
+                cur["url"] = u.group(1)
+            a = re.search(r"Bearer\s+([^\"\s]+)", line)
+            if a:
+                cur["token"] = a.group(1)
+    if cur:
+        servers.append(cur)
+    return servers
+
+
+async def _mcp_list_tools(url: str, token: str) -> tuple[bool, list[str]]:
+    """Probe an MCP server: returns (reachable, [tool names]). A streamable
+    HTTP MCP replies either as JSON or SSE-framed `data:` lines."""
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "Authorization": f"Bearer {token}",
+        "Origin": url,
+    }
+
+    async def rpc(session, sid, method, params=None, notif=False):
+        body = {"jsonrpc": "2.0", "method": method}
+        if not notif:
+            body["id"] = 1
+        if params is not None:
+            body["params"] = params
+        h = dict(headers)
+        if sid:
+            h["mcp-session-id"] = sid
+        async with session.post(url, json=body, headers=h) as r:
+            return r.status, r.headers.get("mcp-session-id"), await r.text()
+
+    def parse(txt: str) -> dict:
+        if "\ndata:" in txt or txt.startswith("data:"):
+            txt = "\n".join(
+                ln[5:].strip() for ln in txt.splitlines() if ln.startswith("data:")
+            )
+        try:
+            return json.loads(txt)
+        except (ValueError, TypeError):
+            return {}
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            st, sid, _ = await rpc(
+                s,
+                None,
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "config-agent", "version": "1"},
+                },
+            )
+            if st >= 400:
+                return False, []
+            await rpc(s, sid, "notifications/initialized", notif=True)
+            st, _, txt = await rpc(s, sid, "tools/list", {})
+            if st >= 400:
+                return True, []
+            data = parse(txt)
+            tools = (
+                data.get("result", {}).get("tools", [])
+                if isinstance(data, dict)
+                else []
+            )
+            names = [t.get("name") for t in tools if isinstance(t, dict)]
+            return True, sorted(n for n in names if isinstance(n, str) and n)
+    except (aiohttp.ClientError, TimeoutError, OSError) as e:
+        log.error("agent.mcp.probe_failed", url=url, error=str(e))
+        return False, []
 
 
 async def _ollama_tags(ollama_url: str) -> list[str]:
@@ -302,12 +398,41 @@ def build_app(
         log.info("agent.model.set", model=model)
         return web.json_response({"ok": True, "restarted": True})
 
+    async def get_mcp(request: web.Request) -> web.Response:
+        # The MCP servers Hermes is wired to (config.yaml mcp_servers) — name,
+        # url, live reachability and the tools each exposes. Tokens are NEVER
+        # returned. These are absent from Hermes' /v1/toolsets, so the panel
+        # surfaces them here.
+        if not authorized(request):
+            return web.json_response(
+                {"ok": False, "reason": "unauthorized"}, status=401
+            )
+        try:
+            text = Path(config_path).read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        out = []
+        for s in _parse_mcp_servers(text):
+            reachable, tools = (
+                await _mcp_list_tools(s["url"], s["token"]) if s["url"] else (False, [])
+            )
+            out.append(
+                {
+                    "name": s["name"],
+                    "url": s["url"],
+                    "reachable": reachable,
+                    "tools": tools,
+                }
+            )
+        return web.json_response({"ok": True, "servers": out})
+
     app = web.Application()
     app.router.add_get("/health", health)
     app.router.add_get("/soul", get_soul)
     app.router.add_put("/soul", put_soul)
     app.router.add_get("/model", get_model)
     app.router.add_put("/model", put_model)
+    app.router.add_get("/mcp", get_mcp)
     return app
 
 

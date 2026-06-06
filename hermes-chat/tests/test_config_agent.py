@@ -7,6 +7,7 @@ import os
 from solilos_chat import config_agent
 from solilos_chat.config_agent import (
     _find_model_value,
+    _parse_mcp_servers,
     _servicebay_mcp_creds,
     _set_model_in_config,
     build_app,
@@ -188,3 +189,37 @@ async def test_put_model_auth_and_empty(aiohttp_client, tmp_path):
     assert (
         await client.put("/model", json={"model": "  "}, headers=AUTH)
     ).status == 400
+
+
+# --- MCP servers (Tools tab) ----------------------------------------------
+
+
+def test_parse_mcp_servers():
+    servers = _parse_mcp_servers(SAMPLE_CONFIG)
+    by = {s["name"]: s for s in servers}
+    assert set(by) == {"ha-mcp", "servicebay-mcp"}
+    assert by["servicebay-mcp"]["url"] == "http://127.0.0.1:5888/mcp"
+    assert by["servicebay-mcp"]["token"] == "sb_0a1b2c3d_ABCDEF234567"
+    assert _parse_mcp_servers("model:\n  model: x\n") == []
+
+
+async def test_get_mcp_lists_servers_without_tokens(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    async def fake_probe(url, token):
+        return (True, ["tool_a", "tool_b"])
+
+    monkeypatch.setattr(config_agent, "_mcp_list_tools", fake_probe)
+    app, _ = _model_app(tmp_path)  # SAMPLE_CONFIG has ha-mcp + servicebay-mcp
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/mcp", headers=AUTH)
+    body = await resp.json()
+    assert resp.status == 200
+    names = {s["name"] for s in body["servers"]}
+    assert names == {"ha-mcp", "servicebay-mcp"}
+    for s in body["servers"]:
+        assert s["reachable"] is True and s["tools"] == ["tool_a", "tool_b"]
+        assert "token" not in s  # tokens never leave the agent
+
+    assert (await client.get("/mcp")).status == 401  # no auth
