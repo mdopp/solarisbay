@@ -28,3 +28,6 @@ dist/
 # Track .claude/skills/ (project skills live in-repo); ignore runtime state (mirrors mdopp/servicebay)
 /.claude/*
 !/.claude/skills/
+
+# stray design screenshots / scratch images (assets live elsewhere)
+servicebay design Screenshot*.png
