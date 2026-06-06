@@ -957,3 +957,44 @@ async def test_put_skill_missing_and_empty(aiohttp_client, tmp_path):
 
     resp = await client.put("/api/skills/status", json={"content": "  "}, headers=admin)
     assert resp.status == 400
+
+
+# --- MCP servers endpoint (proxied to the sidecar) ------------------------
+
+
+async def test_mcp_endpoint_proxies_agent(aiohttp_client, monkeypatch):
+    from solilos_chat import server as server_mod
+
+    async def fake_mcp(url, token):
+        return [
+            {
+                "name": "servicebay-mcp",
+                "url": "http://x/mcp",
+                "reachable": True,
+                "tools": ["restart_service"],
+            }
+        ]
+
+    monkeypatch.setattr(server_mod, "_agent_get_mcp", fake_mcp)
+    app = build_app(
+        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+    body = await (await client.get("/api/mcp")).json()
+    assert body["ok"] is True
+    assert body["servers"][0]["name"] == "servicebay-mcp"
+    assert "token" not in body["servers"][0]
+
+
+async def test_mcp_endpoint_agent_unavailable(aiohttp_client, monkeypatch):
+    from solilos_chat import server as server_mod
+
+    async def fake_mcp(url, token):
+        return None
+
+    monkeypatch.setattr(server_mod, "_agent_get_mcp", fake_mcp)
+    app = build_app(
+        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+    assert (await client.get("/api/mcp")).status == 502

@@ -109,6 +109,16 @@ def build_app(
             )
         return web.json_response({"ok": True, "toolsets": toolsets})
 
+    async def list_mcp(_request: web.Request) -> web.Response:
+        # MCP servers aren't in Hermes' /v1/toolsets; the sidecar reports them
+        # (name/url/reachable/tools, no tokens) from config.yaml.
+        servers = await _agent_get_mcp(config_agent_url, agent_token)
+        if servers is None:
+            return web.json_response(
+                {"ok": False, "reason": "agent_unavailable"}, status=502
+            )
+        return web.json_response({"ok": True, "servers": servers})
+
     async def list_personalities(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "personalities": personalities.catalog()})
 
@@ -371,6 +381,7 @@ def build_app(
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", whoami)
     app.router.add_get("/api/toolsets", list_toolsets)
+    app.router.add_get("/api/mcp", list_mcp)
     app.router.add_get("/api/personalities", list_personalities)
     app.router.add_get("/api/skills", list_skills)
     app.router.add_get("/api/skills/{skill_id}", get_skill)
@@ -443,6 +454,24 @@ async def _agent_get_soul(agent_url: str, token: str) -> str | None:
         return str(body.get("content", "")) if isinstance(body, dict) else None
     except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as e:
         log.error("chat.agent.unreachable", op="get_soul", error=str(e))
+        return None
+
+
+async def _agent_get_mcp(agent_url: str, token: str) -> list[dict[str, Any]] | None:
+    """Read the MCP servers (name/url/reachable/tools, no tokens) from the
+    sidecar. None on failure."""
+    url = f"{agent_url.rstrip('/')}/mcp"
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.get(url, headers=_agent_headers(token)) as r:
+                if r.status >= 400:
+                    return None
+                body = await r.json()
+        servers = body.get("servers") if isinstance(body, dict) else None
+        return servers if isinstance(servers, list) else []
+    except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as e:
+        log.error("chat.agent.unreachable", op="get_mcp", error=str(e))
         return None
 
 

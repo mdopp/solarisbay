@@ -370,6 +370,14 @@
     }
     .pill.on { color: var(--ok); background: var(--ok-soft); }
     .pill.off { color: var(--muted); background: var(--bubble-sol); }
+    .tools-search {
+      width: 100%; max-width: 420px; margin: 0 0 14px; font: inherit; font-size: 14px;
+      padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px;
+      background: var(--panel); color: var(--ink);
+    }
+    .tools-search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    .tools-h { font-size: 12px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; }
+    .tools-h:first-of-type { margin-top: 4px; }
 
     #backdrop { display: none; }
 
@@ -631,6 +639,10 @@
       <div class="pane">
         <h2>Tools</h2>
         <p class="lead">What Sol can do — the toolsets and MCP servers Hermes has loaded, and whether they're active.</p>
+        <input id="tools-search" class="tools-search" type="search" placeholder="Search tools, toolsets, MCP servers…" autocomplete="off" />
+        <h3 class="tools-h">MCP servers</h3>
+        <div id="mcp-cards"></div>
+        <h3 class="tools-h">Built-in toolsets</h3>
         <div id="tools-cards"></div>
       </div>
     </section>
@@ -1027,7 +1039,7 @@
         navBtns.forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-view") === name); });
         if (name === "skills" && !skillsLoaded) { skillsLoaded = true; loadSkills(); }
         if (name === "soul" && !soulLoaded) { soulLoaded = true; loadSoul(); }
-        if (name === "tools") { loadTools(); }
+        if (name === "tools") { loadTools(); loadMcp(); }
         if (name === "model") { loadModel(); }
         closeRail();
       }
@@ -1090,43 +1102,67 @@
         });
       })();
 
-      // ---- Tools / toolsets ----
+      // ---- Tools: built-in toolsets + MCP servers, with search ----
       var toolsCards = document.getElementById("tools-cards");
+      var mcpCards = document.getElementById("mcp-cards");
+      var toolsSearch = document.getElementById("tools-search");
+
+      function toolCard(label, statusText, on, description, tools) {
+        var card = document.createElement("div"); card.className = "tool-card";
+        var head = document.createElement("div"); head.className = "head";
+        var lab = document.createElement("span"); lab.className = "label"; lab.textContent = label; head.appendChild(lab);
+        var pill = document.createElement("span"); pill.className = "pill " + (on ? "on" : "off"); pill.textContent = statusText; head.appendChild(pill);
+        card.appendChild(head);
+        if (description) { var d = document.createElement("div"); d.className = "desc"; d.textContent = description; card.appendChild(d); }
+        if (tools && tools.length) {
+          var tw = document.createElement("div"); tw.className = "tools";
+          tools.forEach(function (n) { var c = document.createElement("span"); c.className = "chip"; c.textContent = n; tw.appendChild(c); });
+          card.appendChild(tw);
+        }
+        return card;
+      }
+      function emptyNote(container, text) {
+        var n = document.createElement("div"); n.className = "empty-note"; n.textContent = text; container.appendChild(n);
+      }
+      function applyToolSearch() {
+        var q = (toolsSearch.value || "").trim().toLowerCase();
+        [mcpCards, toolsCards].forEach(function (container) {
+          Array.prototype.forEach.call(container.querySelectorAll(".tool-card"), function (card) {
+            card.style.display = (!q || card.textContent.toLowerCase().indexOf(q) >= 0) ? "" : "none";
+          });
+        });
+      }
+      toolsSearch.addEventListener("input", applyToolSearch);
+
       function loadTools() {
         return fetch("/api/toolsets")
           .then(function (r) { return r.ok ? r.json() : { toolsets: [] }; })
           .then(function (j) {
             var list = (j && j.toolsets) || [];
             toolsCards.textContent = "";
-            if (!list.length) {
-              var n = document.createElement("div"); n.className = "empty-note";
-              n.textContent = "No toolsets reported."; toolsCards.appendChild(n); return;
-            }
+            if (!list.length) { emptyNote(toolsCards, "No toolsets reported."); return; }
             list.forEach(function (t) {
-              var card = document.createElement("div"); card.className = "tool-card";
-              var head = document.createElement("div"); head.className = "head";
-              var label = document.createElement("span"); label.className = "label";
-              label.textContent = t.label || t.name; head.appendChild(label);
               var on = t.enabled && t.configured;
-              var pill = document.createElement("span");
-              pill.className = "pill " + (on ? "on" : "off");
-              pill.textContent = on ? "active" : (t.configured ? "off" : "not set up");
-              head.appendChild(pill);
-              card.appendChild(head);
-              if (t.description) {
-                var d = document.createElement("div"); d.className = "desc"; d.textContent = t.description; card.appendChild(d);
-              }
-              if (t.tools && t.tools.length) {
-                var tw = document.createElement("div"); tw.className = "tools";
-                t.tools.forEach(function (name) {
-                  var chip = document.createElement("span"); chip.className = "chip"; chip.textContent = name; tw.appendChild(chip);
-                });
-                card.appendChild(tw);
-              }
-              toolsCards.appendChild(card);
+              toolsCards.appendChild(toolCard(t.label || t.name, on ? "active" : (t.configured ? "off" : "not set up"), on, t.description, t.tools));
             });
+            applyToolSearch();
           })
           .catch(function () { toolsCards.textContent = ""; });
+      }
+
+      function loadMcp() {
+        return fetch("/api/mcp")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            mcpCards.textContent = "";
+            if (!j || !j.servers) { emptyNote(mcpCards, "Could not reach the config service."); return; }
+            if (!j.servers.length) { emptyNote(mcpCards, "No MCP servers configured."); return; }
+            j.servers.forEach(function (s) {
+              mcpCards.appendChild(toolCard(s.name, s.reachable ? "connected" : "unreachable", s.reachable, s.url, s.tools));
+            });
+            applyToolSearch();
+          })
+          .catch(function () { mcpCards.textContent = ""; });
       }
 
       // ---- Skills ----
