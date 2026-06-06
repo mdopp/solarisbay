@@ -401,6 +401,58 @@ def write_config_yaml(
     return config_path
 
 
+# Hermes drops a stock SOUL.md on first boot whose first heading is this.
+# A file that still carries it is "unclaimed" — we replace it with the
+# Solilos soul. A soul an operator (or the panel) has customised never
+# carries this marker, so it is left untouched.
+STOCK_SOUL_MARKER = "# Hermes Agent Persona"
+
+
+def write_soul_md(data_dir: str) -> bool:
+    """Install the Solilos SOUL.md (Hermes' durable identity) when the box
+    still carries Hermes' stock default or has none yet. Reads the soul
+    shipped alongside this script. Never overwrites a customised soul.
+    Returns True when the file was written (signals the caller to restart so
+    Hermes reloads it)."""
+    target = os.path.join(data_dir, "hermes", "SOUL.md")
+    source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SOUL.md")
+    try:
+        with open(source, encoding="utf-8") as f:
+            soul = f.read()
+    except OSError as e:
+        jlog("warn", "hermes:soul", "shipped SOUL.md missing — skipping", error=str(e))
+        return False
+    existing = ""
+    if os.path.exists(target):
+        try:
+            with open(target, encoding="utf-8") as f:
+                existing = f.read()
+        except OSError:
+            existing = ""
+    if existing == soul:
+        return False  # already the Solilos soul — idempotent no-op
+    if existing.strip() and STOCK_SOUL_MARKER not in existing:
+        jlog(
+            "info",
+            "hermes:soul",
+            "leaving customised SOUL.md untouched",
+            path=target,
+        )
+        return False
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(soul)
+        os.chmod(target, 0o644)
+    except OSError as e:
+        jlog(
+            "error", "hermes:soul", "could not write SOUL.md", path=target, error=str(e)
+        )
+        return False
+    jlog("info", "hermes:soul", "installed Solilos SOUL.md", path=target)
+    return True
+
+
 def _provision_sb_mcp_token_once(sb_api: str, token_name: str) -> str | None:
     """One mint attempt against the canonical api-tokens route. Returns the
     `sb_`-shaped secret, or None on any failure."""
@@ -955,6 +1007,11 @@ def main() -> int:
     if config_path:
         sb_mcp_changed = ensure_sb_mcp_servers_block(config_path, sb_api)
 
+    # 1c. Install the Solilos soul (SOUL.md) over Hermes' stock default so
+    # the assistant boots as Sol, not the generic "Hermes Agent Persona".
+    # Skipped once a customised soul is in place (panel/operator edit).
+    soul_written = write_soul_md(data_dir)
+
     # Pick up the real HA long-lived token if home-assistant's post-deploy
     # auto-onboarded HA. Without this Hermes' native HA gateway runs with
     # the random placeholder from `assemble` and gets `auth_invalid` from
@@ -978,7 +1035,7 @@ def main() -> int:
 
     # 2. Restart so Hermes picks up the new config (and the new env if we
     # just patched HASS_TOKEN or rewrote .env).
-    if config_written or env_changed or sb_mcp_changed:
+    if config_written or env_changed or sb_mcp_changed or soul_written:
         # Give the pod a few seconds to settle so the restart isn't
         # racing the initial deploy.
         time.sleep(3)
