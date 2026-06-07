@@ -26,6 +26,7 @@ import re
 from typing import Any
 
 import httpx
+from gatekeeper import marker
 from gatekeeper.logging import log
 
 # A "good" short reply is usually a confirmation ("ok", "done", "sure",
@@ -155,7 +156,11 @@ class HermesClient:
         model: str | None = None,
     ) -> str:
         url = f"{self._base_url}/api/sessions"
-        payload: dict[str, Any] = {"user_id": uid}
+        # Seed the title with the resident's immutable uid marker (#153) so the
+        # chat panel's per-resident list filter sees voice sessions too. uid is
+        # 'household' for all voice turns until speaker-ID (#84) is enabled, so
+        # voice isolation is single-user only in the current config.
+        payload: dict[str, Any] = {"user_id": uid, "title": marker.marker_for(uid)}
         if model:
             payload["model"] = model
         response = await client.post(url, json=payload, headers=self._headers())

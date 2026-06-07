@@ -410,7 +410,7 @@ def build_app(
             if not session_id:
                 session_id = await hermes.create_session(uid, system_prompt)
                 log.info("chat.session.created", uid=uid, session_id=session_id)
-                await hermes.set_title(session_id, _title_from(text))
+                await hermes.set_title(session_id, uid, _title_from(text))
             reply = await hermes.chat(session_id, text, images)
         except HermesError:
             return web.json_response(
@@ -451,7 +451,7 @@ def build_app(
             if not session_id:
                 session_id = await hermes.create_session(uid, system_prompt)
                 log.info("chat.session.created", uid=uid, session_id=session_id)
-                await hermes.set_title(session_id, _title_from(text))
+                await hermes.set_title(session_id, uid, _title_from(text))
             cancels[session_id] = cancel
             await _send_event(resp, "session", {"session_id": session_id})
             stream = hermes.chat_stream(session_id, text, images)

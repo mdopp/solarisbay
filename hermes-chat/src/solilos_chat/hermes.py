@@ -21,6 +21,7 @@ from typing import Any
 
 import aiohttp
 
+from solilos_chat import marker
 from solilos_chat.logging import log
 
 
@@ -46,9 +47,15 @@ class HermesClient:
         `system_prompt` is the chosen personality's overlay (see
         `personalities.py`); Hermes accepts it only at create time (PATCH
         rejects it). Empty/None => no overlay, pure SOUL.md.
+
+        The title is seeded with the caller's immutable uid marker (#153) so a
+        session is owned (and visible only to its resident) from the moment it
+        exists, before the first turn re-titles it. `user_id` is still POSTed for
+        forward-compat, but Hermes v0.16.0 does not persist it — the marker is
+        the real ownership record.
         """
         url = f"{self._base_url}/api/sessions"
-        payload: dict[str, Any] = {"user_id": uid}
+        payload: dict[str, Any] = {"user_id": uid, "title": marker.marker_for(uid)}
         if system_prompt:
             payload["system_prompt"] = system_prompt
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
@@ -96,32 +103,39 @@ class HermesClient:
                 return False
 
     async def list_sessions(self, uid: str) -> list[dict[str, Any]]:
-        """List all sessions (single-resident: no per-resident filter).
+        """List the caller's sessions, scoped by the uid title-marker (#153).
 
-        Per-resident isolation is deferred: Hermes v0.15.1 stores
-        `user_id: null` (the `user_id` we POST on create is not persisted or
-        returned), so an owner-filter here would reject every session
-        including the caller's own. We ship list-all for the single-resident
-        reality and restore filtering before multi-resident — tracked in #153.
-        `uid` is still accepted so the signature survives that restore.
-        Each item is `{id, title, last_activity}`.
+        Per-resident isolation: Hermes v0.16.0 stores `user_id: null` (the
+        `user_id` we POST on create is not persisted or returned), so ownership
+        is carried by an immutable `[uid:<hash>] ` prefix the proxy embeds in
+        the title. We keep only sessions whose title bears the *caller's* marker
+        and strip the marker before returning (so #155's human titles render
+        clean). Unmarked legacy sessions are hidden (privacy-safe: they cannot
+        be attributed to a resident). Each item is `{id, title, last_activity}`.
         """
         url = f"{self._base_url}/api/sessions"
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             async with client.get(url, headers=self._headers()) as resp:
                 body = await self._json_or_raise(resp, "list_sessions")
-        return [_session_summary(raw) for raw in _iter_session_items(body)]
+        out: list[dict[str, Any]] = []
+        for raw in _iter_session_items(body):
+            if not marker.has_marker(uid, str(raw.get("title") or "")):
+                continue
+            summary = _session_summary(raw)
+            summary["title"] = marker.strip(summary["title"])
+            out.append(summary)
+        return out
 
     async def get_session(self, session_id: str, uid: str) -> dict[str, Any] | None:
-        """Fetch a session summary + its message history.
+        """Fetch a session summary + its message history, owner-scoped (#153).
 
         The session endpoint returns only a summary; messages live on a
         separate `/messages` endpoint, so we fetch both.
 
-        No ownership 404 (single-resident): Hermes v0.15.1 stores
-        `user_id: null`, so an owner check would reject the caller's own
-        session. Restore the per-resident gate before multi-resident — #153.
-        Returns `None` only when Hermes itself 404s the id.
+        Ownership is enforced by the title marker: a session whose title does
+        not carry the caller's `[uid:<hash>] ` prefix returns `None` (same as a
+        missing id), so one resident cannot open another's history by guessing
+        an id. The marker is stripped from the returned title for the UI.
         """
         url = f"{self._base_url}/api/sessions/{session_id}"
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
@@ -133,20 +147,28 @@ class HermesClient:
             raw = session if isinstance(session, dict) else body
             if not isinstance(raw, dict):
                 return None
+            if not marker.has_marker(uid, str(raw.get("title") or "")):
+                return None
             msg_url = f"{self._base_url}/api/sessions/{session_id}/messages"
             async with client.get(msg_url, headers=self._headers()) as resp:
                 msg_body = await self._json_or_raise(resp, "get_messages")
         summary = _session_summary(raw)
+        summary["title"] = marker.strip(summary["title"])
         summary["messages"] = _extract_messages(msg_body)
         return summary
 
-    async def set_title(self, session_id: str, title: str) -> None:
-        """Persist a session title (PATCH). Silent on a non-2xx — a title is
-        a nicety, not worth failing the turn it rides on."""
+    async def set_title(self, session_id: str, uid: str, title: str) -> None:
+        """Persist a session title (PATCH), re-injecting the uid marker (#153).
+
+        The marker prefix is always re-embedded so an auto-derived title from
+        the first chat turn carries the same ownership tag as the create-time
+        seed; this is the only title-write path (no browser PATCH route exists),
+        which is what keeps the marker immutable to browser clients. Silent on a
+        non-2xx — a title is a nicety, not worth failing the turn it rides on."""
         url = f"{self._base_url}/api/sessions/{session_id}"
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             async with client.patch(
-                url, json={"title": title}, headers=self._headers()
+                url, json={"title": marker.embed(uid, title)}, headers=self._headers()
             ) as resp:
                 if resp.status >= 400:
                     detail = (await resp.text())[:300]

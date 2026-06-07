@@ -12,6 +12,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from gatekeeper import marker
 from gatekeeper.hermes import HermesClient, _extract_reply, _is_low_quality_reply
 
 
@@ -48,7 +49,11 @@ async def test_create_session_then_chat_round_trip(monkeypatch):
 
     assert reply == "pongII"
     assert calls[0][:2] == ("POST", "/api/sessions")
-    assert calls[0][2] == {"user_id": "michael"}
+    # The create body carries the resident's uid marker as the seed title (#153).
+    assert calls[0][2] == {
+        "user_id": "michael",
+        "title": marker.marker_for("michael"),
+    }
     assert calls[1][:2] == ("POST", "/api/sessions/sess-1/chat")
     assert calls[1][2] == {"input": "ping"}
 
@@ -184,7 +189,11 @@ async def test_fast_success_no_fallback(monkeypatch):
     paths = [p for p, _ in record]
     # Only the fast session is created + used; the slow session never runs.
     assert "/api/sessions/sess-slow/chat" not in paths
-    assert record[0][1] == {"user_id": "michael", "model": "gemma4:e2b"}
+    assert record[0][1] == {
+        "user_id": "michael",
+        "title": marker.marker_for("michael"),
+        "model": "gemma4:e2b",
+    }
 
 
 async def test_fast_empty_falls_back_to_slow(monkeypatch):
@@ -207,7 +216,7 @@ async def test_fast_empty_falls_back_to_slow(monkeypatch):
     slow_create = next(
         b for p, b in record if p == "/api/sessions" and not b.get("model")
     )
-    assert slow_create == {"user_id": "michael"}
+    assert slow_create == {"user_id": "michael", "title": marker.marker_for("michael")}
 
 
 async def test_fast_too_short_falls_back_to_slow(monkeypatch):
@@ -243,7 +252,7 @@ async def test_no_fast_model_single_session_passthrough(monkeypatch):
 
     # Exactly one session, no model override in the create body.
     creates = [b for p, b in record if p == "/api/sessions"]
-    assert creates == [{"user_id": "michael"}]
+    assert creates == [{"user_id": "michael", "title": marker.marker_for("michael")}]
     assert client._sessions == {"michael": "only"}
 
 

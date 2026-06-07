@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from solilos_chat import personalities, skills
+from solilos_chat import marker, personalities, skills
 from solilos_chat.hermes import (
     _chat_body,
     _extract_messages,
@@ -85,8 +85,8 @@ class _FakeHermes:
         self.created_prompts.append(system_prompt or "")
         return "sess-1"
 
-    async def set_title(self, session_id, title):
-        self.titles.append((session_id, title))
+    async def set_title(self, session_id, uid, title):
+        self.titles.append((session_id, uid, title))
 
     async def delete_session(self, session_id):
         self.deleted.append(session_id)
@@ -116,26 +116,38 @@ class _FakeHermes:
             yield event
 
     async def list_sessions(self, uid):
-        # Mirror the real client: list-all (no per-resident filter) until #153.
-        return [
-            {
-                "id": s["id"],
-                "title": s.get("title", ""),
-                "last_activity": s.get("last_activity", ""),
-            }
-            for s in self._store
-        ]
+        # Mirror the real client: filter to the caller's uid marker and strip
+        # it from the displayed title (#153). Store titles already carry the
+        # marker (see _two_user_store).
+        out = []
+        for s in self._store:
+            title = s.get("title", "")
+            if not marker.has_marker(uid, title):
+                continue
+            out.append(
+                {
+                    "id": s["id"],
+                    "title": marker.strip(title),
+                    "last_activity": s.get("last_activity", ""),
+                }
+            )
+        return out
 
     async def get_session(self, session_id, uid):
-        # Mirror the real client: open any session (no ownership 404) until #153.
+        # Mirror the real client: owner-scoped by the uid marker (#153). A
+        # session the caller doesn't own is None (same as a missing id).
         for s in self._store:
-            if s["id"] == session_id:
-                return {
-                    "id": s["id"],
-                    "title": s.get("title", ""),
-                    "last_activity": s.get("last_activity", ""),
-                    "messages": s.get("messages", []),
-                }
+            if s["id"] != session_id:
+                continue
+            title = s.get("title", "")
+            if not marker.has_marker(uid, title):
+                return None
+            return {
+                "id": s["id"],
+                "title": marker.strip(title),
+                "last_activity": s.get("last_activity", ""),
+                "messages": s.get("messages", []),
+            }
         return None
 
 
@@ -358,8 +370,9 @@ async def test_first_turn_creates_session(aiohttp_client):
     assert body["reply"] == "echo: hello"
     assert fake.created == ["mdopp"]
     assert fake.turns == [("sess-1", "hello")]
-    # First turn derives + persists a title from the user's message.
-    assert fake.titles == [("sess-1", "hello")]
+    # First turn derives + persists a title from the user's message, tagged
+    # with the caller's uid so set_title can re-inject the marker (#153).
+    assert fake.titles == [("sess-1", "mdopp", "hello")]
 
 
 async def test_subsequent_turn_reuses_session(aiohttp_client):
@@ -421,7 +434,7 @@ async def test_stream_creates_session_and_restreams(aiohttp_client):
     assert body.rstrip().endswith("data: {}")  # final 'done' frame
     assert fake.created == ["mdopp"]
     assert fake.turns == [("sess-1", "hi")]
-    assert fake.titles == [("sess-1", "hi")]
+    assert fake.titles == [("sess-1", "mdopp", "hi")]
 
 
 async def test_stream_empty_input_rejected(aiohttp_client):
@@ -437,11 +450,13 @@ async def test_stream_empty_input_rejected(aiohttp_client):
 
 
 def _two_user_store():
+    # Titles carry each resident's immutable uid marker (#153); an extra
+    # legacy session has no marker at all.
     return [
         {
             "id": "s-mdopp",
             "user_id": "mdopp",
-            "title": "Groceries",
+            "title": marker.embed("mdopp", "Groceries"),
             "last_activity": "2026-06-05T10:00:00Z",
             "messages": [
                 {"role": "user", "content": "buy milk"},
@@ -451,16 +466,23 @@ def _two_user_store():
         {
             "id": "s-lena",
             "user_id": "lena",
-            "title": "Lena private",
+            "title": marker.embed("lena", "Lena private"),
             "last_activity": "2026-06-05T11:00:00Z",
             "messages": [{"role": "user", "content": "secret"}],
+        },
+        {
+            "id": "s-legacy",
+            "user_id": "",
+            "title": "Untagged old session",  # no marker (pre-#153)
+            "last_activity": "2026-06-04T09:00:00Z",
+            "messages": [{"role": "user", "content": "old"}],
         },
     ]
 
 
-async def test_list_sessions_returns_all(aiohttp_client):
-    # Single-resident reality: list-all. Per-resident isolation -> #153
-    # (Hermes v0.15.1 stores user_id:null, so no owner-filter is possible yet).
+async def test_list_sessions_scoped_to_caller(aiohttp_client):
+    # Per-resident isolation (#153): A sees only A's sessions, never B's, and
+    # never the unmarked legacy session. Marker stripped from the title.
     fake = _FakeHermes(store=_two_user_store())
     app = build_app(
         hermes=fake, remote_user_header="Remote-User", default_uid="household"
@@ -470,8 +492,14 @@ async def test_list_sessions_returns_all(aiohttp_client):
     resp = await client.get("/api/sessions", headers={"Remote-User": "mdopp"})
     body = await resp.json()
     assert resp.status == 200
-    ids = {s["id"] for s in body["sessions"]}
-    assert ids == {"s-mdopp", "s-lena"}
+    assert {s["id"] for s in body["sessions"]} == {"s-mdopp"}
+    # Marker stripped — the UI sees the clean human title (#155).
+    assert body["sessions"][0]["title"] == "Groceries"
+
+    # Resident B sees only B's session, not A's and not the legacy one.
+    resp = await client.get("/api/sessions", headers={"Remote-User": "lena"})
+    body = await resp.json()
+    assert {s["id"] for s in body["sessions"]} == {"s-lena"}
 
 
 async def test_delete_session(aiohttp_client):
@@ -526,13 +554,12 @@ async def test_get_own_session_returns_history(aiohttp_client):
     assert resp.status == 200
     assert body["session"]["id"] == "s-mdopp"
     assert body["session"]["messages"][0]["content"] == "buy milk"
+    assert body["session"]["title"] == "Groceries"  # marker stripped for the UI
 
 
-async def test_open_any_session_single_resident(aiohttp_client):
-    # Single-resident reality: any listed session opens (no ownership 404).
-    # Per-resident isolation is intentionally deferred -> #153 (Hermes v0.15.1
-    # stores user_id:null, so the proxy cannot scope by resident yet); this
-    # must be restored before multi-resident chat.
+async def test_get_other_residents_session_is_404(aiohttp_client):
+    # Per-resident isolation (#153): mdopp cannot open lena's session by id —
+    # the missing marker makes it indistinguishable from a non-existent id.
     fake = _FakeHermes(store=_two_user_store())
     app = build_app(
         hermes=fake, remote_user_header="Remote-User", default_uid="household"
@@ -540,12 +567,13 @@ async def test_open_any_session_single_resident(aiohttp_client):
     client = await aiohttp_client(app)
 
     resp = await client.get("/api/sessions/s-lena", headers={"Remote-User": "mdopp"})
-    body = await resp.json()
-    assert resp.status == 200
-    assert body["session"]["id"] == "s-lena"
-    assert body["session"]["messages"][0]["content"] == "secret"
+    assert resp.status == 404
 
-    # An unknown id still 404s (Hermes itself doesn't have it).
+    # The unmarked legacy session is hidden from everyone (privacy-safe).
+    resp = await client.get("/api/sessions/s-legacy", headers={"Remote-User": "mdopp"})
+    assert resp.status == 404
+
+    # An unknown id still 404s.
     resp = await client.get("/api/sessions/nope", headers={"Remote-User": "mdopp"})
     assert resp.status == 404
 
