@@ -116,6 +116,21 @@ default has been changed to a text-only tag. Suggested alternatives:
 Hermes' wiring picks up the new model automatically the next time
 its config is regenerated — see `templates/hermes/README.md`.
 
+## Thinking / reasoning output
+
+`gemma4` and other reasoning-capable tags (`ollama show` reports a
+`thinking` capability) emit their reasoning in `<thinking>…</thinking>`
+blocks before the answer. This needs no Ollama-side parameter — it's a
+native model capability, on by default. Solilos doesn't strip the
+reasoning at the model layer (the chain-of-thought can improve answer
+quality, and the gatekeeper/voice path TTS-reads only the final answer
+anyway); instead the **chat panel's Settings → Chat → Thinking blocks**
+toggle decides how a resident sees it: show the raw block, collapse it
+to a `<details>` disclosure (default), or hide it. The preference is
+per-browser and never round-trips to Ollama, so no template variable
+gates it. If you switch to a non-reasoning tag, no `<thinking>` blocks
+are produced and the toggle is simply a no-op.
+
 ## Storage
 
 Models persist at `${DATA_DIR}/ollama/`. Pulled weights are large

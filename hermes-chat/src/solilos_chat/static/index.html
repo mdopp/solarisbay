@@ -235,6 +235,13 @@
     .md pre code { background: none; padding: 0; font-size: 0.9em; }
     .md pre.mermaid-rendered { background: none; padding: 4px 0; text-align: center; }
     .md pre.mermaid-rendered svg { max-width: 100%; height: auto; }
+    /* Model thinking/reasoning, rendered collapsible (#185). */
+    .md details.think { margin: 0 0 8px; border: 1px dashed var(--line); border-radius: 8px; background: rgba(127,127,127,0.06); }
+    .md details.think > summary { cursor: pointer; padding: 5px 10px; color: var(--muted); font-size: 12px; list-style: none; }
+    .md details.think > summary::-webkit-details-marker { display: none; }
+    .md details.think > summary::before { content: "▸ "; }
+    .md details.think[open] > summary::before { content: "▾ "; }
+    .md details.think .think-body { padding: 2px 12px 8px; color: var(--muted); font-size: 0.95em; }
     .md blockquote { margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
     .md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
 
@@ -469,6 +476,12 @@
     .tools-h { font-size: 12px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; }
     .tools-h:first-of-type { margin-top: 4px; }
 
+    /* Chat preferences pane (#185). */
+    .pref-row { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; padding: 14px 0; border-bottom: 1px solid var(--line); }
+    .pref-label { flex: 1 1 280px; min-width: 0; }
+    .pref-name { font-weight: 600; font-size: 14px; }
+    .pref-desc { color: var(--muted); font-size: 13px; margin-top: 3px; }
+
     #backdrop { display: none; }
 
     /* ---------- Mobile ---------- */
@@ -636,6 +649,7 @@
         <button type="button" data-view="skills" class="active">Skills</button>
         <button type="button" data-view="soul">Soul</button>
         <button type="button" data-view="tools">Tools</button>
+        <button type="button" data-view="prefs">Chat</button>
         <button type="button" data-view="model" id="nav-model" hidden>Model</button>
       </nav>
     </div>
@@ -746,6 +760,24 @@
         <div id="tools-cards"></div>
       </div>
     </section>
+
+    <section id="view-prefs" class="view">
+      <div class="pane">
+        <h2>Chat</h2>
+        <p class="lead">How Sol's replies are shown to you. These are local display preferences — they don't change Sol or the model.</p>
+        <div class="pref-row">
+          <div class="pref-label">
+            <div class="pref-name">Thinking blocks</div>
+            <div class="pref-desc">Reasoning-capable models (e.g. gemma4) can think out loud in <code>&lt;thinking&gt;</code> blocks before answering. Choose how to show that.</div>
+          </div>
+          <div class="seg" id="thinking-seg" role="radiogroup" aria-label="Thinking blocks">
+            <button type="button" data-mode="show" role="radio">Show</button>
+            <button type="button" data-mode="collapse" role="radio">Collapse</button>
+            <button type="button" data-mode="hide" role="radio">Hide</button>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- Attachment modal: camera capture (getUserMedia) + client-side crop (#183) -->
@@ -796,6 +828,44 @@
       var slash = { refresh: function () {}, handleKey: function () { return false; } };
 
       function currentPersonality() { return personalitySel.value || "sol"; }
+
+      // ---- Thinking-mode display preference (#185) ----
+      // Reasoning models (gemma4 etc.) emit a <thinking>…</thinking> (or
+      // <think>…</think>) block before the answer. This is a pure display
+      // choice — the model still reasons; we only decide what the resident
+      // sees: the raw block ("show"), a collapsible ("collapse", default), or
+      // nothing ("hide"). Stored locally; never sent to Hermes/Ollama.
+      var THINK_MODES = { show: 1, collapse: 1, hide: 1 };
+      var thinkingMode = (function () {
+        var saved = localStorage.getItem("sol.thinking");
+        return THINK_MODES[saved] ? saved : "collapse";
+      })();
+      // Matches a paired <thinking>/<think> block (case-insensitive, dotall).
+      var THINK_RE = /<(thinking|think)>([\s\S]*?)<\/\1>/gi;
+
+      // Render assistant text to HTML, applying the thinking-mode preference.
+      // Markdown-render the visible answer and each thinking block separately
+      // (markdown.js escapes HTML, so the <details> wrapper is built here).
+      function renderReply(raw) {
+        var src = String(raw == null ? "" : raw);
+        if (thinkingMode === "show" || src.indexOf("<thin") === -1) {
+          return window.renderMarkdown(src);
+        }
+        var thoughts = [];
+        var answer = src.replace(THINK_RE, function (_m, _tag, inner) {
+          thoughts.push(inner.trim());
+          return "";
+        });
+        var html = window.renderMarkdown(answer.trim());
+        if (thinkingMode === "hide" || !thoughts.length) return html;
+        var blocks = thoughts.map(function (t) {
+          return (
+            '<details class="think"><summary>Reasoning</summary>' +
+            '<div class="think-body md">' + window.renderMarkdown(t) + "</div></details>"
+          );
+        });
+        return blocks.join("\n") + (html ? "\n" + html : "");
+      }
 
       // ---- Mermaid (offline, bundled under /static) ----
       var mermaidReady = false, mermaidSeq = 0;
@@ -904,13 +974,13 @@
             var stick = atBottom();
             if (activity.parentNode) el.removeChild(activity);
             buffer += delta;
-            body.innerHTML = window.renderMarkdown(buffer);
+            body.innerHTML = renderReply(buffer);
             scrollDown(stick);
           },
           finish: function () {
             if (activity.parentNode) el.removeChild(activity);
             if (!buffer) body.textContent = "(no reply)";
-            else body.innerHTML = window.renderMarkdown(buffer);
+            else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
             el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
@@ -984,6 +1054,7 @@
         ["/skills", "Open Skills (Settings)"],
         ["/soul", "Open Soul (Settings)"],
         ["/tools", "Open Tools — what Sol can do (Settings)"],
+        ["/thinking", "Show, collapse, or hide thinking blocks (Settings)"],
         ["/model", "Open Model (Settings, admins)"]
       ];
       function helpMarkdown() {
@@ -1002,6 +1073,7 @@
           deleteSession(sessionId); return;
         }
         if (cmd === "skills" || cmd === "soul" || cmd === "tools") { showView(cmd); return; }
+        if (cmd === "thinking") { showView("prefs"); return; }
         if (cmd === "model") {
           if (isAdmin) { showView("model"); } else { addText("system", "The model switch is for admins."); }
           return;
@@ -1412,7 +1484,8 @@
                 el.className = "msg sol";
                 var body = document.createElement("div");
                 body.className = "md";
-                body.innerHTML = window.renderMarkdown(m.content);
+                body.setAttribute("data-raw", m.content);
+                body.innerHTML = renderReply(m.content);
                 renderMermaidIn(body);
                 el.appendChild(body);
                 if (ts) el.appendChild(metaLine(ts));
@@ -1493,6 +1566,7 @@
         skills: document.getElementById("view-skills"),
         soul: document.getElementById("view-soul"),
         tools: document.getElementById("view-tools"),
+        prefs: document.getElementById("view-prefs"),
         model: document.getElementById("view-model")
       };
       var settingsBar = document.getElementById("settings-bar");
@@ -1509,9 +1583,39 @@
         if (name === "skills" && !skillsLoaded) { skillsLoaded = true; loadSkills(); }
         if (name === "soul" && !soulLoaded) { soulLoaded = true; loadSoul(); }
         if (name === "tools") { loadTools(); loadMcp(); }
+        if (name === "prefs") { syncThinkingSeg(); }
         if (name === "model") { loadModel(); }
         closeRail();
       }
+
+      // ---- Chat preferences: thinking-mode toggle (#185) ----
+      var thinkSeg = document.getElementById("thinking-seg");
+      var thinkBtns = thinkSeg.querySelectorAll("button");
+      function syncThinkingSeg() {
+        thinkBtns.forEach(function (b) {
+          var on = b.getAttribute("data-mode") === thinkingMode;
+          b.classList.toggle("active", on);
+          b.setAttribute("aria-checked", on ? "true" : "false");
+        });
+      }
+      // Re-render the already-shown assistant messages so a toggle takes
+      // effect immediately, without reloading the chat.
+      function rerenderReplies() {
+        var bodies = log.querySelectorAll(".msg.sol > .md[data-raw]");
+        Array.prototype.forEach.call(bodies, function (body) {
+          body.innerHTML = renderReply(body.getAttribute("data-raw"));
+          renderMermaidIn(body);
+        });
+      }
+      thinkBtns.forEach(function (b) {
+        b.addEventListener("click", function () {
+          thinkingMode = b.getAttribute("data-mode");
+          localStorage.setItem("sol.thinking", thinkingMode);
+          syncThinkingSeg();
+          rerenderReplies();
+        });
+      });
+      syncThinkingSeg();
       navBtns.forEach(function (b) {
         b.addEventListener("click", function () { showView(b.getAttribute("data-view")); });
       });
