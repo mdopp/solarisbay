@@ -234,9 +234,15 @@ async def test_get_mcp_lists_servers_without_tokens(
 
 def test_diagnose_connect_error_categories():
     assert "Timeout" in _diagnose_connect_error(TimeoutError())
-    netfail = aiohttp.ClientConnectorError.__new__(aiohttp.ClientConnectorError)
-    Exception.__init__(netfail, "no route")
-    assert "Network/DNS" in _diagnose_connect_error(netfail)
+
+    class _FakeConnectorError(aiohttp.ClientConnectorError):
+        def __init__(self):
+            Exception.__init__(self, "no route")
+
+        def __str__(self):
+            return "no route"
+
+    assert "Network/DNS" in _diagnose_connect_error(_FakeConnectorError())
     assert "Connection error" in _diagnose_connect_error(aiohttp.ClientError("boom"))
 
 
