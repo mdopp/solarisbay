@@ -31,10 +31,23 @@ to `DEFAULT_UID`.
 - `GET /api/sessions?user_id={uid}` — list the uid's sessions.
 - `POST /api/sessions` — create a session bound to the uid.
 - `GET /api/sessions/{id}` — get a session + its message history.
-- `POST /api/sessions/{id}/chat` — body `{"input": …}`, returns the reply.
+- `POST /api/sessions/{id}/chat` — body `{"input": …}` (plus an optional
+  `images: [<base64>]` for camera/upload attachments), returns the reply.
 
 (Not the gatekeeper's placeholder `/converse`, which does not exist in the
 real Hermes API.)
+
+## Multimodal input
+
+The composer has a microphone button (browser-local speech-to-text via the
+Web Speech API — the transcript pre-populates the message box) and an
+attachment button (upload or in-browser camera capture via
+`getUserMedia`, with a client-side crop). Attached images are sent as
+base64 under the chat body's `images` key so the `media-ingestion-multimodal`
+skill and a vision model can act on them; an image with no typed text gets a
+default prompt so the turn still triggers the skill. Mic/camera need a
+secure context (HTTPS or localhost) and degrade gracefully when the browser
+lacks support.
 
 ## Per-user privacy
 

@@ -157,29 +157,37 @@ class HermesClient:
                         body=detail,
                     )
 
-    async def chat(self, session_id: str, text: str) -> str:
-        """Send one turn to an existing session; return the reply text."""
+    async def chat(
+        self, session_id: str, text: str, images: list[str] | None = None
+    ) -> str:
+        """Send one turn to an existing session; return the reply text.
+
+        `images` are base64-encoded image payloads (camera/upload from the
+        chat panel, #183); forwarded under the multimodal `images` key so the
+        media-ingestion skill and a vision model can act on the attachment.
+        """
         url = f"{self._base_url}/api/sessions/{session_id}/chat"
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             async with client.post(
-                url, json={"input": text}, headers=self._headers()
+                url, json=_chat_body(text, images), headers=self._headers()
             ) as resp:
                 body = await self._json_or_raise(resp, "chat")
         return _extract_reply(body)
 
     async def chat_stream(
-        self, session_id: str, text: str
+        self, session_id: str, text: str, images: list[str] | None = None
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream one turn; yield parsed Hermes SSE events as dicts.
 
         Each yielded event is `{"type": <event>, "data": <decoded payload>}`.
         The `assistant.delta` event carries token deltas; `tool.started`/
         `tool.completed` carry tool names; `run.completed` ends the turn.
+        `images` (base64, #183) ride the same multimodal `images` key.
         """
         url = f"{self._base_url}/api/sessions/{session_id}/chat/stream"
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             async with client.post(
-                url, json={"input": text}, headers=self._headers()
+                url, json=_chat_body(text, images), headers=self._headers()
             ) as resp:
                 if resp.status >= 400:
                     detail = (await resp.text())[:500]
@@ -230,6 +238,19 @@ async def _iter_sse(stream: aiohttp.StreamReader) -> AsyncIterator[dict[str, Any
     if data_lines or event:
         payload = "\n".join(data_lines)
         yield {"type": event or "message", "data": _maybe_json(payload)}
+
+
+def _chat_body(text: str, images: list[str] | None) -> dict[str, Any]:
+    """Build the Hermes chat body, adding `images` only when present.
+
+    `images` are bare base64 strings (no `data:` prefix), the multimodal
+    convention Hermes/Ollama vision models read. Omitting the key entirely on
+    a text-only turn keeps the request shape identical to before.
+    """
+    body: dict[str, Any] = {"input": text}
+    if images:
+        body["images"] = images
+    return body
 
 
 def _maybe_json(payload: str) -> Any:

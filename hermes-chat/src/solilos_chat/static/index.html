@@ -293,6 +293,66 @@
     .slash-item.active { background: var(--accent-soft); }
     .slash-item.active .cmd { color: var(--accent); }
 
+    /* Composer mic/attach icon buttons (#183, #184). */
+    .composer-icon {
+      flex: 0 0 auto; width: 40px; align-self: stretch;
+      display: flex; align-items: center; justify-content: center;
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--bg); color: var(--muted);
+    }
+    .composer-icon:hover { color: var(--accent); border-color: var(--accent); }
+    .composer-icon.recording { color: var(--danger); border-color: var(--danger); animation: pulse 1.1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+    /* Attached-image thumbnails above the composer. */
+    .attach-preview {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      max-width: 900px; width: 100%; margin: 0 auto; padding: 0 18px 6px;
+    }
+    .attach-thumb { position: relative; width: 64px; height: 64px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+    .attach-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .attach-thumb .rm {
+      position: absolute; top: 2px; right: 2px; width: 18px; height: 18px;
+      border-radius: 50%; background: rgba(0,0,0,0.6); color: #fff;
+      display: flex; align-items: center; justify-content: center; font-size: 12px; line-height: 1;
+    }
+
+    /* Camera / crop modal. */
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,0.55);
+      display: flex; align-items: center; justify-content: center; padding: 16px;
+    }
+    .modal {
+      width: 100%; max-width: 480px; background: var(--panel-solid);
+      border: 1px solid var(--line); border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-panel); overflow: hidden;
+    }
+    .modal-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .modal-head .grow { flex: 1 1 auto; }
+    .modal-title { font-weight: 600; }
+    .modal-body { padding: 16px; }
+    .attach-choose { display: flex; gap: 12px; }
+    .attach-opt {
+      flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 8px;
+      padding: 22px 10px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--panel); color: var(--ink); font-weight: 500; font-size: 14px;
+    }
+    .attach-opt:hover { border-color: var(--accent); color: var(--accent); }
+    .attach-opt .ic { width: 26px; height: 26px; }
+    .cam-stage { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .cam-stage video { width: 100%; max-height: 320px; border-radius: var(--radius); background: #000; }
+    .cam-shoot { padding: 8px 22px; }
+    .crop-stage { display: flex; flex-direction: column; gap: 12px; }
+    .crop-area { position: relative; max-height: 360px; overflow: hidden; border-radius: var(--radius); background: #000; user-select: none; touch-action: none; }
+    .crop-area img { display: block; width: 100%; height: auto; pointer-events: none; }
+    .crop-box {
+      position: absolute; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(0,0,0,0.45);
+      cursor: move; box-sizing: border-box;
+    }
+    .crop-handle { position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: nwse-resize; }
+    .crop-actions { display: flex; justify-content: flex-end; gap: 10px; }
+    .crop-actions .secondary { color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 14px; }
+
     .pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 24px 16px; }
     .pane > * { max-width: 1024px; margin-left: auto; margin-right: auto; }
     .pane h2 { margin: 0 0 4px; font-size: 18px; }
@@ -514,6 +574,11 @@
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4M8 21h8"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
   </svg>
 
   <aside class="rail">
@@ -592,10 +657,14 @@
       <div class="composer-row">
         <span class="hint">Type <code>/help</code> for commands</span>
       </div>
+      <div class="attach-preview" id="attach-preview" hidden></div>
       <form id="composer">
         <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Commands" hidden></div>
+        <button id="attach-btn" class="composer-icon" type="button" title="Bild anhängen" aria-label="Bild anhängen"><svg class="ic"><use href="#i-image"></use></svg></button>
+        <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
         <textarea id="input" rows="1" placeholder="Message Sol…  (/help for commands)" autofocus></textarea>
         <button id="send" class="btn-primary" type="submit">Send</button>
+        <input id="file-input" type="file" accept="image/*" hidden />
       </form>
     </section>
 
@@ -677,6 +746,37 @@
         <div id="tools-cards"></div>
       </div>
     </section>
+  </div>
+
+  <!-- Attachment modal: camera capture (getUserMedia) + client-side crop (#183) -->
+  <div class="modal-backdrop" id="attach-modal" hidden>
+    <div class="modal" role="dialog" aria-label="Bild anhängen">
+      <div class="modal-head">
+        <span class="modal-title" id="attach-modal-title">Bild anhängen</span>
+        <span class="grow"></span>
+        <button class="icon-btn" id="attach-close" type="button" aria-label="Schließen"><svg class="ic"><use href="#i-x"></use></svg></button>
+      </div>
+      <div class="modal-body">
+        <div class="attach-choose" id="attach-choose">
+          <button class="attach-opt" id="attach-camera" type="button"><svg class="ic"><use href="#i-camera"></use></svg> Kamera</button>
+          <button class="attach-opt" id="attach-upload" type="button"><svg class="ic"><use href="#i-upload"></use></svg> Hochladen</button>
+        </div>
+        <div class="cam-stage" id="cam-stage" hidden>
+          <video id="cam-video" playsinline autoplay muted></video>
+          <button class="btn-primary cam-shoot" id="cam-shoot" type="button">Aufnehmen</button>
+        </div>
+        <div class="crop-stage" id="crop-stage" hidden>
+          <div class="crop-area" id="crop-area">
+            <img id="crop-img" alt="Zum Zuschneiden" />
+            <div class="crop-box" id="crop-box"><span class="crop-handle"></span></div>
+          </div>
+          <div class="crop-actions">
+            <button class="secondary" id="crop-cancel" type="button">Abbrechen</button>
+            <button class="btn-primary" id="crop-confirm" type="button">Anhängen</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="/static/markdown.js"></script>
@@ -829,11 +929,13 @@
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
       });
 
-      function streamChat(text, msg) {
+      function streamChat(text, msg, images) {
+        var payload = { input: text, session_id: sessionId, personality: currentPersonality() };
+        if (images && images.length) payload.images = images;
         return fetch("/api/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ input: text, session_id: sessionId, personality: currentPersonality() })
+          body: JSON.stringify(payload)
         }).then(function (r) {
           if (!r.ok || !r.body) throw new Error("bad response");
           var reader = r.body.getReader();
@@ -989,6 +1091,185 @@
         return { refresh: refresh, handleKey: handleKey, close: close };
       })();
 
+      // ---- Image attachments: upload, camera capture, client-side crop (#183) ----
+      var attach = (function () {
+        var images = [];                 // pending data-URLs
+        var tray = document.getElementById("attach-preview");
+        var btn = document.getElementById("attach-btn");
+        var modal = document.getElementById("attach-modal");
+        var fileInput = document.getElementById("file-input");
+        var chooseEl = document.getElementById("attach-choose");
+        var camStage = document.getElementById("cam-stage");
+        var cropStage = document.getElementById("crop-stage");
+        var camVideo = document.getElementById("cam-video");
+        var cropImg = document.getElementById("crop-img");
+        var cropArea = document.getElementById("crop-area");
+        var cropBox = document.getElementById("crop-box");
+        var stream = null;
+
+        function renderTray() {
+          tray.textContent = "";
+          tray.hidden = images.length === 0;
+          images.forEach(function (src, i) {
+            var t = document.createElement("div"); t.className = "attach-thumb";
+            var im = document.createElement("img"); im.src = src; im.alt = "Anhang"; t.appendChild(im);
+            var rm = document.createElement("button");
+            rm.className = "rm"; rm.type = "button"; rm.setAttribute("aria-label", "Entfernen");
+            rm.innerHTML = "&times;";
+            rm.addEventListener("click", function () { images.splice(i, 1); renderTray(); });
+            t.appendChild(rm);
+            tray.appendChild(t);
+          });
+        }
+
+        function add(dataUrl) { if (images.length < 4) { images.push(dataUrl); renderTray(); } }
+
+        // ---- Modal open/close + camera teardown ----
+        function showStage(which) {
+          chooseEl.hidden = which !== "choose";
+          camStage.hidden = which !== "camera";
+          cropStage.hidden = which !== "crop";
+        }
+        function stopCam() {
+          if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+          camVideo.srcObject = null;
+        }
+        function openModal() { modal.hidden = false; showStage("choose"); }
+        function closeModal() { stopCam(); modal.hidden = true; }
+
+        btn.addEventListener("click", openModal);
+        document.getElementById("attach-close").addEventListener("click", closeModal);
+        modal.addEventListener("click", function (e) { if (e.target === modal) closeModal(); });
+
+        // ---- Upload path ----
+        document.getElementById("attach-upload").addEventListener("click", function () { fileInput.click(); });
+        fileInput.addEventListener("change", function () {
+          var f = fileInput.files && fileInput.files[0];
+          fileInput.value = "";
+          if (!f) return;
+          var rd = new FileReader();
+          rd.onload = function () { startCrop(String(rd.result)); };
+          rd.readAsDataURL(f);
+        });
+
+        // ---- Camera path ----
+        document.getElementById("attach-camera").addEventListener("click", function () {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert("Diese Ansicht kann nicht auf die Kamera zugreifen.");
+            return;
+          }
+          navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+            .then(function (s) { stream = s; camVideo.srcObject = s; showStage("camera"); })
+            .catch(function () { alert("Kamerazugriff verweigert oder nicht verfügbar."); });
+        });
+        document.getElementById("cam-shoot").addEventListener("click", function () {
+          var c = document.createElement("canvas");
+          c.width = camVideo.videoWidth || 640; c.height = camVideo.videoHeight || 480;
+          c.getContext("2d").drawImage(camVideo, 0, 0, c.width, c.height);
+          stopCam();
+          startCrop(c.toDataURL("image/jpeg", 0.9));
+        });
+
+        // ---- Crop: a draggable/resizable box over the loaded image ----
+        var box = { x: 0, y: 0, w: 0, h: 0 };
+        function clampBox() {
+          var W = cropArea.clientWidth, H = cropArea.clientHeight;
+          box.w = Math.max(32, Math.min(box.w, W)); box.h = Math.max(32, Math.min(box.h, H));
+          box.x = Math.max(0, Math.min(box.x, W - box.w)); box.y = Math.max(0, Math.min(box.y, H - box.h));
+          cropBox.style.left = box.x + "px"; cropBox.style.top = box.y + "px";
+          cropBox.style.width = box.w + "px"; cropBox.style.height = box.h + "px";
+        }
+        function startCrop(dataUrl) {
+          cropImg.onload = function () {
+            var W = cropArea.clientWidth, H = cropArea.clientHeight;
+            var side = Math.min(W, H) * 0.8;
+            box = { x: (W - side) / 2, y: (H - side) / 2, w: side, h: side };
+            clampBox();
+          };
+          cropImg.src = dataUrl;
+          showStage("crop");
+        }
+        function dragHandler(resizing) {
+          return function (e) {
+            e.preventDefault();
+            var startX = e.touches ? e.touches[0].clientX : e.clientX;
+            var startY = e.touches ? e.touches[0].clientY : e.clientY;
+            var o = { x: box.x, y: box.y, w: box.w, h: box.h };
+            function move(ev) {
+              var cx = ev.touches ? ev.touches[0].clientX : ev.clientX;
+              var cy = ev.touches ? ev.touches[0].clientY : ev.clientY;
+              var dx = cx - startX, dy = cy - startY;
+              if (resizing) { box.w = o.w + dx; box.h = o.h + dy; }
+              else { box.x = o.x + dx; box.y = o.y + dy; }
+              clampBox();
+            }
+            function up() {
+              document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up);
+              document.removeEventListener("touchmove", move); document.removeEventListener("touchend", up);
+            }
+            document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+            document.addEventListener("touchmove", move, { passive: false }); document.addEventListener("touchend", up);
+          };
+        }
+        cropBox.addEventListener("mousedown", dragHandler(false));
+        cropBox.addEventListener("touchstart", dragHandler(false), { passive: false });
+        var handle = cropBox.querySelector(".crop-handle");
+        handle.addEventListener("mousedown", function (e) { e.stopPropagation(); dragHandler(true)(e); });
+        handle.addEventListener("touchstart", function (e) { e.stopPropagation(); dragHandler(true)(e); }, { passive: false });
+
+        document.getElementById("crop-cancel").addEventListener("click", closeModal);
+        document.getElementById("crop-confirm").addEventListener("click", function () {
+          // Map the on-screen crop box back to the image's natural pixels.
+          var scale = cropImg.naturalWidth / cropArea.clientWidth;
+          var c = document.createElement("canvas");
+          c.width = Math.max(1, Math.round(box.w * scale));
+          c.height = Math.max(1, Math.round(box.h * scale));
+          c.getContext("2d").drawImage(
+            cropImg, box.x * scale, box.y * scale, box.w * scale, box.h * scale,
+            0, 0, c.width, c.height
+          );
+          add(c.toDataURL("image/jpeg", 0.9));
+          closeModal();
+        });
+
+        return { take: function () { var out = images.slice(); images = []; renderTray(); return out; } };
+      })();
+
+      // ---- Voice input: browser-local STT into the message box (#184) ----
+      (function () {
+        var btn = document.getElementById("mic-btn");
+        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) {
+          btn.title = "Spracheingabe wird von diesem Browser nicht unterstützt";
+          btn.addEventListener("click", function () {
+            addText("system", "Spracheingabe wird von diesem Browser nicht unterstützt.");
+          });
+          return;
+        }
+        var rec = new SR();
+        rec.lang = (navigator.language || "de-DE");
+        rec.interimResults = true;
+        rec.continuous = false;
+        var listening = false, base = "";
+        rec.onresult = function (e) {
+          var txt = "";
+          for (var i = e.resultIndex; i < e.results.length; i++) txt += e.results[i][0].transcript;
+          input.value = (base ? base + " " : "") + txt;
+          autosize();
+        };
+        rec.onerror = function () { stop(); };
+        rec.onend = function () { stop(); };
+        function start() {
+          base = input.value.trim();
+          try { rec.start(); listening = true; btn.classList.add("recording"); btn.title = "Aufnahme stoppen"; }
+          catch (err) {}
+        }
+        function stop() {
+          listening = false; btn.classList.remove("recording"); btn.title = "Spracheingabe"; input.focus();
+        }
+        btn.addEventListener("click", function () { if (listening) rec.stop(); else start(); });
+      })();
+
       function showContext() {
         if (!sessionId) { addText("system", "Start a chat first — then /context shows its usage."); return; }
         fetch("/api/sessions/" + encodeURIComponent(sessionId))
@@ -1013,18 +1294,43 @@
         e.preventDefault();
         slash.close();
         var text = input.value.trim();
-        if (!text) return;
-        if (text.charAt(0) === "/") { input.value = ""; autosize(); handleCommand(text); return; }
+        var images = attach.take(); // data-URLs; clears the tray
+        if (!text && !images.length) return;
+        // Slash commands are browser-local — never carry an attachment.
+        if (text.charAt(0) === "/" && !images.length) { input.value = ""; autosize(); handleCommand(text); return; }
         var firstTurn = !sessionId;
-        addText("me", text);
+        addUserTurn(text, images);
         input.value = ""; autosize();
         send.disabled = true;
         var msg = addAssistant();
-        streamChat(text, msg)
+        streamChat(text, msg, images.map(stripDataUrl))
           .then(function () { msg.finish(); if (firstTurn) loadSessions(); })
           .catch(function () { msg.fail("Network error. Please try again."); })
           .finally(function () { send.disabled = false; input.focus(); });
       });
+
+      function stripDataUrl(u) { return u.indexOf(",") >= 0 ? u.slice(u.indexOf(",") + 1) : u; }
+
+      // A user turn that may carry image thumbnails above the (optional) text.
+      function addUserTurn(text, images) {
+        var el = document.createElement("div");
+        el.className = "msg me";
+        if (images && images.length) {
+          var strip = document.createElement("div");
+          strip.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px";
+          images.forEach(function (src) {
+            var im = document.createElement("img");
+            im.src = src; im.alt = "Anhang";
+            im.style.cssText = "width:120px;max-width:60%;border-radius:10px;display:block";
+            strip.appendChild(im);
+          });
+          el.appendChild(strip);
+        }
+        if (text) el.appendChild(document.createTextNode(text));
+        el.appendChild(metaLine(new Date()));
+        log.appendChild(el);
+        scrollDown(true);
+      }
 
       // ---- Session list ----
       function fmtWhen(ts) {

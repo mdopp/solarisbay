@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from solilos_chat import personalities, skills
 from solilos_chat.hermes import (
+    _chat_body,
     _extract_messages,
     _extract_reply,
     _extract_session_id,
@@ -13,6 +14,8 @@ from solilos_chat.hermes import (
     _session_summary,
 )
 from solilos_chat.server import (
+    _IMAGE_PROMPT,
+    _images_from,
     _normalize,
     _title_from,
     build_app,
@@ -72,6 +75,7 @@ class _FakeHermes:
         self.turns = []
         self.titles = []
         self.deleted = []
+        self.images = []
         self._events = events or []
         # store: list of {id, user_id, title, last_activity, messages}
         self._store = store or []
@@ -100,12 +104,14 @@ class _FakeHermes:
             }
         ]
 
-    async def chat(self, session_id, text):
+    async def chat(self, session_id, text, images=None):
         self.turns.append((session_id, text))
+        self.images.append(images or [])
         return f"echo: {text}"
 
-    async def chat_stream(self, session_id, text):
+    async def chat_stream(self, session_id, text, images=None):
         self.turns.append((session_id, text))
+        self.images.append(images or [])
         for event in self._events:
             yield event
 
@@ -243,6 +249,96 @@ def test_normalize_completed_and_unknown():
 def test_maybe_json():
     assert _maybe_json('{"a": 1}') == {"a": 1}
     assert _maybe_json("not json") == "not json"
+
+
+# --- Image attachments (#183) ---------------------------------------------
+
+
+def test_chat_body_text_only_omits_images():
+    assert _chat_body("hi", None) == {"input": "hi"}
+    assert _chat_body("hi", []) == {"input": "hi"}
+
+
+def test_chat_body_includes_images():
+    assert _chat_body("look", ["AAAA"]) == {"input": "look", "images": ["AAAA"]}
+
+
+def test_images_from_strips_data_url_prefix_and_caps():
+    body = {
+        "images": [
+            "data:image/png;base64,AAAA",  # prefix stripped
+            "BBBB",  # bare base64 kept as-is
+            "",  # dropped (empty)
+            123,  # dropped (not a string)
+            "C1",
+            "C2",
+            "C3",  # 6th valid -> dropped by the cap of 4
+        ]
+    }
+    assert _images_from(body) == ["AAAA", "BBBB", "C1", "C2"]
+
+
+def test_images_from_non_list():
+    assert _images_from({}) == []
+    assert _images_from({"images": "nope"}) == []
+
+
+async def test_chat_forwards_images(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat",
+        json={"input": "scan this", "images": ["data:image/jpeg;base64,ZZ"]},
+    )
+    assert resp.status == 200
+    assert fake.turns == [("sess-1", "scan this")]
+    assert fake.images == [["ZZ"]]  # prefix stripped before reaching Hermes
+
+
+async def test_chat_image_only_uses_default_prompt(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post("/api/chat", json={"images": ["QQ"]})
+    assert resp.status == 200
+    assert fake.turns == [("sess-1", _IMAGE_PROMPT)]
+    assert fake.images == [["QQ"]]
+
+
+async def test_chat_no_text_no_images_rejected(aiohttp_client):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post("/api/chat", json={"input": "  ", "images": []})
+    assert resp.status == 400
+    assert fake.turns == []
+
+
+async def test_stream_forwards_images(aiohttp_client):
+    fake = _FakeHermes(events=[{"type": "assistant.delta", "data": {"delta": "ok"}}])
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"input": "look", "images": ["data:image/png;base64,PP"]},
+    )
+    assert resp.status == 200
+    await resp.text()
+    assert fake.turns == [("sess-1", "look")]
+    assert fake.images == [["PP"]]
 
 
 async def test_first_turn_creates_session(aiohttp_client):
