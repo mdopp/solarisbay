@@ -5,9 +5,15 @@ one click and Hermes can consume as a skill pack independently.
 
 ## What's in this repo
 
-- **Hermes skills** (`templates/solbay/skills/`) — five
+- **Hermes skills** (`templates/solbay/skills/`) — household
   procedures Hermes loads at runtime: `audit-query`, `debug-set`,
-  `dynamic-skills`, `media-ingestion-multimodal`, `status`.
+  `dynamic-skills`, `media-ingestion-multimodal`, `problem-summarizer`,
+  `room-enrollment`, `status`.
+- **Operator skill pack** (`templates/admin-soul/skills/`) — the
+  admin-facing soul Hermes loads alongside the household skills:
+  `admin-diagnose` (drill service → container → logs), `admin-logs`
+  (targeted log deep-dive), `admin-act` (lifecycle + mutate actions via
+  the `servicebay_admin` MCP), and a `SOUL.md` operator disposition.
 - **ServiceBay templates** (`templates/{ollama,hermes,solilos-chat,solbay}/`)
   — the four-pod deployment recipe that wires local LLM, agent
   runtime, chat UI, and the Solilos-specific glue (skill mount, voice

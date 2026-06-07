@@ -171,6 +171,14 @@ spec:
     - mountPath: /opt/data/skills/solilos
       name: solilos-skills
       readOnly: true
+    # Operator/admin skill pack (admin-soul template, #176). Read-only for the
+    # same reason as solilos-skills above — Hermes only scans it. The admin-soul
+    # template delivers its skills/ to this hostPath; mounting it under the
+    # loader's scan root is what makes the Hermes loader list the operator
+    # skills (admin-diagnose/admin-logs/admin-act).
+    - mountPath: /opt/data/skills/admin-soul
+      name: admin-soul-skills
+      readOnly: true
     # Drafted skills go here, NOT under /opt/data/skills/solilos. Hermes'
     # skill loader scans /opt/data/skills/solilos; anything that lands
     # there is live immediately. Solilos's dynamic-skills SKILL.md writes
@@ -232,6 +240,10 @@ spec:
   - name: solilos-skills
     hostPath:
       path: {{DATA_DIR}}/solbay/skills
+      type: DirectoryOrCreate
+  - name: admin-soul-skills
+    hostPath:
+      path: {{DATA_DIR}}/admin-soul/skills
       type: DirectoryOrCreate
   - name: solilos-skills-pending
     hostPath:
