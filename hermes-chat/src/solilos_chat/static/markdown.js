@@ -79,6 +79,7 @@
       var fence = line.match(/^\s*```(.*)$/);
       if (fence) {
         closeList();
+        var lang = fence[1].trim().toLowerCase();
         var buf = [];
         i++;
         while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
@@ -86,7 +87,13 @@
           i++;
         }
         i++; // skip closing fence
-        html.push("<pre><code>" + escapeHtml(buf.join("\n")) + "</code></pre>");
+        var code = escapeHtml(buf.join("\n"));
+        if (lang === "mermaid") {
+          // Carry the diagram source verbatim for a post-render pass to draw.
+          html.push('<pre class="mermaid-src"><code>' + code + "</code></pre>");
+        } else {
+          html.push("<pre><code>" + code + "</code></pre>");
+        }
         continue;
       }
 

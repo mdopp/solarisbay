@@ -210,7 +210,14 @@
     .msg.sol { align-self: flex-start; background: var(--bubble-sol); }
     .msg.system { align-self: center; color: var(--muted); background: none; font-size: 13px; padding: 4px; }
     .msg.info { align-self: flex-start; background: var(--accent-soft); }
-    .role { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+    /* Subtle per-message footer: HH:MM timestamp (+ date when not today),
+       and on Sol's replies the round-trip latency. */
+    .meta {
+      display: block; margin-top: 5px; font-size: 11px; color: var(--muted);
+      letter-spacing: 0.2px; opacity: 0.75;
+    }
+    .msg.me .meta { text-align: right; }
+    .meta .took { font-variant-numeric: tabular-nums; }
 
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
@@ -226,6 +233,15 @@
     }
     .md pre { margin: 0 0 8px; padding: 10px 12px; background: rgba(127,127,127,0.14); border-radius: 8px; overflow-x: auto; }
     .md pre code { background: none; padding: 0; font-size: 0.9em; }
+    .md pre.mermaid-rendered { background: none; padding: 4px 0; text-align: center; }
+    .md pre.mermaid-rendered svg { max-width: 100%; height: auto; }
+    /* Model thinking/reasoning, rendered collapsible (#185). */
+    .md details.think { margin: 0 0 8px; border: 1px dashed var(--line); border-radius: 8px; background: rgba(127,127,127,0.06); }
+    .md details.think > summary { cursor: pointer; padding: 5px 10px; color: var(--muted); font-size: 12px; list-style: none; }
+    .md details.think > summary::-webkit-details-marker { display: none; }
+    .md details.think > summary::before { content: "▸ "; }
+    .md details.think[open] > summary::before { content: "▾ "; }
+    .md details.think .think-body { padding: 2px 12px 8px; color: var(--muted); font-size: 0.95em; }
     .md blockquote { margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
     .md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
 
@@ -262,6 +278,87 @@
     .btn-primary { border-radius: var(--radius); padding: 0 18px; background: var(--accent-grad); color: var(--accent-ink); font-weight: 600; box-shadow: 0 6px 16px -4px rgba(249, 115, 22, 0.4); transition: transform .25s var(--ease), box-shadow .25s var(--ease), opacity .2s; }
     .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 22px -6px rgba(249, 115, 22, 0.5); }
     .btn-primary:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
+
+    /* Slash-command autocomplete overlay (anchored above the composer). */
+    #composer { position: relative; }
+    .slash-menu {
+      position: absolute; left: 18px; right: 18px; bottom: calc(100% + 6px);
+      max-height: 280px; overflow-y: auto; z-index: 40;
+      background: var(--panel-solid); border: 1px solid var(--line);
+      border-radius: var(--radius); box-shadow: var(--shadow-panel);
+      padding: 6px;
+    }
+    .slash-item {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 7px 10px; border-radius: 8px; cursor: pointer;
+    }
+    .slash-item .cmd {
+      font-family: "Geist Mono", ui-monospace, Menlo, Consolas, monospace;
+      font-size: 13px; color: var(--ink); font-weight: 500; flex: 0 0 auto;
+    }
+    .slash-item .cmd-desc { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .slash-item.active { background: var(--accent-soft); }
+    .slash-item.active .cmd { color: var(--accent); }
+
+    /* Composer mic/attach icon buttons (#183, #184). */
+    .composer-icon {
+      flex: 0 0 auto; width: 40px; align-self: stretch;
+      display: flex; align-items: center; justify-content: center;
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--bg); color: var(--muted);
+    }
+    .composer-icon:hover { color: var(--accent); border-color: var(--accent); }
+    .composer-icon.recording { color: var(--danger); border-color: var(--danger); animation: pulse 1.1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+    /* Attached-image thumbnails above the composer. */
+    .attach-preview {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      max-width: 900px; width: 100%; margin: 0 auto; padding: 0 18px 6px;
+    }
+    .attach-thumb { position: relative; width: 64px; height: 64px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+    .attach-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .attach-thumb .rm {
+      position: absolute; top: 2px; right: 2px; width: 18px; height: 18px;
+      border-radius: 50%; background: rgba(0,0,0,0.6); color: #fff;
+      display: flex; align-items: center; justify-content: center; font-size: 12px; line-height: 1;
+    }
+
+    /* Camera / crop modal. */
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,0.55);
+      display: flex; align-items: center; justify-content: center; padding: 16px;
+    }
+    .modal {
+      width: 100%; max-width: 480px; background: var(--panel-solid);
+      border: 1px solid var(--line); border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-panel); overflow: hidden;
+    }
+    .modal-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .modal-head .grow { flex: 1 1 auto; }
+    .modal-title { font-weight: 600; }
+    .modal-body { padding: 16px; }
+    .attach-choose { display: flex; gap: 12px; }
+    .attach-opt {
+      flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 8px;
+      padding: 22px 10px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--panel); color: var(--ink); font-weight: 500; font-size: 14px;
+    }
+    .attach-opt:hover { border-color: var(--accent); color: var(--accent); }
+    .attach-opt .ic { width: 26px; height: 26px; }
+    .cam-stage { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .cam-stage video { width: 100%; max-height: 320px; border-radius: var(--radius); background: #000; }
+    .cam-shoot { padding: 8px 22px; }
+    .crop-stage { display: flex; flex-direction: column; gap: 12px; }
+    .crop-area { position: relative; max-height: 360px; overflow: hidden; border-radius: var(--radius); background: #000; user-select: none; touch-action: none; }
+    .crop-area img { display: block; width: 100%; height: auto; pointer-events: none; }
+    .crop-box {
+      position: absolute; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(0,0,0,0.45);
+      cursor: move; box-sizing: border-box;
+    }
+    .crop-handle { position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: nwse-resize; }
+    .crop-actions { display: flex; justify-content: flex-end; gap: 10px; }
+    .crop-actions .secondary { color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 14px; }
 
     .pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 24px 16px; }
     .pane > * { max-width: 1024px; margin-left: auto; margin-right: auto; }
@@ -379,6 +476,12 @@
     .tools-h { font-size: 12px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; }
     .tools-h:first-of-type { margin-top: 4px; }
 
+    /* Chat preferences pane (#185). */
+    .pref-row { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; padding: 14px 0; border-bottom: 1px solid var(--line); }
+    .pref-label { flex: 1 1 280px; min-width: 0; }
+    .pref-name { font-weight: 600; font-size: 14px; }
+    .pref-desc { color: var(--muted); font-size: 13px; margin-top: 3px; }
+
     #backdrop { display: none; }
 
     /* ---------- Mobile ---------- */
@@ -484,6 +587,11 @@
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4M8 21h8"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
   </svg>
 
   <aside class="rail">
@@ -541,6 +649,7 @@
         <button type="button" data-view="skills" class="active">Skills</button>
         <button type="button" data-view="soul">Soul</button>
         <button type="button" data-view="tools">Tools</button>
+        <button type="button" data-view="prefs">Chat</button>
         <button type="button" data-view="model" id="nav-model" hidden>Model</button>
       </nav>
     </div>
@@ -562,9 +671,14 @@
       <div class="composer-row">
         <span class="hint">Type <code>/help</code> for commands</span>
       </div>
+      <div class="attach-preview" id="attach-preview" hidden></div>
       <form id="composer">
+        <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Commands" hidden></div>
+        <button id="attach-btn" class="composer-icon" type="button" title="Bild anhängen" aria-label="Bild anhängen"><svg class="ic"><use href="#i-image"></use></svg></button>
+        <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
         <textarea id="input" rows="1" placeholder="Message Sol…  (/help for commands)" autofocus></textarea>
         <button id="send" class="btn-primary" type="submit">Send</button>
+        <input id="file-input" type="file" accept="image/*" hidden />
       </form>
     </section>
 
@@ -646,9 +760,59 @@
         <div id="tools-cards"></div>
       </div>
     </section>
+
+    <section id="view-prefs" class="view">
+      <div class="pane">
+        <h2>Chat</h2>
+        <p class="lead">How Sol's replies are shown to you. These are local display preferences — they don't change Sol or the model.</p>
+        <div class="pref-row">
+          <div class="pref-label">
+            <div class="pref-name">Thinking blocks</div>
+            <div class="pref-desc">Reasoning-capable models (e.g. gemma4) can think out loud in <code>&lt;thinking&gt;</code> blocks before answering. Choose how to show that.</div>
+          </div>
+          <div class="seg" id="thinking-seg" role="radiogroup" aria-label="Thinking blocks">
+            <button type="button" data-mode="show" role="radio">Show</button>
+            <button type="button" data-mode="collapse" role="radio">Collapse</button>
+            <button type="button" data-mode="hide" role="radio">Hide</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Attachment modal: camera capture (getUserMedia) + client-side crop (#183) -->
+  <div class="modal-backdrop" id="attach-modal" hidden>
+    <div class="modal" role="dialog" aria-label="Bild anhängen">
+      <div class="modal-head">
+        <span class="modal-title" id="attach-modal-title">Bild anhängen</span>
+        <span class="grow"></span>
+        <button class="icon-btn" id="attach-close" type="button" aria-label="Schließen"><svg class="ic"><use href="#i-x"></use></svg></button>
+      </div>
+      <div class="modal-body">
+        <div class="attach-choose" id="attach-choose">
+          <button class="attach-opt" id="attach-camera" type="button"><svg class="ic"><use href="#i-camera"></use></svg> Kamera</button>
+          <button class="attach-opt" id="attach-upload" type="button"><svg class="ic"><use href="#i-upload"></use></svg> Hochladen</button>
+        </div>
+        <div class="cam-stage" id="cam-stage" hidden>
+          <video id="cam-video" playsinline autoplay muted></video>
+          <button class="btn-primary cam-shoot" id="cam-shoot" type="button">Aufnehmen</button>
+        </div>
+        <div class="crop-stage" id="crop-stage" hidden>
+          <div class="crop-area" id="crop-area">
+            <img id="crop-img" alt="Zum Zuschneiden" />
+            <div class="crop-box" id="crop-box"><span class="crop-handle"></span></div>
+          </div>
+          <div class="crop-actions">
+            <button class="secondary" id="crop-cancel" type="button">Abbrechen</button>
+            <button class="btn-primary" id="crop-confirm" type="button">Anhängen</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="/static/markdown.js"></script>
+  <script src="/static/mermaid.min.js"></script>
   <script>
     (function () {
       var log = document.getElementById("log");
@@ -661,8 +825,75 @@
       var personalitySel = document.getElementById("personality");
       var adminBadge = document.getElementById("admin-badge");
       var sessionId = null;
+      var slash = { refresh: function () {}, handleKey: function () { return false; } };
 
       function currentPersonality() { return personalitySel.value || "sol"; }
+
+      // ---- Thinking-mode display preference (#185) ----
+      // Reasoning models (gemma4 etc.) emit a <thinking>…</thinking> (or
+      // <think>…</think>) block before the answer. This is a pure display
+      // choice — the model still reasons; we only decide what the resident
+      // sees: the raw block ("show"), a collapsible ("collapse", default), or
+      // nothing ("hide"). Stored locally; never sent to Hermes/Ollama.
+      var THINK_MODES = { show: 1, collapse: 1, hide: 1 };
+      var thinkingMode = (function () {
+        var saved = localStorage.getItem("sol.thinking");
+        return THINK_MODES[saved] ? saved : "collapse";
+      })();
+      // Matches a paired <thinking>/<think> block (case-insensitive, dotall).
+      var THINK_RE = /<(thinking|think)>([\s\S]*?)<\/\1>/gi;
+
+      // Render assistant text to HTML, applying the thinking-mode preference.
+      // Markdown-render the visible answer and each thinking block separately
+      // (markdown.js escapes HTML, so the <details> wrapper is built here).
+      function renderReply(raw) {
+        var src = String(raw == null ? "" : raw);
+        if (thinkingMode === "show" || src.indexOf("<thin") === -1) {
+          return window.renderMarkdown(src);
+        }
+        var thoughts = [];
+        var answer = src.replace(THINK_RE, function (_m, _tag, inner) {
+          thoughts.push(inner.trim());
+          return "";
+        });
+        var html = window.renderMarkdown(answer.trim());
+        if (thinkingMode === "hide" || !thoughts.length) return html;
+        var blocks = thoughts.map(function (t) {
+          return (
+            '<details class="think"><summary>Reasoning</summary>' +
+            '<div class="think-body md">' + window.renderMarkdown(t) + "</div></details>"
+          );
+        });
+        return blocks.join("\n") + (html ? "\n" + html : "");
+      }
+
+      // ---- Mermaid (offline, bundled under /static) ----
+      var mermaidReady = false, mermaidSeq = 0;
+      if (window.mermaid) {
+        var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+        try {
+          window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
+          mermaidReady = true;
+        } catch (e) {}
+      }
+      // Draw any ```mermaid fenced blocks the markdown renderer left as
+      // <pre class="mermaid-src">. Each render is async; failures leave the raw
+      // source visible (a broken diagram shouldn't blank the message).
+      function renderMermaidIn(container) {
+        if (!mermaidReady || !container) return;
+        var srcs = container.querySelectorAll("pre.mermaid-src");
+        Array.prototype.forEach.call(srcs, function (pre) {
+          var code = pre.querySelector("code");
+          var def = (code ? code.textContent : pre.textContent) || "";
+          pre.className = "mermaid-rendered";
+          var id = "mmd-" + (++mermaidSeq);
+          window.mermaid.render(id, def).then(function (out) {
+            pre.innerHTML = out.svg;
+          }).catch(function () {
+            pre.className = ""; // restore as a plain code block on parse error
+          });
+        });
+      }
 
       // ---- Mobile drawer ----
       function openRail() { document.body.classList.add("rail-open"); }
@@ -674,16 +905,35 @@
       function atBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 40; }
       function scrollDown(stick) { if (stick) log.scrollTop = log.scrollHeight; }
 
-      function addText(role, text) {
+      // HH:MM, prefixed with a short date when the message isn't from today —
+      // enough to tell "15 min ago" from "last week", seconds omitted (#186).
+      function fmtStamp(when) {
+        var d = when instanceof Date ? when : (when ? new Date(when) : new Date());
+        if (isNaN(d.getTime())) d = new Date();
+        var time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        var now = new Date();
+        var sameDay = d.toDateString() === now.toDateString();
+        if (sameDay) return time;
+        return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + time;
+      }
+      function metaLine(when, tookMs) {
+        var m = document.createElement("span");
+        m.className = "meta";
+        m.textContent = fmtStamp(when);
+        if (tookMs != null) {
+          var t = document.createElement("span");
+          t.className = "took";
+          t.textContent = " · took " + (tookMs / 1000).toFixed(1) + "s";
+          m.appendChild(t);
+        }
+        return m;
+      }
+
+      function addText(role, text, when) {
         var el = document.createElement("div");
         el.className = "msg " + role;
-        if (role !== "system") {
-          var label = document.createElement("span");
-          label.className = "role";
-          label.textContent = role === "me" ? "You" : "Sol";
-          el.appendChild(label);
-        }
         el.appendChild(document.createTextNode(text));
+        if (role === "me" || role === "sol") el.appendChild(metaLine(when));
         log.appendChild(el);
         scrollDown(true);
         return el;
@@ -696,6 +946,7 @@
         var body = document.createElement("div");
         body.className = "md";
         body.innerHTML = window.renderMarkdown(markdown);
+        renderMermaidIn(body);
         el.appendChild(body);
         log.appendChild(el);
         scrollDown(true);
@@ -704,10 +955,6 @@
       function addAssistant() {
         var el = document.createElement("div");
         el.className = "msg sol";
-        var label = document.createElement("span");
-        label.className = "role";
-        label.textContent = "Sol";
-        el.appendChild(label);
         var activity = document.createElement("div");
         activity.className = "activity";
         activity.innerHTML =
@@ -720,19 +967,22 @@
         log.appendChild(el);
         scrollDown(true);
         var buffer = "";
+        var started = Date.now();
         return {
           setActivity: function (txt) { var t = activity.querySelector(".activity-text"); if (t) t.textContent = txt; },
           append: function (delta) {
             var stick = atBottom();
             if (activity.parentNode) el.removeChild(activity);
             buffer += delta;
-            body.innerHTML = window.renderMarkdown(buffer);
+            body.innerHTML = renderReply(buffer);
             scrollDown(stick);
           },
           finish: function () {
             if (activity.parentNode) el.removeChild(activity);
             if (!buffer) body.textContent = "(no reply)";
-            else body.innerHTML = window.renderMarkdown(buffer);
+            else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
+            renderMermaidIn(body);
+            el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
           },
           fail: function (msg) { el.removeChild(activity); el.className = "msg system"; body.textContent = msg; }
@@ -743,16 +993,19 @@
         input.style.height = "auto";
         input.style.height = Math.min(input.scrollHeight, 168) + "px";
       }
-      input.addEventListener("input", autosize);
+      input.addEventListener("input", function () { autosize(); slash.refresh(); });
       input.addEventListener("keydown", function (e) {
+        if (slash.handleKey(e)) return; // arrow/enter/tab/esc while the menu is open
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
       });
 
-      function streamChat(text, msg) {
+      function streamChat(text, msg, images) {
+        var payload = { input: text, session_id: sessionId, personality: currentPersonality() };
+        if (images && images.length) payload.images = images;
         return fetch("/api/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ input: text, session_id: sessionId, personality: currentPersonality() })
+          body: JSON.stringify(payload)
         }).then(function (r) {
           if (!r.ok || !r.body) throw new Error("bad response");
           var reader = r.body.getReader();
@@ -801,6 +1054,7 @@
         ["/skills", "Open Skills (Settings)"],
         ["/soul", "Open Soul (Settings)"],
         ["/tools", "Open Tools — what Sol can do (Settings)"],
+        ["/thinking", "Show, collapse, or hide thinking blocks (Settings)"],
         ["/model", "Open Model (Settings, admins)"]
       ];
       function helpMarkdown() {
@@ -819,6 +1073,7 @@
           deleteSession(sessionId); return;
         }
         if (cmd === "skills" || cmd === "soul" || cmd === "tools") { showView(cmd); return; }
+        if (cmd === "thinking") { showView("prefs"); return; }
         if (cmd === "model") {
           if (isAdmin) { showView("model"); } else { addText("system", "The model switch is for admins."); }
           return;
@@ -826,6 +1081,266 @@
         if (cmd === "context") { showContext(); return; }
         addInfo("Unknown command `/" + cmd + "`.\n\n" + helpMarkdown());
       }
+
+      // ---- Slash-command autocomplete (#181) ----
+      // Built-in browser commands plus the registered skills (/api/skills), so
+      // typing "/" surfaces both what the panel can do and what Sol knows.
+      slash = (function () {
+        var menu = document.getElementById("slash-menu");
+        var items = [];     // current filtered [{cmd, desc}]
+        var active = -1;
+        var skillEntries = [];
+
+        fetch("/api/skills")
+          .then(function (r) { return r.ok ? r.json() : { skills: [] }; })
+          .then(function (j) {
+            skillEntries = ((j && j.skills) || []).map(function (s) {
+              return ["/" + s.id, s.description || s.name || ""];
+            });
+          })
+          .catch(function () {});
+
+        function close() { menu.hidden = true; menu.textContent = ""; items = []; active = -1; }
+
+        function render(token) {
+          var q = token.slice(1).toLowerCase(); // text after "/"
+          var pool = COMMANDS.concat(skillEntries);
+          items = pool.filter(function (c) { return c[0].slice(1).toLowerCase().indexOf(q) === 0; });
+          if (!items.length) { close(); return; }
+          active = 0;
+          menu.textContent = "";
+          items.forEach(function (c, i) {
+            var row = document.createElement("div");
+            row.className = "slash-item" + (i === active ? " active" : "");
+            row.setAttribute("role", "option");
+            var cmd = document.createElement("span"); cmd.className = "cmd"; cmd.textContent = c[0];
+            var desc = document.createElement("span"); desc.className = "cmd-desc"; desc.textContent = c[1];
+            row.appendChild(cmd); row.appendChild(desc);
+            row.addEventListener("mousedown", function (e) { e.preventDefault(); choose(i); });
+            menu.appendChild(row);
+          });
+          menu.hidden = false;
+        }
+
+        function move(delta) {
+          if (!items.length) return;
+          var rows = menu.querySelectorAll(".slash-item");
+          if (rows[active]) rows[active].classList.remove("active");
+          active = (active + delta + items.length) % items.length;
+          rows[active].classList.add("active");
+          rows[active].scrollIntoView({ block: "nearest" });
+        }
+
+        function choose(i) {
+          var c = items[i];
+          if (!c) return;
+          input.value = c[0] + " ";
+          close();
+          autosize();
+          input.focus();
+        }
+
+        // Show only when the input is a single "/..."-token (no spaces) command.
+        function refresh() {
+          var v = input.value;
+          if (v.charAt(0) === "/" && v.indexOf(" ") === -1 && v.indexOf("\n") === -1) render(v);
+          else close();
+        }
+
+        function handleKey(e) {
+          if (menu.hidden) return false;
+          if (e.key === "ArrowDown") { e.preventDefault(); move(1); return true; }
+          if (e.key === "ArrowUp") { e.preventDefault(); move(-1); return true; }
+          if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); choose(active); return true; }
+          if (e.key === "Escape") { e.preventDefault(); close(); return true; }
+          return false;
+        }
+
+        document.addEventListener("click", function (e) {
+          if (!menu.hidden && e.target !== input && !menu.contains(e.target)) close();
+        });
+
+        return { refresh: refresh, handleKey: handleKey, close: close };
+      })();
+
+      // ---- Image attachments: upload, camera capture, client-side crop (#183) ----
+      var attach = (function () {
+        var images = [];                 // pending data-URLs
+        var tray = document.getElementById("attach-preview");
+        var btn = document.getElementById("attach-btn");
+        var modal = document.getElementById("attach-modal");
+        var fileInput = document.getElementById("file-input");
+        var chooseEl = document.getElementById("attach-choose");
+        var camStage = document.getElementById("cam-stage");
+        var cropStage = document.getElementById("crop-stage");
+        var camVideo = document.getElementById("cam-video");
+        var cropImg = document.getElementById("crop-img");
+        var cropArea = document.getElementById("crop-area");
+        var cropBox = document.getElementById("crop-box");
+        var stream = null;
+
+        function renderTray() {
+          tray.textContent = "";
+          tray.hidden = images.length === 0;
+          images.forEach(function (src, i) {
+            var t = document.createElement("div"); t.className = "attach-thumb";
+            var im = document.createElement("img"); im.src = src; im.alt = "Anhang"; t.appendChild(im);
+            var rm = document.createElement("button");
+            rm.className = "rm"; rm.type = "button"; rm.setAttribute("aria-label", "Entfernen");
+            rm.innerHTML = "&times;";
+            rm.addEventListener("click", function () { images.splice(i, 1); renderTray(); });
+            t.appendChild(rm);
+            tray.appendChild(t);
+          });
+        }
+
+        function add(dataUrl) { if (images.length < 4) { images.push(dataUrl); renderTray(); } }
+
+        // ---- Modal open/close + camera teardown ----
+        function showStage(which) {
+          chooseEl.hidden = which !== "choose";
+          camStage.hidden = which !== "camera";
+          cropStage.hidden = which !== "crop";
+        }
+        function stopCam() {
+          if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+          camVideo.srcObject = null;
+        }
+        function openModal() { modal.hidden = false; showStage("choose"); }
+        function closeModal() { stopCam(); modal.hidden = true; }
+
+        btn.addEventListener("click", openModal);
+        document.getElementById("attach-close").addEventListener("click", closeModal);
+        modal.addEventListener("click", function (e) { if (e.target === modal) closeModal(); });
+
+        // ---- Upload path ----
+        document.getElementById("attach-upload").addEventListener("click", function () { fileInput.click(); });
+        fileInput.addEventListener("change", function () {
+          var f = fileInput.files && fileInput.files[0];
+          fileInput.value = "";
+          if (!f) return;
+          var rd = new FileReader();
+          rd.onload = function () { startCrop(String(rd.result)); };
+          rd.readAsDataURL(f);
+        });
+
+        // ---- Camera path ----
+        document.getElementById("attach-camera").addEventListener("click", function () {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert("Diese Ansicht kann nicht auf die Kamera zugreifen.");
+            return;
+          }
+          navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+            .then(function (s) { stream = s; camVideo.srcObject = s; showStage("camera"); })
+            .catch(function () { alert("Kamerazugriff verweigert oder nicht verfügbar."); });
+        });
+        document.getElementById("cam-shoot").addEventListener("click", function () {
+          var c = document.createElement("canvas");
+          c.width = camVideo.videoWidth || 640; c.height = camVideo.videoHeight || 480;
+          c.getContext("2d").drawImage(camVideo, 0, 0, c.width, c.height);
+          stopCam();
+          startCrop(c.toDataURL("image/jpeg", 0.9));
+        });
+
+        // ---- Crop: a draggable/resizable box over the loaded image ----
+        var box = { x: 0, y: 0, w: 0, h: 0 };
+        function clampBox() {
+          var W = cropArea.clientWidth, H = cropArea.clientHeight;
+          box.w = Math.max(32, Math.min(box.w, W)); box.h = Math.max(32, Math.min(box.h, H));
+          box.x = Math.max(0, Math.min(box.x, W - box.w)); box.y = Math.max(0, Math.min(box.y, H - box.h));
+          cropBox.style.left = box.x + "px"; cropBox.style.top = box.y + "px";
+          cropBox.style.width = box.w + "px"; cropBox.style.height = box.h + "px";
+        }
+        function startCrop(dataUrl) {
+          cropImg.onload = function () {
+            var W = cropArea.clientWidth, H = cropArea.clientHeight;
+            var side = Math.min(W, H) * 0.8;
+            box = { x: (W - side) / 2, y: (H - side) / 2, w: side, h: side };
+            clampBox();
+          };
+          cropImg.src = dataUrl;
+          showStage("crop");
+        }
+        function dragHandler(resizing) {
+          return function (e) {
+            e.preventDefault();
+            var startX = e.touches ? e.touches[0].clientX : e.clientX;
+            var startY = e.touches ? e.touches[0].clientY : e.clientY;
+            var o = { x: box.x, y: box.y, w: box.w, h: box.h };
+            function move(ev) {
+              var cx = ev.touches ? ev.touches[0].clientX : ev.clientX;
+              var cy = ev.touches ? ev.touches[0].clientY : ev.clientY;
+              var dx = cx - startX, dy = cy - startY;
+              if (resizing) { box.w = o.w + dx; box.h = o.h + dy; }
+              else { box.x = o.x + dx; box.y = o.y + dy; }
+              clampBox();
+            }
+            function up() {
+              document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up);
+              document.removeEventListener("touchmove", move); document.removeEventListener("touchend", up);
+            }
+            document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+            document.addEventListener("touchmove", move, { passive: false }); document.addEventListener("touchend", up);
+          };
+        }
+        cropBox.addEventListener("mousedown", dragHandler(false));
+        cropBox.addEventListener("touchstart", dragHandler(false), { passive: false });
+        var handle = cropBox.querySelector(".crop-handle");
+        handle.addEventListener("mousedown", function (e) { e.stopPropagation(); dragHandler(true)(e); });
+        handle.addEventListener("touchstart", function (e) { e.stopPropagation(); dragHandler(true)(e); }, { passive: false });
+
+        document.getElementById("crop-cancel").addEventListener("click", closeModal);
+        document.getElementById("crop-confirm").addEventListener("click", function () {
+          // Map the on-screen crop box back to the image's natural pixels.
+          var scale = cropImg.naturalWidth / cropArea.clientWidth;
+          var c = document.createElement("canvas");
+          c.width = Math.max(1, Math.round(box.w * scale));
+          c.height = Math.max(1, Math.round(box.h * scale));
+          c.getContext("2d").drawImage(
+            cropImg, box.x * scale, box.y * scale, box.w * scale, box.h * scale,
+            0, 0, c.width, c.height
+          );
+          add(c.toDataURL("image/jpeg", 0.9));
+          closeModal();
+        });
+
+        return { take: function () { var out = images.slice(); images = []; renderTray(); return out; } };
+      })();
+
+      // ---- Voice input: browser-local STT into the message box (#184) ----
+      (function () {
+        var btn = document.getElementById("mic-btn");
+        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) {
+          btn.title = "Spracheingabe wird von diesem Browser nicht unterstützt";
+          btn.addEventListener("click", function () {
+            addText("system", "Spracheingabe wird von diesem Browser nicht unterstützt.");
+          });
+          return;
+        }
+        var rec = new SR();
+        rec.lang = (navigator.language || "de-DE");
+        rec.interimResults = true;
+        rec.continuous = false;
+        var listening = false, base = "";
+        rec.onresult = function (e) {
+          var txt = "";
+          for (var i = e.resultIndex; i < e.results.length; i++) txt += e.results[i][0].transcript;
+          input.value = (base ? base + " " : "") + txt;
+          autosize();
+        };
+        rec.onerror = function () { stop(); };
+        rec.onend = function () { stop(); };
+        function start() {
+          base = input.value.trim();
+          try { rec.start(); listening = true; btn.classList.add("recording"); btn.title = "Aufnahme stoppen"; }
+          catch (err) {}
+        }
+        function stop() {
+          listening = false; btn.classList.remove("recording"); btn.title = "Spracheingabe"; input.focus();
+        }
+        btn.addEventListener("click", function () { if (listening) rec.stop(); else start(); });
+      })();
 
       function showContext() {
         if (!sessionId) { addText("system", "Start a chat first — then /context shows its usage."); return; }
@@ -849,19 +1364,45 @@
 
       form.addEventListener("submit", function (e) {
         e.preventDefault();
+        slash.close();
         var text = input.value.trim();
-        if (!text) return;
-        if (text.charAt(0) === "/") { input.value = ""; autosize(); handleCommand(text); return; }
+        var images = attach.take(); // data-URLs; clears the tray
+        if (!text && !images.length) return;
+        // Slash commands are browser-local — never carry an attachment.
+        if (text.charAt(0) === "/" && !images.length) { input.value = ""; autosize(); handleCommand(text); return; }
         var firstTurn = !sessionId;
-        addText("me", text);
+        addUserTurn(text, images);
         input.value = ""; autosize();
         send.disabled = true;
         var msg = addAssistant();
-        streamChat(text, msg)
+        streamChat(text, msg, images.map(stripDataUrl))
           .then(function () { msg.finish(); if (firstTurn) loadSessions(); })
           .catch(function () { msg.fail("Network error. Please try again."); })
           .finally(function () { send.disabled = false; input.focus(); });
       });
+
+      function stripDataUrl(u) { return u.indexOf(",") >= 0 ? u.slice(u.indexOf(",") + 1) : u; }
+
+      // A user turn that may carry image thumbnails above the (optional) text.
+      function addUserTurn(text, images) {
+        var el = document.createElement("div");
+        el.className = "msg me";
+        if (images && images.length) {
+          var strip = document.createElement("div");
+          strip.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px";
+          images.forEach(function (src) {
+            var im = document.createElement("img");
+            im.src = src; im.alt = "Anhang";
+            im.style.cssText = "width:120px;max-width:60%;border-radius:10px;display:block";
+            strip.appendChild(im);
+          });
+          el.appendChild(strip);
+        }
+        if (text) el.appendChild(document.createTextNode(text));
+        el.appendChild(metaLine(new Date()));
+        log.appendChild(el);
+        scrollDown(true);
+      }
 
       // ---- Session list ----
       function fmtWhen(ts) {
@@ -936,17 +1477,18 @@
             sessionId = s.id || id;
             clearLog();
             (s.messages || []).forEach(function (m) {
-              if (m.role === "user") { addText("me", m.content); }
+              var ts = m.created_at || m.timestamp || m.created || null;
+              if (m.role === "user") { addText("me", m.content, ts); }
               else if (m.role === "assistant") {
                 var el = document.createElement("div");
                 el.className = "msg sol";
-                var label = document.createElement("span");
-                label.className = "role"; label.textContent = "Sol";
-                el.appendChild(label);
                 var body = document.createElement("div");
                 body.className = "md";
-                body.innerHTML = window.renderMarkdown(m.content);
+                body.setAttribute("data-raw", m.content);
+                body.innerHTML = renderReply(m.content);
+                renderMermaidIn(body);
                 el.appendChild(body);
+                if (ts) el.appendChild(metaLine(ts));
                 log.appendChild(el);
               }
             });
@@ -1024,6 +1566,7 @@
         skills: document.getElementById("view-skills"),
         soul: document.getElementById("view-soul"),
         tools: document.getElementById("view-tools"),
+        prefs: document.getElementById("view-prefs"),
         model: document.getElementById("view-model")
       };
       var settingsBar = document.getElementById("settings-bar");
@@ -1040,9 +1583,39 @@
         if (name === "skills" && !skillsLoaded) { skillsLoaded = true; loadSkills(); }
         if (name === "soul" && !soulLoaded) { soulLoaded = true; loadSoul(); }
         if (name === "tools") { loadTools(); loadMcp(); }
+        if (name === "prefs") { syncThinkingSeg(); }
         if (name === "model") { loadModel(); }
         closeRail();
       }
+
+      // ---- Chat preferences: thinking-mode toggle (#185) ----
+      var thinkSeg = document.getElementById("thinking-seg");
+      var thinkBtns = thinkSeg.querySelectorAll("button");
+      function syncThinkingSeg() {
+        thinkBtns.forEach(function (b) {
+          var on = b.getAttribute("data-mode") === thinkingMode;
+          b.classList.toggle("active", on);
+          b.setAttribute("aria-checked", on ? "true" : "false");
+        });
+      }
+      // Re-render the already-shown assistant messages so a toggle takes
+      // effect immediately, without reloading the chat.
+      function rerenderReplies() {
+        var bodies = log.querySelectorAll(".msg.sol > .md[data-raw]");
+        Array.prototype.forEach.call(bodies, function (body) {
+          body.innerHTML = renderReply(body.getAttribute("data-raw"));
+          renderMermaidIn(body);
+        });
+      }
+      thinkBtns.forEach(function (b) {
+        b.addEventListener("click", function () {
+          thinkingMode = b.getAttribute("data-mode");
+          localStorage.setItem("sol.thinking", thinkingMode);
+          syncThinkingSeg();
+          rerenderReplies();
+        });
+      });
+      syncThinkingSeg();
       navBtns.forEach(function (b) {
         b.addEventListener("click", function () { showView(b.getAttribute("data-view")); });
       });

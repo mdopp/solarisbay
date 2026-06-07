@@ -13,6 +13,7 @@ The `solbay` ServiceBay template bind-mounts this directory into the Hermes cont
 | `status/` | `sol-status` | 0 | Pings every Solilos dependency (`solilos.db`, Hermes, Ollama, Home Assistant, ServiceBay-MCP; voice probes once Phase 1 voice is deployed) and returns per-component status. Read-only. |
 | `audit-query/` | `sol-audit-query` | 0 | Read-only query over `cloud_audit` (and future Phase-3a household-domain tables) in `solilos.db`. |
 | `debug-set/` | `sol-debug-set` | 0 | Admin: toggle `system_settings.debug_mode` row in `solilos.db` (verbose logging on demand, TTL-bounded). |
+| `problem-summarizer/` | `sol-problem-summarizer` | 0 | Distils resolved problem→indicators→solution sequences from system logs + past diagnostic chats into a structured Markdown KB at `/opt/data/notes/knowledge-base/troubleshooting.md`. On-request + weekly cron. |
 
 All three operate directly against `solilos.db` (inline SQLite) and ServiceBay-MCP (`get_health_checks`/`diagnose`) — no external `solilos_*` libraries or separate companion scripts.
 

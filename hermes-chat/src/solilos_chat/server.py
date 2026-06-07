@@ -21,6 +21,14 @@ from solilos_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Default prompt for an image-only turn (attachment with no typed text), so the
+# media-ingestion skill has a turn to trigger on. Mirrors the German tone the
+# skill itself uses with residents.
+_IMAGE_PROMPT = "Bitte sieh dir dieses Bild an und verarbeite es."
+# Cap attachments per turn — a small guard against an oversized payload, not a
+# product limit (the panel sends at most a couple of camera/upload images).
+_MAX_IMAGES = 4
+
 
 def _version() -> str:
     """The chat package version, for the sidebar footer. '' if unavailable."""
@@ -320,9 +328,12 @@ def build_app(
                 {"ok": False, "reason": "invalid_json"}, status=400
             )
 
+        images = _images_from(body)
         text = str(body.get("input") or "").strip()
-        if not text:
+        if not text and not images:
             return web.json_response({"ok": False, "reason": "empty_input"}, status=400)
+        if not text:
+            text = _IMAGE_PROMPT
         session_id = str(body.get("session_id") or "")
         system_prompt = personalities.system_prompt_for(body.get("personality"))
 
@@ -331,7 +342,7 @@ def build_app(
                 session_id = await hermes.create_session(uid, system_prompt)
                 log.info("chat.session.created", uid=uid, session_id=session_id)
                 await hermes.set_title(session_id, _title_from(text))
-            reply = await hermes.chat(session_id, text)
+            reply = await hermes.chat(session_id, text, images)
         except HermesError:
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
@@ -348,9 +359,12 @@ def build_app(
                 {"ok": False, "reason": "invalid_json"}, status=400
             )
 
+        images = _images_from(body)
         text = str(body.get("input") or "").strip()
-        if not text:
+        if not text and not images:
             return web.json_response({"ok": False, "reason": "empty_input"}, status=400)
+        if not text:
+            text = _IMAGE_PROMPT
         session_id = str(body.get("session_id") or "")
         system_prompt = personalities.system_prompt_for(body.get("personality"))
 
@@ -369,7 +383,7 @@ def build_app(
                 log.info("chat.session.created", uid=uid, session_id=session_id)
                 await hermes.set_title(session_id, _title_from(text))
             await _send_event(resp, "session", {"session_id": session_id})
-            async for event in hermes.chat_stream(session_id, text):
+            async for event in hermes.chat_stream(session_id, text, images):
                 await _send_event(resp, *_normalize(event))
         except HermesError:
             await _send_event(resp, "error", {"reason": "hermes_unavailable"})
@@ -398,6 +412,26 @@ def build_app(
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_static("/static/", STATIC_DIR)
     return app
+
+
+def _images_from(body: Any) -> list[str]:
+    """Pull base64 image attachments from a chat body (#183).
+
+    The browser sends `data:image/...;base64,<b64>` URLs; we strip the prefix
+    so Hermes receives bare base64 (the multimodal convention). Non-strings,
+    empties, and anything past `_MAX_IMAGES` are dropped.
+    """
+    raw = body.get("images") if isinstance(body, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        out.append(item.split(",", 1)[1] if item.startswith("data:") else item)
+        if len(out) >= _MAX_IMAGES:
+            break
+    return out
 
 
 async def _personality_from(request: web.Request) -> str | None:
