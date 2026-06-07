@@ -13,8 +13,9 @@ What it does
    Whether `/health` is auth-exempt is undocumented as of writing; sending
    the bearer either way works as the strict superset.
 
-1b. **Register the daily family-chronicle cron** via Hermes' `POST /api/jobs`
-   (#83) — idempotent by job name. Over HTTP (as the hermes user) so the
+1b. **Register the periodic crons** via Hermes' `POST /api/jobs` — the daily
+   family-chronicle (#83) and the weekly troubleshooting-KB problem-summarizer
+   (#182) — idempotent by job name. Over HTTP (as the hermes user) so the
    cron DB stays correctly owned.
 
 2. **Read `config.yaml`** — the file ServiceBay's `hermes` template's
@@ -659,45 +660,36 @@ def collect_mcp_servers() -> list[tuple[str, str, str]]:
 
 
 CHRONICLE_JOB_NAME = "sol-daily-chronicle"
+PROBLEM_SUMMARIZER_JOB_NAME = "sol-problem-summarizer"
 
 
-def register_chronicle_cron() -> None:
-    """Register the daily family-chronicle cron job via Hermes' jobs API
-    (#83). Idempotent — skips when a job of the same name already exists.
+def _register_cron(name: str, schedule: str, prompt: str) -> None:
+    """Register a Hermes cron job by name, idempotently. Skips when a job of
+    the same name already exists.
 
-    Registered over HTTP (not `hermes cron create` via podman) so the
-    write goes through the gateway as the hermes user, keeping
-    /opt/data/cron/jobs.json owned correctly; a root-written jobs.json
-    breaks the gateway's own cron reads.
+    Registered over HTTP (not `hermes cron create` via podman) so the write
+    goes through the gateway as the hermes user, keeping
+    /opt/data/cron/jobs.json owned correctly; a root-written jobs.json breaks
+    the gateway's own cron reads.
     """
     status, body = hermes_request_json("/api/jobs", "GET")
     if status == 0:
         jlog(
             "warn",
             "solbay:cron",
-            "chronicle cron skipped — Hermes jobs API unreachable",
+            "cron skipped — Hermes jobs API unreachable",
+            name=name,
         )
         return
     jobs = body if isinstance(body, list) else (body or {}).get("jobs", [])
-    if any(isinstance(j, dict) and j.get("name") == CHRONICLE_JOB_NAME for j in jobs):
-        jlog(
-            "info",
-            "solbay:cron",
-            "chronicle cron already present",
-            name=CHRONICLE_JOB_NAME,
-        )
+    if any(isinstance(j, dict) and j.get("name") == name for j in jobs):
+        jlog("info", "solbay:cron", "cron already present", name=name)
         return
     payload = {
-        "name": CHRONICLE_JOB_NAME,
-        "schedule": "59 23 * * *",
-        "prompt": (
-            "Write today's family chronicle / journal entry for today. "
-            "This is the unattended daily run — no resident is present, so "
-            "do not ask anyone for highlights; compile from the day's "
-            "ingested notes and household events you can see, and write a "
-            "short honest entry (or skip a section) rather than inventing."
-        ),
-        "skills": [CHRONICLE_JOB_NAME],
+        "name": name,
+        "schedule": schedule,
+        "prompt": prompt,
+        "skills": [name],
         "deliver": "local",
     }
     create_status, _ = hermes_request_json("/api/jobs", "POST", payload)
@@ -705,23 +697,55 @@ def register_chronicle_cron() -> None:
         jlog(
             "info",
             "solbay:cron",
-            "registered daily chronicle cron",
-            name=CHRONICLE_JOB_NAME,
-            schedule="59 23 * * *",
+            "registered cron",
+            name=name,
+            schedule=schedule,
         )
     else:
         jlog(
             "warn",
             "solbay:cron",
-            "chronicle cron registration failed",
+            "cron registration failed",
+            name=name,
             status=create_status,
         )
+
+
+def register_chronicle_cron() -> None:
+    """Register the daily family-chronicle cron job via Hermes' jobs API
+    (#83)."""
+    _register_cron(
+        CHRONICLE_JOB_NAME,
+        "59 23 * * *",
+        "Write today's family chronicle / journal entry for today. "
+        "This is the unattended daily run — no resident is present, so "
+        "do not ask anyone for highlights; compile from the day's "
+        "ingested notes and household events you can see, and write a "
+        "short honest entry (or skip a section) rather than inventing.",
+    )
+
+
+def register_problem_summarizer_cron() -> None:
+    """Register the weekly troubleshooting-KB cron job via Hermes' jobs API
+    (#182)."""
+    _register_cron(
+        PROBLEM_SUMMARIZER_JOB_NAME,
+        "30 4 * * 1",
+        "Update the troubleshooting knowledge base. This is the unattended "
+        "weekly run — no admin is present, so do not ask anyone for input. "
+        "Inspect recent system logs and past diagnostic conversations, "
+        "extract resolved problem→indicators→solution sequences, and merge "
+        "them into /opt/data/notes/knowledge-base/troubleshooting.md "
+        "(append new problems, update existing ones in place). If nothing "
+        "new surfaced, leave the file untouched rather than inventing.",
+    )
 
 
 def main() -> int:
     init_env()
     wait_for_hermes()
     register_chronicle_cron()
+    register_problem_summarizer_cron()
     servers = collect_mcp_servers()
     if not merge_config_yaml(servers):
         return 0  # config.yaml doesn't exist; nothing to do, not fatal
