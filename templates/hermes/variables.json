@@ -58,6 +58,21 @@
     "noAutoGenerate": true,
     "description": "Optional: Home Assistant long-lived access token. Auto-populated from home-assistant's onboarding flow (see post-deploy adoption logic) — leave blank in the wizard. Manually setting a value here pins it and disables the adoption."
   },
+  "JELLYFIN_URL": {
+    "type": "text",
+    "description": "Optional: URL of your Jellyfin media server. When set together with JELLYFIN_USERNAME, the post-deploy auto-installs Home Assistant's `jellyfin` integration via HA's config-flow API, so Sol can control playback and read now-playing through `media_player.jellyfin_*` entities (no extra Solilos code). Default points at a Jellyfin running on this host (both pods share hostNetwork). Leave blank to skip the integration.",
+    "default": "http://127.0.0.1:8096"
+  },
+  "JELLYFIN_USERNAME": {
+    "type": "text",
+    "description": "Optional: Jellyfin username the Home Assistant `jellyfin` integration logs in as. Pair with JELLYFIN_URL and JELLYFIN_PASSWORD. Empty skips the integration (post-deploy fails soft).",
+    "default": ""
+  },
+  "JELLYFIN_PASSWORD": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: password for JELLYFIN_USERNAME. The HA `jellyfin` config flow treats it as optional (blank is accepted for passwordless Jellyfin users), so leave it empty if that account has no password. Only used to auto-install the HA Jellyfin integration."
+  },
   "TELEGRAM_BOT_TOKEN": {
     "type": "secret",
     "noAutoGenerate": true,

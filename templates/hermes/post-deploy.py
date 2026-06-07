@@ -1013,6 +1013,154 @@ def adopt_ha_long_lived_token(data_dir: str) -> str | None:
     return token
 
 
+def _ha_get(path: str, token: str, timeout: float = 10.0) -> tuple[int, object]:
+    """GET against HA's API with the long-lived token. Returns
+    (status, parsed-json-or-None). 0 on connection failure."""
+    req = urllib.request.Request(
+        f"http://127.0.0.1:8123{path}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read().decode("utf-8")
+            return resp.status, (json.loads(data) if data else None)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode("utf-8"))
+        except Exception:  # pylint: disable=broad-except
+            return e.code, None
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return 0, None
+
+
+def _ha_post(
+    path: str, token: str, payload: dict[str, object], timeout: float = 30.0
+) -> tuple[int, object]:
+    """POST JSON against HA's API with the long-lived token. Returns
+    (status, parsed-json-or-None). 0 on connection failure."""
+    req = urllib.request.Request(
+        f"http://127.0.0.1:8123{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read().decode("utf-8")
+            return resp.status, (json.loads(data) if data else None)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode("utf-8"))
+        except Exception:  # pylint: disable=broad-except
+            return e.code, None
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return 0, None
+
+
+def ensure_ha_jellyfin_integration(
+    token: str, url: str, username: str, password: str
+) -> bool:
+    """Auto-install Home Assistant's `jellyfin` integration via HA's
+    config-entries flow API so `media_player.jellyfin_*` entities appear —
+    Sol then controls playback and reads now-playing through the existing
+    `homeassistant` toolset (ha_call_service / ha_get_state) with zero
+    Solilos code (#195).
+
+    Idempotent self-heal: skips if a `jellyfin` config entry already exists.
+    Fail-soft: a missing token/url/username, an unreachable Jellyfin, or any
+    HA error logs + returns False — it never crashes the deploy.
+
+    The live HA `jellyfin` config flow (confirmed against HA on the box) is a
+    SINGLE `user` step whose schema is {url (required), username (required),
+    password (optional)} — all submitted at once, not URL-then-auth.
+
+    Returns True only when a new entry was created (a created config entry
+    doesn't itself need a hermes restart, but the caller treats it like the
+    other change signals for symmetry).
+    """
+    if not (token and url and username):
+        return False
+
+    status, entries = _ha_get("/api/config/config_entries/entry", token)
+    if status != 200 or not isinstance(entries, list):
+        jlog(
+            "warn",
+            "hermes:jellyfin",
+            "could not list HA config entries — skipping Jellyfin auto-install",
+            status=status,
+        )
+        return False
+    if any(isinstance(e, dict) and e.get("domain") == "jellyfin" for e in entries):
+        jlog(
+            "info",
+            "hermes:jellyfin",
+            "HA jellyfin config entry already present — nothing to do",
+        )
+        return False
+
+    status, flow = _ha_post(
+        "/api/config/config_entries/flow", token, {"handler": "jellyfin"}
+    )
+    if status != 200 or not isinstance(flow, dict) or not flow.get("flow_id"):
+        jlog(
+            "warn",
+            "hermes:jellyfin",
+            "could not start HA jellyfin config flow — skipping auto-install",
+            status=status,
+        )
+        return False
+    flow_id = flow["flow_id"]
+
+    status, result = _ha_post(
+        f"/api/config/config_entries/flow/{flow_id}",
+        token,
+        {"url": url, "username": username, "password": password},
+    )
+    if (
+        status == 200
+        and isinstance(result, dict)
+        and result.get("type") == "create_entry"
+    ):
+        jlog(
+            "info",
+            "hermes:jellyfin",
+            "created HA jellyfin config entry — media_player.jellyfin_* entities will appear",
+            url=url,
+        )
+        return True
+
+    # Flow didn't complete (bad creds, unreachable Jellyfin, or a multi-step
+    # change in a future HA). Abort the dangling flow so it doesn't linger,
+    # then fail soft.
+    errors = result.get("errors") if isinstance(result, dict) else None
+    _ha_request_delete(f"/api/config/config_entries/flow/{flow_id}", token)
+    jlog(
+        "warn",
+        "hermes:jellyfin",
+        "HA jellyfin config flow did not create an entry — check JELLYFIN_* and that Jellyfin is reachable",
+        status=status,
+        errors=errors,
+    )
+    return False
+
+
+def _ha_request_delete(path: str, token: str, timeout: float = 10.0) -> None:
+    """Best-effort DELETE against HA's API (used to abort a dangling flow)."""
+    req = urllib.request.Request(
+        f"http://127.0.0.1:8123{path}",
+        headers={"Authorization": f"Bearer {token}"},
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            return
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        return
+
+
 def main() -> int:
     data_dir = env("DATA_DIR", "/mnt/data")
     sb_api = env("SB_API_URL", "http://localhost:3000")
@@ -1055,7 +1203,20 @@ def main() -> int:
     # auto-onboarded HA. Without this Hermes' native HA gateway runs with
     # the random placeholder from `assemble` and gets `auth_invalid` from
     # HA on every call.
-    adopt_ha_long_lived_token(data_dir)
+    ha_token = adopt_ha_long_lived_token(data_dir)
+
+    # Auto-install HA's Jellyfin integration so Sol controls media playback +
+    # reads now-playing via the existing `homeassistant` toolset, once
+    # JELLYFIN_* are set (#195). Idempotent (skips if the entry exists) and
+    # fail-soft (never crashes the deploy). Uses the same HA long-lived token
+    # adopt_ha_long_lived_token just confirmed against HA's /api/.
+    if ha_token:
+        ensure_ha_jellyfin_integration(
+            ha_token,
+            env("JELLYFIN_URL"),
+            env("JELLYFIN_USERNAME"),
+            env("JELLYFIN_PASSWORD"),
+        )
 
     # Merge messaging-gateway credentials (Telegram / Discord / Signal
     # allowlists + bot tokens) into <DATA_DIR>/hermes/.env. Idempotent —
