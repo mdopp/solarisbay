@@ -170,6 +170,17 @@
     .trash:hover { background: rgba(194,72,58,.14); color: var(--danger); }
     .sessions-empty { padding: 12px 14px; color: var(--muted); font-size: 13px; }
 
+    /* Pinned household chat (#237): a fixed entry above the session list that
+       starts a new chat pre-bound to the `household` topic (e2b + household
+       soul). Mirrors the .session row treatment but is visually pinned. */
+    .session.pinned {
+      width: calc(100% - 16px); margin: 4px 8px 2px; text-align: left;
+      background: var(--accent-soft); border-color: rgba(249, 115, 22, 0.22);
+    }
+    .session.pinned:hover { background: var(--accent-soft); filter: brightness(1.08); }
+    .session.pinned .pin-ic { flex: 0 0 26px; display: flex; align-items: center; justify-content: center; color: var(--accent); }
+    .session.pinned .title { color: var(--accent); font-weight: 600; }
+
     .rail-foot { border-top: 1px solid var(--line); padding: 10px 12px; }
     .rail-user { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 6px; }
     .rail-user .who { font-weight: 600; }
@@ -669,6 +680,7 @@
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
     <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M5 21V9a7 7 0 0 1 14 0v12l-2.5-2-2 2-2-2-2 2-2-2z"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 9.5V21h5v-6h4v6h5V9.5"/></symbol>
   </svg>
 
   <aside class="rail">
@@ -686,6 +698,11 @@
         <button class="icon-btn" id="new-incognito" type="button" title="Temporärer Chat (incognito) — wird beim Schließen gelöscht, nichts wird gespeichert" aria-label="Temporärer Chat"><svg class="ic"><use href="#i-ghost"></use></svg></button>
         <button class="icon-btn" id="new-session" type="button" title="New chat" aria-label="New chat"><svg class="ic"><use href="#i-plus"></use></svg></button>
       </div>
+      <button class="session pinned" id="pinned-household" type="button" hidden
+              title="Zuhause — Haushalts-Chat (Sol, schnelles Modell)">
+        <span class="pin-ic"><svg class="ic"><use href="#i-home"></use></svg></span>
+        <span class="title">Zuhause</span>
+      </button>
       <div id="sessions"></div>
     </div>
 
@@ -958,6 +975,7 @@
       var sessionsEl = document.getElementById("sessions");
       var newBtn = document.getElementById("new-session");
       var incognitoBtn = document.getElementById("new-incognito");
+      var householdBtn = document.getElementById("pinned-household");
       var incognitoBadge = document.getElementById("incognito-badge");
       var backdrop = document.getElementById("backdrop");
       var personalitySel = document.getElementById("personality");
@@ -969,6 +987,9 @@
       // we hold the slug and send it with the first turn; the proxy binds the
       // topic's default model/persona at session create and persists it.
       var pendingTopic = "";
+      // The built-in household topic slug (#237): the pinned "Zuhause" chat
+      // pre-binds it so the new session inherits e2b + the household soul.
+      var HOUSEHOLD_TOPIC = "household";
       // Incognito/temporary chat (#246): ephemeral by default — the proxy
       // persists nothing (no compaction, no auto-ingestion) and deletes the
       // session on close. The picker stays usable only as the extract target:
@@ -1002,6 +1023,9 @@
               opt.value = t.slug; opt.textContent = t.display_name || t.slug;
               topicSel.appendChild(opt);
             });
+            // Surface the pinned household chat only when the resident can see
+            // the household topic (it's a shared system topic — #237).
+            householdBtn.hidden = !topicsBySlug[HOUSEHOLD_TOPIC];
           })
           .catch(function () {});
       }
@@ -1983,8 +2007,21 @@
         showView("chat");
         input.focus();
       }
+      // Pinned household chat (#237): start a fresh chat pre-bound to the
+      // `household` topic. Reuses the #242 pendingTopic path — the first turn
+      // carries `topic: household`, so the proxy binds the topic's default
+      // model (e2b) + persona (household soul) at session create. The session
+      // stays scoped to the resident via the normal uid resolution (#153).
+      function startHouseholdChat() {
+        if (send.disabled) return;
+        newSession();
+        pendingTopic = HOUSEHOLD_TOPIC;
+        syncSessionTopics();
+      }
+
       newBtn.addEventListener("click", newSession);
       incognitoBtn.addEventListener("click", newIncognito);
+      householdBtn.addEventListener("click", startHouseholdChat);
 
       // ---- Personality ----
       function loadPersonalities() {

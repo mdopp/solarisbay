@@ -59,15 +59,24 @@ DEFAULT_THRESHOLD = 0.90
 # Pass 1 — extract durable learnings into long-term memory FIRST. The agent has
 # the holographic `fact_store` tool; this turn tells it to use it. Phrased so a
 # quiet/short chat with nothing durable simply stores nothing (no fabrication).
+#
+# Deliberately does NOT list "device/room/entity mappings" as a target (#250):
+# those are derivable from Home Assistant's own registry and pure device-control
+# turns ("schalte Bürolicht an") are not durable learnings — memorising them
+# pollutes memory and duplicates state that belongs in HA. The instruction below
+# names device-control/tool-call turns as explicit skip cases.
 EXTRACT_PROMPT = (
     "[system: memory extraction before compaction] Review THIS conversation and "
-    "store every durable, reusable learning worth keeping beyond this chat — "
-    "facts, decisions, household preferences, device/room/entity mappings, "
-    "people, recurring routines. Use your memory tool (fact_store) to save each "
-    "one as a short standalone fact. Store nothing that is transient small-talk "
-    "or already obvious; if there is nothing durable, store nothing. Do not "
-    "summarise back to me — just save the facts. Reply only with how many facts "
-    "you stored."
+    "store only genuinely durable, reusable knowledge worth keeping beyond this "
+    "chat — facts, decisions, household preferences, people, recurring routines. "
+    "Use your memory tool (fact_store) to save each one as a short standalone "
+    "fact. SKIP turns that are pure device control, tool calls, or trivial "
+    "confirmations (e.g. switching a light, asking which devices are on): those "
+    "are not learnings. Do NOT memorise device/room/entity mappings or device "
+    "state — those live in Home Assistant and must be read from it, not stored. "
+    "Store nothing that is transient small-talk or already obvious; if there is "
+    "nothing durable, store nothing. Do not summarise back to me — just save the "
+    "facts. Reply only with how many facts you stored."
 )
 
 # Pass 2 — produce a compact summary of the conversation so far, to seed the

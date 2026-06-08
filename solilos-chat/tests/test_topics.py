@@ -410,6 +410,46 @@ async def test_topic_without_defaults_falls_back(aiohttp_client, tmp_path):
     assert fake.created_prompts == [personalities.system_prompt_for("concise")]
 
 
+async def test_pinned_household_chat_binds_e2b_and_soul(aiohttp_client, tmp_path):
+    # The pinned household chat (#237) starts a new chat carrying
+    # `topic: household`. The seeded household topic (migration 0004) pins
+    # default_model='gemma4:e2b', so the topic default LOCKS the model to e2b
+    # even when the turn would otherwise route thorough (reasoning='high'),
+    # and persists `household` as the session's primary. default_persona is
+    # NULL on the seed → the household soul rides the body's persona overlay.
+    db = _db(tmp_path)
+    _seed_topic_defaults(db, "household", "gemma4:e2b", None)
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solilos_db_path=db,
+        fast_model="gemma4:e2b",
+        thorough_model="gemma4:12b",
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat",
+        json={
+            "input": "rechne mir das mal vor",
+            "reasoning": "high",  # would route to the thorough model (12b)
+            "topic": "household",
+        },
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    from solilos_chat import personalities
+
+    # The topic default e2b wins over the thorough routing model.
+    assert fake.models == ["gemma4:e2b"]
+    # No default_persona → the body's overlay (none here → default Sol soul).
+    assert fake.created_prompts == [personalities.system_prompt_for(None)]
+    sid = (await resp.json())["session_id"]
+    assigned = topics_store.get_session_topics(db, sid, "mdopp")
+    assert assigned["primary"] == "household"
+
+
 async def test_no_topic_uses_routing_default(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     fake = _FakeHermes()

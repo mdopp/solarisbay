@@ -47,6 +47,40 @@ def test_needs_compaction_unknown_usage_is_false():
     assert compaction.needs_compaction({}, 32768, 0.90) is False
 
 
+# --- Extract prompt skips trivial / device-control turns (#250) -------------
+
+
+def test_extract_prompt_skips_device_control_and_tool_turns():
+    # A pure device-control turn (e.g. "schalte licht an" / "welche Lichter sind
+    # an") must not become a stored fact: the prompt names device-control,
+    # tool-call and trivial-confirmation turns as explicit skip cases.
+    p = compaction.EXTRACT_PROMPT.lower()
+    assert "skip" in p
+    assert "device control" in p
+    assert "tool call" in p
+    assert "trivial" in p
+
+
+def test_extract_prompt_does_not_memorise_ha_derivable_mappings():
+    # device/room/entity mappings + device state live in Home Assistant; the
+    # prompt must NOT invite storing them, and must say so explicitly.
+    p = compaction.EXTRACT_PROMPT.lower()
+    assert "do not memorise device/room/entity mappings" in p
+    assert "home assistant" in p
+    # The old invitation that caused the bug must be gone.
+    assert "store every durable, reusable learning" not in p
+
+
+def test_extract_prompt_still_targets_substantive_knowledge():
+    # A substantive, informative turn must still be extractable: the prompt
+    # keeps the genuine durable-learning categories so real conversations are
+    # not silenced by the trivial-turn guard.
+    p = compaction.EXTRACT_PROMPT.lower()
+    assert "fact_store" in p
+    for category in ("facts", "decisions", "household preferences", "routines"):
+        assert category in p
+
+
 # --- Extract-before-compact ordering ---------------------------------------
 
 
