@@ -225,10 +225,9 @@
     .embed #settings-nav [data-view="soul"],
     .embed #settings-nav [data-view="tools"],
     .embed #settings-nav [data-view="model"] { display: none; }
-    /* ServiceBay-admin embed (#274): persona is server-locked to Technical and
-       the topic is fixed, so the Persona + Thema selectors offer no choice. */
-    .embed #persona-control,
-    .embed #topic-control { display: none; }
+    /* ServiceBay-admin embed (#274): persona is server-locked to Technical, so
+       the Persona selector offers no choice. */
+    .embed #persona-control { display: none; }
 
     .view { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
     .view.active { display: flex; }
@@ -568,13 +567,6 @@
       text-overflow: ellipsis; white-space: nowrap;
       color: var(--accent); background: var(--bubble-sol); border: 1px solid var(--line);
     }
-    /* Secondary-tag chips in the header topic picker. */
-    .topic-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-    .topic-tags .topic-chip { cursor: default; margin-top: 0; }
-    .topic-tags .topic-chip button {
-      border: 0; background: transparent; color: inherit; cursor: pointer;
-      font: inherit; padding: 0 0 0 4px; line-height: 1;
-    }
     .pill.on { color: var(--ok); background: var(--ok-soft); }
     .pill.off { color: var(--muted); background: var(--bubble-sol); }
     .tools-search {
@@ -802,11 +794,6 @@
           <label for="personality">Persona</label>
           <select id="personality" aria-label="Persona and speed for new sessions" title="Persona × Geschwindigkeit: schnell antwortet sofort, Thinking lässt Sol nachdenken."></select>
         </span>
-        <span class="persona" id="topic-control" hidden>
-          <label for="topic-primary">Thema</label>
-          <select id="topic-primary" aria-label="Primary topic for this chat" title="Primäres Thema dieses Chats"></select>
-          <span class="topic-tags" id="topic-tags"></span>
-        </span>
         <button class="icon-btn embed-settings" id="embed-settings" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"></use></svg></button>
       </header>
       <div id="log" aria-live="polite"></div>
@@ -958,21 +945,6 @@
     </div>
   </div>
 
-  <!-- Topic dashboard (#244): clicking a topic chip lists the notes tagged
-       #topic/<slug> for this resident, fetched from GET /api/topics/<slug>/items. -->
-  <div class="modal-backdrop" id="topic-modal" hidden>
-    <div class="modal" role="dialog" aria-label="Thema">
-      <div class="modal-head">
-        <span class="modal-title" id="topic-modal-title">Thema</span>
-        <span class="grow"></span>
-        <button class="icon-btn" id="topic-modal-close" type="button" aria-label="Schließen"><svg class="ic"><use href="#i-x"></use></svg></button>
-      </div>
-      <div class="modal-body">
-        <div id="topic-modal-items"></div>
-      </div>
-    </div>
-  </div>
-
   <script src="/static/markdown.js"></script>
   <script src="/static/mermaid.min.js"></script>
   <script>
@@ -1026,26 +998,20 @@
       // The built-in household topic slug (#237): the pinned "Zuhause" chat
       // pre-binds it so the new session inherits e2b + the household soul.
       var HOUSEHOLD_TOPIC = "household";
-      // The two built-in system topics are dedicated contexts (the pinned
-      // "Zuhause" chat and the ServiceBay-admin embed), not free-choice topics,
-      // so they never appear in the Thema picker's options (#274).
-      var FIXED_CONTEXT_TOPICS = { household: 1, "servicebay-admin": 1 };
       // Incognito/temporary chat (#246): ephemeral by default — the proxy
       // persists nothing (no compaction, no auto-ingestion) and deletes the
-      // session on close. The picker stays usable only as the extract target:
-      // selecting a topic names where an explicit "extract to note" lands.
+      // session on close.
       var incognito = false;
       var slash = { refresh: function () {}, handleKey: function () { return false; } };
       var mention = { refresh: function () {}, handleKey: function () { return false; }, close: function () {} };
 
-      // ---- Topics (#241): primary topic picker + secondary tags in the header,
-      // primary-topic chip per chat in the list. Available topics come from the
-      // registry (GET /api/topics); per-session assignment via
-      // GET/POST /api/sessions/{id}/topics.
-      var topicCtrl = document.getElementById("topic-control");
+      // ---- Topics (#241/#279): the user-facing Thema picker is retired — inline
+      // #tag/@person mentions (#279) replace it. The topic registry stays as
+      // internal plumbing: the pinned "Zuhause" row (#237) pre-binds the
+      // household topic, and each chat's primary-topic chip in the list shows its
+      // display name. Available topics come from GET /api/topics; the server
+      // binds a topic's default model/persona at session create (D2/#242).
       var personaCtrl = document.getElementById("persona-control");
-      var topicSel = document.getElementById("topic-primary");
-      var topicTags = document.getElementById("topic-tags");
       var tagCloudPanel = document.getElementById("tag-cloud");
       var tagCloudStrip = document.getElementById("tag-cloud-strip");
       var topicsList = [];
@@ -1058,126 +1024,11 @@
             topicsList = (j && j.topics) || [];
             topicsBySlug = {};
             topicsList.forEach(function (t) { topicsBySlug[t.slug] = t; });
-            topicSel.textContent = "";
-            var none = document.createElement("option");
-            none.value = ""; none.textContent = "—";
-            topicSel.appendChild(none);
-            topicsList.forEach(function (t) {
-              if (FIXED_CONTEXT_TOPICS[t.slug]) return;
-              var opt = document.createElement("option");
-              opt.value = t.slug; opt.textContent = t.display_name || t.slug;
-              topicSel.appendChild(opt);
-            });
             // Surface the pinned household chat only when the resident can see
             // the household topic (it's a shared system topic — #237).
             householdBtn.hidden = !topicsBySlug[HOUSEHOLD_TOPIC];
           })
           .catch(function () {});
-      }
-
-      function renderTopicTags(secondary) {
-        topicTags.textContent = "";
-        (secondary || []).forEach(function (slug) {
-          var meta = topicsBySlug[slug];
-          var chip = document.createElement("span");
-          chip.className = "topic-chip";
-          chip.textContent = (meta && meta.display_name) || slug;
-          if (meta && meta.color) { chip.style.color = meta.color; chip.style.borderColor = meta.color; }
-          var x = document.createElement("button");
-          x.type = "button"; x.textContent = "×"; x.title = "Tag entfernen";
-          x.addEventListener("click", function () { setSessionTopic("remove", slug); });
-          chip.appendChild(x);
-          topicTags.appendChild(chip);
-        });
-      }
-
-      function syncSessionTopics() {
-        topicCtrl.hidden = false;
-        if (!sessionId) {
-          // New chat: the picker reflects the pending pre-assignment (#242).
-          topicSel.value = pendingTopic;
-          renderTopicTags([]);
-          return;
-        }
-        fetch("/api/sessions/" + encodeURIComponent(sessionId) + "/topics")
-          .then(function (r) { return r.ok ? r.json() : { primary: null, secondary: [] }; })
-          .then(function (j) {
-            topicSel.value = (j && j.primary) || "";
-            renderTopicTags((j && j.secondary) || []);
-          })
-          .catch(function () {});
-      }
-
-      function setSessionTopic(action, slug) {
-        if (!sessionId || !slug) return;
-        fetch("/api/sessions/" + encodeURIComponent(sessionId) + "/topics", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: action, slug: slug })
-        })
-          .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (j) {
-            if (j) { topicSel.value = j.primary || ""; renderTopicTags(j.secondary || []); }
-            loadSessions();
-          })
-          .catch(function () {});
-      }
-
-      topicSel.addEventListener("change", function () {
-        if (!sessionId) {
-          // No session yet: stash the choice; the first turn binds it (#242).
-          pendingTopic = topicSel.value || "";
-          return;
-        }
-        if (topicSel.value) { setSessionTopic("primary", topicSel.value); }
-      });
-
-      // ---- Topic dashboard (#244): list a topic's tagged notes ----
-      var topicModal = document.getElementById("topic-modal");
-      var topicModalTitle = document.getElementById("topic-modal-title");
-      var topicModalItems = document.getElementById("topic-modal-items");
-      function closeTopicModal() { topicModal.hidden = true; }
-      document.getElementById("topic-modal-close").addEventListener("click", closeTopicModal);
-      topicModal.addEventListener("click", function (e) { if (e.target === topicModal) closeTopicModal(); });
-
-      function openTopicDashboard(slug) {
-        if (!slug) return;
-        var meta = topicsBySlug[slug];
-        topicModalTitle.textContent = (meta && meta.display_name) || slug;
-        topicModalItems.textContent = "Lädt …";
-        topicModal.hidden = false;
-        // Hierarchical slugs carry a `/`; encode each segment so the path route
-        // (/api/topics/<slug>/items) still receives the full slug.
-        var encoded = slug.split("/").map(encodeURIComponent).join("/");
-        fetch("/api/topics/" + encoded + "/items")
-          .then(function (r) { return r.ok ? r.json() : { items: [] }; })
-          .then(function (j) {
-            var items = (j && j.items) || [];
-            topicModalItems.textContent = "";
-            if (!items.length) {
-              var none = document.createElement("div");
-              none.className = "sessions-empty";
-              none.textContent = "Noch nichts zu diesem Thema notiert.";
-              topicModalItems.appendChild(none);
-              return;
-            }
-            items.forEach(function (it) {
-              var row = document.createElement("div");
-              row.className = "session";
-              var b = document.createElement("div");
-              b.className = "body";
-              var t = document.createElement("div");
-              t.className = "title";
-              t.textContent = it.title || it.path;
-              b.appendChild(t);
-              var w = document.createElement("div");
-              w.className = "when";
-              w.textContent = it.path;
-              b.appendChild(w);
-              row.appendChild(b);
-              topicModalItems.appendChild(row);
-            });
-          })
-          .catch(function () { topicModalItems.textContent = "Konnte das Thema nicht laden."; });
       }
 
       // ---- Persona × speed selector (#278) ----
@@ -1540,11 +1391,9 @@
         var payload = { input: text, session_id: sessionId, personality: currentPersonality(), reasoning: currentReasoning() };
         if (incognito) {
           payload.ephemeral = true;
-          // The picker selection is the extract target: when set, this turn can
-          // be the "extract to note" escape hatch and the proxy tags the note
-          // #topic/<slug>. Sent every turn so the resident can extract any time.
-          if (topicSel.value) payload.topic = topicSel.value;
         } else if (!sessionId && pendingTopic) {
+          // The pinned "Zuhause" pre-bind: the first turn carries the household
+          // topic so the server binds e2b + the household soul at create (#242).
           payload.topic = pendingTopic;
         }
         if (images && images.length) payload.images = images;
@@ -1561,7 +1410,7 @@
           function handle(event, data) {
             var d = {};
             try { d = JSON.parse(data); } catch (e) {}
-            if (event === "session") { if (d.session_id) { sessionId = d.session_id; pendingTopic = ""; if (!incognito) syncSessionTopics(); } }
+            if (event === "session") { if (d.session_id) { sessionId = d.session_id; pendingTopic = ""; } }
             else if (event === "delta") { if (d.text) msg.append(d.text); }
             else if (event === "reasoning") { if (d.text) msg.setReasoning(d.text); }
             else if (event === "tool") {
@@ -2102,11 +1951,10 @@
           ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
           : pendingTopic === HOUSEHOLD_TOPIC;
         householdBtn.classList.toggle("active", active);
-        // The "Zuhause" chat has a fixed persona × speed + topic (Sol fast,
-        // Household), so those selectors offer no choice — hide them (#274).
+        // The "Zuhause" chat has a fixed persona × speed (Sol fast), so the
+        // Persona selector offers no choice — hide it (#274).
         personaCtrl.hidden = active;
         if (active) {
-          topicCtrl.hidden = true;
           // Name the household chat "Zuhause" rather than the generic
           // new-chat placeholder, including the pre-first-turn state (#281).
           var ct = document.getElementById("chat-title");
@@ -2144,12 +1992,9 @@
           if (s.primary_topic) {
             var tc = document.createElement("span");
             tc.className = "topic-chip";
-            tc.style.cursor = "pointer";
-            tc.title = "Alles zu diesem Thema anzeigen";
             var meta = topicsBySlug[s.primary_topic];
             tc.textContent = (meta && meta.display_name) || s.primary_topic;
             if (meta && meta.color) { tc.style.color = meta.color; tc.style.borderColor = meta.color; }
-            tc.addEventListener("click", function (e) { e.stopPropagation(); openTopicDashboard(s.primary_topic); });
             body.appendChild(tc);
           }
           var when = fmtWhen(s.last_activity);
@@ -2223,7 +2068,6 @@
             });
             scrollDown(true);
             loadSessions();
-            syncSessionTopics();
             loadTagCloud();
             input.focus();
           })
@@ -2244,8 +2088,6 @@
         incognito = on;
         incognitoBadge.hidden = !on;
         document.getElementById("chat-title").hidden = on;
-        topicSel.value = "";
-        renderTopicTags([]);
       }
 
       function newSession() {
@@ -2256,7 +2098,6 @@
         pendingTopic = "";
         clearLog();
         loadSessions();
-        syncSessionTopics();
         loadTagCloud();
         closeRail();
         showView("chat");
@@ -2270,7 +2111,6 @@
         pendingTopic = "";
         clearLog();
         applyIncognito(true);
-        topicCtrl.hidden = false;
         loadSessions();
         loadTagCloud();
         closeRail();
@@ -2286,7 +2126,6 @@
         if (send.disabled) return;
         newSession();
         pendingTopic = HOUSEHOLD_TOPIC;
-        syncSessionTopics();
         syncPinnedActive(null);
       }
 
@@ -2775,7 +2614,6 @@
       loadPersonalities();
       loadWhoami();
       loadTopics().then(loadSessions);
-      syncSessionTopics();
     })();
   </script>
 </body>

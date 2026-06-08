@@ -4,8 +4,9 @@ The separate Thinking (Aus/An) and Persona selectors are combined into ONE
 dropdown whose entries pair each persona with a speed (schnell/Thinking),
 mapping back to the unchanged payload.personality + payload.reasoning wiring.
 It carries the #274 hide paths: hidden in the pinned "Zuhause" chat and in the
-ServiceBay-admin embed. The Thema picker still omits the two system contexts.
-The real check is the box-verify across the contexts; these lock the
+ServiceBay-admin embed. The user-facing Thema topic picker is retired (#279d) —
+inline #tag/@person mentions replace it; only the internal household binding
+stays. The real check is the box-verify across the contexts; these lock the
 markup/JS contract.
 """
 
@@ -53,8 +54,8 @@ def test_selection_maps_back_to_persona_and_reasoning():
 
 
 def test_household_hides_the_combined_control():
-    # syncPinnedActive hides the single combined persona control (+ Thema) when
-    # the household context is active — the #274 hide path on the new control.
+    # syncPinnedActive hides the single combined persona control when the
+    # household context is active — the #274 hide path on the new control.
     sync = re.search(
         r"function syncPinnedActive\(activeS\) \{(.*?)\n      \}", _HTML, re.S
     )
@@ -62,23 +63,45 @@ def test_household_hides_the_combined_control():
     body = sync.group(1)
     assert "reasoningCtrl" not in body
     assert "personaCtrl.hidden = active" in body
-    assert "topicCtrl.hidden = true" in body
     # Highlight stays selection-driven (no #262 always-highlight regression).
     assert 'householdBtn.classList.toggle("active", active)' in body
 
 
-def test_thema_picker_omits_system_contexts():
-    assert 'FIXED_CONTEXT_TOPICS = { household: 1, "servicebay-admin": 1 }' in _HTML
-    # The option-building loop skips the fixed-context slugs.
-    assert "if (FIXED_CONTEXT_TOPICS[t.slug]) return;" in _HTML
+def test_thema_picker_is_retired():
+    # The user-facing Thema topic picker is gone (#279d): no dropdown element,
+    # no fixed-context option gating, no picker-facing JS.
+    assert 'id="topic-control"' not in _HTML
+    assert 'id="topic-primary"' not in _HTML
+    assert 'id="topic-tags"' not in _HTML
+    assert "FIXED_CONTEXT_TOPICS" not in _HTML
+    assert "function syncSessionTopics" not in _HTML
+    assert "function setSessionTopic" not in _HTML
+    assert "topicCtrl" not in _HTML
 
 
-def test_embed_hides_persona_and_topic():
-    rule = re.search(
-        r"\.embed #persona-control,\s*\.embed #topic-control \{([^}]*)\}", _HTML
-    )
-    assert rule, "embed persona/topic hide rule missing"
+def test_topic_dashboard_modal_is_removed():
+    # The #244 topic dashboard modal (only reachable from the removed picker /
+    # chip click) is gone; the session-row chip stays as display-only.
+    assert 'id="topic-modal"' not in _HTML
+    assert "function openTopicDashboard" not in _HTML
+
+
+def test_embed_hides_persona():
+    rule = re.search(r"\.embed #persona-control \{([^}]*)\}", _HTML)
+    assert rule, "embed persona hide rule missing"
     assert "display: none" in rule.group(1)
+    # The retired Thema control is no longer in the embed hide rule.
+    assert "#topic-control" not in _HTML
+
+
+def test_household_pin_binding_intact():
+    # The internal household topic binding stays: the pinned chat pre-binds the
+    # `household` topic via the #242 pendingTopic path, and loadTopics surfaces
+    # the pin only when the resident can see the household topic.
+    assert 'var HOUSEHOLD_TOPIC = "household";' in _HTML
+    assert "pendingTopic = HOUSEHOLD_TOPIC;" in _HTML
+    assert "payload.topic = pendingTopic;" in _HTML
+    assert "householdBtn.hidden = !topicsBySlug[HOUSEHOLD_TOPIC];" in _HTML
 
 
 def test_chat_search_is_left_aligned():
