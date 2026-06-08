@@ -41,11 +41,16 @@ These rules apply to every session, human or agent.
 
 ## Releases
 
-- Solilos has **no release-please**. Releases are cut by pushing a `v*` tag, which
-  triggers `build-images.yml` to publish `solilos-gatekeeper` and
-  `schema-init` to GHCR.
-- **Don't** hand-bump versions in `pyproject.toml` or create/push tags unless
-  explicitly asked.
+- Releases are automated via **release-please**. It maintains a release PR that
+  bumps the version + `CHANGELOG.md` from the conventional commits on `main`.
+  **Merging that release PR** cuts the `vX.Y.Z` tag + GitHub release, which
+  triggers `build-images.yml` to publish `solilos-gatekeeper`,
+  `solilos-gatekeeper-ml`, `solilos-chat`, and `schema-init` to GHCR.
+- Conventional Commits + paren-free subjects (above) are load-bearing:
+  release-please derives the version bump and CHANGELOG from them.
+- **Don't** hand-bump versions in `pyproject.toml` or create/push tags by hand —
+  let release-please own that. Cutting a release = merging its release PR, which
+  is a human/explicit-ask decision.
 
 ## Never
 

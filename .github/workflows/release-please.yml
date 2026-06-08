@@ -1,0 +1,21 @@
+name: release-please
+
+# Maintains a release PR (version bump + CHANGELOG from conventional commits).
+# Merging that PR cuts the `vX.Y.Z` tag + GitHub release, which triggers
+# build-images.yml (on: push: tags: ['v*']) to publish the images to GHCR.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
