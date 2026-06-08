@@ -225,10 +225,9 @@
     .embed #settings-nav [data-view="soul"],
     .embed #settings-nav [data-view="tools"],
     .embed #settings-nav [data-view="model"] { display: none; }
-    /* ServiceBay-admin embed (#274): persona is server-locked to Technical and
-       the topic is fixed, so the Persona + Thema selectors offer no choice. */
-    .embed #persona-control,
-    .embed #topic-control { display: none; }
+    /* ServiceBay-admin embed (#274): persona is server-locked to Technical, so
+       the Persona selector offers no choice. */
+    .embed #persona-control { display: none; }
 
     .view { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
     .view.active { display: flex; }
@@ -349,6 +348,44 @@
     .slash-item .cmd-desc { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .slash-item.active { background: var(--accent-soft); }
     .slash-item.active .cmd { color: var(--accent); }
+
+    /* Inline #tag / @person mention chips in sent message bubbles (#279). */
+    .mention {
+      border-radius: 6px; padding: 0 4px; font-weight: 500;
+      background: var(--accent-soft); color: var(--accent);
+    }
+    .mention.person { background: var(--bubble-sol); color: var(--ink); }
+
+    /* Tag-cloud (#279c): the active chat's #tags / @persons as jump-to-message
+       chips. Responsive — a right-side gutter panel when the viewport is wide
+       enough to clear the centered 900px log, a strip above the composer
+       otherwise. Both share #tag-cloud-chip styling; the layout containers are
+       CSS-toggled so only one shows at a time. */
+    .cloud-chip {
+      cursor: pointer; border: 1px solid var(--line); border-radius: 999px;
+      padding: 2px 9px; font-size: 12px; font-weight: 500; line-height: 1.6;
+      background: var(--accent-soft); color: var(--accent); white-space: nowrap;
+    }
+    .cloud-chip.person { background: var(--bubble-sol); color: var(--ink); }
+    .cloud-chip:hover { box-shadow: 0 0 0 2px var(--accent); }
+    /* Desktop right-side panel: fixed in the gutter beside the centered log,
+       only when there's room (≥1240px clears 900px log + a 280px column). */
+    #tag-cloud {
+      display: none; position: fixed; top: 120px; right: 24px; width: 232px;
+      max-height: 60vh; overflow-y: auto; z-index: 15;
+      padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--panel); backdrop-filter: var(--glass); -webkit-backdrop-filter: var(--glass);
+      box-shadow: var(--shadow-card);
+    }
+    #tag-cloud .cloud-head { font-size: 11px; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.3px; text-transform: uppercase; }
+    #tag-cloud .cloud-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    @media (min-width: 1240px) { #tag-cloud:not([hidden]) { display: block; } }
+    /* Narrow/mobile strip directly above the composer. */
+    #tag-cloud-strip {
+      display: none; max-width: 900px; width: 100%; margin: 0 auto;
+      padding: 8px 18px 0; gap: 6px; flex-wrap: wrap; align-items: center;
+    }
+    @media (max-width: 1239px) { #tag-cloud-strip:not([hidden]) { display: flex; } }
 
     /* Composer mic/attach icon buttons (#183, #184). */
     .composer-tools { display: flex; gap: 8px; flex: 0 0 auto; align-items: stretch; }
@@ -529,13 +566,6 @@
       padding: 0 7px; border-radius: 10px; max-width: 100%; overflow: hidden;
       text-overflow: ellipsis; white-space: nowrap;
       color: var(--accent); background: var(--bubble-sol); border: 1px solid var(--line);
-    }
-    /* Secondary-tag chips in the header topic picker. */
-    .topic-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-    .topic-tags .topic-chip { cursor: default; margin-top: 0; }
-    .topic-tags .topic-chip button {
-      border: 0; background: transparent; color: inherit; cursor: pointer;
-      font: inherit; padding: 0 0 0 4px; line-height: 1;
     }
     .pill.on { color: var(--ok); background: var(--ok-soft); }
     .pill.off { color: var(--muted); background: var(--bubble-sol); }
@@ -764,18 +794,16 @@
           <label for="personality">Persona</label>
           <select id="personality" aria-label="Persona and speed for new sessions" title="Persona × Geschwindigkeit: schnell antwortet sofort, Thinking lässt Sol nachdenken."></select>
         </span>
-        <span class="persona" id="topic-control" hidden>
-          <label for="topic-primary">Thema</label>
-          <select id="topic-primary" aria-label="Primary topic for this chat" title="Primäres Thema dieses Chats"></select>
-          <span class="topic-tags" id="topic-tags"></span>
-        </span>
         <button class="icon-btn embed-settings" id="embed-settings" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"></use></svg></button>
       </header>
       <div id="log" aria-live="polite"></div>
+      <aside id="tag-cloud" aria-label="Erwähnungen in diesem Chat" hidden></aside>
       <div class="composer-bar">
+        <div id="tag-cloud-strip" aria-label="Erwähnungen in diesem Chat" hidden></div>
         <div class="attach-preview" id="attach-preview" hidden></div>
         <form id="composer">
           <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Commands" hidden></div>
+          <div class="slash-menu" id="mention-menu" role="listbox" aria-label="Mentions" hidden></div>
           <div class="composer-tools">
             <button id="attach-btn" class="composer-icon" type="button" title="Bild anhängen" aria-label="Bild anhängen"><svg class="ic"><use href="#i-image"></use></svg></button>
             <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
@@ -917,21 +945,6 @@
     </div>
   </div>
 
-  <!-- Topic dashboard (#244): clicking a topic chip lists the notes tagged
-       #topic/<slug> for this resident, fetched from GET /api/topics/<slug>/items. -->
-  <div class="modal-backdrop" id="topic-modal" hidden>
-    <div class="modal" role="dialog" aria-label="Thema">
-      <div class="modal-head">
-        <span class="modal-title" id="topic-modal-title">Thema</span>
-        <span class="grow"></span>
-        <button class="icon-btn" id="topic-modal-close" type="button" aria-label="Schließen"><svg class="ic"><use href="#i-x"></use></svg></button>
-      </div>
-      <div class="modal-body">
-        <div id="topic-modal-items"></div>
-      </div>
-    </div>
-  </div>
-
   <script src="/static/markdown.js"></script>
   <script src="/static/mermaid.min.js"></script>
   <script>
@@ -985,25 +998,22 @@
       // The built-in household topic slug (#237): the pinned "Zuhause" chat
       // pre-binds it so the new session inherits e2b + the household soul.
       var HOUSEHOLD_TOPIC = "household";
-      // The two built-in system topics are dedicated contexts (the pinned
-      // "Zuhause" chat and the ServiceBay-admin embed), not free-choice topics,
-      // so they never appear in the Thema picker's options (#274).
-      var FIXED_CONTEXT_TOPICS = { household: 1, "servicebay-admin": 1 };
       // Incognito/temporary chat (#246): ephemeral by default — the proxy
       // persists nothing (no compaction, no auto-ingestion) and deletes the
-      // session on close. The picker stays usable only as the extract target:
-      // selecting a topic names where an explicit "extract to note" lands.
+      // session on close.
       var incognito = false;
       var slash = { refresh: function () {}, handleKey: function () { return false; } };
+      var mention = { refresh: function () {}, handleKey: function () { return false; }, close: function () {} };
 
-      // ---- Topics (#241): primary topic picker + secondary tags in the header,
-      // primary-topic chip per chat in the list. Available topics come from the
-      // registry (GET /api/topics); per-session assignment via
-      // GET/POST /api/sessions/{id}/topics.
-      var topicCtrl = document.getElementById("topic-control");
+      // ---- Topics (#241/#279): the user-facing Thema picker is retired — inline
+      // #tag/@person mentions (#279) replace it. The topic registry stays as
+      // internal plumbing: the pinned "Zuhause" row (#237) pre-binds the
+      // household topic, and each chat's primary-topic chip in the list shows its
+      // display name. Available topics come from GET /api/topics; the server
+      // binds a topic's default model/persona at session create (D2/#242).
       var personaCtrl = document.getElementById("persona-control");
-      var topicSel = document.getElementById("topic-primary");
-      var topicTags = document.getElementById("topic-tags");
+      var tagCloudPanel = document.getElementById("tag-cloud");
+      var tagCloudStrip = document.getElementById("tag-cloud-strip");
       var topicsList = [];
       var topicsBySlug = {};
 
@@ -1014,126 +1024,11 @@
             topicsList = (j && j.topics) || [];
             topicsBySlug = {};
             topicsList.forEach(function (t) { topicsBySlug[t.slug] = t; });
-            topicSel.textContent = "";
-            var none = document.createElement("option");
-            none.value = ""; none.textContent = "—";
-            topicSel.appendChild(none);
-            topicsList.forEach(function (t) {
-              if (FIXED_CONTEXT_TOPICS[t.slug]) return;
-              var opt = document.createElement("option");
-              opt.value = t.slug; opt.textContent = t.display_name || t.slug;
-              topicSel.appendChild(opt);
-            });
             // Surface the pinned household chat only when the resident can see
             // the household topic (it's a shared system topic — #237).
             householdBtn.hidden = !topicsBySlug[HOUSEHOLD_TOPIC];
           })
           .catch(function () {});
-      }
-
-      function renderTopicTags(secondary) {
-        topicTags.textContent = "";
-        (secondary || []).forEach(function (slug) {
-          var meta = topicsBySlug[slug];
-          var chip = document.createElement("span");
-          chip.className = "topic-chip";
-          chip.textContent = (meta && meta.display_name) || slug;
-          if (meta && meta.color) { chip.style.color = meta.color; chip.style.borderColor = meta.color; }
-          var x = document.createElement("button");
-          x.type = "button"; x.textContent = "×"; x.title = "Tag entfernen";
-          x.addEventListener("click", function () { setSessionTopic("remove", slug); });
-          chip.appendChild(x);
-          topicTags.appendChild(chip);
-        });
-      }
-
-      function syncSessionTopics() {
-        topicCtrl.hidden = false;
-        if (!sessionId) {
-          // New chat: the picker reflects the pending pre-assignment (#242).
-          topicSel.value = pendingTopic;
-          renderTopicTags([]);
-          return;
-        }
-        fetch("/api/sessions/" + encodeURIComponent(sessionId) + "/topics")
-          .then(function (r) { return r.ok ? r.json() : { primary: null, secondary: [] }; })
-          .then(function (j) {
-            topicSel.value = (j && j.primary) || "";
-            renderTopicTags((j && j.secondary) || []);
-          })
-          .catch(function () {});
-      }
-
-      function setSessionTopic(action, slug) {
-        if (!sessionId || !slug) return;
-        fetch("/api/sessions/" + encodeURIComponent(sessionId) + "/topics", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: action, slug: slug })
-        })
-          .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (j) {
-            if (j) { topicSel.value = j.primary || ""; renderTopicTags(j.secondary || []); }
-            loadSessions();
-          })
-          .catch(function () {});
-      }
-
-      topicSel.addEventListener("change", function () {
-        if (!sessionId) {
-          // No session yet: stash the choice; the first turn binds it (#242).
-          pendingTopic = topicSel.value || "";
-          return;
-        }
-        if (topicSel.value) { setSessionTopic("primary", topicSel.value); }
-      });
-
-      // ---- Topic dashboard (#244): list a topic's tagged notes ----
-      var topicModal = document.getElementById("topic-modal");
-      var topicModalTitle = document.getElementById("topic-modal-title");
-      var topicModalItems = document.getElementById("topic-modal-items");
-      function closeTopicModal() { topicModal.hidden = true; }
-      document.getElementById("topic-modal-close").addEventListener("click", closeTopicModal);
-      topicModal.addEventListener("click", function (e) { if (e.target === topicModal) closeTopicModal(); });
-
-      function openTopicDashboard(slug) {
-        if (!slug) return;
-        var meta = topicsBySlug[slug];
-        topicModalTitle.textContent = (meta && meta.display_name) || slug;
-        topicModalItems.textContent = "Lädt …";
-        topicModal.hidden = false;
-        // Hierarchical slugs carry a `/`; encode each segment so the path route
-        // (/api/topics/<slug>/items) still receives the full slug.
-        var encoded = slug.split("/").map(encodeURIComponent).join("/");
-        fetch("/api/topics/" + encoded + "/items")
-          .then(function (r) { return r.ok ? r.json() : { items: [] }; })
-          .then(function (j) {
-            var items = (j && j.items) || [];
-            topicModalItems.textContent = "";
-            if (!items.length) {
-              var none = document.createElement("div");
-              none.className = "sessions-empty";
-              none.textContent = "Noch nichts zu diesem Thema notiert.";
-              topicModalItems.appendChild(none);
-              return;
-            }
-            items.forEach(function (it) {
-              var row = document.createElement("div");
-              row.className = "session";
-              var b = document.createElement("div");
-              b.className = "body";
-              var t = document.createElement("div");
-              t.className = "title";
-              t.textContent = it.title || it.path;
-              b.appendChild(t);
-              var w = document.createElement("div");
-              w.className = "when";
-              w.textContent = it.path;
-              b.appendChild(w);
-              row.appendChild(b);
-              topicModalItems.appendChild(row);
-            });
-          })
-          .catch(function () { topicModalItems.textContent = "Konnte das Thema nicht laden."; });
       }
 
       // ---- Persona × speed selector (#278) ----
@@ -1288,10 +1183,95 @@
         return m;
       }
 
+      // Render a user turn's text, wrapping #tag / @person tokens in a styled
+      // chip span while keeping everything else as plain text nodes (the bubble
+      // is white-space: pre-wrap, so spacing/newlines are preserved). Mirrors
+      // the server-side parse in parse_mentions(): word-start # / @, allowing
+      // hierarchy "/" and hyphen, never mid-word or an email's @ (#279).
+      var MENTION_RE = /(^|[^\w/])([#@])([\w/-]+)/g;
+      function appendMentionText(el, text) {
+        var last = 0, m, count = 0;
+        MENTION_RE.lastIndex = 0;
+        while ((m = MENTION_RE.exec(text))) {
+          var start = m.index + m[1].length; // skip the leading boundary char
+          if (start > last) el.appendChild(document.createTextNode(text.slice(last, start)));
+          var span = document.createElement("span");
+          span.className = "mention" + (m[2] === "@" ? " person" : "");
+          span.textContent = m[2] + m[3];
+          el.appendChild(span);
+          last = start + m[2].length + m[3].length;
+          count++;
+        }
+        if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+        return count;
+      }
+
+      // Jump-to-message ref (#279c). The server stamps every user turn that
+      // carried a mention with a per-session ordinal (mentions.message_ref,
+      // 0,1,2,… over turns-with-mentions). Mirror it on the rendered bubbles so
+      // a tag-cloud chip can scroll to the message a tag/person came from: the
+      // Nth user bubble that contains a mention gets data-mention-ref=N. Reset
+      // on clearLog (a fresh transcript restarts the count).
+      var mentionRefSeq = 0;
+      function tagUserBubble(el, hadMentions) {
+        if (hadMentions) el.setAttribute("data-mention-ref", String(mentionRefSeq++));
+      }
+
+      // ---- Tag-cloud (#279c): the active chat's #tags / @persons as chips that
+      // jump to the message they came from. Loaded on session open/switch and
+      // after each completed turn. Responsive layout (gutter panel vs. strip
+      // above the composer) is pure CSS; the same chips fill both containers. ----
+      function jumpToMention(ref) {
+        var target = log.querySelector('[data-mention-ref="' + ref + '"]');
+        if (!target) return;
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        target.classList.add("search-current");
+        setTimeout(function () { target.classList.remove("search-current"); }, 1600);
+      }
+      function fillCloud(container, items) {
+        container.textContent = "";
+        if (!items.length) { container.hidden = true; return; }
+        if (container === tagCloudPanel) {
+          var head = document.createElement("div");
+          head.className = "cloud-head";
+          head.textContent = "Erwähnungen";
+          container.appendChild(head);
+        }
+        var chips = container === tagCloudPanel
+          ? Object.assign(document.createElement("div"), { className: "cloud-chips" })
+          : container;
+        items.forEach(function (it) {
+          var chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "cloud-chip" + (it.kind === "person" ? " person" : "");
+          chip.textContent = (it.kind === "person" ? "@" : "#") + it.value;
+          chip.title = "Zur Nachricht springen";
+          chip.addEventListener("click", function () { jumpToMention(it.message_ref); });
+          chips.appendChild(chip);
+        });
+        if (chips !== container) container.appendChild(chips);
+        container.hidden = false;
+      }
+      function loadTagCloud() {
+        // Incognito chats keep no durable mentions; a fresh chat has no id yet.
+        if (!sessionId || incognito) { fillCloud(tagCloudPanel, []); fillCloud(tagCloudStrip, []); return; }
+        var sid = sessionId;
+        fetch("/api/sessions/" + encodeURIComponent(sid) + "/mentions")
+          .then(function (r) { return r.ok ? r.json() : { mentions: [] }; })
+          .then(function (j) {
+            if (sid !== sessionId) return; // a switch raced ahead — drop stale
+            var items = (j && j.mentions) || [];
+            fillCloud(tagCloudPanel, items);
+            fillCloud(tagCloudStrip, items);
+          })
+          .catch(function () { /* leave the cloud as-is on a transient error */ });
+      }
+
       function addText(role, text, when) {
         var el = document.createElement("div");
         el.className = "msg " + role;
-        el.appendChild(document.createTextNode(text));
+        if (role === "me") tagUserBubble(el, appendMentionText(el, text) > 0);
+        else el.appendChild(document.createTextNode(text));
         if (role === "me" || role === "sol") el.appendChild(metaLine(when));
         log.appendChild(el);
         scrollDown(true);
@@ -1394,9 +1374,16 @@
         input.style.height = h + "px";
         form.classList.toggle("grown", h > 43);
       }
-      input.addEventListener("input", function () { autosize(); slash.refresh(); });
+      input.addEventListener("input", function () { autosize(); slash.refresh(); mention.refresh(); });
+      // Caret moves (arrows/click) can enter or leave a #/@ token without an
+      // input event, so re-evaluate the mention menu on those too.
+      input.addEventListener("keyup", function (e) {
+        if (e.key.indexOf("Arrow") === 0 || e.key === "Home" || e.key === "End") mention.refresh();
+      });
+      input.addEventListener("click", function () { mention.refresh(); });
       input.addEventListener("keydown", function (e) {
-        if (slash.handleKey(e)) return; // arrow/enter/tab/esc while the menu is open
+        if (slash.handleKey(e)) return;   // arrow/enter/tab/esc while the slash menu is open
+        if (mention.handleKey(e)) return; // same nav while the mention menu is open
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
       });
 
@@ -1404,11 +1391,9 @@
         var payload = { input: text, session_id: sessionId, personality: currentPersonality(), reasoning: currentReasoning() };
         if (incognito) {
           payload.ephemeral = true;
-          // The picker selection is the extract target: when set, this turn can
-          // be the "extract to note" escape hatch and the proxy tags the note
-          // #topic/<slug>. Sent every turn so the resident can extract any time.
-          if (topicSel.value) payload.topic = topicSel.value;
         } else if (!sessionId && pendingTopic) {
+          // The pinned "Zuhause" pre-bind: the first turn carries the household
+          // topic so the server binds e2b + the household soul at create (#242).
           payload.topic = pendingTopic;
         }
         if (images && images.length) payload.images = images;
@@ -1425,7 +1410,7 @@
           function handle(event, data) {
             var d = {};
             try { d = JSON.parse(data); } catch (e) {}
-            if (event === "session") { if (d.session_id) { sessionId = d.session_id; pendingTopic = ""; if (!incognito) syncSessionTopics(); } }
+            if (event === "session") { if (d.session_id) { sessionId = d.session_id; pendingTopic = ""; } }
             else if (event === "delta") { if (d.text) msg.append(d.text); }
             else if (event === "reasoning") { if (d.text) msg.setReasoning(d.text); }
             else if (event === "tool") {
@@ -1559,6 +1544,109 @@
           var v = input.value;
           if (v.charAt(0) === "/" && v.indexOf(" ") === -1 && v.indexOf("\n") === -1) render(v);
           else close();
+        }
+
+        function handleKey(e) {
+          if (menu.hidden) return false;
+          if (e.key === "ArrowDown") { e.preventDefault(); move(1); return true; }
+          if (e.key === "ArrowUp") { e.preventDefault(); move(-1); return true; }
+          if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); choose(active); return true; }
+          if (e.key === "Escape") { e.preventDefault(); close(); return true; }
+          return false;
+        }
+
+        document.addEventListener("click", function (e) {
+          if (!menu.hidden && e.target !== input && !menu.contains(e.target)) close();
+        });
+
+        return { refresh: refresh, handleKey: handleKey, close: close };
+      })();
+
+      // ---- #tag / @person mention autosuggest (#279) ----
+      // Reuses the slash-menu DOM/CSS idiom and keyboard nav, but triggers on a
+      // #/@ token at the cursor and fetches candidates from the unit-279a
+      // endpoints (#: /api/mentions/tags, @: /api/mentions/persons), filtered by
+      // the typed prefix. Selecting an item completes the token in the composer.
+      mention = (function () {
+        var menu = document.getElementById("mention-menu");
+        var items = [];     // current [{kind, value}]
+        var active = -1;
+        var tok = null;     // {char, start, end, prefix} of the token at the cursor
+        var seq = 0;        // fetch generation guard (drop stale responses)
+
+        function close() { menu.hidden = true; menu.textContent = ""; items = []; active = -1; tok = null; }
+
+        // The mention token under the cursor: a leading #/@ at a word boundary
+        // followed by the word chars up to the caret. Null if the caret isn't in
+        // one. Same boundary rule as parse_mentions / appendMentionText.
+        function tokenAt() {
+          var pos = input.selectionStart;
+          if (pos == null || pos !== input.selectionEnd) return null;
+          var head = input.value.slice(0, pos);
+          var m = /([#@])([\w/-]*)$/.exec(head);
+          if (!m) return null;
+          var i = m.index;
+          if (i > 0 && /[\w/]/.test(head.charAt(i - 1))) return null; // mid-word #/@ or email
+          return { char: m[1], start: i, end: pos, prefix: m[2].toLowerCase() };
+        }
+
+        function render() {
+          if (!items.length) { close(); return; }
+          active = 0;
+          menu.textContent = "";
+          items.forEach(function (it, i) {
+            var row = document.createElement("div");
+            row.className = "slash-item" + (i === active ? " active" : "");
+            row.setAttribute("role", "option");
+            var cmd = document.createElement("span"); cmd.className = "cmd";
+            cmd.textContent = tok.char + it.value;
+            row.appendChild(cmd);
+            row.addEventListener("mousedown", function (e) { e.preventDefault(); choose(i); });
+            menu.appendChild(row);
+          });
+          menu.hidden = false;
+        }
+
+        function move(delta) {
+          if (!items.length) return;
+          var rows = menu.querySelectorAll(".slash-item");
+          if (rows[active]) rows[active].classList.remove("active");
+          active = (active + delta + items.length) % items.length;
+          rows[active].classList.add("active");
+          rows[active].scrollIntoView({ block: "nearest" });
+        }
+
+        function choose(i) {
+          var it = items[i];
+          if (!it || !tok) return;
+          var v = input.value;
+          var insert = tok.char + it.value + " ";
+          input.value = v.slice(0, tok.start) + insert + v.slice(tok.end);
+          var caret = tok.start + insert.length;
+          close();
+          autosize();
+          input.focus();
+          input.setSelectionRange(caret, caret);
+        }
+
+        function refresh() {
+          var t = tokenAt();
+          if (!t) { close(); return; }
+          tok = t;
+          var url = t.char === "#"
+            ? "/api/mentions/tags?q=" + encodeURIComponent(t.prefix)
+            : "/api/mentions/persons?q=" + encodeURIComponent(t.prefix);
+          var key = t.char === "#" ? "tags" : "persons";
+          var mine = ++seq;
+          fetch(url, { headers: { Accept: "application/json" } })
+            .then(function (r) { return r.ok ? r.json() : {}; })
+            .then(function (j) {
+              if (mine !== seq) return;          // a newer keystroke superseded this
+              if (!tokenAt()) { close(); return; } // caret left the token meanwhile
+              items = (j && j[key]) || [];
+              render();
+            })
+            .catch(function () { if (mine === seq) close(); });
         }
 
         function handleKey(e) {
@@ -1802,6 +1890,7 @@
       form.addEventListener("submit", function (e) {
         e.preventDefault();
         slash.close();
+        mention.close();
         var text = input.value.trim();
         var images = attach.take(); // data-URLs; clears the tray
         if (!text && !images.length) return;
@@ -1816,7 +1905,7 @@
         activeTurn = turn;
         setStreaming(true);
         streamChat(text, msg, images, controller.signal)
-          .then(function () { if (!turn.stopped) msg.finish(); if (firstTurn) loadSessions(); })
+          .then(function () { if (!turn.stopped) msg.finish(); if (firstTurn) loadSessions(); loadTagCloud(); })
           .catch(function () { if (!turn.stopped) msg.fail("Network error. Please try again."); })
           .finally(function () { if (activeTurn === turn) setStreaming(false); });
       });
@@ -1837,7 +1926,7 @@
           });
           el.appendChild(strip);
         }
-        if (text) el.appendChild(document.createTextNode(text));
+        if (text) tagUserBubble(el, appendMentionText(el, text) > 0);
         el.appendChild(metaLine(when || new Date()));
         log.appendChild(el);
         scrollDown(true);
@@ -1862,11 +1951,10 @@
           ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
           : pendingTopic === HOUSEHOLD_TOPIC;
         householdBtn.classList.toggle("active", active);
-        // The "Zuhause" chat has a fixed persona × speed + topic (Sol fast,
-        // Household), so those selectors offer no choice — hide them (#274).
+        // The "Zuhause" chat has a fixed persona × speed (Sol fast), so the
+        // Persona selector offers no choice — hide it (#274).
         personaCtrl.hidden = active;
         if (active) {
-          topicCtrl.hidden = true;
           // Name the household chat "Zuhause" rather than the generic
           // new-chat placeholder, including the pre-first-turn state (#281).
           var ct = document.getElementById("chat-title");
@@ -1904,12 +1992,9 @@
           if (s.primary_topic) {
             var tc = document.createElement("span");
             tc.className = "topic-chip";
-            tc.style.cursor = "pointer";
-            tc.title = "Alles zu diesem Thema anzeigen";
             var meta = topicsBySlug[s.primary_topic];
             tc.textContent = (meta && meta.display_name) || s.primary_topic;
             if (meta && meta.color) { tc.style.color = meta.color; tc.style.borderColor = meta.color; }
-            tc.addEventListener("click", function (e) { e.stopPropagation(); openTopicDashboard(s.primary_topic); });
             body.appendChild(tc);
           }
           var when = fmtWhen(s.last_activity);
@@ -1941,7 +2026,7 @@
           .catch(function () { addText("system", "Could not delete that chat."); });
       }
 
-      function clearLog() { log.textContent = ""; }
+      function clearLog() { log.textContent = ""; mentionRefSeq = 0; }
 
       function openSession(id) {
         if (send.disabled) return;
@@ -1983,7 +2068,7 @@
             });
             scrollDown(true);
             loadSessions();
-            syncSessionTopics();
+            loadTagCloud();
             input.focus();
           })
           .catch(function () { addText("system", "Could not open that chat."); });
@@ -2003,8 +2088,6 @@
         incognito = on;
         incognitoBadge.hidden = !on;
         document.getElementById("chat-title").hidden = on;
-        topicSel.value = "";
-        renderTopicTags([]);
       }
 
       function newSession() {
@@ -2015,7 +2098,7 @@
         pendingTopic = "";
         clearLog();
         loadSessions();
-        syncSessionTopics();
+        loadTagCloud();
         closeRail();
         showView("chat");
         input.focus();
@@ -2028,8 +2111,8 @@
         pendingTopic = "";
         clearLog();
         applyIncognito(true);
-        topicCtrl.hidden = false;
         loadSessions();
+        loadTagCloud();
         closeRail();
         showView("chat");
         input.focus();
@@ -2043,7 +2126,6 @@
         if (send.disabled) return;
         newSession();
         pendingTopic = HOUSEHOLD_TOPIC;
-        syncSessionTopics();
         syncPinnedActive(null);
       }
 
@@ -2532,7 +2614,6 @@
       loadPersonalities();
       loadWhoami();
       loadTopics().then(loadSessions);
-      syncSessionTopics();
     })();
   </script>
 </body>

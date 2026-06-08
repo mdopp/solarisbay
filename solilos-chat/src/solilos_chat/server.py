@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from aiohttp import web
 
 from solilos_chat import (
     compaction,
+    mentions_store,
     notes_search,
     personalities,
     reasoning,
@@ -94,6 +96,50 @@ def _version() -> str:
 VERSION = _version()
 
 
+# Inline mention tokens (#279): a word-boundary `#`/`@` followed by a run of
+# tag-safe characters (letters/digits/_-, plus the topic-hierarchy `/`). The
+# negative lookbehind keeps mid-word `#`/`@` (e.g. an email's `@`, a `C#`)
+# from matching; the captured group excludes the marker char.
+_TAG_RE = re.compile(r"(?<![\w/])#([\w/-]+)", re.UNICODE)
+_PERSON_RE = re.compile(r"(?<![\w/])@([\w/-]+)", re.UNICODE)
+
+
+def parse_mentions(text: str) -> tuple[list[str], list[str]]:
+    """Split `#tag` / `@person` tokens out of a turn's text.
+
+    Returns `(tags, persons)`, each de-duplicated, lower-cased, order-preserved.
+    The leading `#`/`@` is dropped; the bare value is what's stored/suggested.
+    """
+    tags = _dedup(m.lower() for m in _TAG_RE.findall(text))
+    persons = _dedup(m.lower() for m in _PERSON_RE.findall(text))
+    return tags, persons
+
+
+def _dedup(values: Any) -> list[str]:
+    seen: dict[str, None] = {}
+    for v in values:
+        if v:
+            seen.setdefault(v, None)
+    return list(seen)
+
+
+# Manual person seed for `@person` autosuggest before a resident has used any
+# name in chat (#279). Residents/uids contribute the rest at runtime. CardDAV
+# enrichment (#207, parked behind gbrain) is a future source that appends here —
+# `seeded_persons()` is the single seam it plugs into. Keep this list small.
+_MANUAL_PERSONS = ["mdopp", "anna", "lena"]
+
+
+def seeded_persons(residents: Any) -> list[str]:
+    """The person-suggestion seed: known residents/uids + a manual list.
+
+    De-duplicated, lower-cased. A CardDAV source (#207) would extend this by
+    unioning its contact names in here — the autosuggest endpoint reads only
+    this function, so adding a source is a one-place change.
+    """
+    return _dedup(p.lower() for p in [*(residents or []), *_MANUAL_PERSONS])
+
+
 def _title_from(text: str) -> str:
     """Derive a short session title from the first user message.
 
@@ -147,7 +193,12 @@ def build_app(
     thorough_model: str = "",
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
     notes_dir: str = "/opt/data/notes",
+    residents: list[str] | None = None,
 ) -> web.Application:
+    # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
+    # the manual list in seeded_persons. The caller's own uid is always folded
+    # in at the endpoint, so this is the *other* residents.
+    resident_uids = list(residents or [])
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
     # Hermes drops inbound images (persists a `[screenshot]` placeholder, no
@@ -295,6 +346,19 @@ def build_app(
             parts.append(hint)
         parts.append(text)
         return "\n\n".join(parts)
+
+    def persist_mentions(
+        uid: str, session_id: str, text: str, *, ephemeral: bool
+    ) -> None:
+        """Parse + store the turn's `#tag`/`@person` mentions (#279).
+
+        Skipped for ephemeral chats (they keep no durable state, like topics).
+        Degrades to no-op when the DB/table is absent (mentions_store handles it).
+        """
+        if ephemeral:
+            return
+        tags, persons = parse_mentions(text)
+        mentions_store.record_mentions(solilos_db_path, session_id, uid, tags, persons)
 
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
@@ -714,6 +778,41 @@ def build_app(
         items = notes_search.notes_for_topic(notes_dir, slug, uid)
         return web.json_response({"ok": True, "slug": slug, "items": items})
 
+    async def mentions_tags(request: web.Request) -> web.Response:
+        # Autosuggest for `#tag` (#279): the resident's already-used tags,
+        # prefix-filtered. Per-resident scope (owner_uid = resolve_uid).
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        prefix = request.rel_url.query.get("q", "").strip().lstrip("#").lower()
+        values = mentions_store.known_tags_for(solilos_db_path, uid, prefix)
+        return web.json_response(
+            {"ok": True, "tags": [{"kind": "tag", "value": v} for v in values]}
+        )
+
+    async def mentions_persons(request: web.Request) -> web.Response:
+        # Autosuggest for `@person` (#279): used persons unioned with the seed
+        # (residents/uid registry + manual list; CardDAV later, #207). The
+        # caller's own uid is always a resident; other residents come from config.
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        prefix = request.rel_url.query.get("q", "").strip().lstrip("@").lower()
+        seed = seeded_persons([uid, *resident_uids])
+        used = mentions_store.known_persons_for(solilos_db_path, uid)
+        merged = _dedup([*used, *seed])
+        if prefix:
+            merged = [v for v in merged if v.startswith(prefix)]
+        merged.sort()
+        return web.json_response(
+            {"ok": True, "persons": [{"kind": "person", "value": v} for v in merged]}
+        )
+
+    async def session_mentions(request: web.Request) -> web.Response:
+        # The tag-cloud for one chat (#279c): the resident's `#tag` / `@person`
+        # mentions in this session, each with the message_ref that carried it
+        # (first appearance) for jump-to-message. Per-resident scope.
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        session_id = request.match_info["session_id"]
+        items = mentions_store.list_session_mentions(solilos_db_path, session_id, uid)
+        return web.json_response({"ok": True, "mentions": items})
+
     async def chat(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
@@ -758,6 +857,7 @@ def build_app(
             turn_text = topic_turn_text(
                 text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
             )
+            persist_mentions(uid, session_id, text, ephemeral=ephemeral)
             reply = await hermes.chat(session_id, turn_text, images, effort)
         except HermesError:
             return web.json_response(
@@ -847,6 +947,7 @@ def build_app(
             turn_text = topic_turn_text(
                 text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
             )
+            persist_mentions(uid, session_id, text, ephemeral=ephemeral)
             stream = hermes.chat_stream(session_id, turn_text, images, effort)
             async for event in stream:
                 if cancel.is_set():
@@ -935,6 +1036,9 @@ def build_app(
     app.router.add_get("/api/sessions/{session_id}/topics", get_session_topics)
     app.router.add_post("/api/sessions/{session_id}/topics", set_session_topics)
     app.router.add_get("/api/topics/{slug:.+}/items", topic_items)
+    app.router.add_get("/api/mentions/tags", mentions_tags)
+    app.router.add_get("/api/mentions/persons", mentions_persons)
+    app.router.add_get("/api/sessions/{session_id}/mentions", session_mentions)
     app.router.add_post("/api/chat", chat)
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_post("/api/chat/cancel", cancel_chat)
