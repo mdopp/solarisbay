@@ -24,6 +24,10 @@ import hashlib
 import re
 
 _PREFIX_RE = re.compile(r"^\[uid:([0-9a-f]{8})\]\s")
+# Maintenance sessions carry a distinct `[maint:<hash>] ` prefix (#229) so they
+# never match the household `[uid:...]` filter — the ServiceBay-maintenance
+# embed is isolated from the per-resident session list by construction.
+_MAINT_PREFIX_RE = re.compile(r"^\[maint:([0-9a-f]{8})\]\s")
 
 
 def uid_hash(uid: str) -> str:
@@ -34,6 +38,17 @@ def uid_hash(uid: str) -> str:
 def marker_for(uid: str) -> str:
     """The sentinel prefix for `uid`, e.g. `[uid:1a2b3c4d] `."""
     return f"[uid:{uid_hash(uid)}] "
+
+
+def maint_marker(uid: str) -> str:
+    """The maintenance-session prefix for `uid`, e.g. `[maint:1a2b3c4d] ` (#229).
+
+    A distinct marker class from `marker_for`: maintenance sessions created via
+    the ServiceBay-maintenance embed must never surface in the household session
+    list, so they are tagged out of the `[uid:...]` namespace `has_marker`
+    filters on.
+    """
+    return f"[maint:{uid_hash(uid)}] "
 
 
 def embed(uid: str, title: str) -> str:

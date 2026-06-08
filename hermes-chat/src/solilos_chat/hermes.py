@@ -41,7 +41,9 @@ class HermesClient:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
 
-    async def create_session(self, uid: str, system_prompt: str | None = None) -> str:
+    async def create_session(
+        self, uid: str, system_prompt: str | None = None, *, maintenance: bool = False
+    ) -> str:
         """Create a session bound to `uid`; return its id.
 
         `system_prompt` is the chosen personality's overlay (see
@@ -53,9 +55,14 @@ class HermesClient:
         exists, before the first turn re-titles it. `user_id` is still POSTed for
         forward-compat, but Hermes v0.16.0 does not persist it — the marker is
         the real ownership record.
+
+        `maintenance` (#229) seeds the `[maint:<hash>] ` marker instead, which
+        keeps a ServiceBay-maintenance session out of the household list (its
+        marker is in a different namespace from the household `[uid:...]` filter).
         """
         url = f"{self._base_url}/api/sessions"
-        payload: dict[str, Any] = {"user_id": uid, "title": marker.marker_for(uid)}
+        title = marker.maint_marker(uid) if maintenance else marker.marker_for(uid)
+        payload: dict[str, Any] = {"user_id": uid, "title": title}
         if system_prompt:
             payload["system_prompt"] = system_prompt
         async with aiohttp.ClientSession(timeout=self._timeout) as client:

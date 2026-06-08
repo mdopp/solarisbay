@@ -55,3 +55,23 @@ def test_has_marker_owner_other_and_legacy():
     assert marker.has_marker("lena", tagged) is False  # different resident
     assert marker.has_marker("mdopp", "untagged legacy") is False  # no marker hidden
     assert marker.has_marker("mdopp", "") is False
+
+
+# --- Maintenance marker (#229) --------------------------------------------
+
+
+def test_maint_marker_format_and_does_not_leak_username():
+    m = marker.maint_marker("mdopp")
+    assert re.fullmatch(r"\[maint:[0-9a-f]{8}\] ", m)
+    assert "mdopp" not in m
+    # Same uid hash as the household marker, distinct namespace prefix.
+    assert m == f"[maint:{marker.uid_hash('mdopp')}] "
+
+
+def test_maint_marker_is_hidden_from_household_filter():
+    # A maintenance-tagged title must never match the household `[uid:...]`
+    # filter, so maintenance sessions stay out of the resident session list.
+    maint_title = marker.maint_marker("mdopp") + "diagnostics"
+    assert marker.has_marker("mdopp", maint_title) is False
+    # And a household title is not mistaken for a maintenance one.
+    assert not marker.maint_marker("mdopp").startswith(marker.marker_for("mdopp"))

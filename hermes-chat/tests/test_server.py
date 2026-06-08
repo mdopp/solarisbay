@@ -77,6 +77,7 @@ class _FakeHermes:
     def __init__(self, events=None, store=None):
         self.created = []
         self.created_prompts = []
+        self.maintenance = []
         self.turns = []
         self.titles = []
         self.deleted = []
@@ -86,9 +87,10 @@ class _FakeHermes:
         # store: list of {id, user_id, title, last_activity, messages}
         self._store = store or []
 
-    async def create_session(self, uid, system_prompt=None):
+    async def create_session(self, uid, system_prompt=None, *, maintenance=False):
         self.created.append(uid)
         self.created_prompts.append(system_prompt or "")
+        self.maintenance.append(maintenance)
         return "sess-1"
 
     async def set_title(self, session_id, uid, title):
@@ -1513,6 +1515,130 @@ async def test_cancel_interrupts_active_stream(aiohttp_client):
     body = await resp.text()
     assert "event: cancelled" in body
     assert body.rstrip().endswith("data: {}")  # final 'done' frame
+
+
+# --- ServiceBay-maintenance persona lock (#229) ---------------------------
+
+
+async def test_maint_persona_admin_gets_live_soul_locked(aiohttp_client, monkeypatch):
+    # An admin creating a session via ?persona=servicebay-maintenance gets the
+    # LIVE admin SOUL.md as the locked system prompt, the maintenance marker,
+    # and any body `personality` is ignored (the lock can't be overridden).
+    from solilos_chat import server as server_mod
+
+    async def fake_soul(url, token):
+        return "# Admin Soul\nServiceBay maintenance persona."
+
+    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_soul)
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/sessions?persona=servicebay-maintenance",
+        json={"personality": "concise"},  # ignored under the lock
+        headers={"Remote-User": "mdopp", "Remote-Groups": "admins"},
+    )
+    body = await resp.json()
+    assert resp.status == 200
+    assert body["session_id"] == "sess-1"
+    # System prompt is the live soul, NOT the body personality's overlay.
+    assert fake.created_prompts == ["# Admin Soul\nServiceBay maintenance persona."]
+    assert fake.created_prompts != [personalities.system_prompt_for("concise")]
+    # Tagged as a maintenance session (isolated from the household list).
+    assert fake.maintenance == [True]
+
+
+async def test_maint_persona_non_admin_forbidden_no_create(aiohttp_client, monkeypatch):
+    # A non-admin requesting the maintenance persona is refused (403) and no
+    # session is created — the Authelia admin gate is enforced server-side.
+    from solilos_chat import server as server_mod
+
+    called = []
+
+    async def fake_soul(url, token):
+        called.append(1)
+        return "# Admin Soul"
+
+    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_soul)
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/sessions?persona=servicebay-maintenance",
+        headers={"Remote-User": "cdopp", "Remote-Groups": "family"},
+    )
+    assert resp.status == 403
+    assert fake.created == []
+    assert called == []  # never even fetched the soul for a non-admin
+
+
+async def test_maint_persona_soul_fetch_failure_fails_safe(aiohttp_client, monkeypatch):
+    # Fail safe: if the live soul can't be fetched, the maintenance session is
+    # refused (502) rather than silently falling back to the household persona.
+    from solilos_chat import server as server_mod
+
+    async def fake_soul(url, token):
+        return None
+
+    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_soul)
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/sessions?persona=servicebay-maintenance",
+        headers={"Remote-User": "mdopp", "Remote-Groups": "admins"},
+    )
+    assert resp.status == 502
+    assert fake.created == []  # never created a session with a leaked persona
+
+
+async def test_household_create_unaffected_by_query_persona(aiohttp_client):
+    # A normal (non-maintenance) create is unchanged: body personality applies,
+    # no soul fetch, no maintenance marker. An unrelated query string is inert.
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/sessions?persona=sol",
+        json={"personality": "teacher"},
+        headers={"Remote-User": "mdopp", "Remote-Groups": "family"},
+    )
+    assert resp.status == 200
+    assert fake.created_prompts == [personalities.system_prompt_for("teacher")]
+    assert fake.maintenance == [False]
+
+
+async def test_maint_persona_cannot_escalate_mid_session(aiohttp_client):
+    # Once a session exists, per-turn `personality` is ignored — a maintenance
+    # session's locked prompt can't be switched to the household Sol persona by
+    # any client-supplied field on a follow-up turn.
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat",
+        json={"input": "status", "session_id": "maint-1", "personality": "sol"},
+    )
+    assert resp.status == 200
+    # Reusing an existing session never re-creates it, so no new system prompt
+    # is applied — the create-time lock holds for the session's whole life.
+    assert fake.created == []
+    assert fake.turns == [("maint-1", "status")]
 
 
 async def test_csp_header_from_default_frame_ancestors(aiohttp_client):

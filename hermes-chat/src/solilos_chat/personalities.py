@@ -66,6 +66,13 @@ PERSONALITIES: list[Personality] = [
 _BY_ID = {p.id: p for p in PERSONALITIES}
 DEFAULT_ID = "sol"
 
+# The ServiceBay-maintenance persona (#229) is NOT in the household catalog: it
+# is requested only via the `?persona=servicebay-maintenance` query string on
+# the ServiceBay-controlled embed (#209), is admin-gated, and its system prompt
+# is the *live* admin SOUL.md (#175/#176) fetched at session-create time — never
+# a static overlay here, so the lock can't be widened by editing this file.
+MAINTENANCE_ID = "servicebay-maintenance"
+
 
 def catalog() -> list[dict[str, str]]:
     """The browser-facing list (no system_prompt — that stays server-side)."""

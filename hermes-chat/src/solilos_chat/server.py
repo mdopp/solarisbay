@@ -357,6 +357,43 @@ def build_app(
 
     async def create_session(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
+
+        # The ServiceBay-maintenance lock (#229) is keyed off the URL QUERY
+        # STRING, not the POST body: the iframe `src` is set by ServiceBay and
+        # in-frame JS cannot rewrite it, so a request body can never forge the
+        # maintenance persona — and, conversely, can never escape the lock once
+        # ServiceBay has set the query.
+        if request.rel_url.query.get("persona") == personalities.MAINTENANCE_ID:
+            if not is_admin(request, remote_groups_header, admin_group):
+                return web.json_response(
+                    {"ok": False, "reason": "forbidden"}, status=403
+                )
+            # Option B: the locked system prompt is the LIVE admin SOUL.md
+            # (#175/#176), fetched through the sidecar. Any `personality` in the
+            # body is ignored — the lock cannot be overridden by the client.
+            soul = await _agent_get_soul(config_agent_url, agent_token)
+            if not soul or not soul.strip():
+                # Fail safe: never silently fall back to the household Sol
+                # persona (that would leak the resident-facing soul into a
+                # maintenance session). Refuse the session instead.
+                log.error("chat.maint.soul_unavailable", uid=uid)
+                return web.json_response(
+                    {"ok": False, "reason": "soul_unavailable"}, status=502
+                )
+            try:
+                session_id = await hermes.create_session(uid, soul, maintenance=True)
+            except HermesError:
+                return web.json_response(
+                    {"ok": False, "reason": "hermes_unavailable"}, status=502
+                )
+            log.info(
+                "chat.session.created",
+                uid=uid,
+                session_id=session_id,
+                personality=personalities.MAINTENANCE_ID,
+            )
+            return web.json_response({"ok": True, "session_id": session_id})
+
         personality_id = await _personality_from(request)
         system_prompt = personalities.system_prompt_for(personality_id)
         try:
