@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from importlib.metadata import version
 
-from solilos_chat import compaction, marker, personalities, skills
+from solilos_chat import compaction, marker, personalities, skills, topics_store
 from solilos_chat.hermes import (
     _chat_body,
     _extract_messages,
@@ -79,6 +79,7 @@ class _FakeHermes:
         self.created = []
         self.created_prompts = []
         self.maintenance = []
+        self.ephemeral = []
         self.models = []
         self.turns = []
         self.titles = []
@@ -90,11 +91,12 @@ class _FakeHermes:
         self._store = store or []
 
     async def create_session(
-        self, uid, system_prompt=None, *, maintenance=False, model=""
+        self, uid, system_prompt=None, *, maintenance=False, ephemeral=False, model=""
     ):
         self.created.append(uid)
         self.created_prompts.append(system_prompt or "")
         self.maintenance.append(maintenance)
+        self.ephemeral.append(ephemeral)
         self.models.append(model)
         # First create is "sess-1" (existing tests assert that); later creates
         # (e.g. a compaction continuation) get distinct ids.
@@ -950,6 +952,182 @@ async def test_delete_session_removes_attachments(aiohttp_client, tmp_path):
     )
     assert resp.status == 200
     assert not (tmp_path / "s-mdopp.json").exists()
+
+
+# --- Incognito / temporary chat (#246) -------------------------------------
+
+
+_TOPICS_SCHEMA = """
+CREATE TABLE topics (
+  slug TEXT PRIMARY KEY, display_name TEXT NOT NULL, parent TEXT,
+  scope TEXT NOT NULL DEFAULT 'resident', owner_uid TEXT,
+  default_model TEXT, default_persona TEXT, color TEXT,
+  archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE session_topics (
+  session_id TEXT NOT NULL, topic_slug TEXT NOT NULL, role TEXT NOT NULL,
+  owner_uid TEXT NOT NULL, PRIMARY KEY (session_id, topic_slug)
+);
+"""
+
+
+def _topics_db(tmp_path):
+    import sqlite3
+
+    path = str(tmp_path / "solilos.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(_TOPICS_SCHEMA)
+    conn.execute(
+        "INSERT INTO topics (slug, display_name, scope, owner_uid) "
+        "VALUES ('finanzen', 'Finanzen', 'shared', NULL)"
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+async def test_ephemeral_session_created_with_temp_marker(aiohttp_client, tmp_path):
+    # An incognito first turn creates the session with the ephemeral flag set,
+    # is NOT re-titled (re-titling would re-stamp the durable [uid:] marker and
+    # surface it in the list), and carries no session_topics row.
+    db = _topics_db(tmp_path)
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        solilos_db_path=db,
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat",
+        json={"input": "ist das vertraulich?", "ephemeral": True},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    assert fake.ephemeral == [True]
+    assert fake.titles == []  # no set_title -> [temp:] marker preserved
+    # No durable topic assignment was written for the ephemeral session.
+    assert topics_store.get_session_topics(db, "sess-1", "mdopp") == {
+        "primary": None,
+        "secondary": [],
+    }
+
+
+async def test_ephemeral_turn_injects_no_persist_hint(aiohttp_client, tmp_path):
+    # Every ephemeral turn carries the guard hint telling the agent to persist
+    # nothing (suppresses auto-ingestion / memory writes at the source).
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        solilos_db_path=str(tmp_path / "solilos.db"),
+    )
+    client = await aiohttp_client(app)
+    await client.post(
+        "/api/chat",
+        json={"input": "hallo", "ephemeral": True},
+        headers={"Remote-User": "mdopp"},
+    )
+    turn = fake.turns[-1][1]
+    assert "Temporary/incognito chat" in turn
+    assert "Do NOT save notes" in turn
+    assert turn.endswith("hallo")
+
+
+async def test_ephemeral_existing_session_never_compacts(aiohttp_client, tmp_path):
+    # A turn on an over-cap ephemeral session must NOT compact: compaction would
+    # extract learnings to memory + spawn a durable [uid:] continuation, exactly
+    # the persistence incognito forbids. The turn runs on the original session.
+    store = [
+        {
+            "id": "temp-old",
+            "title": marker.temp_marker("mdopp") + "secret",
+            "input_tokens": 31000,
+            "output_tokens": 1000,
+            "messages": [],
+        }
+    ]
+    fake = _FakeHermes(store=store)
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        context_window=32768,
+        attachments_dir=str(tmp_path),
+        solilos_db_path=str(tmp_path / "solilos.db"),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat",
+        json={"input": "weiter", "session_id": "temp-old", "ephemeral": True},
+        headers={"Remote-User": "mdopp"},
+    )
+    body = await resp.json()
+    assert resp.status == 200
+    assert body["compacted"] is False
+    assert body["session_id"] == "temp-old"
+    assert fake.created == []  # no continuation session
+    assert compaction.EXTRACT_PROMPT not in [t for _, t in fake.turns]
+
+
+async def test_ephemeral_extract_to_topic_tags_the_note(aiohttp_client, tmp_path):
+    # The escape hatch: an explicit "extract to topic finanzen" turn carries the
+    # topic, so the proxy appends the #topic/<slug> stamp the ingestion skill
+    # reads — that one note is the only durable output.
+    db = _topics_db(tmp_path)
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        solilos_db_path=db,
+    )
+    client = await aiohttp_client(app)
+    await client.post(
+        "/api/chat",
+        json={
+            "input": "Erstelle hieraus eine Notiz",
+            "session_id": "temp-1",
+            "ephemeral": True,
+            "topic": "finanzen",
+        },
+        headers={"Remote-User": "mdopp"},
+    )
+    turn = fake.turns[-1][1]
+    assert "#topic/finanzen" in turn
+    assert "Finanzen" in turn  # the resolved display name labels the topic
+    # Still ephemeral: the extract did NOT write a session_topics row.
+    assert topics_store.get_session_topics(db, "temp-1", "mdopp") == {
+        "primary": None,
+        "secondary": [],
+    }
+
+
+async def test_non_ephemeral_chat_unaffected(aiohttp_client, tmp_path):
+    # A normal chat behaves exactly as before: created without the ephemeral
+    # flag, re-titled, and never carries the incognito guard hint.
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        solilos_db_path=str(tmp_path / "solilos.db"),
+    )
+    client = await aiohttp_client(app)
+    await client.post(
+        "/api/chat",
+        json={"input": "normaler chat"},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert fake.ephemeral == [False]
+    assert len(fake.titles) == 1  # re-titled
+    assert "Temporary/incognito chat" not in fake.turns[-1][1]
 
 
 def _two_user_store():

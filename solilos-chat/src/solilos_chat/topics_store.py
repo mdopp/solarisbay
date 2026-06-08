@@ -132,6 +132,15 @@ def topic_context_hint(db_path: str, session_id: str, owner_uid: str) -> str | N
     return f"[Active topic: {display} #topic/{slug}]"
 
 
+def display_name(db_path: str, slug: str) -> str | None:
+    """The topic's display_name for `slug`, or None when DB/table/row is missing.
+
+    Used by the incognito extract path (#246) to label the chosen topic; the
+    extract turn supplies a raw slug, so the proxy resolves the human name here.
+    """
+    return _display_name(db_path, slug)
+
+
 def _display_name(db_path: str, slug: str) -> str | None:
     """The topic's display_name, or None when the DB/table/row is missing."""
     if not slug or not Path(db_path).exists():

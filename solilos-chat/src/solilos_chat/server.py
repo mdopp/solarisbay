@@ -39,6 +39,17 @@ _IMAGE_PROMPT = "Bitte sieh dir dieses Bild an und verarbeite es."
 # product limit (the panel sends at most a couple of camera/upload images).
 _MAX_IMAGES = 4
 
+# Ephemeral/incognito chats (#246): the proxy prepends this to every turn so the
+# agent knows nothing is durable — it must NOT auto-ingest notes, write memory
+# facts, or otherwise persist anything unless the resident explicitly asks to
+# extract a note (which carries a topic and routes through `topic_turn_text`).
+_EPHEMERAL_HINT = (
+    "[Temporary/incognito chat: this conversation is ephemeral and will be "
+    "deleted on close. Do NOT save notes, store memory facts, or persist "
+    "anything from it. Persist ONLY if the resident explicitly asks to extract "
+    "a note (e.g. 'erstelle hieraus eine Notiz im Topic X').]"
+)
+
 
 def _version() -> str:
     """The Solilos release version, for the sidebar footer. '' if unavailable.
@@ -186,15 +197,75 @@ def build_app(
             system_prompt = personalities.system_prompt_for(defaults["default_persona"])
         return model, system_prompt, topic_slug
 
-    def topic_turn_text(text: str, uid: str, session_id: str) -> str:
-        """Prepend the active-topic context hint to a turn, when one applies.
+    async def create_turn_session(
+        uid: str,
+        topic_slug: str,
+        personality_id: object,
+        effort: str,
+        text: str,
+        ephemeral: bool,
+    ) -> str:
+        """Create the session for a first turn; return its id.
 
-        Data ingested from a topic-T chat must be stamped `#topic/<slug>` so it
-        is retrievable by topic (#243). The proxy surfaces the chat's primary
-        topic to the model as a leading system-context line; any ingestion skill
-        in the turn reads it and tags its note. Non-topic chats are untouched
-        (no hint), so nothing changes for them.
+        Ephemeral (#246): an incognito chat is created with the `[temp:]` marker
+        (kept out of the durable list, deleted on close) and is NOT bound to a
+        topic, NOT re-titled (re-titling would re-stamp the `[uid:]` marker and
+        surface it), and never has a `session_topics` row — it carries no durable
+        state. Normal chats bind topic model/persona and persist the auto-title.
         """
+        if ephemeral:
+            session_id = await hermes.create_session(
+                uid, personalities.system_prompt_for(personality_id), ephemeral=True
+            )
+            log.info(
+                "chat.session.created", uid=uid, session_id=session_id, ephemeral=True
+            )
+            return session_id
+        model, system_prompt, primary = await new_session_bindings(
+            topic_slug, personality_id, effort
+        )
+        session_id = await hermes.create_session(uid, system_prompt, model=model)
+        log.info(
+            "chat.session.created",
+            uid=uid,
+            session_id=session_id,
+            model=model,
+            topic=primary or "",
+        )
+        if primary:
+            topics_store.set_primary(solilos_db_path, session_id, primary, uid)
+        await hermes.set_title(session_id, uid, _title_from(text))
+        return session_id
+
+    def topic_turn_text(
+        text: str, uid: str, session_id: str, *, ephemeral: bool, extract_topic: str
+    ) -> str:
+        """Prepend the active-topic / ephemeral context hint to a turn.
+
+        Normal chat: data ingested from a topic-T chat must be stamped
+        `#topic/<slug>` so it is retrievable by topic (#243). The proxy surfaces
+        the chat's primary topic as a leading system-context line; any ingestion
+        skill in the turn reads it and tags its note. Non-topic chats are
+        untouched (no hint).
+
+        Ephemeral chat (#246): the session is incognito, so the proxy does NOT
+        consult `session_topics` (an ephemeral chat keeps no durable assignment)
+        and instead injects the ephemeral guard hint that tells the agent to
+        persist nothing. The one durable escape hatch is an explicit extract:
+        when the turn carries `extract_topic`, the topic stamp is appended so the
+        single note the agent writes is tagged `#topic/<slug>` — that note is the
+        only durable output of the whole conversation.
+        """
+        if ephemeral:
+            parts = [_EPHEMERAL_HINT]
+            if extract_topic:
+                display = topics_store.display_name(solilos_db_path, extract_topic)
+                label = display or extract_topic
+                parts.append(
+                    f"[Extract this to a note #topic/{extract_topic} ({label})]"
+                )
+            parts.append(text)
+            return "\n\n".join(parts)
         hint = topics_store.topic_context_hint(solilos_db_path, session_id, uid)
         return f"{hint}\n\n{text}" if hint else text
 
@@ -633,6 +704,7 @@ def build_app(
             text = _IMAGE_PROMPT
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
+        ephemeral = bool(body.get("ephemeral"))
         system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
@@ -645,27 +717,16 @@ def build_app(
         compacted = False
         try:
             if not session_id:
-                model, system_prompt, primary = await new_session_bindings(
-                    topic_slug, body.get("personality"), effort
+                session_id = await create_turn_session(
+                    uid, topic_slug, body.get("personality"), effort, text, ephemeral
                 )
-                session_id = await hermes.create_session(
-                    uid, system_prompt, model=model
-                )
-                log.info(
-                    "chat.session.created",
-                    uid=uid,
-                    session_id=session_id,
-                    model=model,
-                    topic=primary or "",
-                )
-                if primary:
-                    topics_store.set_primary(solilos_db_path, session_id, primary, uid)
-                await hermes.set_title(session_id, uid, _title_from(text))
-            else:
+            elif not ephemeral:
                 session_id, compacted = await maybe_compact(
                     uid, session_id, system_prompt
                 )
-            turn_text = topic_turn_text(text, uid, session_id)
+            turn_text = topic_turn_text(
+                text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
+            )
             reply = await hermes.chat(session_id, turn_text, images, effort)
         except HermesError:
             return web.json_response(
@@ -705,6 +766,7 @@ def build_app(
             text = _IMAGE_PROMPT
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
+        ephemeral = bool(body.get("ephemeral"))
         system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
@@ -736,23 +798,10 @@ def build_app(
         try:
             compacted = False
             if not session_id:
-                model, system_prompt, primary = await new_session_bindings(
-                    topic_slug, body.get("personality"), effort
+                session_id = await create_turn_session(
+                    uid, topic_slug, body.get("personality"), effort, text, ephemeral
                 )
-                session_id = await hermes.create_session(
-                    uid, system_prompt, model=model
-                )
-                log.info(
-                    "chat.session.created",
-                    uid=uid,
-                    session_id=session_id,
-                    model=model,
-                    topic=primary or "",
-                )
-                if primary:
-                    topics_store.set_primary(solilos_db_path, session_id, primary, uid)
-                await hermes.set_title(session_id, uid, _title_from(text))
-            else:
+            elif not ephemeral:
                 session_id, compacted = await maybe_compact(
                     uid, session_id, system_prompt
                 )
@@ -764,7 +813,9 @@ def build_app(
             # user message; we hold the pixels it drops) so history re-renders
             # the thumbnail after a refresh (#202).
             attachments.add(session_id, images)
-            turn_text = topic_turn_text(text, uid, session_id)
+            turn_text = topic_turn_text(
+                text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
+            )
             stream = hermes.chat_stream(session_id, turn_text, images, effort)
             async for event in stream:
                 if cancel.is_set():

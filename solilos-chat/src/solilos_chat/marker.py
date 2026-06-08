@@ -28,6 +28,11 @@ _PREFIX_RE = re.compile(r"^\[uid:([0-9a-f]{8})\]\s")
 # never match the household `[uid:...]` filter — the ServiceBay-maintenance
 # embed is isolated from the per-resident session list by construction.
 _MAINT_PREFIX_RE = re.compile(r"^\[maint:([0-9a-f]{8})\]\s")
+# Temporary/incognito sessions carry a distinct `[temp:<hash>] ` prefix (#246):
+# like the maintenance marker it lives outside the `[uid:...]` namespace, so an
+# ephemeral chat never surfaces in the durable per-resident session list — it
+# exists only for the open tab and is deleted on close.
+_TEMP_PREFIX_RE = re.compile(r"^\[temp:([0-9a-f]{8})\]\s")
 
 
 def uid_hash(uid: str) -> str:
@@ -49,6 +54,21 @@ def maint_marker(uid: str) -> str:
     filters on.
     """
     return f"[maint:{uid_hash(uid)}] "
+
+
+def temp_marker(uid: str) -> str:
+    """The temporary/incognito-session prefix for `uid`, e.g. `[temp:1a2b3c4d] ` (#246).
+
+    A distinct marker class from `marker_for`: ephemeral chats must never appear
+    in the durable household session list, so they are tagged out of the
+    `[uid:...]` namespace `has_marker` filters on — just like maintenance.
+    """
+    return f"[temp:{uid_hash(uid)}] "
+
+
+def is_temp(title: str) -> bool:
+    """True when `title` carries a `[temp:<hash>] ` marker (an ephemeral chat)."""
+    return _TEMP_PREFIX_RE.match(title) is not None
 
 
 def embed(uid: str, title: str) -> str:
