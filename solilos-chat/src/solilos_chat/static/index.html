@@ -937,6 +937,11 @@
       var reasoningSel = document.getElementById("reasoning-mode");
       var adminBadge = document.getElementById("admin-badge");
       var sessionId = null;
+      // Topic chosen in the picker before the first message of a NEW chat
+      // (#242). There is no session yet to write `session_topics` against, so
+      // we hold the slug and send it with the first turn; the proxy binds the
+      // topic's default model/persona at session create and persists it.
+      var pendingTopic = "";
       var slash = { refresh: function () {}, handleKey: function () { return false; } };
 
       // ---- Topics (#241): primary topic picker + secondary tags in the header,
@@ -986,8 +991,13 @@
       }
 
       function syncSessionTopics() {
-        if (!sessionId) { topicCtrl.hidden = true; return; }
         topicCtrl.hidden = false;
+        if (!sessionId) {
+          // New chat: the picker reflects the pending pre-assignment (#242).
+          topicSel.value = pendingTopic;
+          renderTopicTags([]);
+          return;
+        }
         fetch("/api/sessions/" + encodeURIComponent(sessionId) + "/topics")
           .then(function (r) { return r.ok ? r.json() : { primary: null, secondary: [] }; })
           .then(function (j) {
@@ -1012,6 +1022,11 @@
       }
 
       topicSel.addEventListener("change", function () {
+        if (!sessionId) {
+          // No session yet: stash the choice; the first turn binds it (#242).
+          pendingTopic = topicSel.value || "";
+          return;
+        }
         if (topicSel.value) { setSessionTopic("primary", topicSel.value); }
       });
 
@@ -1282,6 +1297,7 @@
 
       function streamChat(text, msg, images, signal) {
         var payload = { input: text, session_id: sessionId, personality: currentPersonality(), reasoning: currentReasoning() };
+        if (!sessionId && pendingTopic) payload.topic = pendingTopic;
         if (images && images.length) payload.images = images;
         return fetch("/api/chat/stream", {
           method: "POST",
@@ -1296,7 +1312,7 @@
           function handle(event, data) {
             var d = {};
             try { d = JSON.parse(data); } catch (e) {}
-            if (event === "session") { if (d.session_id) { sessionId = d.session_id; syncSessionTopics(); } }
+            if (event === "session") { if (d.session_id) { sessionId = d.session_id; pendingTopic = ""; syncSessionTopics(); } }
             else if (event === "delta") { if (d.text) msg.append(d.text); }
             else if (event === "reasoning") { if (d.text) msg.setReasoning(d.text); }
             else if (event === "tool") {
@@ -1829,6 +1845,7 @@
       function newSession() {
         if (send.disabled) return;
         sessionId = null;
+        pendingTopic = "";
         clearLog();
         loadSessions();
         syncSessionTopics();

@@ -75,7 +75,19 @@ tags. This keeps routing and persona assignment deterministic.
 Assigning a topic to a chat sets the chat's default model and persona (e.g.
 `household` → e2b + household soul; a project topic → operator-chosen
 model/persona). This is the mechanism that ties adaptive model routing (#187)
-to the pinned-persona pattern (#229/#237).
+to the pinned-persona pattern (#229/#237). The topic's `default_model` /
+`default_persona` each fall back independently — to the Schnell/Gründlich
+routing model and the session's normal persona — when the topic leaves that
+column null.
+
+*Binding is at session create.* Hermes binds model + system_prompt only when a
+session is born (the latency bundle — the model can't switch per-turn), so the
+topic default applies when a **new** chat is started under a topic: the picker
+selects a topic before the first message, or a pinned topic-chat (#237) starts
+pre-assigned. Changing the primary topic on an **existing** session updates the
+chip/label and future `#topic/` ingestion tags but does **not** retroactively
+rebind the live session's model/persona — those hold until the next new chat.
+To run a topic under its model/persona, start a new chat in it.
 
 **D3 — scope default is per-resident.**
 Per-resident isolation is the baseline (#153). A topic can be widened to

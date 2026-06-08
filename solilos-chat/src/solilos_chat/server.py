@@ -151,6 +151,33 @@ def build_app(
             return new_id, True
         return session_id, False
 
+    async def new_session_bindings(
+        topic_slug: str, personality_id: object, effort: str
+    ) -> tuple[str, str, str | None]:
+        """Resolve (model, system_prompt, primary_topic) for a session at create.
+
+        D2 (#242): a chat's primary topic carries a default model + persona, and
+        Hermes binds both only at session create (the latency bundle — model
+        can't switch per-turn). So when a new chat is started under a topic (the
+        picker selects one before the first message, or a pinned topic-chat
+        #237 starts pre-assigned), the topic's `default_model` /
+        `default_persona` win; each falls back independently to the normal
+        Schnell/Gründlich routing model / the body's personality overlay when
+        the topic leaves it null. Returns the slug to persist as primary, or
+        None when no topic was supplied.
+        """
+        routed_model = reasoning.model_for_effort(
+            effort, fast_model=fast_model, thorough_model=thorough_model
+        )
+        system_prompt = personalities.system_prompt_for(personality_id)
+        if not topic_slug:
+            return routed_model, system_prompt, None
+        defaults = topics_store.topic_defaults(solilos_db_path, topic_slug)
+        model = defaults["default_model"] or routed_model
+        if defaults["default_persona"]:
+            system_prompt = personalities.system_prompt_for(defaults["default_persona"])
+        return model, system_prompt, topic_slug
+
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
 
@@ -551,6 +578,7 @@ def build_app(
         if not text:
             text = _IMAGE_PROMPT
         session_id = str(body.get("session_id") or "")
+        topic_slug = str(body.get("topic") or "").strip()
         system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
@@ -563,8 +591,8 @@ def build_app(
         compacted = False
         try:
             if not session_id:
-                model = reasoning.model_for_effort(
-                    effort, fast_model=fast_model, thorough_model=thorough_model
+                model, system_prompt, primary = await new_session_bindings(
+                    topic_slug, body.get("personality"), effort
                 )
                 session_id = await hermes.create_session(
                     uid, system_prompt, model=model
@@ -574,7 +602,10 @@ def build_app(
                     uid=uid,
                     session_id=session_id,
                     model=model,
+                    topic=primary or "",
                 )
+                if primary:
+                    topics_store.set_primary(solilos_db_path, session_id, primary, uid)
                 await hermes.set_title(session_id, uid, _title_from(text))
             else:
                 session_id, compacted = await maybe_compact(
@@ -618,6 +649,7 @@ def build_app(
         if not text:
             text = _IMAGE_PROMPT
         session_id = str(body.get("session_id") or "")
+        topic_slug = str(body.get("topic") or "").strip()
         system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
@@ -649,8 +681,8 @@ def build_app(
         try:
             compacted = False
             if not session_id:
-                model = reasoning.model_for_effort(
-                    effort, fast_model=fast_model, thorough_model=thorough_model
+                model, system_prompt, primary = await new_session_bindings(
+                    topic_slug, body.get("personality"), effort
                 )
                 session_id = await hermes.create_session(
                     uid, system_prompt, model=model
@@ -660,7 +692,10 @@ def build_app(
                     uid=uid,
                     session_id=session_id,
                     model=model,
+                    topic=primary or "",
                 )
+                if primary:
+                    topics_store.set_primary(solilos_db_path, session_id, primary, uid)
                 await hermes.set_title(session_id, uid, _title_from(text))
             else:
                 session_id, compacted = await maybe_compact(

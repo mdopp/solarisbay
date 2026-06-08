@@ -86,6 +86,32 @@ def get_session_topics(db_path: str, session_id: str, owner_uid: str) -> dict[st
     return {"primary": primary, "secondary": secondary}
 
 
+def topic_defaults(db_path: str, slug: str) -> dict[str, str | None]:
+    """A topic's `{default_model, default_persona}` (D2), both possibly None.
+
+    Used at session create to bind the topic's model + persona (#242). Returns
+    `{"default_model": None, "default_persona": None}` when the DB/table/row is
+    missing — the caller then falls back to the normal routing/persona.
+    """
+    empty: dict[str, str | None] = {"default_model": None, "default_persona": None}
+    if not slug or not Path(db_path).exists():
+        return empty
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT default_model, default_persona FROM topics WHERE slug = ?",
+                (slug,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return empty
+    if row is None:
+        return empty
+    return {
+        "default_model": row["default_model"],
+        "default_persona": row["default_persona"],
+    }
+
+
 def primary_topics_for(
     db_path: str, session_ids: list[str], owner_uid: str
 ) -> dict[str, str]:
