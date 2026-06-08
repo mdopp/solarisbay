@@ -112,6 +112,40 @@ def topic_defaults(db_path: str, slug: str) -> dict[str, str | None]:
     }
 
 
+def topic_context_hint(db_path: str, session_id: str, owner_uid: str) -> str | None:
+    """A machine-readable system-context line for the chat's primary topic.
+
+    The proxy prepends this to each turn the agent sees so any ingestion skill
+    running in the turn knows which topic to stamp (`#topic/<slug>`, the
+    architecture's data->topic tagging convention). Returns None when the chat
+    has no primary topic (non-topic chats stay untouched) or the DB is missing.
+
+    Shape: `[Active topic: <display_name> #topic/<slug>]` — the `#topic/<slug>`
+    token is what the ingestion skills read; the display name is for the model's
+    benefit. The slug may be hierarchical (e.g. `projekt/wintergarten`).
+    """
+    assigned = get_session_topics(db_path, session_id, owner_uid)
+    slug = assigned["primary"]
+    if not slug:
+        return None
+    display = _display_name(db_path, slug) or slug
+    return f"[Active topic: {display} #topic/{slug}]"
+
+
+def _display_name(db_path: str, slug: str) -> str | None:
+    """The topic's display_name, or None when the DB/table/row is missing."""
+    if not slug or not Path(db_path).exists():
+        return None
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT display_name FROM topics WHERE slug = ?", (slug,)
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row["display_name"] if row else None
+
+
 def primary_topics_for(
     db_path: str, session_ids: list[str], owner_uid: str
 ) -> dict[str, str]:

@@ -178,6 +178,18 @@ def build_app(
             system_prompt = personalities.system_prompt_for(defaults["default_persona"])
         return model, system_prompt, topic_slug
 
+    def topic_turn_text(text: str, uid: str, session_id: str) -> str:
+        """Prepend the active-topic context hint to a turn, when one applies.
+
+        Data ingested from a topic-T chat must be stamped `#topic/<slug>` so it
+        is retrievable by topic (#243). The proxy surfaces the chat's primary
+        topic to the model as a leading system-context line; any ingestion skill
+        in the turn reads it and tags its note. Non-topic chats are untouched
+        (no hint), so nothing changes for them.
+        """
+        hint = topics_store.topic_context_hint(solilos_db_path, session_id, uid)
+        return f"{hint}\n\n{text}" if hint else text
+
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
 
@@ -611,7 +623,8 @@ def build_app(
                 session_id, compacted = await maybe_compact(
                     uid, session_id, system_prompt
                 )
-            reply = await hermes.chat(session_id, text, images, effort)
+            turn_text = topic_turn_text(text, uid, session_id)
+            reply = await hermes.chat(session_id, turn_text, images, effort)
         except HermesError:
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
@@ -709,7 +722,8 @@ def build_app(
             # user message; we hold the pixels it drops) so history re-renders
             # the thumbnail after a refresh (#202).
             attachments.add(session_id, images)
-            stream = hermes.chat_stream(session_id, text, images, effort)
+            turn_text = topic_turn_text(text, uid, session_id)
+            stream = hermes.chat_stream(session_id, turn_text, images, effort)
             async for event in stream:
                 if cancel.is_set():
                     # Closing the upstream generator aborts the Hermes/Ollama

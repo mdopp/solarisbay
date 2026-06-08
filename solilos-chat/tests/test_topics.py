@@ -382,6 +382,75 @@ async def test_changing_topic_mid_session_does_not_rebind(aiohttp_client, tmp_pa
     assert fake.models == ["gemma4:e2b"]  # unchanged — still one create, e2b
 
 
+def test_topic_context_hint_for_primary(tmp_path):
+    db = _db(tmp_path)
+    topics_store.set_primary(db, "sess-1", "projekt/wintergarten", "mdopp")
+    hint = topics_store.topic_context_hint(db, "sess-1", "mdopp")
+    # Machine-readable #topic/<slug> token (hierarchical slug) + display name.
+    assert hint == "[Active topic: Wintergarten #topic/projekt/wintergarten]"
+
+
+def test_topic_context_hint_none_without_topic(tmp_path):
+    db = _db(tmp_path)
+    assert topics_store.topic_context_hint(db, "sess-1", "mdopp") is None
+
+
+def test_topic_context_hint_scoped_per_resident(tmp_path):
+    db = _db(tmp_path)
+    topics_store.set_primary(db, "sess-1", "household", "mdopp")
+    # lena does not see mdopp's assignment → no hint on the same session id.
+    assert topics_store.topic_context_hint(db, "sess-1", "lena") is None
+
+
+def test_topic_context_hint_missing_db(tmp_path):
+    assert (
+        topics_store.topic_context_hint(str(tmp_path / "no.db"), "s", "mdopp") is None
+    )
+
+
+async def test_turn_carries_topic_hint_when_topic_active(aiohttp_client, tmp_path):
+    # A turn in a topic chat gets the #topic/<slug> context line prepended so an
+    # ingestion skill in the turn knows which topic to stamp (#243).
+    db = _db(tmp_path)
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solilos_db_path=db,
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat",
+        json={"input": "merk dir das", "topic": "projekt/wintergarten"},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    sent = fake.turns[-1][1]
+    assert sent.startswith("[Active topic: Wintergarten #topic/projekt/wintergarten]")
+    assert sent.endswith("merk dir das")
+
+
+async def test_turn_has_no_hint_without_topic(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solilos_db_path=db,
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat",
+        json={"input": "merk dir das"},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    # No active topic → the turn text is the user input verbatim, no hint.
+    assert fake.turns[-1][1] == "merk dir das"
+
+
 async def test_session_list_annotates_primary_topic(aiohttp_client, tmp_path):
     from solilos_chat import marker
 
