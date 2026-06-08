@@ -6,7 +6,7 @@ metadata:
     app: ollama
   annotations:
     servicebay.label: "AI Engine (Ollama)"
-    servicebay.schema-version: "3"
+    servicebay.schema-version: "4"
     servicebay.ports: "{{OLLAMA_PORT}}/tcp"
     # No `servicebay.tier` — Ollama is opt-in AI infrastructure, not a
     # platform foundation. Bind it to 127.0.0.1 by default (see
@@ -46,6 +46,10 @@ spec:
     # per-request num_ctx — only this env-set default actually applies.
     - name: OLLAMA_CONTEXT_LENGTH
       value: "{{OLLAMA_CONTEXT_LENGTH}}"
+    # Flash attention: negligible speed change on this GPU class but
+    # harmless, and the prerequisite for optional KV-cache quant.
+    - name: OLLAMA_FLASH_ATTENTION
+      value: "{{OLLAMA_FLASH_ATTENTION}}"
     # GPU passthrough (CDI). OLLAMA_GPU_PASSTHROUGH=yes renders the
     # resources block below. (Blank does not render it, but post-deploy
     # still auto-engages the GPU when /etc/cdi/nvidia.yaml exists — see

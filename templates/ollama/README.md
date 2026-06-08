@@ -34,12 +34,27 @@ networking.
   want a vision backend for Solilos's `media-ingestion-multimodal` skill.
   Suggested non-default tags: `qwen2.5vl:7b`, `llava:13b`, `bakllava:7b`.
 - `OLLAMA_CONTEXT_LENGTH` — Ollama's default load context window, in
-  tokens. Default `131072` (gemma4:12b's full native context, ~6.5 GB
-  VRAM, 100% GPU). Forces the size models load at so Hermes' 4157-token
-  system prompt isn't truncated to a 1-token reply by Ollama's stock
-  4096 default (#146 — the `/v1` endpoint ignores per-request
-  `num_ctx`, so only this env-set default lands). Tune down only for a
-  larger model that won't fit the full window.
+  tokens. Default `32768`. gemma4:12b's full native context is actually
+  `262144`, but that's far more than a household assistant needs and the
+  window costs VRAM directly. 32768 is the smallest window that
+  comfortably covers Hermes' ~4157-token system prompt plus a long
+  conversation; it loads gemma4:12b 100% on a 16 GB GPU at **~8.95 GB**
+  (vs ~10.3 GB at 131072), leaving ~6.6 GB headroom for the embedding
+  model — and it avoids the eviction race at an oversized window that was
+  silently bouncing the box down to `gemma4:e2b`. Forces the load size so
+  Hermes' system prompt isn't truncated to a 1-token reply by Ollama's
+  stock 4096 default (#146 — the `/v1` endpoint ignores per-request
+  `num_ctx`, so only this env-set default lands). Tune up only if you
+  genuinely need a longer context AND have the VRAM.
+- `OLLAMA_FLASH_ATTENTION` — `1` (on) / `0` (off). Default `1`. Enables
+  Ollama's flash-attention kernel: negligible speed change on this GPU
+  class but harmless, and the prerequisite for optional KV-cache
+  quantization. Wired on both the `.kube` and the GPU `.container` paths.
+- `OLLAMA_EMBED_MODEL` — dedicated embedding model, pre-pulled at install
+  so it stays resident alongside the chat model. Default
+  `nomic-embed-text` (~274 MB). **Embeddings/RAG must target this tag,
+  never the chat model** (see *Embeddings / RAG* below) — this is the
+  #214 serialization fix.
 - `OLLAMA_GPU_PASSTHROUGH` — leave blank for CPU; set non-blank
   for NVIDIA GPU passthrough via CDI.
 - `OLLAMA_READINESS_TIMEOUT_SECONDS` — post-deploy model-pull
@@ -87,7 +102,9 @@ API exposes every loaded model to anyone who reaches it.
    is ready before the operator's first request.
 3. If `OLLAMA_VISION_MODEL` is set, POSTs a second `/api/pull` for
    that model (sequential to keep network/disk pressure predictable).
-4. Logs progress and emits a final "ready" line.
+4. POSTs `/api/pull` for `OLLAMA_EMBED_MODEL` so the embedding model is
+   resident (skipped if it's already the default/an extra).
+5. Logs progress and emits a final "ready" line.
 
 Idempotent — a second deploy with the same models finds them already
 cached and skips the pulls.
@@ -130,6 +147,36 @@ to a `<details>` disclosure (default), or hide it. The preference is
 per-browser and never round-trips to Ollama, so no template variable
 gates it. If you switch to a non-reasoning tag, no `<thinking>` blocks
 are produced and the toggle is simply a no-op.
+
+## Embeddings / RAG
+
+`OLLAMA_EMBED_MODEL` (default `nomic-embed-text`) is pre-pulled at
+install so an embedding model is always resident. **Point all
+embedding/RAG calls at this tag — never at the chat model.** Ollama
+runs a separate `llama-server` runner per loaded model, and runners
+serve requests in parallel *across* models but serialize *within* a
+model. Measured on the box (RTX 2000 Ada, gemma4:12b Q4_K_M, GPU-bound
+~22.9 tok/s): an embed request issued against `nomic-embed-text`
+*during* a 40 s gemma4:12b generation returned in **1.79 s with no
+stall**, because it landed on the embed runner. A second request to the
+chat model, by contrast, would have queued behind the first.
+
+This is the #214 serialization fix, and it's deliberately the *only*
+lever pulled:
+
+- **Do NOT raise `OLLAMA_NUM_PARALLEL`** — it multiplies KV-cache VRAM
+  per loaded model and slows concurrent generations.
+- **Do NOT run a second Ollama** — a distinct embed tag already gets its
+  own runner inside the one server.
+
+The `32768` default context plus the small embed model fit the chat
+model + embeddings + headroom on a 16 GB GPU (gemma4:12b ~8.95 GB,
+`nomic-embed-text` a few hundred MB, leaving ~6.6 GB).
+
+> **Speculative decoding is not available via Ollama CUDA serving as of
+> 0.30.6** — there is no API/Modelfile/env knob for a draft model on
+> CUDA, and gemma4's native MTP is MLX/Mac-only. No draft-model config
+> is shipped here on purpose.
 
 ## Storage
 

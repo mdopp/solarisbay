@@ -26,8 +26,18 @@
   },
   "OLLAMA_CONTEXT_LENGTH": {
     "type": "text",
-    "description": "Ollama's DEFAULT load context window (tokens) — forces the size a model is loaded at, regardless of per-request hints. Fixes Hermes' 1-token truncation loop (#146): Hermes' system prompt is 4157 tokens, larger than Ollama's stock 4096 default, leaving ~1 token for output (finish_reason='length' every turn). Hermes tries to inject `options.num_ctx`, but Ollama's `/v1/chat/completions` endpoint silently ignores per-request num_ctx — only this env-set DEFAULT actually lands. Default `131072` is gemma4:12b's full native context, which still loads 100% on GPU at only ~6.5 GB VRAM. Tune down only if you switch to a larger model that won't fit the full window.",
-    "default": "131072"
+    "description": "Ollama's DEFAULT load context window (tokens) — forces the size a model is loaded at, regardless of per-request hints. Fixes Hermes' 1-token truncation loop (#146): Hermes' system prompt is 4157 tokens, larger than Ollama's stock 4096 default, leaving ~1 token for output (finish_reason='length' every turn). Hermes tries to inject `options.num_ctx`, but Ollama's `/v1/chat/completions` endpoint silently ignores per-request num_ctx — only this env-set DEFAULT actually lands. Default `32768`: gemma4:12b's full native context is 262144, but that's far more than a household assistant needs and the window directly costs VRAM. 32768 is the smallest window that comfortably covers Hermes' ~4157-token system prompt plus a long conversation, loads gemma4:12b 100% on a 16 GB GPU at ~8.95 GB (vs ~10.3 GB at 131072), and leaves ~6.6 GB headroom for the embedding model — which also avoids the eviction race at an oversized window that was silently bouncing the box to gemma4:e2b. Tune up only if you genuinely need a longer context AND have the VRAM.",
+    "default": "32768"
+  },
+  "OLLAMA_FLASH_ATTENTION": {
+    "type": "text",
+    "description": "Enables Ollama's flash-attention kernel (`1` on, `0` off). Speed change is negligible on this GPU class (RTX 2000 Ada) but it's harmless and is the prerequisite for optional KV-cache quantization, so it's on by default.",
+    "default": "1"
+  },
+  "OLLAMA_EMBED_MODEL": {
+    "type": "text",
+    "description": "Dedicated embedding model, pre-pulled at install so it's resident alongside the chat model. Embeddings/RAG must target THIS tag, never OLLAMA_DEFAULT_MODEL: Ollama runs a separate llama-server runner per model, so an embed request to a different model runs in PARALLEL with a chat generation (measured: an embed during a 40s 12b generation returned in 1.79s with no stall), whereas a second request to the chat model SERIALIZES behind the first. Do NOT raise OLLAMA_NUM_PARALLEL (it multiplies KV-cache VRAM and slows concurrent gens) and do NOT run a second Ollama — a distinct embed tag is the whole fix (#214). Default `nomic-embed-text` (~274 MB).",
+    "default": "nomic-embed-text"
   },
   "OLLAMA_READINESS_TIMEOUT_SECONDS": {
     "type": "text",

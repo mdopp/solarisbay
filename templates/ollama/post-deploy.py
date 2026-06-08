@@ -327,10 +327,13 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
     """Render the `.container` Quadlet text for the GPU fixup. Mirrors the
     .yml's runtime contract (image, OLLAMA_HOST, hostNetwork, the volume
     mount) plus AddDevice + SecurityLabelDisable for CDI passthrough, and
-    OLLAMA_CONTEXT_LENGTH so the GPU path honors the same default load
-    context as the .kube render path (#146). Kept pure so the
-    needs-rewrite comparison and the write share one source of truth."""
-    context_length = env("OLLAMA_CONTEXT_LENGTH", "131072")
+    OLLAMA_CONTEXT_LENGTH + OLLAMA_FLASH_ATTENTION so the GPU path honors
+    the same defaults as the .kube render path (#146 — the .kube env never
+    reaches the GPU runtime, so anything required on the box has to be
+    rendered here too). Kept pure so the needs-rewrite comparison and the
+    write share one source of truth."""
+    context_length = env("OLLAMA_CONTEXT_LENGTH", "32768")
+    flash_attention = env("OLLAMA_FLASH_ATTENTION", "1")
     return (
         "[Unit]\n"
         "Description=Ollama (Local LLM Server, GPU passthrough #1026 fixup)\n"
@@ -346,6 +349,9 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
         "# per-request num_ctx, so only this env-set default lands — without\n"
         "# it the GPU Quadlet stays at 4096 and Hermes loops at 1 token (#146).\n"
         f"Environment=OLLAMA_CONTEXT_LENGTH={context_length}\n"
+        "# Flash attention — negligible speed change here but harmless and\n"
+        "# the prerequisite for optional KV-cache quant.\n"
+        f"Environment=OLLAMA_FLASH_ATTENTION={flash_attention}\n"
         "# CDI device — verified working on rootless podman 5.8 + nvidia-ctk\n"
         "# 1.19. podman kube play silently drops this when expressed as\n"
         "# resources.limits.nvidia.com/gpu, which is why the .yml-based\n"
@@ -494,6 +500,7 @@ def main() -> int:
     extra_models_raw = env("OLLAMA_EXTRA_MODELS", "")
     extra_models = [m.strip() for m in extra_models_raw.split(",") if m.strip()]
     vision_model = env("OLLAMA_VISION_MODEL", "")
+    embed_model = env("OLLAMA_EMBED_MODEL", "nomic-embed-text")
     timeout = int(env("OLLAMA_READINESS_TIMEOUT_SECONDS", "600"))
     sb_api = env("SB_API_URL", "http://localhost:3000")
     sb_token = env("SB_API_TOKEN", "")
@@ -582,6 +589,21 @@ def main() -> int:
                 model=vision_model,
             )
 
+    # Dedicated embedding model (#214): a distinct tag gets its own
+    # llama-server runner, so embed/RAG requests run in parallel with a
+    # chat generation instead of serializing behind it. Embeddings must
+    # target this tag, never the chat model.
+    if embed_model and embed_model not in (model, *extra_models):
+        jlog("info", "ollama:pull", "starting embed-model pull", model=embed_model)
+        if not pull_model(ollama_url, embed_model, stall_sec=timeout):
+            jlog(
+                "warn",
+                "ollama:pull",
+                'embed-model pull did not complete; embeddings/RAG will have no resident embed model. Pull manually with `curl -X POST http://127.0.0.1:%s/api/pull -d \'{"name":"%s"}\'`.'
+                % (port, embed_model),
+                model=embed_model,
+            )
+
     register_http_check(sb_api, sb_token, ollama_url)
 
     print(f"✅ Ollama is running on 127.0.0.1:{port}. Default model: {model}.")
@@ -589,6 +611,10 @@ def main() -> int:
         print(f"   Extra models pulled: {', '.join(extra_models)}.")
     if vision_model:
         print(f"   Vision model: {vision_model} (multimodal-capable).")
+    if embed_model:
+        print(
+            f"   Embedding model: {embed_model} (target this for RAG, not the chat model)."
+        )
     print(
         f"   Other ServiceBay templates (hermes, solbay) can reach it at http://127.0.0.1:{port}."
     )

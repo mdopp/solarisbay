@@ -1,3 +1,9 @@
+## v4
+
+- `OLLAMA_CONTEXT_LENGTH` default lowered from `131072` to `32768` (#214). gemma4:12b's true native context is `262144` (not 131072); 32768 covers Hermes' ~4157-token system prompt plus a long conversation, loads gemma4:12b 100% on a 16 GB GPU at ~8.95 GB (vs ~10.3 GB at 131072), leaves ~6.6 GB headroom for the embedding model, and avoids the eviction race at an oversized window that was bouncing the box to `gemma4:e2b`.
+- New `OLLAMA_FLASH_ATTENTION` variable (default `1`) — enables flash attention (prerequisite for optional KV-cache quant; negligible speed change on this GPU). Wired on both the `.kube` and GPU `.container` render paths.
+- New `OLLAMA_EMBED_MODEL` variable (default `nomic-embed-text`), pre-pulled at install. Embeddings/RAG must target this tag, never the chat model: a distinct model gets its own llama-server runner that serves in parallel with a chat generation, so embeds don't serialize behind it (#214). Do NOT raise `OLLAMA_NUM_PARALLEL` or run a second Ollama.
+
 ## v3
 
 - `OLLAMA_DEFAULT_MODEL` default bumped to `gemma4:12b` (newer 12B parameter natively multimodal model, with `gemma4:e2b` supported as a lighter alternative).
