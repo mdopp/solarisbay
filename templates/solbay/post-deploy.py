@@ -751,10 +751,13 @@ def register_chat_compactor_cron() -> None:
         "Compact stale, long chat sessions. This is the unattended nightly run "
         "— no one is present, so do not ask for input. For each stale long "
         "conversation: FIRST extract its durable learnings (facts, decisions, "
-        "household preferences, device/room/entity mappings, people, routines) "
-        "into your memory with fact_store, THEN summarize the transcript so the "
-        "chat can continue in a small context. Never delete a chat; the original "
-        "transcript stays. If nothing is stale enough to compact, do nothing.",
+        "household preferences, people, routines) into your memory with "
+        "fact_store — but SKIP pure device-control, tool-call, or trivial "
+        "confirmation turns, and do NOT memorise device/room/entity mappings or "
+        "device state (those live in Home Assistant). THEN summarize the "
+        "transcript so the chat can continue in a small context. Never delete a "
+        "chat; the original transcript stays. If nothing is stale enough to "
+        "compact, do nothing.",
     )
 
 
