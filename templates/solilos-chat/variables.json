@@ -39,8 +39,8 @@
   },
   "CONTEXT_WINDOW": {
     "type": "text",
-    "description": "Model context window in tokens, shown by the chat's /context command. Match the ollama template's OLLAMA_CONTEXT_LENGTH (default 131072).",
-    "default": "131072"
+    "description": "Model context window in tokens. Shown by the chat's /context command and used as the chat-compaction cap (#210): a chat is auto-compacted near ~90% of this. Match the ollama template's OLLAMA_CONTEXT_LENGTH (default 32768).",
+    "default": "32768"
   },
   "LOGOUT_URL": {
     "type": "text",

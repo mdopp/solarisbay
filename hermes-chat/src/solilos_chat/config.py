@@ -26,6 +26,7 @@ class Settings:
     config_agent_url: str
     logout_url: str
     context_window: int
+    compaction_threshold: float
     attachments_dir: str
     frame_ancestors: str
 
@@ -68,6 +69,11 @@ class Settings:
             # Model context window (tokens) shown by the /context command.
             # Matches the ollama template's OLLAMA_CONTEXT_LENGTH default.
             context_window=int(os.environ.get("CONTEXT_WINDOW", "131072")),
+            # Fraction of the context window at which a chat is auto-compacted
+            # (#210): extract durable learnings to memory, then continue in a
+            # fresh small-context session. ~0.90 leaves headroom so a turn never
+            # truncates while the two compaction turns run.
+            compaction_threshold=float(os.environ.get("COMPACTION_THRESHOLD", "0.90")),
             # Host-mounted dir where the proxy persists image attachments
             # Hermes drops (the one stateful store, #202).
             attachments_dir=os.environ.get("ATTACHMENTS_DIR", "/data/attachments"),

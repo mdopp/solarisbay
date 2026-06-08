@@ -1,5 +1,29 @@
 # Hermes — template changelog
 
+## Unreleased — #230
+
+The post-deploy now writes `agent.disabled_toolsets` into `config.yaml` to
+shrink the cold-cache prefill latency floor. Hermes enables ~15 built-in
+toolsets for every session by default; their cumulative tool-definition
+schemas — not, as first suspected, an inlined Home Assistant entity-state
+dump — are the dominant chunk of the ~29k-token system prompt (the
+`homeassistant` toolset only registers `ha_list_entities` / `ha_get_state` /
+`ha_list_services` / `ha_call_service` and fetches state lazily, and the
+state-pushing HA *gateway* is `watch_*`-gated and off by default). We
+blacklist four toolsets the household assistant never uses — `browser`
+(engine already `disabled`), `code_execution` (`dynamic-skills` forbids
+running generated code), `image_gen` (we ingest images via vision, never
+generate), and `delegation` (no multi-agent path) — so their schemas (and
+associated prompt guidance) drop out of every prefill. Capabilities the
+household relies on are kept: `homeassistant`, `skills`, `memory`, `web`,
+`vision`, `tts`, `todo`, `file` + `terminal` (skills write notes and ripgrep
+the vault through these), `cronjob`, `session_search`. No schema-version
+bump — config.yaml is rewritten on every deploy, so there is no migration.
+
+No knob exists to disable a (nonexistent) HA state dump; further prompt
+shrink beyond toolset trimming (the built-in default system prompt itself,
+per-tool schema verbosity) is Hermes-internal — an upstream/Hermes-config ask.
+
 ## v3 — #940
 
 Solilos's dynamic skill compiler now drafts pending skills into a separate

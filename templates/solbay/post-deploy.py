@@ -14,9 +14,9 @@ What it does
    the bearer either way works as the strict superset.
 
 1b. **Register the periodic crons** via Hermes' `POST /api/jobs` — the daily
-   family-chronicle (#83) and the weekly troubleshooting-KB problem-summarizer
-   (#182) — idempotent by job name. Over HTTP (as the hermes user) so the
-   cron DB stays correctly owned.
+   family-chronicle (#83), the weekly troubleshooting-KB problem-summarizer
+   (#182), and the nightly chat-compactor (#210) — idempotent by job name. Over
+   HTTP (as the hermes user) so the cron DB stays correctly owned.
 
 2. **Read `config.yaml`** — the file ServiceBay's `hermes` template's
    post-deploy wrote with the `model:` block. Read via `podman exec`
@@ -659,6 +659,7 @@ def collect_mcp_servers() -> list[tuple[str, str, str]]:
 
 CHRONICLE_JOB_NAME = "sol-daily-chronicle"
 PROBLEM_SUMMARIZER_JOB_NAME = "sol-problem-summarizer"
+CHAT_COMPACTOR_JOB_NAME = "sol-chat-compactor"
 
 
 def _register_cron(name: str, schedule: str, prompt: str) -> None:
@@ -739,11 +740,30 @@ def register_problem_summarizer_cron() -> None:
     )
 
 
+def register_chat_compactor_cron() -> None:
+    """Register the nightly chat-compaction cron job via Hermes' jobs API
+    (#210). The overnight half of compaction: it extracts durable learnings to
+    memory then summarizes stale long chats. The per-turn hard-cap trigger is
+    handled live by the chat backend, not here."""
+    _register_cron(
+        CHAT_COMPACTOR_JOB_NAME,
+        "15 4 * * *",
+        "Compact stale, long chat sessions. This is the unattended nightly run "
+        "— no one is present, so do not ask for input. For each stale long "
+        "conversation: FIRST extract its durable learnings (facts, decisions, "
+        "household preferences, device/room/entity mappings, people, routines) "
+        "into your memory with fact_store, THEN summarize the transcript so the "
+        "chat can continue in a small context. Never delete a chat; the original "
+        "transcript stays. If nothing is stale enough to compact, do nothing.",
+    )
+
+
 def main() -> int:
     init_env()
     wait_for_hermes()
     register_chronicle_cron()
     register_problem_summarizer_cron()
+    register_chat_compactor_cron()
     servers = collect_mcp_servers()
     if not merge_config_yaml(servers):
         return 0  # config.yaml doesn't exist; nothing to do, not fatal

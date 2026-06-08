@@ -7,8 +7,8 @@ one click and Hermes can consume as a skill pack independently.
 
 - **Hermes skills** (`templates/solbay/skills/`) — household
   procedures Hermes loads at runtime: `audit-query`, `debug-set`,
-  `dynamic-skills`, `media-ingestion-multimodal`, `problem-summarizer`,
-  `room-enrollment`, `status`.
+  `chat-compactor`, `dynamic-skills`, `media-ingestion-multimodal`,
+  `problem-summarizer`, `room-enrollment`, `status`.
 - **Operator skill pack** (`templates/admin-soul/skills/`) — the
   admin-facing soul Hermes loads alongside the household skills:
   `admin-diagnose` (drill service → container → logs), `admin-logs`

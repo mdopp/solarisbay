@@ -75,8 +75,8 @@ spec:
     # API_SERVER_KEY (above).
     - name: CONFIG_AGENT_URL
       value: "{{CONFIG_AGENT_URL}}"
-    # Model context window (tokens) the /context command reports; match the
-    # ollama template's OLLAMA_CONTEXT_LENGTH.
+    # Model context window (tokens): the /context command reports it and chat
+    # compaction (#210) uses it as the cap. Match OLLAMA_CONTEXT_LENGTH.
     - name: CONTEXT_WINDOW
       value: "{{CONTEXT_WINDOW}}"
     # Optional Authelia logout URL for the sidebar footer; empty hides the

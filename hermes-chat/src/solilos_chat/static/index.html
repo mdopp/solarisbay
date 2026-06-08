@@ -831,7 +831,7 @@
         <div class="pref-row">
           <div class="pref-label">
             <div class="pref-name">Thinking blocks</div>
-            <div class="pref-desc">When the chat runs in <strong>Gründlich</strong> mode (the Modus selector in the chat header), Sol thinks out loud in <code>&lt;thinking&gt;</code> blocks before answering. Choose how those are shown. In <strong>Schnell</strong> mode there is no thinking block.</div>
+            <div class="pref-desc">When the chat runs in <strong>Gründlich</strong> mode (the Modus selector in the chat header), Sol reasons before answering and shows that reasoning in a separate block. Choose how it is shown. In <strong>Schnell</strong> mode there is no reasoning block.</div>
           </div>
           <div class="seg" id="thinking-seg" role="radiogroup" aria-label="Thinking blocks">
             <button type="button" data-mode="show" role="radio">Show</button>
@@ -1104,6 +1104,13 @@
           '<span class="dots"><span></span><span></span><span></span></span>' +
           '<span class="activity-text">thinking…</span>';
         el.appendChild(activity);
+        // Reasoning (#231) renders as its own collapsible block above the
+        // answer. gemma4 delivers it in one shot near turn-end (a distinct
+        // `reasoning` event), so it gets its own container rather than being
+        // parsed out of the answer text.
+        var reasonEl = document.createElement("div");
+        reasonEl.className = "md reasoning";
+        el.appendChild(reasonEl);
         var body = document.createElement("div");
         body.className = "md";
         el.appendChild(body);
@@ -1116,6 +1123,20 @@
         return {
           setActivity: function (txt) { var t = activity.querySelector(".activity-text"); if (t) t.textContent = txt; },
           setTrace: function (t) { trace = t; },
+          setReasoning: function (text) {
+            // Honor the display preference (#185): "hide" => no block at all.
+            var src = String(text == null ? "" : text).trim();
+            if (!src || thinkingMode === "hide") { reasonEl.innerHTML = ""; return; }
+            var inner = window.renderMarkdown(src);
+            if (thinkingMode === "show") {
+              reasonEl.innerHTML = '<div class="think-body md">' + inner + "</div>";
+            } else {
+              reasonEl.innerHTML =
+                '<details class="think"><summary>Reasoning</summary>' +
+                '<div class="think-body md">' + inner + "</div></details>";
+            }
+            scrollDown(atBottom());
+          },
           append: function (delta) {
             var stick = atBottom();
             if (activity.parentNode) el.removeChild(activity);
@@ -1181,6 +1202,7 @@
             try { d = JSON.parse(data); } catch (e) {}
             if (event === "session") { if (d.session_id) sessionId = d.session_id; }
             else if (event === "delta") { if (d.text) msg.append(d.text); }
+            else if (event === "reasoning") { if (d.text) msg.setReasoning(d.text); }
             else if (event === "tool") {
               if (d.phase === "started") msg.setActivity("using " + (d.name || "tool") + "…");
               else msg.setActivity("thinking…");
