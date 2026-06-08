@@ -32,6 +32,7 @@ protocol.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -471,13 +472,46 @@ def write_config_yaml(
 STOCK_SOUL_MARKER = "# Hermes Agent Persona"
 
 
+def _soul_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _record_shipped_soul(marker_path: str, soul: str) -> None:
+    """Write the sha256 of the just-installed shipped soul alongside it, so a
+    later redeploy can tell an unmodified shipped soul (safe to update) from an
+    operator-edited one (must be preserved). Best-effort — a failed write only
+    means the next redeploy falls back to the stock-marker heuristic."""
+    try:
+        with open(marker_path, "w", encoding="utf-8") as f:
+            f.write(_soul_sha256(soul) + "\n")
+        os.chmod(marker_path, 0o644)
+    except OSError as e:
+        jlog(
+            "warn",
+            "hermes:soul",
+            "could not record shipped-soul hash",
+            path=marker_path,
+            error=str(e),
+        )
+
+
 def write_soul_md(data_dir: str) -> bool:
-    """Install the Solilos SOUL.md (Hermes' durable identity) when the box
-    still carries Hermes' stock default or has none yet. Reads the soul
-    shipped alongside this script. Never overwrites a customised soul.
-    Returns True when the file was written (signals the caller to restart so
-    Hermes reloads it)."""
+    """Install the Solilos SOUL.md (Hermes' durable identity) and keep it in
+    sync with the shipped soul on redeploy, without clobbering an
+    operator-edited one. Returns True when the file was written (signals the
+    caller to restart so Hermes reloads it).
+
+    A sidecar `.soul.shipped.sha256` records the hash of the soul we last
+    shipped (#283). On redeploy we can then tell two on-box souls apart that
+    both differ from the *current* shipped soul:
+      - on-box hash == last-recorded shipped hash → the operator never touched
+        it; a changed shipped soul is safe to UPDATE (so #276/#266-style
+        SOUL.md fixes land on existing installs via a normal redeploy).
+      - on-box hash != last-recorded shipped hash → the operator edited it →
+        PRESERVE (log that a shipped update is available).
+    Fresh install / Hermes' stock default → write + record (no sidecar yet)."""
     target = os.path.join(data_dir, "hermes", "SOUL.md")
+    marker = os.path.join(data_dir, "hermes", ".soul.shipped.sha256")
     source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SOUL.md")
     try:
         with open(source, encoding="utf-8") as f:
@@ -493,15 +527,43 @@ def write_soul_md(data_dir: str) -> bool:
         except OSError:
             existing = ""
     if existing == soul:
-        return False  # already the Solilos soul — idempotent no-op
-    if existing.strip() and STOCK_SOUL_MARKER not in existing:
-        jlog(
-            "info",
-            "hermes:soul",
-            "leaving customised SOUL.md untouched",
-            path=target,
-        )
+        # Already the current shipped soul — idempotent. Record the sidecar
+        # if it's missing (legacy install / box where the soul was applied by
+        # hand) so a future shipped change is recognised as updatable.
+        if not os.path.exists(marker):
+            _record_shipped_soul(marker, soul)
         return False
+
+    recorded = ""
+    if os.path.exists(marker):
+        try:
+            with open(marker, encoding="utf-8") as f:
+                recorded = f.read().strip()
+        except OSError:
+            recorded = ""
+
+    if existing.strip():
+        if recorded:
+            # The sidecar tells us what we last shipped: an on-box soul that
+            # still hashes to it was never operator-edited → update it.
+            if recorded != _soul_sha256(existing):
+                jlog(
+                    "info",
+                    "hermes:soul",
+                    "leaving operator-edited SOUL.md untouched — a shipped update is available",
+                    path=target,
+                )
+                return False
+        elif STOCK_SOUL_MARKER not in existing:
+            # No sidecar and not Hermes' stock default — can't prove it's
+            # unmodified, so preserve it (fall back to the pre-#283 guard).
+            jlog(
+                "info",
+                "hermes:soul",
+                "leaving customised SOUL.md untouched",
+                path=target,
+            )
+            return False
     try:
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "w", encoding="utf-8") as f:
@@ -512,6 +574,7 @@ def write_soul_md(data_dir: str) -> bool:
             "error", "hermes:soul", "could not write SOUL.md", path=target, error=str(e)
         )
         return False
+    _record_shipped_soul(marker, soul)
     jlog("info", "hermes:soul", "installed Solilos SOUL.md", path=target)
     return True
 
