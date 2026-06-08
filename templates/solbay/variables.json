@@ -6,8 +6,8 @@
   },
   "FAST_HERMES_MODEL": {
     "type": "text",
-    "description": "Optional Ollama model id (e.g. `gemma4:e2b`) for adaptive voice routing (#187). When set, each voice turn first hits a fast/small model in its own Hermes session and only escalates to the default model on a low-quality reply (empty, or too short without a confirmation). Leave blank to disable — the gatekeeper then uses a single session on Hermes' default model, unchanged.",
-    "default": ""
+    "description": "Ollama model id for adaptive voice routing (#187 / latency bundle). The model follows the reasoning effort: a FAST household-control turn (the common case) runs on this fast model in its own Hermes session; an explicit 'think harder' (Gründlich) turn skips straight to the default model. A fast turn that comes back empty/too-short also escalates to the default. Default `gemma4:e2b` — ~4× faster prefill (≈3900 vs ≈965 tok/s) and tool-calls reliably for HA control. The tag must be pulled in Ollama (the ollama template ships it). Leave blank to disable routing (single session on Hermes' default model, unchanged).",
+    "default": "gemma4:e2b"
   },
   "GATEKEEPER_IMAGE": {
     "type": "text",

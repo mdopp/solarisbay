@@ -101,6 +101,15 @@ spec:
     # `'self' https://admin.dopp.cloud` so admin.dopp.cloud can frame it.
     - name: FRAME_ANCESTORS
       value: "{{FRAME_ANCESTORS}}"
+    # Adaptive model routing (latency bundle): the model is bound at Hermes
+    # session create from the chosen reasoning effort. A Schnell/FAST
+    # conversation → FAST_MODEL (gemma4:e2b: ~4× faster prefill + reliable HA
+    # tool-calls); a Gründlich/thorough one → THOROUGH_MODEL (gemma4:12b).
+    # Empty leaves routing off (Hermes' configured model.model is used).
+    - name: FAST_MODEL
+      value: "{{FAST_MODEL}}"
+    - name: THOROUGH_MODEL
+      value: "{{THOROUGH_MODEL}}"
     - name: TZ
       value: "{{TZ}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host

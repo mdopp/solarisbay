@@ -107,6 +107,8 @@ def build_app(
     compaction_threshold: float = compaction.DEFAULT_THRESHOLD,
     attachments_dir: str = "/data/attachments",
     frame_ancestors: str = "'self'",
+    fast_model: str = "",
+    thorough_model: str = "",
 ) -> web.Application:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -508,8 +510,18 @@ def build_app(
         compacted = False
         try:
             if not session_id:
-                session_id = await hermes.create_session(uid, system_prompt)
-                log.info("chat.session.created", uid=uid, session_id=session_id)
+                model = reasoning.model_for_effort(
+                    effort, fast_model=fast_model, thorough_model=thorough_model
+                )
+                session_id = await hermes.create_session(
+                    uid, system_prompt, model=model
+                )
+                log.info(
+                    "chat.session.created",
+                    uid=uid,
+                    session_id=session_id,
+                    model=model,
+                )
                 await hermes.set_title(session_id, uid, _title_from(text))
             else:
                 session_id, compacted = await maybe_compact(
@@ -584,8 +596,18 @@ def build_app(
         try:
             compacted = False
             if not session_id:
-                session_id = await hermes.create_session(uid, system_prompt)
-                log.info("chat.session.created", uid=uid, session_id=session_id)
+                model = reasoning.model_for_effort(
+                    effort, fast_model=fast_model, thorough_model=thorough_model
+                )
+                session_id = await hermes.create_session(
+                    uid, system_prompt, model=model
+                )
+                log.info(
+                    "chat.session.created",
+                    uid=uid,
+                    session_id=session_id,
+                    model=model,
+                )
                 await hermes.set_title(session_id, uid, _title_from(text))
             else:
                 session_id, compacted = await maybe_compact(
@@ -980,6 +1002,8 @@ async def serve(
     compaction_threshold: float = compaction.DEFAULT_THRESHOLD,
     attachments_dir: str = "/data/attachments",
     frame_ancestors: str = "'self'",
+    fast_model: str = "",
+    thorough_model: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -998,6 +1022,8 @@ async def serve(
         compaction_threshold=compaction_threshold,
         attachments_dir=attachments_dir,
         frame_ancestors=frame_ancestors,
+        fast_model=fast_model,
+        thorough_model=thorough_model,
     )
     runner = web.AppRunner(app)
     await runner.setup()

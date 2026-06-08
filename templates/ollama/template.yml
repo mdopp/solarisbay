@@ -46,6 +46,12 @@ spec:
     # per-request num_ctx — only this env-set default actually applies.
     - name: OLLAMA_CONTEXT_LENGTH
       value: "{{OLLAMA_CONTEXT_LENGTH}}"
+    # Keep a model loaded after its last request so a conversational pause
+    # doesn't pay a cold model RELOAD next turn (stock 5m evicts too soon).
+    # 60m, not -1: both models can be co-resident @128k (tight VRAM), so an
+    # idle one should still be allowed to release. See OLLAMA_KEEP_ALIVE.
+    - name: OLLAMA_KEEP_ALIVE
+      value: "{{OLLAMA_KEEP_ALIVE}}"
     # Flash attention: negligible speed change on this GPU class but
     # harmless, and the prerequisite for optional KV-cache quant.
     - name: OLLAMA_FLASH_ATTENTION

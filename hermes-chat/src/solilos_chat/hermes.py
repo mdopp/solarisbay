@@ -42,13 +42,23 @@ class HermesClient:
         return headers
 
     async def create_session(
-        self, uid: str, system_prompt: str | None = None, *, maintenance: bool = False
+        self,
+        uid: str,
+        system_prompt: str | None = None,
+        *,
+        maintenance: bool = False,
+        model: str = "",
     ) -> str:
         """Create a session bound to `uid`; return its id.
 
         `system_prompt` is the chosen personality's overlay (see
         `personalities.py`); Hermes accepts it only at create time (PATCH
         rejects it). Empty/None => no overlay, pure SOUL.md.
+
+        `model` (latency bundle) is the Ollama tag this session binds to —
+        Hermes accepts `model` only at session create, so adaptive routing
+        (Schnell→e2b / Gründlich→12b) is fixed for the session's lifetime here.
+        Empty => no override, Hermes' configured default model.
 
         The title is seeded with the caller's immutable uid marker (#153) so a
         session is owned (and visible only to its resident) from the moment it
@@ -65,6 +75,8 @@ class HermesClient:
         payload: dict[str, Any] = {"user_id": uid, "title": title}
         if system_prompt:
             payload["system_prompt"] = system_prompt
+        if model:
+            payload["model"] = model
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             async with client.post(url, json=payload, headers=self._headers()) as resp:
                 body = await self._json_or_raise(resp, "create_session")

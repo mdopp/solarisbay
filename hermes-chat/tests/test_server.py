@@ -79,6 +79,7 @@ class _FakeHermes:
         self.created = []
         self.created_prompts = []
         self.maintenance = []
+        self.models = []
         self.turns = []
         self.titles = []
         self.deleted = []
@@ -88,10 +89,13 @@ class _FakeHermes:
         # store: list of {id, user_id, title, last_activity, messages}
         self._store = store or []
 
-    async def create_session(self, uid, system_prompt=None, *, maintenance=False):
+    async def create_session(
+        self, uid, system_prompt=None, *, maintenance=False, model=""
+    ):
         self.created.append(uid)
         self.created_prompts.append(system_prompt or "")
         self.maintenance.append(maintenance)
+        self.models.append(model)
         # First create is "sess-1" (existing tests assert that); later creates
         # (e.g. a compaction continuation) get distinct ids.
         return "sess-1" if len(self.created) == 1 else f"sess-{len(self.created)}"
@@ -516,6 +520,58 @@ async def test_chat_selector_overrides_to_thorough(aiohttp_client, tmp_path):
     )
     assert resp.status == 200
     assert fake.efforts == ["high"]
+
+
+async def test_chat_routes_fast_turn_to_fast_model(aiohttp_client, tmp_path):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        fast_model="gemma4:e2b",
+        thorough_model="gemma4:12b",
+    )
+    client = await aiohttp_client(app)
+    # A default (FAST/Schnell) household-control turn binds the new session to
+    # the fast model (latency bundle).
+    resp = await client.post("/api/chat", json={"input": "welche Lichter sind an"})
+    assert resp.status == 200
+    assert fake.efforts == ["none"]
+    assert fake.models == ["gemma4:e2b"]
+
+
+async def test_chat_routes_thorough_turn_to_thorough_model(aiohttp_client, tmp_path):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        fast_model="gemma4:e2b",
+        thorough_model="gemma4:12b",
+    )
+    client = await aiohttp_client(app)
+    # The Gründlich selector binds the new session to the thorough model.
+    resp = await client.post("/api/chat", json={"input": "hallo", "reasoning": "high"})
+    assert resp.status == 200
+    assert fake.efforts == ["high"]
+    assert fake.models == ["gemma4:12b"]
+
+
+async def test_chat_no_routing_tags_no_model_override(aiohttp_client, tmp_path):
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    # Routing off by default → no per-session model override (Hermes' default).
+    resp = await client.post("/api/chat", json={"input": "hi"})
+    assert resp.status == 200
+    assert fake.models == [""]
 
 
 async def test_chat_admin_escalates_reasoning(aiohttp_client, tmp_path):

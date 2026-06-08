@@ -33,6 +33,8 @@ async def _run() -> None:
         compaction_threshold=settings.compaction_threshold,
         attachments_dir=settings.attachments_dir,
         frame_ancestors=settings.frame_ancestors,
+        fast_model=settings.fast_model,
+        thorough_model=settings.thorough_model,
     )
 
 

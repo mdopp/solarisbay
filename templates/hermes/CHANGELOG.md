@@ -1,5 +1,22 @@
 # Hermes — template changelog
 
+## Unreleased — latency bundle
+
+Widened `agent.disabled_toolsets` beyond #230's four. Toolset names were
+enumerated against the live box (`GET /v1/toolsets`: 27 toolsets, 10 enabled).
+On top of `browser` / `code_execution` / `image_gen` / `delegation` we now also
+blacklist the configured-but-unused built-ins the household never invokes:
+`messaging`, `discord`, `discord_admin` (no agent-initiated chat sends — image
+*input* arrives via Hermes' messaging *gateways*, which is unrelated to these
+agent-action toolsets), `spotify` (playback runs through Home Assistant),
+`x_search`, `video`, `video_gen` (no social/video path), and `yuanbao`, `moa`,
+`computer_use`, `context_engine` (unused integrations). Every dropped tool
+schema shaves cold-prefill time and delays the window truncation the latency
+bundle is fixing. Kept (all currently enabled + used): `homeassistant`,
+`skills`, `memory`, `web`, `vision`, `todo`, `file`, `terminal`, `cronjob`,
+`session_search`. Still no schema-version bump — config.yaml is rewritten on
+every deploy.
+
 ## Unreleased — #230
 
 The post-deploy now writes `agent.disabled_toolsets` into `config.yaml` to

@@ -332,7 +332,8 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
     reaches the GPU runtime, so anything required on the box has to be
     rendered here too). Kept pure so the needs-rewrite comparison and the
     write share one source of truth."""
-    context_length = env("OLLAMA_CONTEXT_LENGTH", "32768")
+    context_length = env("OLLAMA_CONTEXT_LENGTH", "131072")
+    keep_alive = env("OLLAMA_KEEP_ALIVE", "60m")
     flash_attention = env("OLLAMA_FLASH_ATTENTION", "1")
     return (
         "[Unit]\n"
@@ -349,6 +350,10 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
         "# per-request num_ctx, so only this env-set default lands — without\n"
         "# it the GPU Quadlet stays at 4096 and Hermes loops at 1 token (#146).\n"
         f"Environment=OLLAMA_CONTEXT_LENGTH={context_length}\n"
+        "# Keep a model loaded after its last request so a conversational\n"
+        "# pause doesn't pay a cold model reload next turn (stock 5m evicts\n"
+        "# too soon). 60m, not -1, so a co-resident idle model can release.\n"
+        f"Environment=OLLAMA_KEEP_ALIVE={keep_alive}\n"
         "# Flash attention — negligible speed change here but harmless and\n"
         "# the prerequisite for optional KV-cache quant.\n"
         f"Environment=OLLAMA_FLASH_ATTENTION={flash_attention}\n"

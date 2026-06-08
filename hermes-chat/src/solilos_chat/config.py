@@ -32,6 +32,8 @@ class Settings:
     compaction_threshold: float
     attachments_dir: str
     frame_ancestors: str
+    fast_model: str
+    thorough_model: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -93,6 +95,15 @@ class Settings:
             # (#228). Default `'self'`; the ServiceBay maintenance embed sets
             # `'self' https://admin.dopp.cloud` so admin.dopp.cloud can frame it.
             frame_ancestors=os.environ.get("FRAME_ANCESTORS", "'self'"),
+            # Adaptive model routing (latency bundle). The model is bound at
+            # Hermes session create from the chosen reasoning effort: a
+            # Schnell/FAST conversation → FAST_MODEL (gemma4:e2b, ~4× faster
+            # prefill + reliable HA tool-calls); a Gründlich/thorough one →
+            # THOROUGH_MODEL (gemma4:12b). Empty (default) => no per-session
+            # override, Hermes' configured model.model is used — so routing is
+            # off until the operator sets the tags (minimal-knobs, opt-in).
+            fast_model=os.environ.get("FAST_MODEL", "").strip(),
+            thorough_model=os.environ.get("THOROUGH_MODEL", "").strip(),
         )
 
 

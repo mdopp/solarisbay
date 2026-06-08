@@ -79,3 +79,16 @@ def choose_effort(text: str, *, selector: object = None, admin: bool = False) ->
     if admin or wants_reasoning(text):
         return HIGH
     return FAST
+
+
+def model_for_effort(effort: str, *, fast_model: str, thorough_model: str) -> str:
+    """Map a reasoning effort to the Ollama model tag (latency bundle).
+
+    FAST ("none", the Schnell household-control default) → the fast model
+    (`gemma4:e2b`: ~4× faster prefill, tool-calls reliably for HA control);
+    any reasoning level (LOW/HIGH, Gründlich) → the thorough model
+    (`gemma4:12b`). Hermes binds the model at session create, so this is the
+    tag the session is created with. Returns "" when the matching tag is unset
+    (no override → Hermes' configured default model).
+    """
+    return thorough_model if effort != FAST else fast_model

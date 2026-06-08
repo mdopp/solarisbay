@@ -234,6 +234,34 @@ async def test_fast_too_short_falls_back_to_slow(monkeypatch):
     assert "/api/sessions/sess-slow/chat" in [p for p, _ in record]
 
 
+async def test_thorough_cue_skips_fast_model(monkeypatch):
+    # A THOROUGH turn (explicit "think harder" cue) must bypass the fast model
+    # entirely and go straight to the slow (12b default) session — model routing
+    # follows the reasoning effort, not just the reply-quality fallback.
+    record: list[tuple[str, dict]] = []
+    _install_transport(
+        monkeypatch,
+        _routing_handler(record, fast_reply="should never run", slow_reply="deep"),
+    )
+    client = HermesClient("http://hermes:8642", "", fast_model="gemma4:e2b")
+
+    reply = await client.converse(
+        text="denk mal scharf nach und erklär mir das genau",
+        uid="michael",
+        endpoint="e",
+        trace_id="t",
+    )
+
+    assert reply == "deep"
+    paths = [p for p, _ in record]
+    # The fast session is never created or used.
+    assert "/api/sessions/sess-fast/chat" not in paths
+    assert all(not b.get("model") for p, b in record if p == "/api/sessions")
+    # The slow turn carries the escalated reasoning_effort.
+    slow_chat = [b for p, b in record if p == "/api/sessions/sess-slow/chat"]
+    assert slow_chat and slow_chat[0]["reasoning_effort"] == "high"
+
+
 async def test_no_fast_model_single_session_passthrough(monkeypatch):
     record: list[tuple[str, dict]] = []
 

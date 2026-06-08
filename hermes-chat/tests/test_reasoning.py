@@ -53,3 +53,36 @@ def test_unknown_selector_falls_back_to_adaptive(bad):
     assert reasoning.choose_effort("welche Lichter sind an", selector=bad) == (
         reasoning.FAST
     )
+
+
+def test_model_for_effort_routes_fast_to_e2b():
+    # FAST (Schnell, the household-control default) → the fast model.
+    assert (
+        reasoning.model_for_effort(
+            reasoning.FAST, fast_model="gemma4:e2b", thorough_model="gemma4:12b"
+        )
+        == "gemma4:e2b"
+    )
+
+
+@pytest.mark.parametrize("effort", [reasoning.LOW, reasoning.HIGH])
+def test_model_for_effort_routes_reasoning_to_12b(effort):
+    # Any reasoning level (Gründlich) → the thorough model.
+    assert (
+        reasoning.model_for_effort(
+            effort, fast_model="gemma4:e2b", thorough_model="gemma4:12b"
+        )
+        == "gemma4:12b"
+    )
+
+
+def test_model_for_effort_empty_when_tag_unset():
+    # Routing off (no tags) → no override; Hermes' configured model is used.
+    assert (
+        reasoning.model_for_effort(reasoning.FAST, fast_model="", thorough_model="")
+        == ""
+    )
+    assert (
+        reasoning.model_for_effort(reasoning.HIGH, fast_model="", thorough_model="")
+        == ""
+    )

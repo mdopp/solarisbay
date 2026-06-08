@@ -66,5 +66,15 @@
     "type": "text",
     "description": "CSP `frame-ancestors` source list controlling who may iframe the chat. Default `'self'` (no cross-origin embedding). For the ServiceBay maintenance embed (#209) set `'self' https://admin.dopp.cloud` so the SB admin UI can iframe `chat.<publicDomain>`. DEPLOY REQUIREMENT for cross-origin embedding: the Authelia session cookie on chat's NPM proxy must be `SameSite=None; Secure`, otherwise the SSO cookie won't be sent inside the cross-origin iframe and the embed redirects to login. Both hosts are `*.dopp.cloud` so the cookie domain already covers them — only the SameSite flag changes. This is an NPM/Authelia config change, NOT a solilos-chat change.",
     "default": "'self'"
+  },
+  "FAST_MODEL": {
+    "type": "text",
+    "description": "Adaptive model routing (latency bundle): the Ollama tag a Schnell/FAST chat conversation binds to at Hermes session create. `gemma4:e2b` prefills ~4× faster than `gemma4:12b` (≈3900 vs ≈965 tok/s) and tool-calls reliably for Home-Assistant control, so household-control turns get it. Empty (default) leaves routing OFF — Hermes' configured `model.model` is used for every session regardless of effort. Pair with THOROUGH_MODEL; the pre-pulled tag must exist in Ollama (`gemma4:e2b` is shipped by the ollama template's extra/default models).",
+    "default": "gemma4:e2b"
+  },
+  "THOROUGH_MODEL": {
+    "type": "text",
+    "description": "Adaptive model routing (latency bundle): the Ollama tag a Gründlich/thorough chat conversation binds to (any reasoning_effort above `none`). `gemma4:12b` is the larger, more capable model for explanations and multi-step reasoning. Empty leaves the thorough path on Hermes' configured `model.model`. Pair with FAST_MODEL.",
+    "default": "gemma4:12b"
   }
 }

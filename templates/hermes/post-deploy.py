@@ -355,31 +355,46 @@ def write_config_yaml(
         # thinking. Leaving this false avoids surfacing an (empty) block on the
         # common fast turn.
         "  show_reasoning: false\n"
-        # Cold-cache prefill floor (#230): the ~29k-token system prompt is
-        # dominated by the cumulative built-in tool-definition JSON, not — as
-        # first suspected — an inlined HA entity-state dump (the `homeassistant`
-        # toolset only registers ha_list_entities/ha_get_state/ha_list_services/
-        # ha_call_service and fetches state lazily; the state-pushing HA *gateway*
-        # is `watch_*`-gated and OFF by default). Hermes enables ~15 toolsets by
-        # default for every session; blacklist the ones the household assistant
-        # never uses so their tool schemas (and any associated prompt guidance,
-        # e.g. memory's MEMORY_GUIDANCE) drop out of every prefill. Kept:
-        # homeassistant (device control), skills, memory, web/search (ddgs),
-        # vision (media-ingestion), tts (voice), todo, file + terminal (skills
-        # write notes via write_file/replace_file_content and ripgrep the vault
-        # via the terminal tool — verified in the SKILL.md bodies), cronjob,
-        # session_search, clarify, safe. Disabled = verifiably unused here:
-        #   - browser: engine is `disabled` above, so its tool defs are dead weight
-        #   - code_execution: dynamic-skills explicitly forbids run_command; no
-        #     household skill executes code
-        #   - image_gen: we ingest images (vision), never generate them
-        #   - delegation: no multi-agent delegation in the household path
+        # Cold-cache prefill floor (#230 + latency bundle): the base system
+        # prompt is dominated by the cumulative built-in tool-definition JSON.
+        # At the old 32k window the ~25k base brushed/crossed the limit every
+        # HA-control turn → drop-middle truncation → cache invalidation → full
+        # re-prefill (~20s). The companion ollama change moves the window to
+        # 128k (lots of headroom), but every tool schema dropped from the
+        # prefill still cuts cold-prefill time, so we widen the blacklist.
+        # Toolset names verified against the live box `GET /v1/toolsets` (27
+        # toolsets; 10 enabled). KEPT (all currently enabled + used): homeassistant
+        # (device control), skills, memory, web (ddgs search), vision
+        # (media-ingestion), todo, file + terminal (skills write notes via
+        # write_file/replace_file_content and ripgrep the vault via terminal —
+        # verified in the SKILL.md bodies), cronjob, session_search; tts stays
+        # off-but-allowed (voice runs through the gatekeeper, not this toolset).
+        # DISABLED = verifiably unused here (the four from #230 + the configured
+        # built-ins the household never invokes — messaging/social/media-gen/
+        # remote-control toolsets; attachment INPUT arrives via Hermes' messaging
+        # *gateways*, which is unrelated to these agent-action toolsets):
+        #   - browser / code_execution / image_gen / delegation (#230)
+        #   - messaging, discord, discord_admin: no agent-initiated chat sends
+        #   - spotify: playback is via Home Assistant, not this toolset
+        #   - x_search, video, video_gen, image_gen: no social/video/gen path
+        #   - yuanbao, moa, computer_use, context_engine: unused integrations
         "agent:\n"
         "  disabled_toolsets:\n"
         "    - browser\n"
         "    - code_execution\n"
         "    - image_gen\n"
+        "    - video_gen\n"
+        "    - video\n"
+        "    - x_search\n"
         "    - delegation\n"
+        "    - messaging\n"
+        "    - discord\n"
+        "    - discord_admin\n"
+        "    - spotify\n"
+        "    - yuanbao\n"
+        "    - moa\n"
+        "    - computer_use\n"
+        "    - context_engine\n"
     )
     if custom_providers_block:
         content += "\n" + custom_providers_block

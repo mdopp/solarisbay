@@ -9,13 +9,21 @@ The gatekeeper owns one Hermes session per conversation (keyed by the uid or
 the originating satellite) for real continuity across turns; an expired
 session (404) is recreated once and the turn retried.
 
-Adaptive routing (#187): when `fast_model` is set, the client keeps a second
-"fast" session per conversation (keyed `<conv>:fast`, created with that model
-override) and tries it first. Hermes session chat returns only plain text —
-no tool-call or confidence signal reaches the gatekeeper — so the only
-observable quality signal is the reply itself: an empty reply, or one shorter
-than a short-confirmation that doesn't look like a confirmation, is treated as
-a fast-model miss and the same turn is replayed on the normal (slow) session.
+Adaptive routing (#187 / latency bundle): when `fast_model` is set, the client
+keeps a second "fast" session per conversation (keyed `<conv>:fast`, created
+with that model override) and uses it for FAST turns. The model follows the
+#222 reasoning effort: a FAST turn (`reasoning_effort: "none"`, the Schnell
+household-control default) runs on the fast model (`gemma4:e2b` — ~4× faster
+prefill and tool-calls reliably for HA control); a THOROUGH turn (an explicit
+"think harder" cue → Gründlich) skips the fast model entirely and goes straight
+to the normal (slow) session on Hermes' default model (`gemma4:12b`).
+
+On a FAST turn we still guard reply quality: Hermes session chat returns only
+plain text — no tool-call or confidence signal reaches the gatekeeper — so the
+only observable signal is the reply itself. An empty reply, or one shorter than
+a short-confirmation that doesn't look like a confirmation, is treated as a
+fast-model miss and the same turn is replayed on the slow session.
+
 When `fast_model` is empty the fast path is a no-op: single-session behaviour,
 unchanged.
 """
@@ -88,7 +96,9 @@ class HermesClient:
         if effort != reasoning.FAST:
             log.info("gatekeeper.hermes.reasoning", trace_id=trace_id, effort=effort)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            if self._fast_model:
+            # Route the model by effort: FAST → fast model (e2b); THOROUGH
+            # skips straight to the slow session on Hermes' default (12b).
+            if self._fast_model and effort == reasoning.FAST:
                 fast_reply = await self._turn(
                     client,
                     conv_key=f"{conv_key}:fast",
