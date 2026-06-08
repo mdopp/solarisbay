@@ -361,40 +361,46 @@ def write_config_yaml(
         # HA-control turn → drop-middle truncation → cache invalidation → full
         # re-prefill (~20s). The companion ollama change moves the window to
         # 128k (lots of headroom), but every tool schema dropped from the
-        # prefill still cuts cold-prefill time, so we widen the blacklist.
-        # Toolset names verified against the live box `GET /v1/toolsets` (27
-        # toolsets; 10 enabled). KEPT (all currently enabled + used): homeassistant
-        # (device control), skills, memory, web (ddgs search), vision
-        # (media-ingestion), todo, file + terminal (skills write notes via
-        # write_file/replace_file_content and ripgrep the vault via terminal —
-        # verified in the SKILL.md bodies), cronjob, session_search; tts stays
-        # off-but-allowed (voice runs through the gatekeeper, not this toolset).
-        # DISABLED = verifiably unused here (the four from #230 + the configured
-        # built-ins the household never invokes — messaging/social/media-gen/
-        # remote-control toolsets; attachment INPUT arrives via Hermes' messaging
-        # *gateways*, which is unrelated to these agent-action toolsets):
-        #   - browser / code_execution / image_gen / delegation (#230)
-        #   - messaging, discord, discord_admin: no agent-initiated chat sends
-        #   - spotify: playback is via Home Assistant, not this toolset
-        #   - x_search, video, video_gen, image_gen: no social/video/gen path
-        #   - yuanbao, moa, computer_use, context_engine: unused integrations
+        # prefill still cuts cold-prefill time, so we trim the blacklist to the
+        # toolsets the household demonstrably never uses. Conservative on
+        # purpose: only the clearly-unused dev/external/generation toolsets are
+        # disabled — when in doubt we KEEP a toolset enabled rather than risk
+        # silently removing a capability a resident relies on. Toolset names
+        # verified against the live box `GET /v1/toolsets`.
+        # KEPT enabled (used, or plausibly used by the household):
+        #   - homeassistant (device control), skills, memory, web (ddgs search),
+        #     vision (media-ingestion), todo, file + terminal (skills write notes
+        #     via write_file/replace_file_content and ripgrep the vault via the
+        #     terminal tool — verified in the SKILL.md bodies), cronjob,
+        #     session_search; tts off-but-allowed (voice runs via the gatekeeper).
+        #   - messaging, discord: the media-ingestion-multimodal skill ingests
+        #     image attachments "via Signal, Telegram, Discord, or any other
+        #     messaging gateway" and the agent replies back through that gateway,
+        #     so these are the ingestion entry points — keep them.
+        #   - context_engine: Hermes' native context-management; #210/#235
+        #     compaction may lean on it. Not proven independent → keep it.
+        #   - spotify: household music control is a plausible feature → keep it.
+        #   - video: photo/media handling may touch it → keep it.
+        # DISABLED = clearly unused dev/external/generation toolsets only:
+        #   - browser: engine is `disabled` above, so its tool defs are dead weight
+        #   - code_execution: dynamic-skills forbids run_command; no skill runs code
+        #   - image_gen / video_gen: we ingest media (vision), never generate it
+        #   - delegation: no multi-agent delegation in the household path
+        #   - discord_admin: server administration — no household use
+        #   - x_search: no social-search path
+        #   - yuanbao, moa, computer_use: unused external integrations
         "agent:\n"
         "  disabled_toolsets:\n"
         "    - browser\n"
         "    - code_execution\n"
         "    - image_gen\n"
         "    - video_gen\n"
-        "    - video\n"
-        "    - x_search\n"
         "    - delegation\n"
-        "    - messaging\n"
-        "    - discord\n"
         "    - discord_admin\n"
-        "    - spotify\n"
+        "    - x_search\n"
         "    - yuanbao\n"
         "    - moa\n"
         "    - computer_use\n"
-        "    - context_engine\n"
     )
     if custom_providers_block:
         content += "\n" + custom_providers_block
