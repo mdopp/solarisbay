@@ -39,7 +39,7 @@ def _load(name: str, path: pathlib.Path):
 
 @pytest.fixture(scope="module")
 def solbay():
-    return _load("solbay_post_deploy", TEMPLATES / "solbay" / "post-deploy.py")
+    return _load("solbay_post_deploy", TEMPLATES / "solilos" / "post-deploy.py")
 
 
 # A live config the box could carry after admin-soul has spliced its entry

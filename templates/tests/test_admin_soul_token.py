@@ -28,7 +28,7 @@ def _load(name: str, path: pathlib.Path):
 
 @pytest.fixture(scope="module")
 def admin():
-    return _load("admin_soul_post_deploy", TEMPLATES / "admin-soul" / "post-deploy.py")
+    return _load("admin_soul_post_deploy", TEMPLATES / "solilos" / "post-deploy.py")
 
 
 GOOD = "sb_0a1b2c3d_ABCDEF234567"
@@ -71,19 +71,19 @@ def test_admin_entry_name_is_distinct(admin):
 def test_mint_uses_canonical_route_and_admin_scopes(admin, monkeypatch):
     seen = {}
 
-    def fake_post(path, payload, timeout=30.0):
-        seen["path"] = path
+    def fake_post(url, payload, timeout=30.0):
+        seen["url"] = url
         seen["scopes"] = payload.get("scopes")
         return 200, {"secret": GOOD}
 
-    monkeypatch.setattr(admin, "sb_post_json", fake_post)
+    monkeypatch.setattr(admin, "post_json", fake_post)
     assert admin._mint_admin_token_once() == GOOD
-    assert seen["path"] == "/api/system/api-tokens"
+    assert seen["url"].endswith("/api/system/api-tokens")
     assert seen["scopes"] == ["read", "lifecycle", "mutate"]
 
 
 def test_mint_rejects_non_sb_shaped_secret(admin, monkeypatch):
-    monkeypatch.setattr(admin, "sb_post_json", lambda *a, **k: (200, {"secret": JUNK}))
+    monkeypatch.setattr(admin, "post_json", lambda *a, **k: (200, {"secret": JUNK}))
     assert admin._mint_admin_token_once() is None
 
 

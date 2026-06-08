@@ -6,12 +6,14 @@ metadata:
     servicebay.label: "Solilos (Household AI Assistant)"
     servicebay.tier: "feature"
 spec:
-  # Full Solilos deployment: local LLM (ollama) + agent runtime (hermes)
-  # + chat UI (solilos-chat) + the household-specific glue + skills +
-  # voice bridge (solbay).
+  # Full Solilos deployment: local LLM (ollama) + the merged assistant
+  # service (solilos) — agent runtime (hermes) + chat UI + household glue +
+  # skills + voice bridge + operator soul, all one ServiceBay service / one
+  # tile (#271). ollama stays its own service (GPU/LLM engine = a real
+  # boundary, like a DB). Two tiles, not five.
   #
   # NOT included: home-assistant and voice — those live in ServiceBay's
   # default registry. The household-stack composition (smart home +
   # Solilos) is up to the operator: enable both registries and tick what
   # they want.
-  templates: [ollama, hermes, solilos-chat, solbay]
+  templates: [ollama, solilos]

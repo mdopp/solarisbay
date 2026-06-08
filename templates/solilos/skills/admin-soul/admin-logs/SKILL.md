@@ -32,8 +32,8 @@ Out of scope:
 - **`get_container_logs <container>`** — one container (`<service>-<app>`). Use
   this for a precise read; it's the default for a deep-dive.
 - **`get_service_logs <service>`** — interleaves every container in the service's
-  pod. Use it when the failure spans a sidecar (e.g. `hermes-config-agent`
-  alongside `hermes-hermes`) or you don't yet know which container logged the
+  pod. Use it when the failure spans a sidecar (e.g. `solilos-config-agent`
+  alongside `solilos-hermes`) or you don't yet know which container logged the
   error.
 
 Resolve the container name the same way `sol-admin-diagnose` does

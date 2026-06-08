@@ -615,7 +615,7 @@ def main() -> None:
     soul_path = os.environ.get("SOUL_PATH", "/opt/data/SOUL.md")
     config_path = os.environ.get("CONFIG_PATH", "/opt/data/config.yaml")
     ollama_url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-    hermes_service = os.environ.get("HERMES_SERVICE", "hermes")
+    hermes_service = os.environ.get("HERMES_SERVICE", "solilos")
     log.info("agent.boot", host=host, port=port)
     asyncio.run(
         serve(

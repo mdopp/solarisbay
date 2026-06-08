@@ -1,0 +1,259 @@
+{
+  "HERMES_API_PORT": {
+    "type": "text",
+    "description": "Host port for Hermes' HTTP API. Default 8642. Bound to 127.0.0.1 (API_SERVER_HOST in template.yml). The chat / gatekeeper / config-agent containers in this Pod reach it via host loopback; remote callers go through NPM + Authelia.",
+    "default": "8642"
+  },
+  "HERMES_API_KEY": {
+    "type": "secret",
+    "description": "Bearer token clients send as `Authorization: Bearer <key>` on requests to Hermes' API. Auto-generated; the chat proxy and gatekeeper in this Pod reuse it server-side. Regenerate from the wizard if it leaks."
+  },
+  "HERMES_LLM_PROVIDER_URL": {
+    "type": "text",
+    "description": "OpenAI-compatible LLM endpoint Hermes calls. Default points at the `ollama` service on the same host (127.0.0.1:11434 is reachable because both pods are hostNetwork). Override to point at a remote vLLM, a different Ollama, or a cloud provider — the post-deploy script writes this into Hermes' config.yaml.",
+    "default": "http://127.0.0.1:11434/v1"
+  },
+  "OLLAMA_DEFAULT_MODEL": {
+    "type": "text",
+    "description": "Model tag Hermes writes into `config.yaml`'s `model.model`. Shares its name with the `ollama` template's variable, so ServiceBay prompts for it once and the tag Hermes requests is exactly the one Ollama pre-pulls — the two can't drift apart. Default `gemma4:12b` (multimodal, fits a 16 GB GPU; `gemma4:e2b` is a lighter text/vision alternative). Only override if you point `HERMES_LLM_PROVIDER_URL` at a non-Ollama backend.",
+    "default": "gemma4:12b"
+  },
+  "HERMES_DASHBOARD_PORT": {
+    "type": "text",
+    "description": "Host loopback port for Hermes' web dashboard (config, API keys, sessions). Bound to 127.0.0.1 only — reached through NPM + Authelia forward-auth at https://<HERMES_SUBDOMAIN>.<domain>, never directly on the LAN.",
+    "default": "9119"
+  },
+  "HERMES_SUBDOMAIN": {
+    "type": "subdomain",
+    "description": "Subdomain for the Hermes web dashboard. Internal exposure — it gets a real LE cert (Authelia forward-auth needs https) but NPM binds the LAN-only access list, so it isn't reachable from outside the LAN. Authelia forward-auth gates it on top of that, because the dashboard surfaces Hermes' API keys.",
+    "default": "hermes",
+    "exposure": "internal",
+    "proxyPort": "HERMES_DASHBOARD_PORT",
+    "loopbackOnly": true,
+    "proxyConfig": {
+      "allow_websocket_upgrade": true,
+      "block_exploits": true,
+      "ssl_forced": true,
+      "advanced_config": "__authelia_forward_auth__",
+      "strictUpstreamHost": true
+    }
+  },
+  "CONFIG_AGENT_IMAGE": {
+    "type": "text",
+    "description": "Image for the Solilos config sidecar that runs in this Pod (applies admin soul/model edits from the chat panel — the public chat container can't write Hermes' data dir). Reuses the solilos-chat image with a different entrypoint. Leave default unless running a fork PoC.",
+    "default": "ghcr.io/mdopp/solilos-chat:latest"
+  },
+  "CONFIG_AGENT_PORT": {
+    "type": "text",
+    "description": "Host loopback port the config sidecar binds (the chat container reaches it here via host loopback; this is a hostNetwork pod). Default 8650; change only if it clashes.",
+    "default": "8650"
+  },
+  "CONFIG_AGENT_URL": {
+    "type": "text",
+    "description": "URL of the config sidecar running in this Pod (host loopback). The panel proxies admin soul/model edits here because the chat container can't write Hermes' own data dir. Must match CONFIG_AGENT_PORT (default 8650).",
+    "default": "http://127.0.0.1:8650"
+  },
+  "HERMES_CHAT_IMAGE": {
+    "type": "text",
+    "description": "Image tag for Solilos's stateless chat proxy. Leave default unless you're running a fork PoC.",
+    "default": "ghcr.io/mdopp/solilos-chat:latest"
+  },
+  "HERMES_CHAT_PORT": {
+    "type": "text",
+    "description": "Host loopback port the chat proxy binds on. NPM proxies the public `chat.<publicDomain>` down to this port behind Authelia forward-auth. Default 8787; pick something else only if it's taken. NB: the servicebay.healthcheck annotation uses the literal 8787 — change it there too if you change this.",
+    "default": "8787"
+  },
+  "HERMES_CHAT_SUBDOMAIN": {
+    "type": "subdomain",
+    "description": "Subdomain for the chat surface. `chat` matches what the household stack already points at (#1044); keeping it the same so existing bookmarks / family-portal links don't break. Authelia forward-auth gates every request before it lands on the chat proxy, which then folds the Remote-User identity into the Hermes uid (no second login).",
+    "default": "chat",
+    "exposure": "internal",
+    "proxyPort": "HERMES_CHAT_PORT",
+    "loopbackOnly": true,
+    "proxyConfig": {
+      "allow_websocket_upgrade": true,
+      "block_exploits": true,
+      "ssl_forced": true,
+      "advanced_config": "__authelia_forward_auth__"
+    }
+  },
+  "CONTEXT_WINDOW": {
+    "type": "text",
+    "description": "Context window in tokens, used as the chat-compaction cap (#210): a chat is auto-compacted near ~90% of this, and the /context command reports it. Leave EMPTY (or `auto`) to AUTO-DERIVE it at runtime from the live Ollama active model (#235) — the chat queries Ollama's `/api/ps` for the window the model is actually loaded at (= OLLAMA_CONTEXT_LENGTH, bounded by the model's native context), so the cap always matches the loaded model and adapts per model with no manual sync. Set a positive integer ONLY to OVERRIDE that derivation (ops control); the override wins. Fallback when auto and Ollama is unreachable: OLLAMA_CONTEXT_LENGTH, then a safe static 32768.",
+    "default": ""
+  },
+  "OLLAMA_URL": {
+    "type": "text",
+    "description": "URL of Ollama's API (host loopback — this is a hostNetwork pod, so default `http://127.0.0.1:11434` matches the ollama template). Queried for the active model's loaded context window to AUTO-DERIVE CONTEXT_WINDOW (#235). Only matters when CONTEXT_WINDOW is left empty/auto.",
+    "default": "http://127.0.0.1:11434"
+  },
+  "LOGOUT_URL": {
+    "type": "text",
+    "description": "Optional logout URL shown in the chat sidebar footer (e.g. your Authelia logout endpoint like https://auth.<domain>/logout). Leave empty to hide the logout link.",
+    "default": ""
+  },
+  "FRAME_ANCESTORS": {
+    "type": "text",
+    "description": "CSP `frame-ancestors` source list controlling who may iframe the chat. Default `'self'` (no cross-origin embedding). For the ServiceBay maintenance embed (#209) set `'self' https://admin.dopp.cloud` so the SB admin UI can iframe `chat.<publicDomain>`. DEPLOY REQUIREMENT for cross-origin embedding: the Authelia session cookie on chat's NPM proxy must be `SameSite=None; Secure`, otherwise the SSO cookie won't be sent inside the cross-origin iframe and the embed redirects to login. Both hosts are `*.dopp.cloud` so the cookie domain already covers them — only the SameSite flag changes. This is an NPM/Authelia config change, NOT a solilos-chat change.",
+    "default": "'self'"
+  },
+  "FAST_MODEL": {
+    "type": "text",
+    "description": "Adaptive model routing (latency bundle): the Ollama tag a Schnell/FAST chat conversation binds to at Hermes session create. `gemma4:e2b` prefills ~4× faster than `gemma4:12b` (≈3900 vs ≈965 tok/s) and tool-calls reliably for Home-Assistant control, so household-control turns get it. Empty (default) leaves routing OFF — Hermes' configured `model.model` is used for every session regardless of effort. Pair with THOROUGH_MODEL; the pre-pulled tag must exist in Ollama (`gemma4:e2b` is shipped by the ollama template's extra/default models).",
+    "default": "gemma4:e2b"
+  },
+  "THOROUGH_MODEL": {
+    "type": "text",
+    "description": "Adaptive model routing (latency bundle): the Ollama tag a Gründlich/thorough chat conversation binds to (any reasoning_effort above `none`). `gemma4:12b` is the larger, more capable model for explanations and multi-step reasoning. Empty leaves the thorough path on Hermes' configured `model.model`. Pair with FAST_MODEL.",
+    "default": "gemma4:12b"
+  },
+  "DEFAULT_UID": {
+    "type": "text",
+    "description": "Hermes uid used as the fallback resident identity when no SSO identity is present: the chat proxy uses it when the Authelia `Remote-User` header is absent (e.g. direct loopback offline test), and the gatekeeper attributes a voice turn to it until Phase-2 speaker-ID resolves the speaker. Default `household` (the household-wide identity); set an LLDAP `uid` to attribute the SSO-less / pre-speaker-ID path to a specific resident.",
+    "default": "household"
+  },
+  "TZ": {
+    "type": "text",
+    "description": "IANA time zone for log timestamps.",
+    "default": "Europe/Berlin"
+  },
+  "HASS_URL": {
+    "type": "text",
+    "description": "Optional: URL of your Home Assistant instance. Defaults to http://127.0.0.1:8123 (reachable because both pods share hostNetwork). When combined with HASS_TOKEN, turns on Hermes' native Home Assistant integration for device control on first start.",
+    "default": "http://127.0.0.1:8123"
+  },
+  "HASS_TOKEN": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: Home Assistant long-lived access token. Auto-populated from home-assistant's onboarding flow (see post-deploy adoption logic) — leave blank in the wizard. Manually setting a value here pins it and disables the adoption."
+  },
+  "JELLYFIN_URL": {
+    "type": "text",
+    "description": "Optional: URL of your Jellyfin media server. When set together with JELLYFIN_USERNAME, the post-deploy auto-installs Home Assistant's `jellyfin` integration via HA's config-flow API, so Sol can control playback and read now-playing through `media_player.jellyfin_*` entities (no extra Solilos code). Default points at a Jellyfin running on this host (both pods share hostNetwork). Leave blank to skip the integration.",
+    "default": "http://127.0.0.1:8096"
+  },
+  "JELLYFIN_USERNAME": {
+    "type": "text",
+    "description": "Optional: Jellyfin username the Home Assistant `jellyfin` integration logs in as. Pair with JELLYFIN_URL and JELLYFIN_PASSWORD. Empty skips the integration (post-deploy fails soft).",
+    "default": ""
+  },
+  "JELLYFIN_PASSWORD": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: password for JELLYFIN_USERNAME. The HA `jellyfin` config flow treats it as optional (blank is accepted for passwordless Jellyfin users), so leave it empty if that account has no password. Only used to auto-install the HA Jellyfin integration."
+  },
+  "TELEGRAM_BOT_TOKEN": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: Telegram bot token from @BotFather. When set, Hermes' Telegram gateway starts and routes inbound chats to Solilos. Pair with TELEGRAM_ALLOWED_USERS — without an allowlist Hermes denies every message and logs `No user allowlists configured`. Leave blank if you don't use Telegram (post-deploy skips writing the .env entry; gateway stays off)."
+  },
+  "TELEGRAM_ALLOWED_USERS": {
+    "type": "text",
+    "description": "Optional: comma-separated Telegram user IDs allowed to chat with Hermes (e.g. `123456789,987654321`). Use @userinfobot to find your numeric ID. Empty value means every Telegram message is denied even if TELEGRAM_BOT_TOKEN is set.",
+    "default": ""
+  },
+  "DISCORD_BOT_TOKEN": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: Discord bot token from the Discord developer portal. When set, Hermes' Discord gateway starts. Pair with DISCORD_ALLOWED_CHANNELS to allowlist the channels Hermes responds in. Leave blank if you don't use Discord."
+  },
+  "DISCORD_ALLOWED_CHANNELS": {
+    "type": "text",
+    "description": "Optional: comma-separated Discord channel IDs Hermes is allowed to respond in. Empty means every channel is denied even if DISCORD_BOT_TOKEN is set.",
+    "default": ""
+  },
+  "SIGNAL_ACCOUNT": {
+    "type": "text",
+    "description": "Optional: Signal phone number (E.164, e.g. `+491701234567`) the linked signal-cli account belongs to. Linking itself is interactive (`podman exec -it solilos-hermes signal-cli link -n HermesAgent` + scan QR with the operator's phone — see README). Setting this here writes the Hermes-side config; pair with SIGNAL_ALLOWED_USERS.",
+    "default": ""
+  },
+  "SIGNAL_ALLOWED_USERS": {
+    "type": "text",
+    "description": "Optional: comma-separated Signal phone numbers (E.164) allowed to chat with Hermes. Empty means every Signal message is denied even after pairing.",
+    "default": ""
+  },
+  "GATEKEEPER_IMAGE": {
+    "type": "text",
+    "description": "Image tag for Solilos's gatekeeper container. Leave default for the base bridge. For Phase-2 speaker-ID set this to ghcr.io/mdopp/solilos-gatekeeper-ml:latest (bakes in SpeechBrain/torch) and turn on SOLILOS_SPEAKER_ID_ENABLED.",
+    "default": "ghcr.io/mdopp/solilos-gatekeeper:latest"
+  },
+  "GATEKEEPER_PORT": {
+    "type": "text",
+    "description": "Host port the gatekeeper listens on for incoming Wyoming-satellite connections (HA Voice PE devices, wyoming-satellite CLI).",
+    "default": "10700"
+  },
+  "FAST_HERMES_MODEL": {
+    "type": "text",
+    "description": "Ollama model id for adaptive voice routing (#187 / latency bundle). The model follows the reasoning effort: a FAST household-control turn (the common case) runs on this fast model in its own Hermes session; an explicit 'think harder' (Gründlich) turn skips straight to the default model. A fast turn that comes back empty/too-short also escalates to the default. Default `gemma4:e2b` — ~4× faster prefill (≈3900 vs ≈965 tok/s) and tool-calls reliably for HA control. The tag must be pulled in Ollama (the ollama template ships it). Leave blank to disable routing (single session on Hermes' default model, unchanged).",
+    "default": "gemma4:e2b"
+  },
+  "WHISPER_URI": {
+    "type": "text",
+    "description": "Wyoming STT endpoint. Reached via host loopback because both this pod and ServiceBay's `voice` template run with hostNetwork: true.",
+    "default": "tcp://127.0.0.1:10300"
+  },
+  "PIPER_URI": {
+    "type": "text",
+    "description": "Wyoming TTS endpoint. Reached via host loopback.",
+    "default": "tcp://127.0.0.1:10200"
+  },
+  "OPENWAKEWORD_URI": {
+    "type": "text",
+    "description": "Wyoming wakeword endpoint. Advertised in the gatekeeper's Info; Phase 0 lets the satellite do wakeword on-device, so server-side orchestration is optional.",
+    "default": "tcp://127.0.0.1:10400"
+  },
+  "VOICE_PE_DEVICES": {
+    "type": "text",
+    "description": "JSON map from short device name to Wyoming URI, e.g. `{\"office\": \"tcp://192.168.1.10:10700\", \"bedroom\": \"tcp://192.168.1.11:10700\"}`. The gatekeeper's `POST /push` endpoint resolves `voice-pe:<name>` against this map. Leave as `{}` until you've paired at least one device.",
+    "default": "{}"
+  },
+  "PUSH_TOKEN": {
+    "type": "secret",
+    "description": "Bearer token Hermes presents on the gatekeeper's `POST /push` endpoint. The listener binds loopback (127.0.0.1) so only Hermes on the same host reaches it; a blank token disables auth, which is fine for that loopback-only default. Set a value only if you change PUSH_HOST to expose the endpoint beyond loopback."
+  },
+  "GATEKEEPER_MCP_URL": {
+    "type": "text",
+    "description": "URL of the gatekeeper's own room MCP server (set_room/list_rooms over streamable HTTP). The post-deploy hook registers it with Hermes so the agent can self-enrol a satellite's room without holding PUSH_TOKEN (#104). Reached via host loopback; the port matches the gatekeeper's MCP_PORT (10760).",
+    "default": "http://127.0.0.1:10760/mcp"
+  },
+  "GATEKEEPER_MCP_TOKEN": {
+    "type": "secret",
+    "description": "Bearer token Hermes presents to the gatekeeper's room MCP server. The listener binds loopback (127.0.0.1) so only Hermes on the same host reaches it; a blank token disables auth, which is fine for that loopback-only default. Set a value only if you change MCP_HOST to expose the endpoint beyond loopback."
+  },
+  "SERVICEBAY_MCP_URL": {
+    "type": "text",
+    "description": "ServiceBay MCP control surface URL. Used by the post-deploy hook to register both the household servicebay-mcp (read+lifecycle) and the operator servicebay_admin (read+lifecycle+mutate) entries with Hermes. Reached via host loopback.",
+    "default": "http://127.0.0.1:5888/mcp"
+  },
+  "SERVICEBAY_MCP_TOKEN": {
+    "type": "secret",
+    "description": "ServiceBay-MCP bearer token (Settings → Integrations → MCP → Generate token, scope `read+lifecycle`)."
+  },
+  "ADMIN_SOUL_IMAGE": {
+    "type": "text",
+    "description": "Image used as the admin-soul idle-presence container (run as `sleep infinity`); the operator soul itself runs inside the shared Hermes, so this is only here to own the operator skill pack in the Pod. Defaults to a stock minimal busybox image. Leave default unless running a fork PoC.",
+    "default": "docker.io/library/busybox:latest"
+  },
+  "LLDAP_GROUP": {
+    "type": "text",
+    "description": "LLDAP group whose members are considered family (versus guests). Members get personal harnesses in Phase 2; non-members get the guest harness.",
+    "default": "family"
+  },
+  "SOLILOS_SPEAKER_ID_ENABLED": {
+    "type": "select",
+    "description": "Phase-2 speaker-ID (#84): resolve which resident is speaking per voice turn from enrolled voice embeddings. BIOMETRIC — stores per-resident voice fingerprints in solilos.db. Requires the solilos-gatekeeper-ml image (see GATEKEEPER_IMAGE); with the base image this stays inert (falls back to DEFAULT_UID). Off by default.",
+    "options": ["false", "true"],
+    "default": "false"
+  },
+  "SOLILOS_SPEAKER_ID_THRESHOLD": {
+    "type": "text",
+    "description": "Cosine-similarity threshold (0..1) above which a voice turn is attributed to an enrolled resident; below it Solilos falls back to DEFAULT_UID. Higher = stricter. Default 0.55.",
+    "default": "0.55"
+  },
+  "SOLILOS_DEBUG_MODE": {
+    "type": "select",
+    "description": "Initial debug-mode default for the `system_settings.debug_mode.active` row. `true` during build phases, flip to `false` for productive household use (controllable at runtime via the `sol-debug-set` skill).",
+    "options": ["true", "false"],
+    "default": "true"
+  }
+}

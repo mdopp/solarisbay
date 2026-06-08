@@ -1,13 +1,13 @@
 """Solilos Hermes plugin entrypoint.
 
-Registers the bundled skills (templates/solbay/skills/) with
-Hermes when this repo is cloned into ~/.hermes/plugins/solbay/ via
+Registers the bundled household skills (templates/solilos/skills/household/)
+with Hermes when this repo is cloned into ~/.hermes/plugins/solbay/ via
 Hermes' "Install from URL" flow.
 
 NOT used when Solilos is deployed via ServiceBay (mdopp/solbay registry).
-In that case the solbay template's post-deploy.py copies the
-skills into Hermes' bind-mount target at /opt/data/skills/solilos/, and
-Hermes' built-in skill loader picks them up from the filesystem.
+In that case ServiceBay's asset transport ships the merged solilos template's
+skills/household/ to Hermes' bind-mount target at /opt/data/skills/solilos/,
+and Hermes' built-in skill loader picks them up from the filesystem.
 
 Hermes plugin contract:
   https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins
@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-_SKILLS_ROOT = Path(__file__).parent / "templates" / "solbay" / "skills"
+_SKILLS_ROOT = Path(__file__).parent / "templates" / "solilos" / "skills" / "household"
 _HERMES_BINDMOUNT = Path("/opt/data/skills/solilos")
 
 
@@ -39,7 +39,7 @@ def _already_loaded_via_bindmount() -> bool:
 def on_load(ctx):
     """Called by Hermes when the plugin is loaded.
 
-    Walks templates/solbay/skills/ and registers each
+    Walks templates/solilos/skills/household/ and registers each
     `SKILL.md` via ctx.register_skill(name, path). Skill names are the
     immediate-subdirectory names (audit-query, debug-set, …).
     """

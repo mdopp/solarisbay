@@ -49,7 +49,7 @@ Out of scope:
 ### 1. Gather troubleshooting signal from what is available now
 Compile only from sources you actually have — do **not** invent problems:
 - **System logs** — recent error/warn lines from the stack. Use the `terminal`
-  tool, e.g. `podman logs --since 168h hermes-hermes 2>&1 | grep -iE "error|warn|fail"`
+  tool, e.g. `podman logs --since 168h solilos-hermes 2>&1 | grep -iE "error|warn|fail"`
   for the Hermes container, and the equivalent for other Solilos containers
   (`gatekeeper`, `ollama`, …). Look for *resolved* sequences: an error followed
   later by a quiet period or an explicit fix.

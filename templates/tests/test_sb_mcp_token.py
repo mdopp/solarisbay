@@ -28,12 +28,12 @@ def _load(name: str, path: pathlib.Path):
 
 @pytest.fixture(scope="module")
 def hermes():
-    return _load("hermes_post_deploy", TEMPLATES / "hermes" / "post-deploy.py")
+    return _load("hermes_post_deploy", TEMPLATES / "solilos" / "post-deploy.py")
 
 
 @pytest.fixture(scope="module")
 def household():
-    return _load("household_post_deploy", TEMPLATES / "solbay" / "post-deploy.py")
+    return _load("household_post_deploy", TEMPLATES / "solilos" / "post-deploy.py")
 
 
 GOOD = "sb_0a1b2c3d_ABCDEF234567"
@@ -143,7 +143,6 @@ def test_first_install_appends_block(hermes, tmp_path, monkeypatch):
 
 def test_household_collect_skips_when_mint_fails(household, monkeypatch):
     monkeypatch.setattr(household, "SERVICEBAY_MCP_URL", "http://127.0.0.1:5888/mcp")
-    monkeypatch.setattr(household, "SERVICEBAY_MCP_TOKEN", JUNK)
     monkeypatch.setattr(household, "GATEKEEPER_MCP_URL", "")
     monkeypatch.setattr(household, "existing_servicebay_mcp_token", lambda: None)
     monkeypatch.setattr(household, "mint_servicebay_mcp_token", lambda *a, **k: None)
@@ -192,10 +191,10 @@ def test_household_existing_token_parser_rejects_junk(household, monkeypatch):
 def test_household_mint_uses_canonical_route_and_validates(household, monkeypatch):
     seen = {}
 
-    def fake_post(path, payload, timeout=30.0):
-        seen["path"] = path
+    def fake_post(url, payload, timeout=30.0):
+        seen["url"] = url
         return 200, {"secret": GOOD}
 
-    monkeypatch.setattr(household, "sb_post_json", fake_post)
+    monkeypatch.setattr(household, "post_json", fake_post)
     assert household._mint_servicebay_mcp_token_once() == GOOD
-    assert seen["path"] == "/api/system/api-tokens"
+    assert seen["url"].endswith("/api/system/api-tokens")

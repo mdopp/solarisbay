@@ -32,7 +32,7 @@ def _load(name: str, path: pathlib.Path):
 
 @pytest.fixture(scope="module")
 def hermes():
-    return _load("hermes_post_deploy", TEMPLATES / "hermes" / "post-deploy.py")
+    return _load("hermes_post_deploy", TEMPLATES / "solilos" / "post-deploy.py")
 
 
 def _wire(hermes, monkeypatch, *, entries, flow_start, flow_submit):

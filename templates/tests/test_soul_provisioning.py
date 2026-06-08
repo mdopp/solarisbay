@@ -16,7 +16,7 @@ import sys
 import pytest
 
 TEMPLATES = pathlib.Path(__file__).resolve().parents[1]
-SHIPPED_SOUL = (TEMPLATES / "hermes" / "SOUL.md").read_text(encoding="utf-8")
+SHIPPED_SOUL = (TEMPLATES / "solilos" / "SOUL.md").read_text(encoding="utf-8")
 SHIPPED_SHA = hashlib.sha256(SHIPPED_SOUL.encode("utf-8")).hexdigest()
 
 
@@ -31,7 +31,7 @@ def _load(name: str, path: pathlib.Path):
 
 @pytest.fixture(scope="module")
 def hermes():
-    return _load("hermes_post_deploy", TEMPLATES / "hermes" / "post-deploy.py")
+    return _load("hermes_post_deploy", TEMPLATES / "solilos" / "post-deploy.py")
 
 
 def _soul_path(data_dir: pathlib.Path) -> pathlib.Path:

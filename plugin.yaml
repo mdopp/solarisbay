@@ -7,16 +7,17 @@ description: |
   dynamic-skills, media-ingestion-multimodal, notes-search, room-enrollment,
   status) plus the ServiceBay
   templates and
-  container images that deploy the household pod (solbay)
-  alongside Hermes + Ollama. Installable two ways:
+  container images that deploy the merged assistant service (solilos —
+  Hermes runtime + chat UI + household glue + voice bridge + operator soul,
+  one tile) alongside Ollama. Installable two ways:
 
   - As a Hermes plugin via Skills → Install from URL: clone this repo
     to ~/.hermes/plugins/solbay/. The __init__.py at the repo root
-    walks templates/solbay/skills/ and registers each
+    walks templates/solilos/skills/household/ and registers each
     SKILL.md via ctx.register_skill(...).
 
   - As a ServiceBay external registry (mdopp/solbay) alongside
-    mdopp/servicebay-templates. The solbay template's
-    post-deploy.py copies templates/solbay/skills/ into
-    Hermes' bind-mount target {{DATA_DIR}}/solbay/skills/
+    mdopp/servicebay-templates. The merged solilos template's
+    skills/household/ are shipped by ServiceBay's asset transport into
+    Hermes' bind-mount target {{DATA_DIR}}/solilos/skills/household/
     where Hermes' built-in skill loader auto-discovers them.
