@@ -894,6 +894,21 @@
     </div>
   </div>
 
+  <!-- Topic dashboard (#244): clicking a topic chip lists the notes tagged
+       #topic/<slug> for this resident, fetched from GET /api/topics/<slug>/items. -->
+  <div class="modal-backdrop" id="topic-modal" hidden>
+    <div class="modal" role="dialog" aria-label="Thema">
+      <div class="modal-head">
+        <span class="modal-title" id="topic-modal-title">Thema</span>
+        <span class="grow"></span>
+        <button class="icon-btn" id="topic-modal-close" type="button" aria-label="Schließen"><svg class="ic"><use href="#i-x"></use></svg></button>
+      </div>
+      <div class="modal-body">
+        <div id="topic-modal-items"></div>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/markdown.js"></script>
   <script src="/static/mermaid.min.js"></script>
   <script>
@@ -1029,6 +1044,55 @@
         }
         if (topicSel.value) { setSessionTopic("primary", topicSel.value); }
       });
+
+      // ---- Topic dashboard (#244): list a topic's tagged notes ----
+      var topicModal = document.getElementById("topic-modal");
+      var topicModalTitle = document.getElementById("topic-modal-title");
+      var topicModalItems = document.getElementById("topic-modal-items");
+      function closeTopicModal() { topicModal.hidden = true; }
+      document.getElementById("topic-modal-close").addEventListener("click", closeTopicModal);
+      topicModal.addEventListener("click", function (e) { if (e.target === topicModal) closeTopicModal(); });
+
+      function openTopicDashboard(slug) {
+        if (!slug) return;
+        var meta = topicsBySlug[slug];
+        topicModalTitle.textContent = (meta && meta.display_name) || slug;
+        topicModalItems.textContent = "Lädt …";
+        topicModal.hidden = false;
+        // Hierarchical slugs carry a `/`; encode each segment so the path route
+        // (/api/topics/<slug>/items) still receives the full slug.
+        var encoded = slug.split("/").map(encodeURIComponent).join("/");
+        fetch("/api/topics/" + encoded + "/items")
+          .then(function (r) { return r.ok ? r.json() : { items: [] }; })
+          .then(function (j) {
+            var items = (j && j.items) || [];
+            topicModalItems.textContent = "";
+            if (!items.length) {
+              var none = document.createElement("div");
+              none.className = "sessions-empty";
+              none.textContent = "Noch nichts zu diesem Thema notiert.";
+              topicModalItems.appendChild(none);
+              return;
+            }
+            items.forEach(function (it) {
+              var row = document.createElement("div");
+              row.className = "session";
+              var b = document.createElement("div");
+              b.className = "body";
+              var t = document.createElement("div");
+              t.className = "title";
+              t.textContent = it.title || it.path;
+              b.appendChild(t);
+              var w = document.createElement("div");
+              w.className = "when";
+              w.textContent = it.path;
+              b.appendChild(w);
+              row.appendChild(b);
+              topicModalItems.appendChild(row);
+            });
+          })
+          .catch(function () { topicModalItems.textContent = "Konnte das Thema nicht laden."; });
+      }
 
       function currentPersonality() { return personalitySel.value || "sol"; }
 
@@ -1764,9 +1828,12 @@
           if (s.primary_topic) {
             var tc = document.createElement("span");
             tc.className = "topic-chip";
+            tc.style.cursor = "pointer";
+            tc.title = "Alles zu diesem Thema anzeigen";
             var meta = topicsBySlug[s.primary_topic];
             tc.textContent = (meta && meta.display_name) || s.primary_topic;
             if (meta && meta.color) { tc.style.color = meta.color; tc.style.borderColor = meta.color; }
+            tc.addEventListener("click", function (e) { e.stopPropagation(); openTopicDashboard(s.primary_topic); });
             body.appendChild(tc);
           }
           var when = fmtWhen(s.last_activity);

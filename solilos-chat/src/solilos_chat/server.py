@@ -16,7 +16,14 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from solilos_chat import compaction, personalities, reasoning, skills, topics_store
+from solilos_chat import (
+    compaction,
+    notes_search,
+    personalities,
+    reasoning,
+    skills,
+    topics_store,
+)
 from solilos_chat.attachments import AttachmentStore, attach_to_messages
 from solilos_chat.context import STATIC_DEFAULT, ContextWindow
 from solilos_chat.hermes import HermesClient, HermesError
@@ -110,6 +117,7 @@ def build_app(
     fast_model: str = "",
     thorough_model: str = "",
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
+    notes_dir: str = "/opt/data/notes",
 ) -> web.Application:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -574,6 +582,17 @@ def build_app(
         assigned = topics_store.get_session_topics(solilos_db_path, session_id, uid)
         return web.json_response({"ok": True, **assigned})
 
+    async def topic_items(request: web.Request) -> web.Response:
+        # The topic dashboard's per-topic note list (#244): the notes tagged
+        # `#topic/<slug>` in the vault (stamped by ingestion, #243). Per-resident
+        # scope (D3): only the caller's own (or unowned/shared) notes. The slug
+        # may be hierarchical (projekt/wintergarten), so the route captures the
+        # rest of the path into `slug`.
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        slug = request.match_info["slug"].strip("/")
+        items = notes_search.notes_for_topic(notes_dir, slug, uid)
+        return web.json_response({"ok": True, "slug": slug, "items": items})
+
     async def chat(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
@@ -801,6 +820,7 @@ def build_app(
     app.router.add_get("/api/topics", list_topics)
     app.router.add_get("/api/sessions/{session_id}/topics", get_session_topics)
     app.router.add_post("/api/sessions/{session_id}/topics", set_session_topics)
+    app.router.add_get("/api/topics/{slug:.+}/items", topic_items)
     app.router.add_post("/api/chat", chat)
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_post("/api/chat/cancel", cancel_chat)
@@ -1110,6 +1130,7 @@ async def serve(
     fast_model: str = "",
     thorough_model: str = "",
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
+    notes_dir: str = "/opt/data/notes",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -1131,6 +1152,7 @@ async def serve(
         fast_model=fast_model,
         thorough_model=thorough_model,
         solilos_db_path=solilos_db_path,
+        notes_dir=notes_dir,
     )
     runner = web.AppRunner(app)
     await runner.setup()
