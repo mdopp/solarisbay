@@ -172,14 +172,13 @@
 
     /* Pinned household chat (#237): a fixed entry above the session list that
        starts a new chat pre-bound to the `household` topic (e2b + household
-       soul). Mirrors the .session row treatment but is visually pinned. */
+       soul). Pinned layout + home icon only — the active highlight comes from
+       the shared `.session.active` rule, toggled from selection state (#262),
+       so the row is neutral unless the household chat is the current chat. */
     .session.pinned {
       width: calc(100% - 16px); margin: 4px 8px 2px; text-align: left;
-      background: var(--accent-soft); border-color: rgba(249, 115, 22, 0.22);
     }
-    .session.pinned:hover { background: var(--accent-soft); filter: brightness(1.08); }
     .session.pinned .pin-ic { flex: 0 0 26px; display: flex; align-items: center; justify-content: center; color: var(--accent); }
-    .session.pinned .title { color: var(--accent); font-weight: 600; }
 
     .rail-foot { border-top: 1px solid var(--line); padding: 10px 12px; }
     .rail-user { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 6px; }
@@ -1852,11 +1851,24 @@
         return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
       }
 
+      // Drive the pinned household row's highlight from selection state, the
+      // same mechanism that toggles .active on a normal .session row (#262):
+      // it's active when the open chat is bound to the household topic, or when
+      // a fresh no-session chat is pre-bound to it before its first turn. The
+      // row is otherwise neutral. Generalizes to any future pinned topic row.
+      function syncPinnedActive(activeS) {
+        var active = sessionId
+          ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
+          : pendingTopic === HOUSEHOLD_TOPIC;
+        householdBtn.classList.toggle("active", active);
+      }
+
       function renderSessions(list) {
         // Mirror the active session's name into the chat header.
         var activeS = (list || []).find(function (s) { return s.id === sessionId; });
         var ct = document.getElementById("chat-title");
         if (ct) { ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat"; }
+        syncPinnedActive(activeS);
         sessionsEl.textContent = "";
         if (!list.length) {
           var empty = document.createElement("div");
@@ -2016,6 +2028,7 @@
         if (send.disabled) return;
         newSession();
         pendingTopic = HOUSEHOLD_TOPIC;
+        syncPinnedActive(null);
         syncSessionTopics();
       }
 
