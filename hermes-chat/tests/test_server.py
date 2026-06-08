@@ -1485,7 +1485,9 @@ async def test_cancel_interrupts_active_stream(aiohttp_client):
     import asyncio
 
     class _SlowHermes(_FakeHermes):
-        async def chat_stream(self, session_id, text, images=None):
+        async def chat_stream(
+            self, session_id, text, images=None, reasoning_effort="none"
+        ):
             self.turns.append((session_id, text))
             while True:
                 yield {"type": "assistant.delta", "data": {"delta": "x"}}
