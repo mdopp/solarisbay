@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.1](https://github.com/mdopp/solbay/compare/v0.4.0...v0.4.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **chat,template:** per-turn time grounding, SOUL.md scanner, compaction title collision ([a5dd663](https://github.com/mdopp/solbay/commit/a5dd6631103d0a80201c30567f56ac2cd446734b))
+* **chat:** drive pinned household row highlight from selection state ([adabd35](https://github.com/mdopp/solbay/commit/adabd35bda23d9dc308084ec54847f7afa22cc33))
+* **chat:** drive pinned household row highlight from selection state ([1d270de](https://github.com/mdopp/solbay/commit/1d270ded2a4ca0125936df8449f3f0c5d996a7be)), closes [#262](https://github.com/mdopp/solbay/issues/262)
+* **chat:** give compaction continuation a unique title ([76790dc](https://github.com/mdopp/solbay/commit/76790dce633f250ac1343f68e0283ebdac2f0674)), closes [#267](https://github.com/mdopp/solbay/issues/267)
+* **template:** ground Hermes time per-turn and de-trigger SOUL.md scanner ([4db2522](https://github.com/mdopp/solbay/commit/4db25226511de45b7e2e769093226d32f2f91250)), closes [#265](https://github.com/mdopp/solbay/issues/265) [#266](https://github.com/mdopp/solbay/issues/266)
+
 ## [0.4.0](https://github.com/mdopp/solbay/compare/v0.3.0...v0.4.0) (2026-06-08)
 
 
