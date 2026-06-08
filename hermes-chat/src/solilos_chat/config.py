@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from solilos_chat import context
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -25,7 +27,8 @@ class Settings:
     soul_path: str
     config_agent_url: str
     logout_url: str
-    context_window: int
+    context_window_override: int | None
+    ollama_url: str
     compaction_threshold: float
     attachments_dir: str
     frame_ancestors: str
@@ -66,9 +69,18 @@ class Settings:
             # Optional Authelia logout URL for the sidebar footer. Empty ⇒ the
             # panel hides the logout link (avoids a dead link when unset).
             logout_url=os.environ.get("LOGOUT_URL", ""),
-            # Model context window (tokens) shown by the /context command.
-            # Matches the ollama template's OLLAMA_CONTEXT_LENGTH default.
-            context_window=int(os.environ.get("CONTEXT_WINDOW", "131072")),
+            # Context window (tokens): empty/"auto" => derive from the live
+            # Ollama active model at runtime (#235), so the compaction cap always
+            # matches what the model is actually loaded with and adapts per
+            # model. A positive integer here is an explicit operator OVERRIDE
+            # that wins over the derived value (ops control). Resolved at boot +
+            # refreshed periodically; see context.derive_context_window.
+            context_window_override=context.parse_override(
+                os.environ.get("CONTEXT_WINDOW")
+            ),
+            # Where Ollama's API lives (host loopback — the chat pod is
+            # hostNetwork). Queried for the active model's loaded context window.
+            ollama_url=os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"),
             # Fraction of the context window at which a chat is auto-compacted
             # (#210): extract durable learnings to memory, then continue in a
             # fresh small-context session. ~0.90 leaves headroom so a turn never

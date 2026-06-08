@@ -39,8 +39,13 @@
   },
   "CONTEXT_WINDOW": {
     "type": "text",
-    "description": "Model context window in tokens. Shown by the chat's /context command and used as the chat-compaction cap (#210): a chat is auto-compacted near ~90% of this. Match the ollama template's OLLAMA_CONTEXT_LENGTH (default 32768).",
-    "default": "32768"
+    "description": "Context window in tokens, used as the chat-compaction cap (#210): a chat is auto-compacted near ~90% of this, and the /context command reports it. Leave EMPTY (or `auto`) to AUTO-DERIVE it at runtime from the live Ollama active model (#235) — the chat queries Ollama's `/api/ps` for the window the model is actually loaded at (= OLLAMA_CONTEXT_LENGTH, bounded by the model's native context), so the cap always matches the loaded model and adapts per model with no manual sync. Set a positive integer ONLY to OVERRIDE that derivation (ops control); the override wins. Fallback when auto and Ollama is unreachable: OLLAMA_CONTEXT_LENGTH, then a safe static 32768.",
+    "default": ""
+  },
+  "OLLAMA_URL": {
+    "type": "text",
+    "description": "URL of Ollama's API (host loopback — the chat pod is hostNetwork, so default `http://127.0.0.1:11434` matches the ollama template). Queried for the active model's loaded context window to AUTO-DERIVE CONTEXT_WINDOW (#235). Only matters when CONTEXT_WINDOW is left empty/auto.",
+    "default": "http://127.0.0.1:11434"
   },
   "LOGOUT_URL": {
     "type": "text",

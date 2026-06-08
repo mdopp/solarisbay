@@ -18,6 +18,7 @@ from aiohttp import web
 
 from solilos_chat import compaction, personalities, reasoning, skills
 from solilos_chat.attachments import AttachmentStore, attach_to_messages
+from solilos_chat.context import STATIC_DEFAULT, ContextWindow
 from solilos_chat.hermes import HermesClient, HermesError
 from solilos_chat.logging import log
 
@@ -102,11 +103,13 @@ def build_app(
     config_agent_url: str = "http://127.0.0.1:8650",
     agent_token: str = "",
     logout_url: str = "",
-    context_window: int = 131072,
+    context_window: ContextWindow | int = STATIC_DEFAULT,
     compaction_threshold: float = compaction.DEFAULT_THRESHOLD,
     attachments_dir: str = "/data/attachments",
     frame_ancestors: str = "'self'",
 ) -> web.Application:
+    if isinstance(context_window, int):
+        context_window = ContextWindow.static(context_window)
     # Hermes drops inbound images (persists a `[screenshot]` placeholder, no
     # attachment API), so the proxy persists the sent data URLs itself and
     # re-attaches them on history load (#202) — the one stateful exception.
@@ -136,7 +139,7 @@ def build_app(
                 uid,
                 session_id,
                 base_system_prompt=system_prompt,
-                context_window=context_window,
+                context_window=context_window.value,
                 threshold=compaction_threshold,
             )
         except HermesError:
@@ -159,7 +162,7 @@ def build_app(
                 "is_admin": is_admin(request, remote_groups_header, admin_group),
                 "version": VERSION,
                 "logout_url": logout_url,
-                "context_window": context_window,
+                "context_window": context_window.value,
             }
         )
 
@@ -973,11 +976,13 @@ async def serve(
     config_agent_url: str = "http://127.0.0.1:8650",
     agent_token: str = "",
     logout_url: str = "",
-    context_window: int = 131072,
+    context_window: ContextWindow,
     compaction_threshold: float = compaction.DEFAULT_THRESHOLD,
     attachments_dir: str = "/data/attachments",
     frame_ancestors: str = "'self'",
 ) -> None:
+    if isinstance(context_window, int):
+        context_window = ContextWindow.static(context_window)
     app = build_app(
         hermes=hermes,
         remote_user_header=remote_user_header,
@@ -999,9 +1004,11 @@ async def serve(
     site = web.TCPSite(runner, host, port)
     await site.start()
     log.info("chat.listening", host=host, port=port)
+    # Re-derive the context window periodically so a model switch adapts the
+    # compaction cap without a restart (no-op when an explicit override pins it).
+    refresh = asyncio.create_task(context_window.refresh_loop())
     try:
-        import asyncio
-
         await asyncio.Event().wait()
     finally:
+        refresh.cancel()
         await runner.cleanup()

@@ -75,10 +75,17 @@ spec:
     # API_SERVER_KEY (above).
     - name: CONFIG_AGENT_URL
       value: "{{CONFIG_AGENT_URL}}"
-    # Model context window (tokens): the /context command reports it and chat
-    # compaction (#210) uses it as the cap. Match OLLAMA_CONTEXT_LENGTH.
+    # Context window (tokens) = the chat-compaction cap (#210) + /context.
+    # Empty/auto => AUTO-DERIVE from the live Ollama active model at runtime
+    # (#235): the proxy reads OLLAMA_URL's /api/ps for the window the model is
+    # actually loaded at, so the cap matches the loaded model and adapts per
+    # model. A positive integer OVERRIDES the derivation (ops control).
     - name: CONTEXT_WINDOW
       value: "{{CONTEXT_WINDOW}}"
+    # Where Ollama's API lives (host loopback; hostNetwork pod). Queried for the
+    # active model's loaded context window when CONTEXT_WINDOW auto-derives.
+    - name: OLLAMA_URL
+      value: "{{OLLAMA_URL}}"
     # Optional Authelia logout URL for the sidebar footer; empty hides the
     # link (no dead link when unset).
     - name: LOGOUT_URL
