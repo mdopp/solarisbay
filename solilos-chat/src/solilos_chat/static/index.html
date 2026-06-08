@@ -350,6 +350,13 @@
     .slash-item.active { background: var(--accent-soft); }
     .slash-item.active .cmd { color: var(--accent); }
 
+    /* Inline #tag / @person mention chips in sent message bubbles (#279). */
+    .mention {
+      border-radius: 6px; padding: 0 4px; font-weight: 500;
+      background: var(--accent-soft); color: var(--accent);
+    }
+    .mention.person { background: var(--bubble-sol); color: var(--ink); }
+
     /* Composer mic/attach icon buttons (#183, #184). */
     .composer-tools { display: flex; gap: 8px; flex: 0 0 auto; align-items: stretch; }
     /* When the textarea has grown tall, stack the icons and pin them to the
@@ -776,6 +783,7 @@
         <div class="attach-preview" id="attach-preview" hidden></div>
         <form id="composer">
           <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Commands" hidden></div>
+          <div class="slash-menu" id="mention-menu" role="listbox" aria-label="Mentions" hidden></div>
           <div class="composer-tools">
             <button id="attach-btn" class="composer-icon" type="button" title="Bild anhängen" aria-label="Bild anhängen"><svg class="ic"><use href="#i-image"></use></svg></button>
             <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
@@ -995,6 +1003,7 @@
       // selecting a topic names where an explicit "extract to note" lands.
       var incognito = false;
       var slash = { refresh: function () {}, handleKey: function () { return false; } };
+      var mention = { refresh: function () {}, handleKey: function () { return false; }, close: function () {} };
 
       // ---- Topics (#241): primary topic picker + secondary tags in the header,
       // primary-topic chip per chat in the list. Available topics come from the
@@ -1288,10 +1297,32 @@
         return m;
       }
 
+      // Render a user turn's text, wrapping #tag / @person tokens in a styled
+      // chip span while keeping everything else as plain text nodes (the bubble
+      // is white-space: pre-wrap, so spacing/newlines are preserved). Mirrors
+      // the server-side parse in parse_mentions(): word-start # / @, allowing
+      // hierarchy "/" and hyphen, never mid-word or an email's @ (#279).
+      var MENTION_RE = /(^|[^\w/])([#@])([\w/-]+)/g;
+      function appendMentionText(el, text) {
+        var last = 0, m;
+        MENTION_RE.lastIndex = 0;
+        while ((m = MENTION_RE.exec(text))) {
+          var start = m.index + m[1].length; // skip the leading boundary char
+          if (start > last) el.appendChild(document.createTextNode(text.slice(last, start)));
+          var span = document.createElement("span");
+          span.className = "mention" + (m[2] === "@" ? " person" : "");
+          span.textContent = m[2] + m[3];
+          el.appendChild(span);
+          last = start + m[2].length + m[3].length;
+        }
+        if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+      }
+
       function addText(role, text, when) {
         var el = document.createElement("div");
         el.className = "msg " + role;
-        el.appendChild(document.createTextNode(text));
+        if (role === "me") appendMentionText(el, text);
+        else el.appendChild(document.createTextNode(text));
         if (role === "me" || role === "sol") el.appendChild(metaLine(when));
         log.appendChild(el);
         scrollDown(true);
@@ -1394,9 +1425,16 @@
         input.style.height = h + "px";
         form.classList.toggle("grown", h > 43);
       }
-      input.addEventListener("input", function () { autosize(); slash.refresh(); });
+      input.addEventListener("input", function () { autosize(); slash.refresh(); mention.refresh(); });
+      // Caret moves (arrows/click) can enter or leave a #/@ token without an
+      // input event, so re-evaluate the mention menu on those too.
+      input.addEventListener("keyup", function (e) {
+        if (e.key.indexOf("Arrow") === 0 || e.key === "Home" || e.key === "End") mention.refresh();
+      });
+      input.addEventListener("click", function () { mention.refresh(); });
       input.addEventListener("keydown", function (e) {
-        if (slash.handleKey(e)) return; // arrow/enter/tab/esc while the menu is open
+        if (slash.handleKey(e)) return;   // arrow/enter/tab/esc while the slash menu is open
+        if (mention.handleKey(e)) return; // same nav while the mention menu is open
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
       });
 
@@ -1559,6 +1597,109 @@
           var v = input.value;
           if (v.charAt(0) === "/" && v.indexOf(" ") === -1 && v.indexOf("\n") === -1) render(v);
           else close();
+        }
+
+        function handleKey(e) {
+          if (menu.hidden) return false;
+          if (e.key === "ArrowDown") { e.preventDefault(); move(1); return true; }
+          if (e.key === "ArrowUp") { e.preventDefault(); move(-1); return true; }
+          if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); choose(active); return true; }
+          if (e.key === "Escape") { e.preventDefault(); close(); return true; }
+          return false;
+        }
+
+        document.addEventListener("click", function (e) {
+          if (!menu.hidden && e.target !== input && !menu.contains(e.target)) close();
+        });
+
+        return { refresh: refresh, handleKey: handleKey, close: close };
+      })();
+
+      // ---- #tag / @person mention autosuggest (#279) ----
+      // Reuses the slash-menu DOM/CSS idiom and keyboard nav, but triggers on a
+      // #/@ token at the cursor and fetches candidates from the unit-279a
+      // endpoints (#: /api/mentions/tags, @: /api/mentions/persons), filtered by
+      // the typed prefix. Selecting an item completes the token in the composer.
+      mention = (function () {
+        var menu = document.getElementById("mention-menu");
+        var items = [];     // current [{kind, value}]
+        var active = -1;
+        var tok = null;     // {char, start, end, prefix} of the token at the cursor
+        var seq = 0;        // fetch generation guard (drop stale responses)
+
+        function close() { menu.hidden = true; menu.textContent = ""; items = []; active = -1; tok = null; }
+
+        // The mention token under the cursor: a leading #/@ at a word boundary
+        // followed by the word chars up to the caret. Null if the caret isn't in
+        // one. Same boundary rule as parse_mentions / appendMentionText.
+        function tokenAt() {
+          var pos = input.selectionStart;
+          if (pos == null || pos !== input.selectionEnd) return null;
+          var head = input.value.slice(0, pos);
+          var m = /([#@])([\w/-]*)$/.exec(head);
+          if (!m) return null;
+          var i = m.index;
+          if (i > 0 && /[\w/]/.test(head.charAt(i - 1))) return null; // mid-word #/@ or email
+          return { char: m[1], start: i, end: pos, prefix: m[2].toLowerCase() };
+        }
+
+        function render() {
+          if (!items.length) { close(); return; }
+          active = 0;
+          menu.textContent = "";
+          items.forEach(function (it, i) {
+            var row = document.createElement("div");
+            row.className = "slash-item" + (i === active ? " active" : "");
+            row.setAttribute("role", "option");
+            var cmd = document.createElement("span"); cmd.className = "cmd";
+            cmd.textContent = tok.char + it.value;
+            row.appendChild(cmd);
+            row.addEventListener("mousedown", function (e) { e.preventDefault(); choose(i); });
+            menu.appendChild(row);
+          });
+          menu.hidden = false;
+        }
+
+        function move(delta) {
+          if (!items.length) return;
+          var rows = menu.querySelectorAll(".slash-item");
+          if (rows[active]) rows[active].classList.remove("active");
+          active = (active + delta + items.length) % items.length;
+          rows[active].classList.add("active");
+          rows[active].scrollIntoView({ block: "nearest" });
+        }
+
+        function choose(i) {
+          var it = items[i];
+          if (!it || !tok) return;
+          var v = input.value;
+          var insert = tok.char + it.value + " ";
+          input.value = v.slice(0, tok.start) + insert + v.slice(tok.end);
+          var caret = tok.start + insert.length;
+          close();
+          autosize();
+          input.focus();
+          input.setSelectionRange(caret, caret);
+        }
+
+        function refresh() {
+          var t = tokenAt();
+          if (!t) { close(); return; }
+          tok = t;
+          var url = t.char === "#"
+            ? "/api/mentions/tags?q=" + encodeURIComponent(t.prefix)
+            : "/api/mentions/persons?q=" + encodeURIComponent(t.prefix);
+          var key = t.char === "#" ? "tags" : "persons";
+          var mine = ++seq;
+          fetch(url, { headers: { Accept: "application/json" } })
+            .then(function (r) { return r.ok ? r.json() : {}; })
+            .then(function (j) {
+              if (mine !== seq) return;          // a newer keystroke superseded this
+              if (!tokenAt()) { close(); return; } // caret left the token meanwhile
+              items = (j && j[key]) || [];
+              render();
+            })
+            .catch(function () { if (mine === seq) close(); });
         }
 
         function handleKey(e) {
@@ -1802,6 +1943,7 @@
       form.addEventListener("submit", function (e) {
         e.preventDefault();
         slash.close();
+        mention.close();
         var text = input.value.trim();
         var images = attach.take(); // data-URLs; clears the tray
         if (!text && !images.length) return;
@@ -1837,7 +1979,7 @@
           });
           el.appendChild(strip);
         }
-        if (text) el.appendChild(document.createTextNode(text));
+        if (text) appendMentionText(el, text);
         el.appendChild(metaLine(when || new Date()));
         log.appendChild(el);
         scrollDown(true);
