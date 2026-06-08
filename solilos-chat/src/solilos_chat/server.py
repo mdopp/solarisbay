@@ -277,14 +277,23 @@ def build_app(
         """Create the session for a first turn; return its id.
 
         Ephemeral (#246): an incognito chat is created with the `[temp:]` marker
-        (kept out of the durable list, deleted on close) and is NOT bound to a
-        topic, NOT re-titled (re-titling would re-stamp the `[uid:]` marker and
-        surface it), and never has a `session_topics` row — it carries no durable
-        state. Normal chats bind topic model/persona and persist the auto-title.
+        (kept out of the durable list, deleted on close) plus a unique title
+        suffix after the marker (#286 — so two temp chats can't collide on
+        Hermes' unique-title constraint), is NOT bound to a topic, NOT re-titled
+        (re-titling would re-stamp the `[uid:]` marker and surface it), and never
+        has a `session_topics` row — it carries no durable state. Normal chats
+        bind topic model/persona and persist the auto-title.
         """
         if ephemeral:
+            # A unique suffix rides after the `[temp:]` marker so a second temp
+            # chat can't 400 against the first's bare-marker title (#286, same
+            # collision #267/#277 fixed). The marker prefix is preserved, so the
+            # chat stays incognito (not-persisted / not-listed).
             session_id = await hermes.create_session(
-                uid, personalities.system_prompt_for(personality_id), ephemeral=True
+                uid,
+                personalities.system_prompt_for(personality_id),
+                ephemeral=True,
+                title=_title_from(text),
             )
             log.info(
                 "chat.session.created", uid=uid, session_id=session_id, ephemeral=True

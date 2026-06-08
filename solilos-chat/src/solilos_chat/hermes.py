@@ -81,12 +81,15 @@ class HermesClient:
         from its first turn, but Hermes enforces title uniqueness, so a caller
         that opens a session which may never be re-titled (e.g. a compaction
         continuation) must pass a unique suffix or risk a 400 "title already in
-        use" against an abandoned bare-marker stub. Ignored for maintenance /
-        ephemeral markers, which are not in the household namespace.
+        use" against an abandoned bare-marker stub. For an ephemeral session the
+        suffix rides *after* the `[temp:<hash>] ` marker (the marker prefix is
+        anchored, so the incognito/not-listed semantics are preserved) — needed
+        so two temp chats for the same resident can't collide (#286). Ignored for
+        the maintenance marker.
         """
         url = f"{self._base_url}/api/sessions"
         if ephemeral:
-            session_title = marker.temp_marker(uid)
+            session_title = marker.temp_marker(uid) + title
         elif maintenance:
             session_title = marker.maint_marker(uid)
         elif title:

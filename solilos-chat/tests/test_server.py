@@ -1187,6 +1187,45 @@ async def test_ephemeral_session_created_with_temp_marker(aiohttp_client, tmp_pa
     }
 
 
+async def test_two_ephemeral_first_turns_get_distinct_noncolliding_titles(
+    aiohttp_client, tmp_path
+):
+    # Two incognito first turns for the same resident must seed distinct
+    # `create_session` titles (#286): the bare `[temp:]` marker is shared across
+    # temp chats, so without a unique suffix the second collides on Hermes'
+    # unique-title constraint (400 -> 502). Each ephemeral create now passes
+    # `title=_title_from(text)` (rides after the [temp:] marker), so two temp
+    # chats with different first messages can't collide.
+    db = _topics_db(tmp_path)
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        solilos_db_path=db,
+    )
+    client = await aiohttp_client(app)
+    for text in ("ist das vertraulich?", "und das hier auch?"):
+        resp = await client.post(
+            "/api/chat",
+            json={"input": text, "ephemeral": True},
+            headers={"Remote-User": "mdopp"},
+        )
+        assert resp.status == 200
+    # Both creates were ephemeral and carried a non-empty, distinct title suffix.
+    assert fake.ephemeral == [True, True]
+    assert all(t for t in fake.create_titles)
+    assert fake.create_titles[0] != fake.create_titles[1]
+    # Ephemeral semantics intact: never re-titled (would surface the [uid:]
+    # marker) and no durable topic row written.
+    assert fake.titles == []
+    assert topics_store.get_session_topics(db, "sess-1", "mdopp") == {
+        "primary": None,
+        "secondary": [],
+    }
+
+
 async def test_ephemeral_turn_injects_no_persist_hint(aiohttp_client, tmp_path):
     # Every ephemeral turn carries the guard hint telling the agent to persist
     # nothing (suppresses auto-ingestion / memory writes at the source).
