@@ -202,6 +202,20 @@
     /* Mobile top bar — hidden on desktop. */
     .topbar { display: none; }
 
+    /* Embed mode (#227): focused frame for the ServiceBay maintenance
+       iframe — drop the rail + topbar chrome, let .main fill the frame.
+       The in-header gear (hidden otherwise) is the only way into Settings. */
+    .embed .rail { display: none; }
+    .embed .topbar { display: none; }
+    .embed .main { border-radius: 0; border-width: 0; box-shadow: none; }
+    .chat-header .embed-settings { display: none; }
+    .embed .chat-header .embed-settings { display: inline-flex; }
+    /* Embed Settings shows only the Chat display-prefs tab. */
+    .embed #settings-nav [data-view="skills"],
+    .embed #settings-nav [data-view="soul"],
+    .embed #settings-nav [data-view="tools"],
+    .embed #settings-nav [data-view="model"] { display: none; }
+
     .view { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
     .view.active { display: flex; }
 
@@ -211,7 +225,7 @@
       max-width: 900px; width: 100%; margin: 0 auto;
     }
     .msg { max-width: 84%; padding: 10px 13px; border-radius: var(--radius); word-wrap: break-word; overflow-wrap: anywhere; }
-    .msg.me { align-self: flex-end; background: var(--bubble-me); white-space: pre-wrap; }
+    .msg.me { align-self: flex-end; background: var(--bubble-me); white-space: pre-wrap; border-top-right-radius: 4px; }
     .msg.sol { align-self: flex-start; background: var(--bubble-sol); }
     .msg.system { align-self: center; color: var(--muted); background: none; font-size: 13px; padding: 4px; }
     .msg.info { align-self: flex-start; background: var(--accent-soft); }
@@ -631,6 +645,7 @@
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
   </svg>
 
   <aside class="rail">
@@ -711,6 +726,7 @@
           <label for="personality">Persona</label>
           <select id="personality" aria-label="Personality for new sessions"></select>
         </span>
+        <button class="icon-btn embed-settings" id="embed-settings" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"></use></svg></button>
       </header>
       <div id="log" aria-live="polite"></div>
       <div class="composer-bar">
@@ -722,7 +738,7 @@
             <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
           </div>
           <textarea id="input" rows="1" placeholder="type message or /help" autofocus></textarea>
-          <button id="send" class="btn-primary" type="submit">Send</button>
+          <button id="send" class="btn-primary" type="submit" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
           <button id="stop" class="composer-icon stop" type="button" title="Antwort stoppen" aria-label="Antwort stoppen" hidden><svg class="ic"><use href="#i-stop"></use></svg></button>
           <input id="file-input" type="file" accept="image/*" hidden />
         </form>
@@ -862,6 +878,34 @@
   <script src="/static/mermaid.min.js"></script>
   <script>
     (function () {
+      // ---- Embed mode + accent theme override (#227) ----
+      // The ServiceBay maintenance embed iframes this page with
+      // ?embed=1&accent=%233b82f6&accent2=%232563eb. embed=1 strips the
+      // chrome (rail/topbar) to a focused frame; ?accent / ?accent2 retint
+      // the (already CSS-var-driven) UI. No backend involvement.
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        if (params.get("embed") === "1") document.body.classList.add("embed");
+        var hex = /^#[0-9a-fA-F]{6}$/;
+        function rgba(h, a) {
+          var n = parseInt(h.slice(1), 16);
+          return "rgba(" + ((n >> 16) & 255) + ", " + ((n >> 8) & 255) +
+            ", " + (n & 255) + ", " + a + ")";
+        }
+        var accent = params.get("accent");
+        var accent2 = params.get("accent2");
+        if (accent && hex.test(accent)) {
+          var r = document.documentElement.style;
+          r.setProperty("--accent", accent);
+          r.setProperty("--accent-soft", rgba(accent, 0.15));
+          r.setProperty("--bubble-me", rgba(accent, 0.16));
+          var lighter = accent2 && hex.test(accent2) ? accent2 : accent;
+          r.setProperty("--accent-2", lighter);
+          r.setProperty("--accent-grad",
+            "linear-gradient(135deg, " + accent + ", " + lighter + ")");
+        }
+      })();
+
       var log = document.getElementById("log");
       var form = document.getElementById("composer");
       var input = document.getElementById("input");
@@ -1775,9 +1819,13 @@
       navBtns.forEach(function (b) {
         b.addEventListener("click", function () { showView(b.getAttribute("data-view")); });
       });
-      function openSettings() { showView("skills"); }
+      // In embed mode only the Chat display-prefs tab is shown, so open
+      // straight to it (the other nav buttons are CSS-hidden, #227).
+      var isEmbed = document.body.classList.contains("embed");
+      function openSettings() { showView(isEmbed ? "prefs" : "skills"); }
       openSettingsBtn.addEventListener("click", openSettings);
       document.getElementById("topbar-settings").addEventListener("click", openSettings);
+      document.getElementById("embed-settings").addEventListener("click", openSettings);
       document.getElementById("settings-back").addEventListener("click", function () { showView("chat"); });
       document.getElementById("brand-home").addEventListener("click", function () { showView("chat"); });
 
