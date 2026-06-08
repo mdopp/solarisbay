@@ -120,7 +120,14 @@ class _FakeHermes:
         self._store = store or []
 
     async def create_session(
-        self, uid, system_prompt=None, *, maintenance=False, ephemeral=False, model=""
+        self,
+        uid,
+        system_prompt=None,
+        *,
+        maintenance=False,
+        ephemeral=False,
+        model="",
+        title="",
     ):
         self.created.append(uid)
         self.created_prompts.append(system_prompt or "")

@@ -94,6 +94,7 @@ class _RecordingHermes:
         self._fail_on = fail_on  # one of "extract", "summary", "create"
         self.calls: list[str] = []
         self.created_prompts: list[str] = []
+        self.created_titles: list[str] = []
 
     async def get_session(self, session_id, uid):
         return dict(self._session) if self._session is not None else None
@@ -111,11 +112,14 @@ class _RecordingHermes:
             return self._summary
         raise AssertionError(f"unexpected chat text: {text!r}")
 
-    async def create_session(self, uid, system_prompt=None, *, maintenance=False):
+    async def create_session(
+        self, uid, system_prompt=None, *, maintenance=False, title=""
+    ):
         if self._fail_on == "create":
             raise RuntimeError("create boom")
         self.calls.append("create")
         self.created_prompts.append(system_prompt or "")
+        self.created_titles.append(title)
         return "cont-1"
 
 
@@ -142,6 +146,38 @@ async def test_compaction_seeds_continuation_with_summary_and_overlay():
     assert "Be concise." in seed  # the personality overlay is preserved
     assert "we discussed the boiler" in seed  # the compacted summary is seeded
     assert "memory" in seed.lower()  # points at the stored learnings
+
+
+async def test_compaction_continuation_title_is_unique_not_bare_marker(monkeypatch):
+    # #267: the continuation must NOT be created with a bare uid marker as its
+    # title — Hermes enforces title uniqueness, so a bare marker collides with
+    # an abandoned stub session and 400s, stalling compaction. The continuation
+    # gets a non-empty, unique human suffix so two continuations never clash.
+    from solilos_chat import marker
+
+    h = _RecordingHermes(session=_OVER)
+    await compaction.compact_session(h, "mdopp", "s1", context_window=32768)
+    title = h.created_titles[0]
+    assert title  # a human suffix is passed (not the empty default = bare marker)
+    assert title.strip() != marker.marker_for("mdopp").strip()
+
+    # Two continuations opened at different times must get distinct titles, so a
+    # later compaction can never collide with this one's persisted session.
+    class _Clock:
+        n = 0
+
+        @classmethod
+        def now(cls):
+            from datetime import datetime, timedelta
+
+            cls.n += 1
+            return datetime(2026, 6, 8, 12, 0, 0) + timedelta(seconds=cls.n)
+
+    monkeypatch.setattr(compaction, "datetime", _Clock)
+    h2 = _RecordingHermes(session=_OVER)
+    await compaction.compact_session(h2, "mdopp", "s1", context_window=32768)
+    await compaction.compact_session(h2, "mdopp", "s1", context_window=32768)
+    assert h2.created_titles[0] != h2.created_titles[1]
 
 
 async def test_compaction_skips_when_under_threshold():

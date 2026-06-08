@@ -44,6 +44,7 @@ So both passes (extract, summarise) are ordinary Hermes chat turns on the
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from solilos_chat.logging import log
@@ -189,9 +190,14 @@ async def compact_session(
         return None
 
     # Open the continuation; the original session is untouched (kept as record).
+    # The title carries a timestamp suffix so it never collides with an
+    # abandoned bare-marker stub — Hermes enforces title uniqueness and a bare
+    # `[uid:...] ` marker would 400 against any stub already holding it (#267).
     try:
         new_id = await hermes.create_session(
-            uid, _continuation_prompt(base_system_prompt, summary)
+            uid,
+            _continuation_prompt(base_system_prompt, summary),
+            title=f"Fortsetzung {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         )
     except Exception as e:  # noqa: BLE001
         log.error("chat.compaction.create_failed", session_id=session_id, error=str(e))
