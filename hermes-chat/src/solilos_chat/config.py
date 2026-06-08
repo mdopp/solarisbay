@@ -27,6 +27,7 @@ class Settings:
     logout_url: str
     context_window: int
     attachments_dir: str
+    frame_ancestors: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -70,6 +71,10 @@ class Settings:
             # Host-mounted dir where the proxy persists image attachments
             # Hermes drops (the one stateful store, #202).
             attachments_dir=os.environ.get("ATTACHMENTS_DIR", "/data/attachments"),
+            # CSP `frame-ancestors` source list — who may iframe the chat
+            # (#228). Default `'self'`; the ServiceBay maintenance embed sets
+            # `'self' https://admin.dopp.cloud` so admin.dopp.cloud can frame it.
+            frame_ancestors=os.environ.get("FRAME_ANCESTORS", "'self'"),
         )
 
 

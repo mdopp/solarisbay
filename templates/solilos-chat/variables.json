@@ -56,5 +56,10 @@
     "type": "text",
     "description": "IANA time zone for log timestamps.",
     "default": "Europe/Berlin"
+  },
+  "FRAME_ANCESTORS": {
+    "type": "text",
+    "description": "CSP `frame-ancestors` source list controlling who may iframe the chat. Default `'self'` (no cross-origin embedding). For the ServiceBay maintenance embed (#209) set `'self' https://admin.dopp.cloud` so the SB admin UI can iframe `chat.<publicDomain>`. DEPLOY REQUIREMENT for cross-origin embedding: the Authelia session cookie on chat's NPM proxy must be `SameSite=None; Secure`, otherwise the SSO cookie won't be sent inside the cross-origin iframe and the embed redirects to login. Both hosts are `*.dopp.cloud` so the cookie domain already covers them — only the SameSite flag changes. This is an NPM/Authelia config change, NOT a solilos-chat change.",
+    "default": "'self'"
   }
 }

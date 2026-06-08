@@ -31,6 +31,7 @@ def main() -> None:
             logout_url=settings.logout_url,
             context_window=settings.context_window,
             attachments_dir=settings.attachments_dir,
+            frame_ancestors=settings.frame_ancestors,
         )
     )
 

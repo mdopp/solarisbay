@@ -89,6 +89,11 @@ spec:
     # on history load. The one stateful store in an otherwise stateless pod.
     - name: ATTACHMENTS_DIR
       value: "/data/attachments"
+    # CSP `frame-ancestors` source list (#228): who may iframe the chat.
+    # Default `'self'`; the ServiceBay maintenance embed sets
+    # `'self' https://admin.dopp.cloud` so admin.dopp.cloud can frame it.
+    - name: FRAME_ANCESTORS
+      value: "{{FRAME_ANCESTORS}}"
     - name: TZ
       value: "{{TZ}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host

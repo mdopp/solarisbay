@@ -1513,3 +1513,32 @@ async def test_cancel_interrupts_active_stream(aiohttp_client):
     body = await resp.text()
     assert "event: cancelled" in body
     assert body.rstrip().endswith("data: {}")  # final 'done' frame
+
+
+async def test_csp_header_from_default_frame_ancestors(aiohttp_client):
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/health")
+    assert resp.headers["Content-Security-Policy"] == "frame-ancestors 'self'"
+    assert "X-Frame-Options" not in resp.headers
+
+
+async def test_csp_header_uses_configured_frame_ancestors(aiohttp_client):
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        frame_ancestors="'self' https://admin.dopp.cloud",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/health")
+    assert (
+        resp.headers["Content-Security-Policy"]
+        == "frame-ancestors 'self' https://admin.dopp.cloud"
+    )

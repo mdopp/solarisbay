@@ -104,6 +104,7 @@ def build_app(
     logout_url: str = "",
     context_window: int = 131072,
     attachments_dir: str = "/data/attachments",
+    frame_ancestors: str = "'self'",
 ) -> web.Application:
     # Hermes drops inbound images (persists a `[screenshot]` placeholder, no
     # attachment API), so the proxy persists the sent data URLs itself and
@@ -550,7 +551,15 @@ def build_app(
         await _send_event(resp, "done", {})
         return resp
 
-    app = web.Application()
+    @web.middleware
+    async def csp(request: web.Request, handler: Any) -> web.StreamResponse:
+        # CSP frame-ancestors gates who may iframe the chat (#228). Set on
+        # every response; no X-Frame-Options (it conflicts with CSP).
+        resp = await handler(request)
+        resp.headers["Content-Security-Policy"] = f"frame-ancestors {frame_ancestors}"
+        return resp
+
+    app = web.Application(middlewares=[csp])
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", whoami)
@@ -850,6 +859,7 @@ async def serve(
     logout_url: str = "",
     context_window: int = 131072,
     attachments_dir: str = "/data/attachments",
+    frame_ancestors: str = "'self'",
 ) -> None:
     app = build_app(
         hermes=hermes,
@@ -864,6 +874,7 @@ async def serve(
         logout_url=logout_url,
         context_window=context_window,
         attachments_dir=attachments_dir,
+        frame_ancestors=frame_ancestors,
     )
     runner = web.AppRunner(app)
     await runner.setup()
