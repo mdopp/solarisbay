@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.5.0](https://github.com/mdopp/solbay/compare/v0.4.1...v0.5.0) (2026-06-08)
+
+
+### Features
+
+* **chat:** combine persona+speed dropdown, left-align search, name Zuhause chat ([4c73411](https://github.com/mdopp/solbay/commit/4c734119a32dd5f08ae7ab3cb0910c65b87ec5ac)), closes [#278](https://github.com/mdopp/solbay/issues/278) [#280](https://github.com/mdopp/solbay/issues/280) [#281](https://github.com/mdopp/solbay/issues/281)
+* **chat:** declutter header — Thinking toggle + context-fixed selectors ([4778935](https://github.com/mdopp/solbay/commit/47789359332d96d6c59a4e4a0ad93a0bcc24ebee))
+* **chat:** declutter header — Thinking toggle + context-fixed selectors ([0b5d330](https://github.com/mdopp/solbay/commit/0b5d33036a13369bc1dfa34bc233a2bfee149990)), closes [#274](https://github.com/mdopp/solbay/issues/274)
+* **chat:** household first-turn reply + header dropdown/title + SOUL HA grounding ([fa8a76e](https://github.com/mdopp/solbay/commit/fa8a76e55dd1bcd5a321db5880d13f275fc80c2e))
+* **chat:** inline #tag/[@person](https://github.com/person) multitag — mentions backend, autosuggest, tag-cloud, retire Thema picker ([ca02fac](https://github.com/mdopp/solbay/commit/ca02facdd109e6d0a4b4defd4a75bb5ff1c5663b))
+* **chat:** mention autosuggest popover + sent-turn highlight (279b) ([637306f](https://github.com/mdopp/solbay/commit/637306f423ace720e9cac696e2375f764b2f2e7e)), closes [#279](https://github.com/mdopp/solbay/issues/279)
+* **chat:** mentions backend for inline #tag/[@person](https://github.com/person) (279a) ([94bee55](https://github.com/mdopp/solbay/commit/94bee551409e2dc17b5909c370609765517a0d14)), closes [#279](https://github.com/mdopp/solbay/issues/279)
+* **chat:** responsive tag-cloud + jump-to-message (279c) ([d006c4d](https://github.com/mdopp/solbay/commit/d006c4dfe3d31483ed3fdabb9a6f721f5824fcb4)), closes [#279](https://github.com/mdopp/solbay/issues/279)
+* **chat:** retire user-facing Thema topic picker (279d) ([98e610d](https://github.com/mdopp/solbay/commit/98e610d544c92b7dbccab8e207f4bff1b026db32)), closes [#279](https://github.com/mdopp/solbay/issues/279)
+* **template:** merge hermes/chat/solbay/admin-soul into one solilos service ([6fe0d11](https://github.com/mdopp/solbay/commit/6fe0d114d525c1728b70467ef080b0c2a26575f6))
+* **template:** merge hermes/chat/solbay/admin-soul into one solilos service ([dab508e](https://github.com/mdopp/solbay/commit/dab508e014b830adf32019c159b81fe3a8407d26)), closes [#271](https://github.com/mdopp/solbay/issues/271)
+* **template:** TTFT prefill trim - drop household admin MCP, ollama anti-eviction, disable kanban ([867ab8e](https://github.com/mdopp/solbay/commit/867ab8ee325b9b3e4b53b2ed7505f5b7459c667c))
+* **template:** TTFT trim — drop household servicebay_admin MCP, ollama anti-eviction, disable kanban ([8131fa7](https://github.com/mdopp/solbay/commit/8131fa72fedd4337606367001929fa81f61bbb84)), closes [#268](https://github.com/mdopp/solbay/issues/268)
+
+
+### Bug Fixes
+
+* **chat:** give first-turn session a unique title to avoid bare-marker collision ([87f5b78](https://github.com/mdopp/solbay/commit/87f5b783e3d37f574fecbffe19f47499b0967204)), closes [#277](https://github.com/mdopp/solbay/issues/277)
+* **chat:** unique ephemeral [temp:] title so a 2nd incognito chat can't 400 ([7c479fe](https://github.com/mdopp/solbay/commit/7c479fefe57c7b18f9266fba387fc7cfc0f993ae))
+* **chat:** unique ephemeral [temp:] title so a 2nd incognito chat can't 400 ([c403381](https://github.com/mdopp/solbay/commit/c4033817d949a68ebdc58347e14794720082fc6c)), closes [#286](https://github.com/mdopp/solbay/issues/286)
+* **template:** land shipped SOUL.md changes on existing installs via a shipped-hash sidecar ([9dcbd79](https://github.com/mdopp/solbay/commit/9dcbd790220d4d1f2f61625c79ddf5eaf1fb6984))
+* **template:** land shipped SOUL.md changes on existing installs via a shipped-hash sidecar ([7e0da6d](https://github.com/mdopp/solbay/commit/7e0da6d5d8ed368e2c82e81eb34a8c0d47041a26)), closes [#283](https://github.com/mdopp/solbay/issues/283)
+* **template:** SOUL.md grounds device/state questions in live HA tool calls ([1e25a43](https://github.com/mdopp/solbay/commit/1e25a4360cadfc8c78beb491161a5ba09532f03d)), closes [#276](https://github.com/mdopp/solbay/issues/276)
+
 ## [0.4.1](https://github.com/mdopp/solbay/compare/v0.4.0...v0.4.1) (2026-06-08)
 
 
