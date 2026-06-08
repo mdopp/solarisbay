@@ -19,6 +19,7 @@ from solilos_chat.server import (
     _IMAGE_PROMPT,
     _images_from,
     _normalize,
+    _reasoning_from_completed,
     _stream_phases,
     _title_from,
     _trace_from_phases,
@@ -341,8 +342,49 @@ def test_normalize_tool_events():
 
 
 def test_normalize_completed_and_unknown():
-    assert _normalize({"type": "run.completed", "data": {}}) == ("completed", {})
+    # run.completed with no reasoning => empty reasoning string (#231).
+    assert _normalize({"type": "run.completed", "data": {}}) == (
+        "completed",
+        {"reasoning": ""},
+    )
     assert _normalize({"type": "ping", "data": {}}) == ("keepalive", {})
+
+
+def test_normalize_completed_surfaces_reasoning():
+    # gemma4 puts the thinking text on the final message's reasoning_content
+    # field of run.completed — NOT a literal <thinking> tag in the answer (#231).
+    event = {
+        "type": "run.completed",
+        "data": {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "Die Antwort ist 4.",
+                    "reasoning": "ignored-fallback",
+                    "reasoning_content": "Erst 2+2 rechnen…",
+                }
+            ]
+        },
+    }
+    assert _normalize(event) == ("completed", {"reasoning": "Erst 2+2 rechnen…"})
+
+
+def test_reasoning_from_completed_shapes():
+    # reasoning_content preferred over reasoning; first message with text wins;
+    # missing/garbage => "".
+    assert _reasoning_from_completed({}) == ""
+    assert _reasoning_from_completed({"messages": "nope"}) == ""
+    assert _reasoning_from_completed({"messages": [{"content": "hi"}]}) == ""
+    assert (
+        _reasoning_from_completed({"messages": [{"reasoning": "fallback only"}]})
+        == "fallback only"
+    )
+    assert (
+        _reasoning_from_completed(
+            {"messages": ["bad", {"reasoning_content": "the thoughts"}]}
+        )
+        == "the thoughts"
+    )
 
 
 def test_maybe_json():
@@ -607,6 +649,81 @@ async def test_stream_creates_session_and_restreams(aiohttp_client):
     assert fake.created == ["mdopp"]
     assert fake.turns == [("sess-1", "hi")]
     assert fake.titles == [("sess-1", "mdopp", "hi")]
+
+
+async def test_stream_thorough_turn_emits_reasoning_event(aiohttp_client):
+    # Gründlich turn: Hermes returns reasoning on run.completed (no <thinking>
+    # tag in the answer deltas), so the proxy surfaces it as a distinct
+    # `reasoning` event the panel renders collapsibly (#231).
+    fake = _FakeHermes(
+        events=[
+            {"type": "assistant.delta", "data": {"delta": "4"}},
+            {
+                "type": "run.completed",
+                "data": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "4",
+                            "reasoning_content": "2 plus 2 macht 4.",
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"input": "was ist 2+2", "reasoning": "high"},
+        headers={"Remote-User": "mdopp"},
+    )
+    body = await resp.text()
+    assert fake.efforts == ["high"]
+    assert "event: reasoning" in body
+    assert '"text": "2 plus 2 macht 4."' in body
+    # The forwarded `completed` frame stays bare (reasoning lives in its own event).
+    assert "event: completed\ndata: {}" in body
+
+
+async def test_stream_fast_turn_suppresses_reasoning(aiohttp_client):
+    # gemma4 returns reasoning even on a fast turn, but #222 fast-default must
+    # show no block — the proxy gates on the per-turn effort, not on Hermes.
+    fake = _FakeHermes(
+        events=[
+            {"type": "assistant.delta", "data": {"delta": "Hallo"}},
+            {
+                "type": "run.completed",
+                "data": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Hallo",
+                            "reasoning_content": "Der Nutzer grüßt.",
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"input": "hallo"},
+        headers={"Remote-User": "mdopp"},
+    )
+    body = await resp.text()
+    assert fake.efforts == ["none"]
+    assert "event: reasoning" not in body
+    assert "Der Nutzer grüßt." not in body
 
 
 async def test_stream_empty_input_rejected(aiohttp_client):

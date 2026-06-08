@@ -619,6 +619,16 @@ def build_app(
                     elif t_tool is not None:
                         tool_ms += now - t_tool
                         t_tool = None
+                elif name == "completed":
+                    # gemma4 returns its reasoning on every run.completed (the
+                    # `reasoning_content` field), regardless of effort — so the
+                    # block is gated here on the per-turn effort, not on Hermes:
+                    # a fast ("none") turn surfaces nothing (#222); a thorough
+                    # turn emits a distinct `reasoning` event the panel renders
+                    # collapsibly (#231). The forwarded `completed` stays bare.
+                    reasoning_text = data.pop("reasoning", "")
+                    if effort != "none" and reasoning_text:
+                        await _send_event(resp, "reasoning", {"text": reasoning_text})
                 await _send_event(resp, name, data)
             if not cancelled:
                 t_end = clock() * 1000.0
@@ -668,9 +678,11 @@ def build_app(
     return app
 
 
-# The reasoning block streams inline in the assistant deltas (Hermes does not
-# emit a separate reasoning SSE event), so its close tag is how the proxy spots
-# the reasoning→answer boundary. Lowercased compare; gemma4 uses <thinking>.
+# Legacy boundary marker for the latency trace (#225): if a model ever streams
+# an inline `</thinking>` close tag in the answer deltas this splits reasoning
+# from answer. gemma4 does NOT — it surfaces reasoning as a distinct field on
+# run.completed (#231), delivered in one shot at turn end — so this no longer
+# fires for gemma4 and the reasoning phase simply folds into the answer span.
 _THINK_CLOSE = "</think"
 
 
@@ -922,8 +934,29 @@ def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         phase = "started" if etype == "tool.started" else "completed"
         return "tool", {"name": str(name), "phase": phase}
     if etype == "run.completed":
-        return "completed", {}
+        return "completed", {"reasoning": _reasoning_from_completed(payload)}
     return "keepalive", {}
+
+
+def _reasoning_from_completed(payload: dict[str, Any]) -> str:
+    """Pull the reasoning text out of a `run.completed` payload (#231).
+
+    gemma4 does NOT emit a literal `<thinking>` tag inline in the answer
+    deltas; it surfaces the reasoning as a distinct field on the final
+    assistant message of the `run.completed` event — `reasoning_content`
+    (preferred) or `reasoning`. Both carry the same text; the answer text is in
+    `content`, separate from the reasoning. Empty string when absent.
+    """
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        text = msg.get("reasoning_content") or msg.get("reasoning")
+        if text:
+            return str(text)
+    return ""
 
 
 async def serve(
