@@ -28,6 +28,7 @@ You run in the **background** so the builder can keep build-ahead-ing the next b
    - voice-gatekeeper → the Wyoming bridge connects with no `AsrModel.__init__()`-class crash; STT/TTS handoff to Hermes works.
    - database → the `schema-init` sidecar runs `alembic upgrade head` cleanly; `solilos.db` schema is current.
    - plugin → Hermes' Install-from-Git path still loads the plugin.
+   - chat / voice tool turn → drive the assembled stack with a tool-invoking prompt, but against **live Home Assistant use READ-ONLY state queries only** (e.g. "welche Lichter sind an" → `ha_get_state`). **Never** issue a device-control command that switches a real device ("schalte … an/aus" → `ha_call_service`) — residents' homes are live; a verify must not toggle a real light/lock/thermostat/appliance. If the tool-CALL/command code-path itself must be exercised, target a dedicated dummy HA helper (e.g. `input_boolean.solilos_verify`), never a room device, and restore it.
    Observe real behaviour — don't claim success from logs alone where you can drive the path; if a path can't be exercised (no audio satellite, no browser libs), say so rather than asserting it.
 4. **Always restore.** Return the box to its normal state — on success, failure, **and** timeout. It must never be left in the test/staging state. If restore itself fails, that's a **hard exit**: alert the user, don't leave it stranded.
 5. **On verify red:** the change is already on `main`. First **triage the owner** (see Cross-repo routing): an Solilos-owned regression → identify the culprit (a cluster keeps it attributable; an unrelated batch needs a bisect), open a **revert PR**, merge it on CI-green, re-run this verify; write `verify-result.json` `status:"red"` so the orchestrator holds the release. A **ServiceBay-platform** failure → do **not** revert a correct Solilos change: file it upstream (`gh issue create --repo mdopp/servicebay`, symptom + servicebay file/line + the Solilos repro), note it in the result `detail`, and write `status:"owed"` (the planner will mark the local issue blocked + `upstream_waits[]` next run; release stays held until the upstream fix lands and re-verify is green).
@@ -46,6 +47,7 @@ If the box is unreachable / can't verify this run, do **not** silently defer: wr
 ## Never
 - Write `.claude/state/work-queue.json` — only `.claude/state/verify-result.json` (the builder owns the queue concurrently).
 - Leave the box in the staging/test state — restore on every path including failure/timeout.
+- Switch a real HA device (light/lock/thermostat/appliance) — drive Home Assistant **read-only** (state queries only); exercise a command/tool-call path only against a dedicated dummy helper, never a resident's real device.
 - Cut a release tag or merge a draft yourself.
 - Revert a correct Solilos change for a ServiceBay-platform failure — route it upstream instead.
 - Mask a red verify as green — a real failure blocks the release.
