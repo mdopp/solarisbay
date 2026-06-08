@@ -225,6 +225,10 @@
     .embed #settings-nav [data-view="soul"],
     .embed #settings-nav [data-view="tools"],
     .embed #settings-nav [data-view="model"] { display: none; }
+    /* ServiceBay-admin embed (#274): persona is server-locked to Technical and
+       the topic is fixed, so the Persona + Thema selectors offer no choice. */
+    .embed #persona-control,
+    .embed #topic-control { display: none; }
 
     .view { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
     .view.active { display: flex; }
@@ -756,14 +760,14 @@
           <input class="chat-search" id="chat-search" type="search" placeholder="In Chat suchen…" aria-label="In Chat suchen" autocomplete="off" />
           <span class="chat-search-count" id="chat-search-count" hidden></span>
         </span>
-        <span class="persona">
-          <label for="reasoning-mode">Modus</label>
-          <select id="reasoning-mode" aria-label="Reasoning mode for this chat" title="Schnell antwortet ohne Nachdenken; Gründlich lässt Sol nachdenken und zeigt die Gedanken.">
-            <option value="none">Schnell</option>
-            <option value="high">Gründlich</option>
+        <span class="persona" id="reasoning-control">
+          <label for="reasoning-mode">Thinking</label>
+          <select id="reasoning-mode" aria-label="Thinking mode for this chat" title="Aus: schnelle Antwort ohne Nachdenken. An: Sol denkt nach und zeigt die Gedanken.">
+            <option value="none">Aus</option>
+            <option value="high">An</option>
           </select>
         </span>
-        <span class="persona">
+        <span class="persona" id="persona-control">
           <label for="personality">Persona</label>
           <select id="personality" aria-label="Personality for new sessions"></select>
         </span>
@@ -877,7 +881,7 @@
         <div class="pref-row">
           <div class="pref-label">
             <div class="pref-name">Thinking blocks</div>
-            <div class="pref-desc">When the chat runs in <strong>Gründlich</strong> mode (the Modus selector in the chat header), Sol reasons before answering and shows that reasoning in a separate block. Choose how it is shown. In <strong>Schnell</strong> mode there is no reasoning block.</div>
+            <div class="pref-desc">When <strong>Thinking</strong> is on (the Thinking selector in the chat header), Sol reasons before answering and shows that reasoning in a separate block. Choose how it is shown. With Thinking off there is no reasoning block.</div>
           </div>
           <div class="seg" id="thinking-seg" role="radiogroup" aria-label="Thinking blocks">
             <button type="button" data-mode="show" role="radio">Show</button>
@@ -989,6 +993,10 @@
       // The built-in household topic slug (#237): the pinned "Zuhause" chat
       // pre-binds it so the new session inherits e2b + the household soul.
       var HOUSEHOLD_TOPIC = "household";
+      // The two built-in system topics are dedicated contexts (the pinned
+      // "Zuhause" chat and the ServiceBay-admin embed), not free-choice topics,
+      // so they never appear in the Thema picker's options (#274).
+      var FIXED_CONTEXT_TOPICS = { household: 1, "servicebay-admin": 1 };
       // Incognito/temporary chat (#246): ephemeral by default — the proxy
       // persists nothing (no compaction, no auto-ingestion) and deletes the
       // session on close. The picker stays usable only as the extract target:
@@ -1001,6 +1009,8 @@
       // registry (GET /api/topics); per-session assignment via
       // GET/POST /api/sessions/{id}/topics.
       var topicCtrl = document.getElementById("topic-control");
+      var reasoningCtrl = document.getElementById("reasoning-control");
+      var personaCtrl = document.getElementById("persona-control");
       var topicSel = document.getElementById("topic-primary");
       var topicTags = document.getElementById("topic-tags");
       var topicsList = [];
@@ -1018,6 +1028,7 @@
             none.value = ""; none.textContent = "—";
             topicSel.appendChild(none);
             topicsList.forEach(function (t) {
+              if (FIXED_CONTEXT_TOPICS[t.slug]) return;
               var opt = document.createElement("option");
               opt.value = t.slug; opt.textContent = t.display_name || t.slug;
               topicSel.appendChild(opt);
@@ -1136,12 +1147,12 @@
 
       function currentPersonality() { return personalitySel.value || "sol"; }
 
-      // ---- Reasoning selector (#224, "auswählbar") ----
-      // Per-conversation fast/thorough override that the backend (#222) honours
-      // ahead of its adaptive default: "none" (Schnell, the default — no
-      // thinking generated, ~1.5-3s) vs "high" (Gründlich — the model reasons
-      // and the chat renders the thinking block). Persisted locally; sent with
-      // every turn as `reasoning`.
+      // ---- Thinking selector (#224, "auswählbar") ----
+      // Per-conversation Thinking toggle that the backend (#222) honours ahead
+      // of its adaptive default: "none" (off, the default — no thinking
+      // generated, ~1.5-3s) vs "high" (on — the model reasons and the chat
+      // renders the thinking block). Persisted locally; sent with every turn as
+      // `reasoning`.
       var REASONING_VALUES = { none: 1, low: 1, high: 1 };
       (function () {
         var saved = localStorage.getItem("sol.reasoning");
@@ -1861,6 +1872,11 @@
           ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
           : pendingTopic === HOUSEHOLD_TOPIC;
         householdBtn.classList.toggle("active", active);
+        // The "Zuhause" chat has fixed mode + persona + topic (Thinking off,
+        // Sol, Household), so those selectors offer no choice — hide them (#274).
+        reasoningCtrl.hidden = active;
+        personaCtrl.hidden = active;
+        if (active) topicCtrl.hidden = true;
       }
 
       function renderSessions(list) {
@@ -2028,8 +2044,8 @@
         if (send.disabled) return;
         newSession();
         pendingTopic = HOUSEHOLD_TOPIC;
-        syncPinnedActive(null);
         syncSessionTopics();
+        syncPinnedActive(null);
       }
 
       newBtn.addEventListener("click", newSession);
