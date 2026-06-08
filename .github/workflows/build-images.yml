@@ -52,6 +52,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # Full history + tags so `git describe --tags` can compute the
+          # SOLILOS_VERSION badge value (shallow checkout sees no tags).
+          fetch-depth: 0
 
       - name: Check Dockerfile exists
         id: check
@@ -94,6 +98,16 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=MIT
 
+      - name: Compute version
+        if: steps.check.outputs.exists == 'true' && matrix.inject_version
+        id: version
+        run: |
+          # git-describe yields the clean tag on a tag build (e.g. v0.3.0) and a
+          # tag-relative descriptor on main (e.g. v0.2.0-12-ga6e9164). Strip the
+          # leading 'v' — the badge prepends its own, so 'main' would show 'vmain'
+          # but '0.2.0-12-g...' shows 'v0.2.0-12-g...'.
+          echo "v=$(git describe --tags --always | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+
       - name: Build (and push on main/tags)
         if: steps.check.outputs.exists == 'true'
         uses: docker/build-push-action@v7
@@ -102,7 +116,7 @@ jobs:
           file: ${{ matrix.context }}/Dockerfile
           build-args: |
             ${{ matrix.build_args }}
-            ${{ matrix.inject_version && format('SOLILOS_VERSION={0}', steps.meta.outputs.version) || '' }}
+            ${{ matrix.inject_version && format('SOLILOS_VERSION={0}', steps.version.outputs.v) || '' }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
