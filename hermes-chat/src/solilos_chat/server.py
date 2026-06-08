@@ -434,6 +434,8 @@ def build_app(
             admin=is_admin(request, remote_groups_header, admin_group),
         )
 
+        clock = asyncio.get_event_loop().time
+        t_start = clock() * 1000.0
         try:
             if not session_id:
                 session_id = await hermes.create_session(uid, system_prompt)
@@ -445,8 +447,15 @@ def build_app(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
         attachments.add(session_id, images)
+        # Non-streamed turn: only total wall-time is observable (no per-phase
+        # boundaries without the stream), so the trace carries just the total
+        # (#225). The streaming path is where the phase waterfall comes from.
+        total_ms = clock() * 1000.0 - t_start
+        trace = _trace_from_phases([], total_ms)
 
-        return web.json_response({"ok": True, "session_id": session_id, "reply": reply})
+        return web.json_response(
+            {"ok": True, "session_id": session_id, "reply": reply, "trace": trace}
+        )
 
     async def chat_stream(request: web.Request) -> web.StreamResponse:
         uid = resolve_uid(request, remote_user_header, default_uid)
@@ -481,6 +490,17 @@ def build_app(
         await resp.prepare(request)
 
         cancel = asyncio.Event()
+        # Phase timing for the latency trace (#225). Timestamps are monotonic
+        # ms; only the boundaries the proxy can actually see on the wire are
+        # captured (see _trace_from_phases for what is/isn't observable).
+        clock = asyncio.get_event_loop().time
+        t_start = clock() * 1000.0
+        t_first: float | None = None  # first delta -> prefill / TTFT
+        t_think_end: float | None = None  # </thinking> seen -> reasoning ends
+        tool_ms = 0.0
+        t_tool: float | None = None  # open tool round-trip
+        answer_buf = ""
+        cancelled = False
         try:
             if not session_id:
                 session_id = await hermes.create_session(uid, system_prompt)
@@ -499,8 +519,30 @@ def build_app(
                     # run (#192) — stops generation, not just our forwarding.
                     await stream.aclose()
                     await _send_event(resp, "cancelled", {})
+                    cancelled = True
                     break
-                await _send_event(resp, *_normalize(event))
+                name, data = _normalize(event)
+                now = clock() * 1000.0
+                if name == "delta":
+                    if t_first is None:
+                        t_first = now
+                    answer_buf += data.get("text", "")
+                    if t_think_end is None and _THINK_CLOSE in answer_buf.lower():
+                        t_think_end = now
+                elif name == "tool":
+                    if data.get("phase") == "started":
+                        t_tool = now
+                    elif t_tool is not None:
+                        tool_ms += now - t_tool
+                        t_tool = None
+                await _send_event(resp, name, data)
+            if not cancelled:
+                t_end = clock() * 1000.0
+                trace = _trace_from_phases(
+                    _stream_phases(t_start, t_first, t_think_end, t_end, tool_ms),
+                    t_end - t_start,
+                )
+                await _send_event(resp, "trace", trace)
         except HermesError:
             await _send_event(resp, "error", {"reason": "hermes_unavailable"})
         finally:
@@ -532,6 +574,70 @@ def build_app(
     app.router.add_post("/api/chat/cancel", cancel_chat)
     app.router.add_static("/static/", STATIC_DIR)
     return app
+
+
+# The reasoning block streams inline in the assistant deltas (Hermes does not
+# emit a separate reasoning SSE event), so its close tag is how the proxy spots
+# the reasoning→answer boundary. Lowercased compare; gemma4 uses <thinking>.
+_THINK_CLOSE = "</think"
+
+
+def _stream_phases(
+    t_start: float,
+    t_first: float | None,
+    t_think_end: float | None,
+    t_end: float,
+    tool_ms: float,
+) -> list[tuple[str, float]]:
+    """Turn the stream timestamps into labelled phase spans (#225).
+
+    What the proxy can genuinely time, in order: prefill (turn start → first
+    token), reasoning (first token → `</thinking>`, only when a block streamed),
+    answer (reasoning end / first token → turn end), and the summed tool
+    round-trips. The Ollama-internal prefill/eval token split is NOT here — it
+    is invisible to the proxy (see _trace_from_phases).
+    """
+    if t_first is None:  # no tokens streamed (e.g. tool-only or empty turn)
+        return [("Tool round-trip", tool_ms)] if tool_ms > 0 else []
+    phases: list[tuple[str, float]] = [("Prefill (TTFT)", t_first - t_start)]
+    answer_start = t_first
+    if t_think_end is not None:
+        phases.append(("Reasoning", t_think_end - t_first))
+        answer_start = t_think_end
+    phases.append(("Answer", t_end - answer_start))
+    if tool_ms > 0:
+        phases.append(("Tool round-trip", tool_ms))
+    return phases
+
+
+def _trace_from_phases(
+    phases: list[tuple[str, float]], total_ms: float
+) -> dict[str, Any]:
+    """Assemble a per-turn latency trace from measured phase durations (#225).
+
+    `phases` is `[(label, ms), ...]` for the spans the proxy could actually
+    time on the wire — what it observes is the Hermes *session stream*, so the
+    honest, measurable breakdown is: time-to-first-token (prefill), reasoning
+    generation (the `<thinking>` block, when one streamed), answer generation,
+    and tool round-trips (`tool.started`→`tool.completed`). The fine-grained
+    Ollama prompt_eval/eval (prefill vs decode token) split happens *inside*
+    Hermes and is never streamed to this proxy, so it is deliberately absent —
+    it would need Hermes to expose per-pass timings to be shown.
+
+    Each phase becomes `{label, seconds, pct}` (pct of total wall-time, so a
+    sum < 100% is expected — the gaps are orchestration the proxy can't
+    attribute). Zero/negative spans are dropped so the waterfall stays honest.
+    """
+    total = max(total_ms, 0.0)
+    out = []
+    for label, ms in phases:
+        if ms <= 0:
+            continue
+        pct = (ms / total * 100.0) if total else 0.0
+        out.append(
+            {"label": label, "seconds": round(ms / 1000.0, 2), "pct": round(pct, 1)}
+        )
+    return {"total_seconds": round(total / 1000.0, 2), "phases": out}
 
 
 def _images_from(body: Any) -> list[str]:

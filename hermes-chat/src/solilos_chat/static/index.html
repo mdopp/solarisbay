@@ -224,6 +224,21 @@
     .msg.me .meta { text-align: right; }
     .meta .took { font-variant-numeric: tabular-nums; }
     .meta .stopped-note { color: var(--danger); margin-left: 6px; }
+    /* Per-turn latency waterfall, collapsed by default (#225). */
+    .meta details.trace { display: inline; }
+    .meta details.trace > summary {
+      display: inline; cursor: pointer; margin-left: 8px; list-style: none;
+      color: var(--muted); text-decoration: underline dotted;
+    }
+    .meta details.trace > summary::-webkit-details-marker { display: none; }
+    .meta details.trace > summary::before { content: "▸ trace"; }
+    .meta details.trace[open] > summary::before { content: "▾ trace"; }
+    .trace-rows { display: block; margin: 6px 0 2px; max-width: 360px; }
+    .trace-row { display: flex; align-items: center; gap: 8px; margin: 2px 0; font-variant-numeric: tabular-nums; }
+    .trace-row .tr-label { flex: 0 0 96px; }
+    .trace-row .tr-bar { flex: 1 1 auto; height: 7px; border-radius: 4px; background: rgba(127,127,127,0.16); overflow: hidden; }
+    .trace-row .tr-bar > span { display: block; height: 100%; background: var(--accent); }
+    .trace-row .tr-num { flex: 0 0 78px; text-align: right; }
 
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
@@ -964,7 +979,41 @@
         if (sameDay) return time;
         return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + time;
       }
-      function metaLine(when, tookMs) {
+      // Collapsible per-turn latency waterfall (#225). `trace` is the proxy's
+      // {total_seconds, phases:[{label, seconds, pct}]} — the breakdown it can
+      // genuinely measure on the Hermes stream (TTFT · reasoning · answer ·
+      // tool round-trip). The Ollama-internal prefill/eval split isn't here:
+      // it never reaches the proxy. Returns null when there's nothing to show.
+      function renderTrace(trace) {
+        if (!trace || !trace.phases || !trace.phases.length) return null;
+        var det = document.createElement("details");
+        det.className = "trace";
+        var sum = document.createElement("summary");
+        sum.title = "Per-phase latency breakdown for this turn";
+        det.appendChild(sum);
+        var rows = document.createElement("div");
+        rows.className = "trace-rows";
+        trace.phases.forEach(function (p) {
+          var row = document.createElement("div");
+          row.className = "trace-row";
+          var label = document.createElement("span");
+          label.className = "tr-label"; label.textContent = p.label;
+          var bar = document.createElement("span");
+          bar.className = "tr-bar";
+          var fill = document.createElement("span");
+          fill.style.width = Math.max(0, Math.min(100, p.pct || 0)) + "%";
+          bar.appendChild(fill);
+          var num = document.createElement("span");
+          num.className = "tr-num";
+          num.textContent = (p.seconds).toFixed(2) + "s · " + (p.pct || 0).toFixed(0) + "%";
+          row.appendChild(label); row.appendChild(bar); row.appendChild(num);
+          rows.appendChild(row);
+        });
+        det.appendChild(rows);
+        return det;
+      }
+
+      function metaLine(when, tookMs, trace) {
         var m = document.createElement("span");
         m.className = "meta";
         m.textContent = fmtStamp(when);
@@ -974,6 +1023,8 @@
           t.textContent = " · took " + (tookMs / 1000).toFixed(1) + "s";
           m.appendChild(t);
         }
+        var tr = renderTrace(trace);
+        if (tr) m.appendChild(tr);
         return m;
       }
 
@@ -1017,8 +1068,10 @@
         var buffer = "";
         var started = Date.now();
         var done = false;
+        var trace = null;
         return {
           setActivity: function (txt) { var t = activity.querySelector(".activity-text"); if (t) t.textContent = txt; },
+          setTrace: function (t) { trace = t; },
           append: function (delta) {
             var stick = atBottom();
             if (activity.parentNode) el.removeChild(activity);
@@ -1032,7 +1085,7 @@
             if (!buffer) body.textContent = "(no reply)";
             else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
-            el.appendChild(metaLine(new Date(), Date.now() - started));
+            el.appendChild(metaLine(new Date(), Date.now() - started, trace));
             scrollDown(atBottom());
           },
           stopped: function () {
@@ -1087,7 +1140,8 @@
             else if (event === "tool") {
               if (d.phase === "started") msg.setActivity("using " + (d.name || "tool") + "…");
               else msg.setActivity("thinking…");
-            } else if (event === "cancelled") { msg.stopped(); }
+            } else if (event === "trace") { msg.setTrace(d); }
+            else if (event === "cancelled") { msg.stopped(); }
             else if (event === "error") { msg.fail("Sol is unavailable right now. Please try again."); }
           }
           function flush() {

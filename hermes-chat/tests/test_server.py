@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
+
 from solilos_chat import marker, personalities, skills
 from solilos_chat.hermes import (
     _chat_body,
@@ -17,7 +19,10 @@ from solilos_chat.server import (
     _IMAGE_PROMPT,
     _images_from,
     _normalize,
+    _stream_phases,
     _title_from,
+    _trace_from_phases,
+    _version,
     build_app,
     is_admin,
     resolve_uid,
@@ -225,6 +230,77 @@ def test_title_from_first_message():
     out = _title_from(long)
     assert out.endswith("…") and len(out) <= 58
     assert _title_from("") == ""
+
+
+# --- Version badge (#223) --------------------------------------------------
+
+
+def test_version_prefers_env(monkeypatch):
+    # The injected release version (SOLILOS_VERSION, set at image build from the
+    # git tag/ref) wins over the never-bumped package version.
+    monkeypatch.setenv("SOLILOS_VERSION", "0.3.0")
+    assert _version() == "0.3.0"
+
+
+def test_version_env_blank_falls_back_to_package(monkeypatch):
+    # A blank env (local/dev build) falls through to the package metadata, so
+    # the badge still shows something rather than going empty.
+    monkeypatch.setenv("SOLILOS_VERSION", "   ")
+    assert _version() == version("solilos-chat")
+
+
+def test_version_no_env_uses_package(monkeypatch):
+    monkeypatch.delenv("SOLILOS_VERSION", raising=False)
+    assert _version() == version("solilos-chat")
+
+
+# --- Latency trace (#225) --------------------------------------------------
+
+
+def test_trace_from_phases_computes_pct_and_drops_zero():
+    trace = _trace_from_phases(
+        [("Prefill (TTFT)", 200.0), ("Answer", 800.0), ("noop", 0.0)],
+        1000.0,
+    )
+    assert trace["total_seconds"] == 1.0
+    assert trace["phases"] == [
+        {"label": "Prefill (TTFT)", "seconds": 0.2, "pct": 20.0},
+        {"label": "Answer", "seconds": 0.8, "pct": 80.0},
+    ]
+
+
+def test_trace_from_phases_empty_total_is_safe():
+    # Total 0 must not divide-by-zero; an empty phase list yields no rows.
+    assert _trace_from_phases([], 0.0) == {"total_seconds": 0.0, "phases": []}
+
+
+def test_stream_phases_with_reasoning_split():
+    # start=0, first token=100, </thinking>=600, end=1000, 0 tool ms.
+    phases = _stream_phases(0.0, 100.0, 600.0, 1000.0, 0.0)
+    assert phases == [
+        ("Prefill (TTFT)", 100.0),
+        ("Reasoning", 500.0),
+        ("Answer", 400.0),
+    ]
+
+
+def test_stream_phases_no_reasoning_just_prefill_and_answer():
+    phases = _stream_phases(0.0, 100.0, None, 1000.0, 0.0)
+    assert phases == [("Prefill (TTFT)", 100.0), ("Answer", 900.0)]
+
+
+def test_stream_phases_includes_tool_round_trip():
+    phases = _stream_phases(0.0, 100.0, None, 1000.0, 250.0)
+    assert ("Tool round-trip", 250.0) in phases
+
+
+def test_stream_phases_no_tokens_yields_only_tool_or_empty():
+    # A turn that streamed no assistant tokens (tool-only) keeps just the tool
+    # span; a totally empty turn yields nothing.
+    assert _stream_phases(0.0, None, None, 1000.0, 300.0) == [
+        ("Tool round-trip", 300.0)
+    ]
+    assert _stream_phases(0.0, None, None, 1000.0, 0.0) == []
 
 
 def test_normalize_assistant_delta():
