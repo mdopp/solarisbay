@@ -112,6 +112,17 @@ spec:
       value: "{{THOROUGH_MODEL}}"
     - name: TZ
       value: "{{TZ}}"
+    # solilos.db holds the topics registry + chat<->topic assignments (#241).
+    # Same file the schema-init sidecar (solbay pod) migrates and the gatekeeper
+    # reads for voice speaker-ID. Bind-mounted read-write so topic operations
+    # can write session_topics rows.
+    - name: SOLILOS_DB_PATH
+      value: "/var/lib/solilos/solilos.db"
+    # The Obsidian notes vault (Syncthing-synced), read for the topic dashboard's
+    # per-topic note list (#244). Same path the ingestion/notes-search skills use
+    # inside the Hermes runtime.
+    - name: NOTES_DIR
+      value: "/opt/data/notes"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{HERMES_CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint
@@ -126,6 +137,10 @@ spec:
       name: solilos-skills
     - mountPath: /data/attachments
       name: solilos-chat-attachments
+    - mountPath: /var/lib/solilos
+      name: solilos-data
+    - mountPath: /opt/data/notes
+      name: solilos-notes
   volumes:
   - name: solilos-skills
     hostPath:
@@ -135,4 +150,14 @@ spec:
   - name: solilos-chat-attachments
     hostPath:
       path: {{DATA_DIR}}/solbay/chat-attachments
+      type: DirectoryOrCreate
+  # solilos.db: topics registry + chat<->topic assignments (#241).
+  - name: solilos-data
+    hostPath:
+      path: {{DATA_DIR}}/solbay
+      type: DirectoryOrCreate
+  # Notes vault (Syncthing): topic dashboard reads notes tagged #topic/<slug>.
+  - name: solilos-notes
+    hostPath:
+      path: {{DATA_DIR}}/file-share/data/notes
       type: DirectoryOrCreate
