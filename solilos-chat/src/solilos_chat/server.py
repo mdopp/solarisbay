@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from aiohttp import web
@@ -49,6 +51,22 @@ _EPHEMERAL_HINT = (
     "anything from it. Persist ONLY if the resident explicitly asks to extract "
     "a note (e.g. 'erstelle hieraus eine Notiz im Topic X').]"
 )
+
+
+_LOCAL_TZ = ZoneInfo("Europe/Berlin")
+
+
+def _now_hint() -> str:
+    """A fresh local wall-clock line prepended to every user turn.
+
+    Hermes stamps the session with a frozen, date-granular "Conversation
+    started" line at create time and replays it verbatim; the container also
+    runs UTC. Without a per-turn line the agent reports a wrong/frozen
+    date-time. Hermes binds system_prompt at create and rejects per-turn
+    updates, so injecting this into the user turn is the only lever.
+    """
+    now = datetime.now(_LOCAL_TZ)
+    return f"[Aktuelle Zeit: {now.strftime('%A, %d.%m.%Y, %H:%M Uhr %Z')}]"
 
 
 def _version() -> str:
@@ -257,7 +275,7 @@ def build_app(
         only durable output of the whole conversation.
         """
         if ephemeral:
-            parts = [_EPHEMERAL_HINT]
+            parts = [_now_hint(), _EPHEMERAL_HINT]
             if extract_topic:
                 display = topics_store.display_name(solilos_db_path, extract_topic)
                 label = display or extract_topic
@@ -267,7 +285,11 @@ def build_app(
             parts.append(text)
             return "\n\n".join(parts)
         hint = topics_store.topic_context_hint(solilos_db_path, session_id, uid)
-        return f"{hint}\n\n{text}" if hint else text
+        parts = [_now_hint()]
+        if hint:
+            parts.append(hint)
+        parts.append(text)
+        return "\n\n".join(parts)
 
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
