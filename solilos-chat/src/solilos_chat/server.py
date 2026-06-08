@@ -26,7 +26,7 @@ from solilos_chat import (
 )
 from solilos_chat.attachments import AttachmentStore, attach_to_messages
 from solilos_chat.context import STATIC_DEFAULT, ContextWindow
-from solilos_chat.hermes import HermesClient, HermesError
+from solilos_chat.hermes import HermesClient, HermesError, _answer_from_messages
 from solilos_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -849,6 +849,14 @@ def build_app(
                     reasoning_text = data.pop("reasoning", "")
                     if effort != "none" and reasoning_text:
                         await _send_event(resp, "reasoning", {"text": reasoning_text})
+                    # A tool-invocation turn (e.g. a Home Assistant state query)
+                    # streams no answer deltas — the final summary arrives only
+                    # on run.completed. Surface it as a late delta so the browser
+                    # renders the reply instead of an empty bubble (#258).
+                    completed_answer = data.pop("answer", "")
+                    if not answer_buf.strip() and completed_answer:
+                        await _send_event(resp, "delta", {"text": completed_answer})
+                        answer_buf += completed_answer
                 await _send_event(resp, name, data)
             if not cancelled:
                 t_end = clock() * 1000.0
@@ -1159,7 +1167,10 @@ def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         phase = "started" if etype == "tool.started" else "completed"
         return "tool", {"name": str(name), "phase": phase}
     if etype == "run.completed":
-        return "completed", {"reasoning": _reasoning_from_completed(payload)}
+        return "completed", {
+            "reasoning": _reasoning_from_completed(payload),
+            "answer": _answer_from_messages(payload.get("messages")),
+        }
     return "keepalive", {}
 
 

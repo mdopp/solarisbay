@@ -443,6 +443,12 @@ def _extract_reply(body: Any) -> str:
         content = msg.get("content") or ""
         if content:
             return str(content)
+    # A tool-invocation turn (e.g. a Home Assistant state query) leaves the
+    # top-level `message.content` empty and carries the model's final summary in
+    # the last assistant message of the `messages` array instead (#258).
+    from_messages = _answer_from_messages(body.get("messages"))
+    if from_messages:
+        return from_messages
     return str(
         body.get("output")
         or body.get("reply")
@@ -450,3 +456,28 @@ def _extract_reply(body: Any) -> str:
         or body.get("text")
         or ""
     )
+
+
+def _answer_from_messages(messages: Any) -> str:
+    """Last assistant `content` from a Hermes `messages` array, else "".
+
+    Tool-invocation turns surface the model's final answer here rather than in
+    `message.content` / streaming deltas, so both chat paths fall back to it
+    (#258). The reasoning lives in a separate field and is skipped.
+    """
+    if not isinstance(messages, list):
+        return ""
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") not in (None, "assistant"):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            content = "".join(
+                str(p.get("text") or "") if isinstance(p, dict) else str(p)
+                for p in content
+            )
+        if content:
+            return str(content)
+    return ""

@@ -74,6 +74,25 @@ def test_extract_reply_shapes():
     assert _extract_reply({}) == ""
 
 
+def test_extract_reply_tool_turn_uses_messages():
+    # A tool-invocation turn (HA state query) leaves message.content empty and
+    # carries the summary in the last assistant message of `messages` (#258).
+    body = {
+        "message": {"role": "assistant", "content": ""},
+        "messages": [
+            {"role": "user", "content": "welche lichter sind an"},
+            {"role": "tool", "content": '{"on": ["Küche"]}'},
+            {"role": "assistant", "content": "Die Küche-Lampe ist an."},
+        ],
+    }
+    assert _extract_reply(body) == "Die Küche-Lampe ist an."
+    # Content parts array (multimodal-shaped) is joined.
+    parts = {"messages": [{"role": "assistant", "content": [{"text": "Licht an."}]}]}
+    assert _extract_reply(parts) == "Licht an."
+    # No assistant content => empty, no tool/user leakage.
+    assert _extract_reply({"messages": [{"role": "tool", "content": "x"}]}) == ""
+
+
 class _FakeHermes:
     def __init__(self, events=None, store=None):
         self.created = []
@@ -351,7 +370,7 @@ def test_normalize_completed_and_unknown():
     # run.completed with no reasoning => empty reasoning string (#231).
     assert _normalize({"type": "run.completed", "data": {}}) == (
         "completed",
-        {"reasoning": ""},
+        {"reasoning": "", "answer": ""},
     )
     assert _normalize({"type": "ping", "data": {}}) == ("keepalive", {})
 
@@ -372,7 +391,10 @@ def test_normalize_completed_surfaces_reasoning():
             ]
         },
     }
-    assert _normalize(event) == ("completed", {"reasoning": "Erst 2+2 rechnen…"})
+    assert _normalize(event) == (
+        "completed",
+        {"reasoning": "Erst 2+2 rechnen…", "answer": "Die Antwort ist 4."},
+    )
 
 
 def test_reasoning_from_completed_shapes():
@@ -782,6 +804,70 @@ async def test_stream_fast_turn_suppresses_reasoning(aiohttp_client):
     assert fake.efforts == ["none"]
     assert "event: reasoning" not in body
     assert "Der Nutzer grüßt." not in body
+
+
+async def test_stream_tool_turn_surfaces_answer_as_late_delta(aiohttp_client):
+    # A HA state query is a tool-invocation turn: Hermes streams no answer
+    # deltas, only tool events, and delivers the summary on run.completed. The
+    # proxy must surface that text as a late delta so the bubble isn't empty
+    # (#258) — otherwise the UI shows "(no reply)".
+    fake = _FakeHermes(
+        events=[
+            {"type": "tool.started", "data": {"tool": "homeassistant"}},
+            {"type": "tool.completed", "data": {"tool": "homeassistant"}},
+            {
+                "type": "run.completed",
+                "data": {
+                    "messages": [
+                        {"role": "user", "content": "welche lichter sind an"},
+                        {"role": "tool", "content": '{"on": ["kitchen"]}'},
+                        {"role": "assistant", "content": "Die Kueche-Lampe ist an."},
+                    ]
+                },
+            },
+        ]
+    )
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"input": "welche lichter sind an"},
+        headers={"Remote-User": "mdopp"},
+    )
+    body = await resp.text()
+    assert "event: delta" in body
+    assert '"text": "Die Kueche-Lampe ist an."' in body
+    # The forwarded completed frame stays bare (answer rode the late delta).
+    assert "event: completed\ndata: {}" in body
+
+
+async def test_stream_no_duplicate_delta_when_answer_already_streamed(aiohttp_client):
+    # When the answer was streamed normally, run.completed must NOT re-emit it
+    # as a second delta (#258 guard: only fill when answer_buf is empty).
+    fake = _FakeHermes(
+        events=[
+            {"type": "assistant.delta", "data": {"delta": "Hallo"}},
+            {
+                "type": "run.completed",
+                "data": {"messages": [{"role": "assistant", "content": "Hallo"}]},
+            },
+        ]
+    )
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"input": "hi"},
+        headers={"Remote-User": "mdopp"},
+    )
+    body = await resp.text()
+    assert body.count('"text": "Hallo"') == 1
 
 
 async def test_stream_empty_input_rejected(aiohttp_client):
