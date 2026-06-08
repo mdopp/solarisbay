@@ -34,6 +34,8 @@ class Settings:
     frame_ancestors: str
     fast_model: str
     thorough_model: str
+    solilos_db_path: str
+    notes_dir: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -104,6 +106,16 @@ class Settings:
             # off until the operator sets the tags (minimal-knobs, opt-in).
             fast_model=os.environ.get("FAST_MODEL", "").strip(),
             thorough_model=os.environ.get("THOROUGH_MODEL", "").strip(),
+            # solilos.db (bind-mounted into the pod) holds the topics registry
+            # and chat<->topic assignments (#241). Same path the gatekeeper and
+            # schema-init sidecar use.
+            solilos_db_path=os.environ.get(
+                "SOLILOS_DB_PATH", "/var/lib/solilos/solilos.db"
+            ),
+            # The Obsidian notes vault (Syncthing-synced), read for the
+            # topic dashboard's per-topic note list (#244). Same path the
+            # ingestion/notes-search skills use inside the Hermes runtime.
+            notes_dir=os.environ.get("NOTES_DIR", "/opt/data/notes"),
         )
 
 

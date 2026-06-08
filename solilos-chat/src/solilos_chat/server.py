@@ -16,7 +16,14 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from solilos_chat import compaction, personalities, reasoning, skills
+from solilos_chat import (
+    compaction,
+    notes_search,
+    personalities,
+    reasoning,
+    skills,
+    topics_store,
+)
 from solilos_chat.attachments import AttachmentStore, attach_to_messages
 from solilos_chat.context import STATIC_DEFAULT, ContextWindow
 from solilos_chat.hermes import HermesClient, HermesError
@@ -31,6 +38,17 @@ _IMAGE_PROMPT = "Bitte sieh dir dieses Bild an und verarbeite es."
 # Cap attachments per turn — a small guard against an oversized payload, not a
 # product limit (the panel sends at most a couple of camera/upload images).
 _MAX_IMAGES = 4
+
+# Ephemeral/incognito chats (#246): the proxy prepends this to every turn so the
+# agent knows nothing is durable — it must NOT auto-ingest notes, write memory
+# facts, or otherwise persist anything unless the resident explicitly asks to
+# extract a note (which carries a topic and routes through `topic_turn_text`).
+_EPHEMERAL_HINT = (
+    "[Temporary/incognito chat: this conversation is ephemeral and will be "
+    "deleted on close. Do NOT save notes, store memory facts, or persist "
+    "anything from it. Persist ONLY if the resident explicitly asks to extract "
+    "a note (e.g. 'erstelle hieraus eine Notiz im Topic X').]"
+)
 
 
 def _version() -> str:
@@ -109,6 +127,8 @@ def build_app(
     frame_ancestors: str = "'self'",
     fast_model: str = "",
     thorough_model: str = "",
+    solilos_db_path: str = "/var/lib/solilos/solilos.db",
+    notes_dir: str = "/opt/data/notes",
 ) -> web.Application:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -149,6 +169,105 @@ def build_app(
         if new_id:
             return new_id, True
         return session_id, False
+
+    async def new_session_bindings(
+        topic_slug: str, personality_id: object, effort: str
+    ) -> tuple[str, str, str | None]:
+        """Resolve (model, system_prompt, primary_topic) for a session at create.
+
+        D2 (#242): a chat's primary topic carries a default model + persona, and
+        Hermes binds both only at session create (the latency bundle — model
+        can't switch per-turn). So when a new chat is started under a topic (the
+        picker selects one before the first message, or a pinned topic-chat
+        #237 starts pre-assigned), the topic's `default_model` /
+        `default_persona` win; each falls back independently to the normal
+        Schnell/Gründlich routing model / the body's personality overlay when
+        the topic leaves it null. Returns the slug to persist as primary, or
+        None when no topic was supplied.
+        """
+        routed_model = reasoning.model_for_effort(
+            effort, fast_model=fast_model, thorough_model=thorough_model
+        )
+        system_prompt = personalities.system_prompt_for(personality_id)
+        if not topic_slug:
+            return routed_model, system_prompt, None
+        defaults = topics_store.topic_defaults(solilos_db_path, topic_slug)
+        model = defaults["default_model"] or routed_model
+        if defaults["default_persona"]:
+            system_prompt = personalities.system_prompt_for(defaults["default_persona"])
+        return model, system_prompt, topic_slug
+
+    async def create_turn_session(
+        uid: str,
+        topic_slug: str,
+        personality_id: object,
+        effort: str,
+        text: str,
+        ephemeral: bool,
+    ) -> str:
+        """Create the session for a first turn; return its id.
+
+        Ephemeral (#246): an incognito chat is created with the `[temp:]` marker
+        (kept out of the durable list, deleted on close) and is NOT bound to a
+        topic, NOT re-titled (re-titling would re-stamp the `[uid:]` marker and
+        surface it), and never has a `session_topics` row — it carries no durable
+        state. Normal chats bind topic model/persona and persist the auto-title.
+        """
+        if ephemeral:
+            session_id = await hermes.create_session(
+                uid, personalities.system_prompt_for(personality_id), ephemeral=True
+            )
+            log.info(
+                "chat.session.created", uid=uid, session_id=session_id, ephemeral=True
+            )
+            return session_id
+        model, system_prompt, primary = await new_session_bindings(
+            topic_slug, personality_id, effort
+        )
+        session_id = await hermes.create_session(uid, system_prompt, model=model)
+        log.info(
+            "chat.session.created",
+            uid=uid,
+            session_id=session_id,
+            model=model,
+            topic=primary or "",
+        )
+        if primary:
+            topics_store.set_primary(solilos_db_path, session_id, primary, uid)
+        await hermes.set_title(session_id, uid, _title_from(text))
+        return session_id
+
+    def topic_turn_text(
+        text: str, uid: str, session_id: str, *, ephemeral: bool, extract_topic: str
+    ) -> str:
+        """Prepend the active-topic / ephemeral context hint to a turn.
+
+        Normal chat: data ingested from a topic-T chat must be stamped
+        `#topic/<slug>` so it is retrievable by topic (#243). The proxy surfaces
+        the chat's primary topic as a leading system-context line; any ingestion
+        skill in the turn reads it and tags its note. Non-topic chats are
+        untouched (no hint).
+
+        Ephemeral chat (#246): the session is incognito, so the proxy does NOT
+        consult `session_topics` (an ephemeral chat keeps no durable assignment)
+        and instead injects the ephemeral guard hint that tells the agent to
+        persist nothing. The one durable escape hatch is an explicit extract:
+        when the turn carries `extract_topic`, the topic stamp is appended so the
+        single note the agent writes is tagged `#topic/<slug>` — that note is the
+        only durable output of the whole conversation.
+        """
+        if ephemeral:
+            parts = [_EPHEMERAL_HINT]
+            if extract_topic:
+                display = topics_store.display_name(solilos_db_path, extract_topic)
+                label = display or extract_topic
+                parts.append(
+                    f"[Extract this to a note #topic/{extract_topic} ({label})]"
+                )
+            parts.append(text)
+            return "\n\n".join(parts)
+        hint = topics_store.topic_context_hint(solilos_db_path, session_id, uid)
+        return f"{hint}\n\n{text}" if hint else text
 
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
@@ -386,6 +505,12 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
+        # Annotate each session with its primary topic so the list can render a
+        # chip (#241). Per-resident scope (D3): only the caller's assignments.
+        ids = [str(s.get("id")) for s in sessions if s.get("id")]
+        primaries = topics_store.primary_topics_for(solilos_db_path, ids, uid)
+        for s in sessions:
+            s["primary_topic"] = primaries.get(str(s.get("id")))
         return web.json_response({"ok": True, "sessions": sessions})
 
     async def create_session(request: web.Request) -> web.Response:
@@ -482,6 +607,86 @@ def build_app(
         )
         return web.json_response({"ok": True})
 
+    async def list_topics(request: web.Request) -> web.Response:
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        return web.json_response(
+            {"ok": True, "topics": topics_store.list_topics(solilos_db_path, uid)}
+        )
+
+    async def create_topic(request: web.Request) -> web.Response:
+        # Create a resident-scoped topic from a confirmed suggestion (D4, #245).
+        # The topic-suggester skill POSTs here only after the resident says yes;
+        # the proxy never auto-creates. Idempotent on slug (see topics_store).
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        slug = str(body.get("slug") or "").strip().strip("/")
+        display_name = str(body.get("display_name") or "").strip()
+        if not slug or not display_name:
+            return web.json_response(
+                {"ok": False, "reason": "slug_and_display_name_required"}, status=400
+            )
+        color = body.get("color")
+        color = color.strip() if isinstance(color, str) and color.strip() else None
+        topics_store.create_topic(solilos_db_path, slug, display_name, uid, color)
+        log.info("chat.topic.create", uid=uid, slug=slug)
+        return web.json_response({"ok": True, "slug": slug})
+
+    async def get_session_topics(request: web.Request) -> web.Response:
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        session_id = request.match_info["session_id"]
+        assigned = topics_store.get_session_topics(solilos_db_path, session_id, uid)
+        return web.json_response({"ok": True, **assigned})
+
+    async def set_session_topics(request: web.Request) -> web.Response:
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        session_id = request.match_info["session_id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        action = body.get("action")
+        slug = body.get("slug")
+        if not isinstance(slug, str) or not slug.strip():
+            return web.json_response({"ok": False, "reason": "empty_slug"}, status=400)
+        slug = slug.strip()
+        if action == "primary":
+            topics_store.set_primary(solilos_db_path, session_id, slug, uid)
+        elif action == "add_secondary":
+            topics_store.add_secondary(solilos_db_path, session_id, slug, uid)
+        elif action == "remove":
+            topics_store.remove_topic(solilos_db_path, session_id, slug, uid)
+        else:
+            return web.json_response(
+                {"ok": False, "reason": "invalid_action"}, status=400
+            )
+        log.info(
+            "chat.session.topic",
+            uid=uid,
+            session_id=session_id,
+            action=action,
+            slug=slug,
+        )
+        assigned = topics_store.get_session_topics(solilos_db_path, session_id, uid)
+        return web.json_response({"ok": True, **assigned})
+
+    async def topic_items(request: web.Request) -> web.Response:
+        # The topic dashboard's per-topic note list (#244): the notes tagged
+        # `#topic/<slug>` in the vault (stamped by ingestion, #243). Per-resident
+        # scope (D3): only the caller's own (or unowned/shared) notes. The slug
+        # may be hierarchical (projekt/wintergarten), so the route captures the
+        # rest of the path into `slug`.
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        slug = request.match_info["slug"].strip("/")
+        items = notes_search.notes_for_topic(notes_dir, slug, uid)
+        return web.json_response({"ok": True, "slug": slug, "items": items})
+
     async def chat(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
@@ -498,6 +703,8 @@ def build_app(
         if not text:
             text = _IMAGE_PROMPT
         session_id = str(body.get("session_id") or "")
+        topic_slug = str(body.get("topic") or "").strip()
+        ephemeral = bool(body.get("ephemeral"))
         system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
@@ -510,24 +717,17 @@ def build_app(
         compacted = False
         try:
             if not session_id:
-                model = reasoning.model_for_effort(
-                    effort, fast_model=fast_model, thorough_model=thorough_model
+                session_id = await create_turn_session(
+                    uid, topic_slug, body.get("personality"), effort, text, ephemeral
                 )
-                session_id = await hermes.create_session(
-                    uid, system_prompt, model=model
-                )
-                log.info(
-                    "chat.session.created",
-                    uid=uid,
-                    session_id=session_id,
-                    model=model,
-                )
-                await hermes.set_title(session_id, uid, _title_from(text))
-            else:
+            elif not ephemeral:
                 session_id, compacted = await maybe_compact(
                     uid, session_id, system_prompt
                 )
-            reply = await hermes.chat(session_id, text, images, effort)
+            turn_text = topic_turn_text(
+                text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
+            )
+            reply = await hermes.chat(session_id, turn_text, images, effort)
         except HermesError:
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
@@ -565,6 +765,8 @@ def build_app(
         if not text:
             text = _IMAGE_PROMPT
         session_id = str(body.get("session_id") or "")
+        topic_slug = str(body.get("topic") or "").strip()
+        ephemeral = bool(body.get("ephemeral"))
         system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
@@ -596,20 +798,10 @@ def build_app(
         try:
             compacted = False
             if not session_id:
-                model = reasoning.model_for_effort(
-                    effort, fast_model=fast_model, thorough_model=thorough_model
+                session_id = await create_turn_session(
+                    uid, topic_slug, body.get("personality"), effort, text, ephemeral
                 )
-                session_id = await hermes.create_session(
-                    uid, system_prompt, model=model
-                )
-                log.info(
-                    "chat.session.created",
-                    uid=uid,
-                    session_id=session_id,
-                    model=model,
-                )
-                await hermes.set_title(session_id, uid, _title_from(text))
-            else:
+            elif not ephemeral:
                 session_id, compacted = await maybe_compact(
                     uid, session_id, system_prompt
                 )
@@ -621,7 +813,10 @@ def build_app(
             # user message; we hold the pixels it drops) so history re-renders
             # the thumbnail after a refresh (#202).
             attachments.add(session_id, images)
-            stream = hermes.chat_stream(session_id, text, images, effort)
+            turn_text = topic_turn_text(
+                text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
+            )
+            stream = hermes.chat_stream(session_id, turn_text, images, effort)
             async for event in stream:
                 if cancel.is_set():
                     # Closing the upstream generator aborts the Hermes/Ollama
@@ -696,6 +891,11 @@ def build_app(
     app.router.add_post("/api/sessions", create_session)
     app.router.add_get("/api/sessions/{session_id}", get_session)
     app.router.add_delete("/api/sessions/{session_id}", delete_session)
+    app.router.add_get("/api/topics", list_topics)
+    app.router.add_post("/api/topics", create_topic)
+    app.router.add_get("/api/sessions/{session_id}/topics", get_session_topics)
+    app.router.add_post("/api/sessions/{session_id}/topics", set_session_topics)
+    app.router.add_get("/api/topics/{slug:.+}/items", topic_items)
     app.router.add_post("/api/chat", chat)
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_post("/api/chat/cancel", cancel_chat)
@@ -1004,6 +1204,8 @@ async def serve(
     frame_ancestors: str = "'self'",
     fast_model: str = "",
     thorough_model: str = "",
+    solilos_db_path: str = "/var/lib/solilos/solilos.db",
+    notes_dir: str = "/opt/data/notes",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -1024,6 +1226,8 @@ async def serve(
         frame_ancestors=frame_ancestors,
         fast_model=fast_model,
         thorough_model=thorough_model,
+        solilos_db_path=solilos_db_path,
+        notes_dir=notes_dir,
     )
     runner = web.AppRunner(app)
     await runner.setup()

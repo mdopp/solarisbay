@@ -27,7 +27,7 @@ When the user shares household facts, preferences, or notes (e.g., "Remember tha
 - **Instant Retrieval**: The native `qmd` hybrid-retrieval engine automatically scans `/opt/data/notes/` and will retrieve these files for contextual prompt injection.
 
 ### Operating Sequence:
-1. Formulate a clean Markdown block summarizing the new facts, including tags and date updated.
+1. Formulate a clean Markdown block summarizing the new facts, including tags and date updated. **Topic tag (conditional)**: if the turn context carries an active-topic line `[Active topic: <name> #topic/<slug>]`, add that exact `#topic/<slug>` tag to the fact block's `#tags` so the fact is retrievable by topic. The slug may be hierarchical (e.g. `#topic/projekt/wintergarten`). Omit it entirely when no active topic is present.
 2. Read the existing note file using `view_file` if it exists.
 3. **Wiki-link the named entities** (see "Wiki-linking facts" below) so the note joins the Obsidian graph instead of sitting isolated.
 4. Append or rewrite the file using `write_to_file` (or `replace_file_content` for edits) under `/opt/data/notes/`.

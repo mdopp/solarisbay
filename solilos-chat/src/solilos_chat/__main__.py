@@ -35,6 +35,8 @@ async def _run() -> None:
         frame_ancestors=settings.frame_ancestors,
         fast_model=settings.fast_model,
         thorough_model=settings.thorough_model,
+        solilos_db_path=settings.solilos_db_path,
+        notes_dir=settings.notes_dir,
     )
 
 

@@ -53,6 +53,7 @@ Do **not** trigger on plain text messages that do not contain an image attachmen
 - **YAML Frontmatter**:
   - `type`: `book`, `album`, `document`, or `receipt`
   - `tags`: `#solilos/ingested` combined with `#type/book`, `#type/album`, `#type/document`, or `#type/receipt`
+  - **Topic tag (conditional)**: if the turn context carries an active-topic line `[Active topic: <name> #topic/<slug>]`, add that exact `#topic/<slug>` tag to the `tags` list (as a `topic/<slug>` entry, matching the YAML list form below) so the note is retrievable by topic. The slug may be hierarchical (e.g. `topic/projekt/wintergarten`). Omit it entirely when no active topic is present.
   - `added_by`: the current resident `uid` (default `guest` if unresolved)
   - `added_at`: current ISO-8601 timestamp
   - `isbn` / `artist` / `document_date` (specific extracted fields)

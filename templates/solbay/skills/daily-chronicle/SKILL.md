@@ -130,6 +130,12 @@ created_at: {{timestamp}}
 
 - Leave a section out (or write *"—"*) when there is genuinely nothing for it,
   rather than inventing content.
+- **Topic tag (conditional)**: if the turn context carries an active-topic line
+  `[Active topic: <name> #topic/<slug>]` (a resident-invoked run from a topic
+  chat), add that exact `topic/<slug>` entry to the frontmatter `tags` list so
+  the entry is retrievable by topic. The slug may be hierarchical
+  (e.g. `topic/projekt/wintergarten`). Omit it for the unattended 23:59 cron run
+  (no active topic).
 - `{{ingested_today}}` should wiki-link the day's items, e.g.
   `- [[book_dune]] — "Dune" von Frank Herbert`, so the journal joins the graph.
 

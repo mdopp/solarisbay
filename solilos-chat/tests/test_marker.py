@@ -75,3 +75,23 @@ def test_maint_marker_is_hidden_from_household_filter():
     assert marker.has_marker("mdopp", maint_title) is False
     # And a household title is not mistaken for a maintenance one.
     assert not marker.maint_marker("mdopp").startswith(marker.marker_for("mdopp"))
+
+
+# --- Temporary/incognito marker (#246) ------------------------------------
+
+
+def test_temp_marker_format_and_does_not_leak_username():
+    m = marker.temp_marker("mdopp")
+    assert re.fullmatch(r"\[temp:[0-9a-f]{8}\] ", m)
+    assert "mdopp" not in m
+    assert m == f"[temp:{marker.uid_hash('mdopp')}] "
+
+
+def test_temp_marker_is_hidden_from_household_filter():
+    # An ephemeral chat must never appear in the durable household session list.
+    temp_title = marker.temp_marker("mdopp") + "secret one-off"
+    assert marker.has_marker("mdopp", temp_title) is False
+    assert marker.is_temp(temp_title) is True
+    # And it is in a distinct namespace from both other marker classes.
+    assert marker.is_temp(marker.marker_for("mdopp") + "x") is False
+    assert marker.is_temp(marker.maint_marker("mdopp") + "x") is False

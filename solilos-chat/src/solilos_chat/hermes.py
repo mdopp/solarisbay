@@ -47,6 +47,7 @@ class HermesClient:
         system_prompt: str | None = None,
         *,
         maintenance: bool = False,
+        ephemeral: bool = False,
         model: str = "",
     ) -> str:
         """Create a session bound to `uid`; return its id.
@@ -69,9 +70,18 @@ class HermesClient:
         `maintenance` (#229) seeds the `[maint:<hash>] ` marker instead, which
         keeps a ServiceBay-maintenance session out of the household list (its
         marker is in a different namespace from the household `[uid:...]` filter).
+
+        `ephemeral` (#246) seeds the `[temp:<hash>] ` marker, which likewise keeps
+        an incognito chat out of the durable household list — it is deleted on
+        close, so it must never appear as a persisted session.
         """
         url = f"{self._base_url}/api/sessions"
-        title = marker.maint_marker(uid) if maintenance else marker.marker_for(uid)
+        if ephemeral:
+            title = marker.temp_marker(uid)
+        elif maintenance:
+            title = marker.maint_marker(uid)
+        else:
+            title = marker.marker_for(uid)
         payload: dict[str, Any] = {"user_id": uid, "title": title}
         if system_prompt:
             payload["system_prompt"] = system_prompt
