@@ -49,6 +49,7 @@ class HermesClient:
         maintenance: bool = False,
         ephemeral: bool = False,
         model: str = "",
+        title: str = "",
     ) -> str:
         """Create a session bound to `uid`; return its id.
 
@@ -74,15 +75,25 @@ class HermesClient:
         `ephemeral` (#246) seeds the `[temp:<hash>] ` marker, which likewise keeps
         an incognito chat out of the durable household list — it is deleted on
         close, so it must never appear as a persisted session.
+
+        `title` appends a human suffix after the household `[uid:...]` marker
+        (#267). The default bare marker is fine for a session that is re-titled
+        from its first turn, but Hermes enforces title uniqueness, so a caller
+        that opens a session which may never be re-titled (e.g. a compaction
+        continuation) must pass a unique suffix or risk a 400 "title already in
+        use" against an abandoned bare-marker stub. Ignored for maintenance /
+        ephemeral markers, which are not in the household namespace.
         """
         url = f"{self._base_url}/api/sessions"
         if ephemeral:
-            title = marker.temp_marker(uid)
+            session_title = marker.temp_marker(uid)
         elif maintenance:
-            title = marker.maint_marker(uid)
+            session_title = marker.maint_marker(uid)
+        elif title:
+            session_title = marker.embed(uid, title)
         else:
-            title = marker.marker_for(uid)
-        payload: dict[str, Any] = {"user_id": uid, "title": title}
+            session_title = marker.marker_for(uid)
+        payload: dict[str, Any] = {"user_id": uid, "title": session_title}
         if system_prompt:
             payload["system_prompt"] = system_prompt
         if model:

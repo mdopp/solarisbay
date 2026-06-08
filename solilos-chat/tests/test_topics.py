@@ -555,7 +555,9 @@ async def test_turn_carries_topic_hint_when_topic_active(aiohttp_client, tmp_pat
     )
     assert resp.status == 200
     sent = fake.turns[-1][1]
-    assert sent.startswith("[Active topic: Wintergarten #topic/projekt/wintergarten]")
+    # The fresh current-time line (#265) leads; the topic hint follows it.
+    assert sent.startswith("[Aktuelle Zeit:")
+    assert "[Active topic: Wintergarten #topic/projekt/wintergarten]" in sent
     assert sent.endswith("merk dir das")
 
 
@@ -575,8 +577,12 @@ async def test_turn_has_no_hint_without_topic(aiohttp_client, tmp_path):
         headers={"Remote-User": "mdopp"},
     )
     assert resp.status == 200
-    # No active topic → the turn text is the user input verbatim, no hint.
-    assert fake.turns[-1][1] == "merk dir das"
+    # No active topic → no topic hint, but the fresh current-time line (#265)
+    # still leads and the user input trails it.
+    sent = fake.turns[-1][1]
+    assert sent.startswith("[Aktuelle Zeit:")
+    assert "[Active topic:" not in sent
+    assert sent.endswith("merk dir das")
 
 
 async def test_session_list_annotates_primary_topic(aiohttp_client, tmp_path):

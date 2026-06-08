@@ -335,6 +335,12 @@ def write_config_yaml(
     content = (
         "# Written by ServiceBay's hermes template post-deploy.py.\n"
         "# Edit via the wizard's reconfigure flow or hand-edit and restart the hermes service.\n"
+        # Local time zone (#265) — Hermes stamps each session's "Conversation
+        # started" line and times tool runs against this. Empty (upstream
+        # default) leaves the container on UTC, so the agent reports the wrong
+        # local time. The household is single-locale; mirror the other
+        # templates' Europe/Berlin default.
+        "timezone: Europe/Berlin\n"
         "model:\n"
         f"  provider: custom\n"
         f"  model: {model}\n"

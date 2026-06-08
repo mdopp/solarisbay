@@ -30,6 +30,16 @@ from solilos_chat.server import (
 )
 
 
+def _assert_turns(turns, expected):
+    """Assert forwarded `(session_id, text)` turns, tolerating the per-turn
+    current-time line (#265) that now leads every user turn. Each expected
+    text must be the tail of the forwarded turn for the same session."""
+    assert len(turns) == len(expected)
+    for (sid, sent), (exp_sid, exp_text) in zip(turns, expected):
+        assert sid == exp_sid
+        assert sent.endswith(exp_text)
+
+
 class _FakeRequest:
     def __init__(self, headers: dict[str, str]):
         self.headers = headers
@@ -110,7 +120,14 @@ class _FakeHermes:
         self._store = store or []
 
     async def create_session(
-        self, uid, system_prompt=None, *, maintenance=False, ephemeral=False, model=""
+        self,
+        uid,
+        system_prompt=None,
+        *,
+        maintenance=False,
+        ephemeral=False,
+        model="",
+        title="",
     ):
         self.created.append(uid)
         self.created_prompts.append(system_prompt or "")
@@ -494,7 +511,7 @@ async def test_chat_forwards_images(aiohttp_client, tmp_path):
         json={"input": "scan this", "images": ["data:image/jpeg;base64,ZZ"]},
     )
     assert resp.status == 200
-    assert fake.turns == [("sess-1", "scan this")]
+    _assert_turns(fake.turns, [("sess-1", "scan this")])
     # Full data URL reaches Hermes (prefix kept, #202).
     assert fake.images == [["data:image/jpeg;base64,ZZ"]]
 
@@ -511,7 +528,7 @@ async def test_chat_image_only_uses_default_prompt(aiohttp_client, tmp_path):
 
     resp = await client.post("/api/chat", json={"images": ["QQ"]})
     assert resp.status == 200
-    assert fake.turns == [("sess-1", _IMAGE_PROMPT)]
+    _assert_turns(fake.turns, [("sess-1", _IMAGE_PROMPT)])
     assert fake.images == [["QQ"]]
 
 
@@ -643,7 +660,7 @@ async def test_stream_forwards_images(aiohttp_client, tmp_path):
     )
     assert resp.status == 200
     await resp.text()
-    assert fake.turns == [("sess-1", "look")]
+    _assert_turns(fake.turns, [("sess-1", "look")])
     assert fake.images == [["data:image/png;base64,PP"]]
 
 
@@ -661,9 +678,9 @@ async def test_first_turn_creates_session(aiohttp_client):
     assert resp.status == 200
     assert body["ok"] is True
     assert body["session_id"] == "sess-1"
-    assert body["reply"] == "echo: hello"
+    assert body["reply"].endswith("hello")
     assert fake.created == ["mdopp"]
-    assert fake.turns == [("sess-1", "hello")]
+    _assert_turns(fake.turns, [("sess-1", "hello")])
     # First turn derives + persists a title from the user's message, tagged
     # with the caller's uid so set_title can re-inject the marker (#153).
     assert fake.titles == [("sess-1", "mdopp", "hello")]
@@ -682,7 +699,7 @@ async def test_subsequent_turn_reuses_session(aiohttp_client):
     body = await resp.json()
     assert body["session_id"] == "existing"
     assert fake.created == []
-    assert fake.turns == [("existing", "again")]
+    _assert_turns(fake.turns, [("existing", "again")])
     # Reusing a session never re-titles it.
     assert fake.titles == []
 
@@ -727,7 +744,7 @@ async def test_stream_creates_session_and_restreams(aiohttp_client):
     assert "event: completed" in body
     assert body.rstrip().endswith("data: {}")  # final 'done' frame
     assert fake.created == ["mdopp"]
-    assert fake.turns == [("sess-1", "hi")]
+    _assert_turns(fake.turns, [("sess-1", "hi")])
     assert fake.titles == [("sess-1", "mdopp", "hi")]
 
 
@@ -987,7 +1004,7 @@ async def test_turn_over_cap_compacts_and_switches_session(aiohttp_client, tmp_p
     # Extraction happened on the OLD session BEFORE the real turn on the new one.
     texts = [t for _, t in fake.turns]
     assert texts[0] == compaction.EXTRACT_PROMPT
-    assert texts[-1] == "next turn"
+    assert texts[-1].endswith("next turn")
     assert fake.turns[0][0] == "old" and fake.turns[-1][0] == body["session_id"]
 
 
@@ -1019,7 +1036,7 @@ async def test_turn_under_cap_does_not_compact(aiohttp_client, tmp_path):
     assert body["compacted"] is False
     assert body["session_id"] == "small"
     assert fake.created == []  # no continuation created
-    assert [t for _, t in fake.turns] == ["hello"]
+    assert [t for _, t in fake.turns][-1].endswith("hello")
 
 
 async def test_delete_session_removes_attachments(aiohttp_client, tmp_path):
@@ -1214,6 +1231,41 @@ async def test_non_ephemeral_chat_unaffected(aiohttp_client, tmp_path):
     assert fake.ephemeral == [False]
     assert len(fake.titles) == 1  # re-titled
     assert "Temporary/incognito chat" not in fake.turns[-1][1]
+
+
+async def test_turn_carries_current_time_line(aiohttp_client, tmp_path):
+    # #265: every user turn is prepended a fresh local wall-clock line so the
+    # agent reports a correct, advancing date-time (Hermes only stamps a frozen,
+    # date-granular "Conversation started" line at create and runs UTC).
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        solilos_db_path=str(tmp_path / "solilos.db"),
+    )
+    client = await aiohttp_client(app)
+    # Normal chat: time line leads, the typed text trails.
+    await client.post(
+        "/api/chat",
+        json={"input": "wie spät ist es?"},
+        headers={"Remote-User": "mdopp"},
+    )
+    normal_turn = fake.turns[-1][1]
+    assert normal_turn.startswith("[Aktuelle Zeit:")
+    assert "Uhr" in normal_turn
+    assert normal_turn.endswith("wie spät ist es?")
+    # Ephemeral chat: time line composes with the incognito guard, text last.
+    await client.post(
+        "/api/chat",
+        json={"input": "und jetzt?", "ephemeral": True},
+        headers={"Remote-User": "mdopp"},
+    )
+    eph_turn = fake.turns[-1][1]
+    assert eph_turn.startswith("[Aktuelle Zeit:")
+    assert "Temporary/incognito chat" in eph_turn
+    assert eph_turn.endswith("und jetzt?")
 
 
 def _two_user_store():
@@ -2157,7 +2209,7 @@ async def test_maint_persona_cannot_escalate_mid_session(aiohttp_client):
     # Reusing an existing session never re-creates it, so no new system prompt
     # is applied — the create-time lock holds for the session's whole life.
     assert fake.created == []
-    assert fake.turns == [("maint-1", "status")]
+    _assert_turns(fake.turns, [("maint-1", "status")])
 
 
 async def test_csp_header_from_default_frame_ancestors(aiohttp_client):
