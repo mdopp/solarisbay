@@ -13,13 +13,13 @@ on:
     paths:
       - 'voice-gatekeeper/**'
       - 'database/**'
-      - 'hermes-chat/**'
+      - 'solilos-chat/**'
       - '.github/workflows/build-images.yml'
   pull_request:
     paths:
       - 'voice-gatekeeper/**'
       - 'database/**'
-      - 'hermes-chat/**'
+      - 'solilos-chat/**'
       - '.github/workflows/build-images.yml'
 
 permissions:
@@ -46,7 +46,7 @@ jobs:
             context: database
             description: "Solilos schema-init sidecar — runs alembic upgrade head against the SolBay pod's local SQLite (solilos.db) on every pod start. Idempotent."
           - image: solilos-chat
-            context: hermes-chat
+            context: solilos-chat
             inject_version: true
             description: "Solilos chat — stateless aiohttp proxy serving a static chat page over Hermes' native session API. Reads the Authelia Remote-User header for SSO; holds API_SERVER_KEY server-side. Replaces the fragile in-process hermes-webui."
     steps:

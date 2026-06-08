@@ -60,12 +60,12 @@ jobs:
       # when a PR changes no gatekeeper source. Ratchet the floor up in the script.
       - run: python scripts/check-diff-coverage.py
 
-  test-hermes-chat:
-    name: pytest (hermes-chat)
+  test-solilos-chat:
+    name: pytest (solilos-chat)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: hermes-chat
+        working-directory: solilos-chat
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6

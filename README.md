@@ -28,7 +28,7 @@ one click and Hermes can consume as a skill pack independently.
   container that runs `alembic upgrade head` against the Solilos pod's
   local SQLite (`solilos.db`) on every pod start. Built into
   `ghcr.io/mdopp/solilos-schema-init:latest`.
-- **Chat proxy image source** (`hermes-chat/`) — a small, stateless
+- **Chat proxy image source** (`solilos-chat/`) — a small, stateless
   aiohttp proxy serving a static chat page over Hermes' native session
   API, built into `ghcr.io/mdopp/solilos-chat:latest` and deployed by the
   `solilos-chat` template at `chat.<publicDomain>`.
@@ -89,7 +89,7 @@ solbay/
 │   ├── Dockerfile
 │   ├── alembic.ini
 │   └── migrations/
-├── hermes-chat/                    # Docker image source (chat proxy)
+├── solilos-chat/                   # Docker image source (chat proxy)
 │   ├── Dockerfile
 │   ├── pyproject.toml
 │   ├── src/

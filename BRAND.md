@@ -98,7 +98,7 @@ plain-spoken in the promise. Never self-help-cheesy, never cold-tech. It speaks
 | Home template dir | `templates/oscar-household` | `templates/solbay` |
 | Hermes plugin + stack name | `name: oscar`, `~/.hermes/plugins/oscar/` | `name: solbay`, `~/.hermes/plugins/solbay/` |
 | Components (in-stack, bare roles) | `oscar-gatekeeper`, `oscar-household-init`, `oscar-data` | `gatekeeper`, `schema-init`, `solilos-data` |
-| Chat pod | `oscar-chat` image, `templates/hermes-chat`, pkg `oscar_chat` | `solilos-chat` image + `templates/solilos-chat` template + pod, pkg `solilos_chat`; image **source** dir stays `hermes-chat/` |
+| Chat pod | `oscar-chat` image, `templates/hermes-chat`, pkg `oscar_chat` | `solilos-chat` image + `templates/solilos-chat` template + pod + `solilos-chat/` source dir, pkg `solilos_chat` |
 | Published images (GHCR, brand-prefixed) | `oscar-gatekeeper`, `oscar-household-init`, `oscar-chat`, `oscar-gatekeeper-ml` | `solilos-gatekeeper`, `solilos-schema-init`, `solilos-chat`, `solilos-gatekeeper-ml` |
 | Python projects | `oscar-gatekeeper`, `oscar-schema`, `oscar-chat` | `solilos-gatekeeper`, `solilos-schema`, `solilos-chat` |
 | Hermes skill names | `oscar-status`, `oscar-audit-query`, `oscar-debug-set`, `oscar-daily-chronicle`, `oscar-dynamic-skills`, `oscar-notes-search`, `oscar-room-enrollment`, `oscar-custom-*` | `sol-status`, `sol-audit-query`, `sol-debug-set`, `sol-daily-chronicle`, `sol-dynamic-skills`, `sol-notes-search`, `sol-room-enrollment`, `sol-custom-*` |
@@ -115,8 +115,8 @@ must be identifiable. Two deliberate stems: home/voice on `sol`/`solbay`
 artifacts on `solilos` (images, Python projects, env vars `SOLILOS_*`, data
 paths, notes namespace, Wyoming/MCP program names). The chat pod is the one
 brand-prefixed *template* (`solilos-chat`) so it lines up with its
-`solilos-chat` image; only its image-source dir stays role-named `hermes-chat/`
-alongside the other role-named source dirs (`voice-gatekeeper/`, `database/`).
+`solilos-chat` image and `solilos-chat/` source dir, alongside the role-named
+source dirs (`voice-gatekeeper/`, `database/`).
 Unchanged: `hermes`, `hermes-webui` (retired), `ollama`; generic package
 `gatekeeper`; `HERMES_*` / `GATEKEEPER_*` / `DEFAULT_UID`. The rename is a
 coordinated migration — see #138.

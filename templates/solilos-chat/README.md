@@ -5,7 +5,7 @@ A small, **stateless, offline-capable** household chat surface at
 (`ghcr.io/mdopp/solilos-chat`) and forwards turns to Hermes' **native session
 API**. Replaces the fragile in-process `hermes-webui` (#139, #140).
 
-The proxy source lives in `hermes-chat/` at the repo root (the image
+The proxy source lives in `solilos-chat/` at the repo root (the image
 context); this directory is the ServiceBay template that deploys it.
 
 ## What it does
@@ -67,5 +67,5 @@ any data dir under `${DATA_DIR}/_archived/`, and drops it from
 ## Out of scope
 
 - Session-list / new-session UI (#141) — this is one current session.
-- The SolBay rename (#138) is applied: `solilos-chat` image and
-  `solilos-chat` template; the proxy source dir stays `hermes-chat/`.
+- The SolBay rename (#138) is applied: `solilos-chat` image,
+  `solilos-chat` template, and `solilos-chat/` proxy source dir.
