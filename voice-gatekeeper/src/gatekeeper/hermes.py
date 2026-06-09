@@ -90,6 +90,13 @@ class HermesClient:
         location: str | None = None,
     ) -> str:
         conv_key = uid or endpoint
+        # Inject the satellite's resolved room as an out-of-band context hint
+        # (#313): the gatekeeper resolves it from its own room store, so the
+        # household profile no longer needs the set_room/list_rooms MCP tools
+        # dragged into every turn. Hermes' session chat carries only `input`, so
+        # the hint rides as a bracketed prefix the model reads but doesn't speak.
+        if location:
+            text = f"[room: {location}]\n{text}"
         # Adaptive reasoning routing (#222): default FAST ("none") for voice;
         # escalate to thorough only on an explicit cue in the transcript.
         effort = reasoning.choose_effort(text)

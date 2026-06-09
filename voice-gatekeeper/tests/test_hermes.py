@@ -59,6 +59,48 @@ async def test_create_session_then_chat_round_trip(monkeypatch):
     assert calls[1][2] == {"input": "ping", "reasoning_effort": "none"}
 
 
+async def test_location_injected_as_context_prefix(monkeypatch):
+    """#313 — the resolved room rides as an out-of-band context prefix on the
+    turn input (replacing the dropped set_room/list_rooms MCP tools)."""
+    chat_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        if request.url.path == "/api/sessions":
+            return httpx.Response(200, json={"id": "sess-1"})
+        chat_bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    _install_transport(monkeypatch, handler)
+    client = HermesClient("http://hermes:8642", "secret")
+    await client.converse(
+        text="Welche Lichter sind an?",
+        uid="household",
+        endpoint="voice-pe:sat",
+        trace_id="t",
+        location="kitchen",
+    )
+    assert chat_bodies[0]["input"] == "[room: kitchen]\nWelche Lichter sind an?"
+
+
+async def test_no_location_leaves_input_unprefixed(monkeypatch):
+    chat_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        if request.url.path == "/api/sessions":
+            return httpx.Response(200, json={"id": "sess-1"})
+        chat_bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    _install_transport(monkeypatch, handler)
+    client = HermesClient("http://hermes:8642", "secret")
+    await client.converse(text="hallo", uid="household", endpoint="e", trace_id="t")
+    assert chat_bodies[0]["input"] == "hallo"
+
+
 async def test_bearer_token_sent(monkeypatch):
     seen: list[str | None] = []
 

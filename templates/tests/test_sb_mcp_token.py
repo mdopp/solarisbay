@@ -142,18 +142,16 @@ def test_first_install_appends_block(hermes, tmp_path, monkeypatch):
 
 
 def test_household_collect_never_includes_servicebay_mcp(household, monkeypatch):
-    """#292: the household (DEFAULT-profile) config must NEVER carry servicebay-
-    mcp — its ~50-tool SB control surface is the bulk of the first-turn prefill,
-    and lives only on the admin profile now. Even with a valid existing token /
-    URL present, collect_mcp_servers must not return a servicebay-mcp entry."""
+    """#292/#313: the household (DEFAULT-profile) MCP set is empty. servicebay-mcp
+    is excluded (#292 — its ~50-tool SB control surface is the bulk of the first-
+    turn prefill, and lives only on the admin profile now) and gatekeeper-mcp is
+    excluded (#313 — the room hint is injected out-of-band, so its tools no longer
+    ride every household turn). Even with a valid existing token / URL present,
+    collect_mcp_servers must return no entries."""
     monkeypatch.setattr(household, "SERVICEBAY_MCP_URL", "http://127.0.0.1:5888/mcp")
-    monkeypatch.setattr(household, "GATEKEEPER_MCP_URL", "http://127.0.0.1:10760/mcp")
-    monkeypatch.setattr(household, "GATEKEEPER_MCP_TOKEN", "")
 
     servers = household.collect_mcp_servers()
-    assert all(name != "servicebay-mcp" for name, _, _ in servers)
-    # gatekeeper-mcp stays — household needs its room/resource tools.
-    assert ("gatekeeper-mcp", "http://127.0.0.1:10760/mcp", "") in servers
+    assert servers == []
 
 
 def test_household_existing_token_parser_rejects_junk(household, monkeypatch):

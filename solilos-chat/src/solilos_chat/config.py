@@ -37,6 +37,7 @@ class Settings:
     thorough_model: str
     solilos_db_path: str
     notes_dir: str
+    trace_proxy_url: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -124,6 +125,11 @@ class Settings:
             # topic dashboard's per-topic note list (#244). Same path the
             # ingestion/notes-search skills use inside the Hermes runtime.
             notes_dir=os.environ.get("NOTES_DIR", "/opt/data/notes"),
+            # The always-on Ollama trace proxy's base URL (the `trace` container,
+            # loopback). At turn time the server pulls its `/__traces__` calls in
+            # the turn window to persist the per-message trace (#306). Defaults
+            # match the proxy's TRACE_PROXY_HOST/PORT (127.0.0.1:11436).
+            trace_proxy_url=os.environ.get("TRACE_PROXY_URL", "http://127.0.0.1:11436"),
         )
 
 

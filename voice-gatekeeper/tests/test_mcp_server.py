@@ -39,6 +39,20 @@ async def test_lists_room_tools(db_path):
         assert {t.name for t in tools.tools} == {"set_room", "list_rooms"}
 
 
+def test_only_tools_capability_advertised(db_path):
+    """#312 — we register zero prompts/resources, so the server must advertise
+    only the tools capability (else Hermes surfaces list_prompts/get_prompt/
+    list_resources/read_resource as four useless tools in every prompt)."""
+    from mcp.server.lowlevel.server import NotificationOptions
+
+    caps = build_mcp(db_path=db_path)._mcp_server.get_capabilities(
+        NotificationOptions(), {}
+    )
+    assert caps.tools is not None
+    assert caps.prompts is None
+    assert caps.resources is None
+
+
 async def test_set_and_list_room(db_path):
     async with connect(build_mcp(db_path=db_path)._mcp_server) as client:
         set_res = await client.call_tool(

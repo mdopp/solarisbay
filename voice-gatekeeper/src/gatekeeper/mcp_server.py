@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 
+import mcp.types as mcp_types
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -66,6 +67,21 @@ def build_mcp(*, db_path: str) -> FastMCP:
         """Return the known satellite->room mappings as `{satellite_id: room}`."""
         rooms = await asyncio.to_thread(_list_rooms, db_path)
         return {"rooms": rooms}
+
+    # We register zero prompts and zero resources, but FastMCP unconditionally
+    # installs their protocol handlers, so `get_capabilities` advertises the
+    # prompts+resources capabilities and Hermes' MCP client surfaces
+    # list_prompts/get_prompt/list_resources/read_resource as four useless
+    # model-callable tools in every prompt (#312). Drop those handlers so the
+    # initialize response advertises only `tools`.
+    for _req in (
+        mcp_types.ListPromptsRequest,
+        mcp_types.GetPromptRequest,
+        mcp_types.ListResourcesRequest,
+        mcp_types.ReadResourceRequest,
+        mcp_types.ListResourceTemplatesRequest,
+    ):
+        mcp._mcp_server.request_handlers.pop(_req, None)
 
     return mcp
 

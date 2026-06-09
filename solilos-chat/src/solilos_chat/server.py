@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ from solilos_chat import (
     reasoning,
     skills,
     topics_store,
+    trace_store,
 )
 from solilos_chat.attachments import AttachmentStore, attach_to_messages
 from solilos_chat.context import STATIC_DEFAULT, ContextWindow
@@ -194,6 +197,7 @@ def build_app(
     thorough_model: str = "",
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
     notes_dir: str = "/opt/data/notes",
+    trace_proxy_url: str = "http://127.0.0.1:11436",
     residents: list[str] | None = None,
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
@@ -394,6 +398,72 @@ def build_app(
             return
         tags, persons = parse_mentions(text)
         mentions_store.record_mentions(solilos_db_path, session_id, uid, tags, persons)
+
+    async def persist_turn_trace(
+        uid: str, session_id: str, t0: float, *, ephemeral: bool
+    ) -> None:
+        """Correlate this turn's Ollama calls to a stable trace_id and persist.
+
+        The trace proxy sees the calls but not the Hermes session id; only this
+        turn knows both the session and its wall-clock window — `t0` (captured at
+        turn start) to now (the proxy has recorded every call by the time the
+        reply is back, so the fetch moment is a safe upper bound, #306). Pull the
+        proxy's calls in that window, assign them a fresh per-turn `trace_id`, and
+        persist the ordered steps so a reopen shows the same trace. Skipped for
+        ephemeral chats (no durable state); fail-open — a proxy/DB hiccup never
+        breaks the turn that already produced a reply.
+        """
+        if ephemeral:
+            return
+        try:
+            steps = await fetch_turn_steps(t0)
+            if steps:
+                trace_store.persist_trace(
+                    solilos_db_path, session_id, uuid.uuid4().hex, uid, steps
+                )
+        except Exception as e:  # noqa: BLE001 — trace persistence is best-effort
+            log.warn("chat.trace.persist_error", session_id=session_id, error=str(e))
+
+    async def fetch_turn_steps(t0: float) -> list[dict[str, Any]]:
+        """The proxy's captured Ollama calls for this turn — those whose timestamp
+        is at or after the turn start `t0` and at or before the fetch moment `t1`
+        (a record can't post-date the GET that read it). `/__traces__` returns
+        newest-first light records (each with `ts`, `model`, `wall_s`, tokens,
+        `context_free`, `finish_reason`, `n_tools`, and the `id` that fetches the
+        exact content) — we keep the window's calls in chronological (step) order
+        and tag the proxy `id` as `detail_id` for the per-step content fetch."""
+        url = f"{trace_proxy_url.rstrip('/')}/__traces__"
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as client:
+            async with client.get(url) as r:
+                if r.status >= 400:
+                    return []
+                records = await r.json()
+        t1 = time.time()
+        window = [rec for rec in records if t0 <= rec.get("ts", 0) <= t1]
+        window.sort(key=lambda rec: rec.get("ts", 0))
+        return [
+            {
+                "model": rec.get("model"),
+                "wall_s": rec.get("wall_s"),
+                "prompt_tokens": rec.get("prompt_tokens"),
+                "completion_tokens": rec.get("completion_tokens"),
+                "context_free": rec.get("context_free"),
+                "finish_reason": rec.get("finish_reason"),
+                "n_tools": rec.get("n_tools"),
+                "detail_id": rec.get("id"),
+            }
+            for rec in window
+        ]
+
+    async def session_trace(request: web.Request) -> web.Response:
+        # The persisted per-turn LLM trace for one chat (#306): the ordered steps
+        # the proxy captured, each with model/wall_s/tokens/detail_id, so the
+        # panel renders the same trace on reopen. Per-resident scope.
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        session_id = request.match_info["session_id"]
+        steps = trace_store.list_session_trace(solilos_db_path, session_id, uid)
+        return web.json_response({"ok": True, "steps": steps})
 
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
@@ -874,6 +944,7 @@ def build_app(
 
         clock = asyncio.get_event_loop().time
         t_start = clock() * 1000.0
+        wall_t0 = time.time()  # wall-clock window for proxy trace correlation (#306)
         compacted = False
         try:
             # Only a missing session_id starts a fresh Hermes session; turn 2+
@@ -900,6 +971,7 @@ def build_app(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
         attachments.add(session_id, images)
+        await persist_turn_trace(uid, session_id, wall_t0, ephemeral=ephemeral)
         # Non-streamed turn: only total wall-time is observable (no per-phase
         # boundaries without the stream), so the trace carries just the total
         # (#225). The streaming path is where the phase waterfall comes from.
@@ -956,6 +1028,7 @@ def build_app(
         # captured (see _trace_from_phases for what is/isn't observable).
         clock = asyncio.get_event_loop().time
         t_start = clock() * 1000.0
+        wall_t0 = time.time()  # wall-clock window for proxy trace correlation (#306)
         t_first: float | None = None  # first delta -> prefill / TTFT
         t_think_end: float | None = None  # </thinking> seen -> reasoning ends
         tool_ms = 0.0
@@ -1035,6 +1108,7 @@ def build_app(
                     t_end - t_start,
                 )
                 await _send_event(resp, "trace", trace)
+                await persist_turn_trace(uid, session_id, wall_t0, ephemeral=ephemeral)
         except HermesError:
             await _send_event(resp, "error", {"reason": "hermes_unavailable"})
         finally:
@@ -1077,6 +1151,7 @@ def build_app(
     app.router.add_get("/api/mentions/tags", mentions_tags)
     app.router.add_get("/api/mentions/persons", mentions_persons)
     app.router.add_get("/api/sessions/{session_id}/mentions", session_mentions)
+    app.router.add_get("/api/sessions/{session_id}/trace", session_trace)
     app.router.add_post("/api/chat", chat)
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_post("/api/chat/cancel", cancel_chat)
@@ -1378,6 +1453,7 @@ async def serve(
     thorough_model: str = "",
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
     notes_dir: str = "/opt/data/notes",
+    trace_proxy_url: str = "http://127.0.0.1:11436",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -1401,6 +1477,7 @@ async def serve(
         thorough_model=thorough_model,
         solilos_db_path=solilos_db_path,
         notes_dir=notes_dir,
+        trace_proxy_url=trace_proxy_url,
     )
     runner = web.AppRunner(app)
     await runner.setup()
