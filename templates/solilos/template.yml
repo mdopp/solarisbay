@@ -252,6 +252,12 @@ spec:
     - mountPath: /etc/cont-init.d/99-install-ddgs
       name: hermes-data
       subPath: 99-install-ddgs
+    # #299 — keep the admin gateway up across reboots. Sorts before the image's
+    # 02-reconcile-profiles hook; forces admin's recorded gateway_state to
+    # `running` so the reconciler auto-starts it on every boot.
+    - mountPath: /etc/cont-init.d/016-ensure-admin-gateway
+      name: hermes-data
+      subPath: 016-ensure-admin-gateway
 
   # Privileged config sidecar (Solilos). The public chat pod can't write
   # Hermes' own data dir (0700, owned by a foreign subuid), so an admin's

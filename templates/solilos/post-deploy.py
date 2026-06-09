@@ -790,6 +790,70 @@ def write_ddgs_install_script(data_dir: str) -> bool:
         return False
 
 
+# A graceful pod shutdown records the admin gateway's gateway_state as `stopped`,
+# so the image's 02-reconcile-profiles reconciler (which only auto-starts profiles
+# whose recorded state is `running`) would leave admin DOWN after a plain restart
+# or reboot — only a ServiceBay deploy (which re-runs start_admin_gateway) brought
+# it back (#299). This cont-init hook runs BEFORE 02-reconcile (it sorts `016-` <
+# `02-`) and forces admin's recorded state to `running`, so the reconciler
+# auto-starts the admin gateway on EVERY boot. It writes as the hermes user
+# (mirroring 02-reconcile's uid drop) so the state file stays hermes-owned and the
+# running gateway can keep updating it. No-op until the admin profile exists.
+ADMIN_GATEWAY_BOOT_HOOK = "016-ensure-admin-gateway"
+_ADMIN_GATEWAY_BOOT_HOOK_SCRIPT = (
+    "#!/command/with-contenv sh\n"
+    "# Keep the admin profile gateway up across reboots (#299): force its recorded\n"
+    "# gateway_state to `running` before 02-reconcile-profiles auto-starts it.\n"
+    'state="/opt/data/profiles/admin/gateway_state.json"\n'
+    '[ -f "$state" ] || exit 0\n'
+    'run() { [ "$(id -u)" = 0 ] && set -- s6-setuidgid hermes "$@"; "$@"; }\n'
+    "run /opt/hermes/.venv/bin/python - \"$state\" <<'PY' || true\n"
+    "import json, sys\n"
+    "p = sys.argv[1]\n"
+    "try:\n"
+    "    d = json.load(open(p))\n"
+    "except Exception:\n"
+    "    d = {}\n"
+    'd["gateway_state"] = "running"\n'
+    'json.dump(d, open(p, "w"))\n'
+    "PY\n"
+)
+
+
+def write_admin_gateway_boot_hook() -> bool:
+    """Write the cont-init hook (`/opt/data/016-ensure-admin-gateway`, mounted at
+    /etc/cont-init.d/016-ensure-admin-gateway) that keeps the admin gateway up
+    across reboots (#299).
+
+    Written + chmod'd VIA THE CONTAINER: `/opt/data` is hermes-owned mode 0700, so
+    the post-deploy's host-side write silently fails and the subPath mount source
+    goes missing → the hermes container can't start at the next restart (the pod
+    goes Degraded; box-verified the hard way). MUST run after wait_for_hermes (the
+    container must be up to exec) and BEFORE the final restart (so the file is on
+    the volume when the pod is recreated with the mount). Returns True on write."""
+    target = f"/opt/data/{ADMIN_GATEWAY_BOOT_HOOK}"
+    if read_file_in_container(target) == _ADMIN_GATEWAY_BOOT_HOOK_SCRIPT:
+        return False
+    if not write_file_in_container(target, _ADMIN_GATEWAY_BOOT_HOOK_SCRIPT):
+        return False
+    # cont-init.d scripts must be executable.
+    try:
+        subprocess.run(
+            ["podman", "exec", HERMES_CONTAINER, "chmod", "0755", target],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    jlog(
+        "info",
+        "hermes:admin-boot-hook",
+        "wrote admin-gateway boot hook (#299)",
+        path=target,
+    )
+    return True
+
+
 def _ha_token_timeout() -> int:
     return int(os.environ.get("HA_TOKEN_TIMEOUT", "90"))
 
@@ -2496,6 +2560,10 @@ def main() -> int:
     # its bind port pinned via a per-profile `.env` (API_SERVER_PORT=:8643 — the
     # config.yaml port is overridden by the container env, box-verified #293).
     provision_profiles(data_dir, provider_url, admin_port=admin_api_port)
+    # Boot hook that keeps admin up across reboots (#299) — written via the
+    # container (hermes is up now, after wait_for_hermes) so it lands on the
+    # volume BEFORE the restart below recreates the pod with the hook mounted.
+    write_admin_gateway_boot_hook()
 
     # ── 5. restart, THEN start the admin gateway ─────────────────────────────
     # The restart makes the container's bare `gateway run` serve the household

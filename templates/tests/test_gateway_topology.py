@@ -163,6 +163,16 @@ def test_post_deploy_makes_household_the_default_profile(pd, post_deploy_src):
     assert "admin" in src.lower()
 
 
+def test_admin_gateway_boot_hook_mounted_and_written(pd, raw_template, post_deploy_src):
+    # The reboot-persistence hook (#299) is written by post-deploy and mounted
+    # into cont-init.d, sorting before the image's 02-reconcile-profiles.
+    assert "write_admin_gateway_boot_hook()" in post_deploy_src
+    hermes = _block(raw_template, "hermes")
+    assert "/etc/cont-init.d/016-ensure-admin-gateway" in hermes
+    assert "subPath: 016-ensure-admin-gateway" in hermes
+    assert "016-ensure-admin-gateway" < "02-reconcile-profiles"
+
+
 def test_admin_profile_created_no_skills(pd, monkeypatch):
     # `hermes profile create admin --no-skills` — a lean, empty profile (no
     # ~105-skill bundled-catalog copy), the box-verified way to keep it lean.

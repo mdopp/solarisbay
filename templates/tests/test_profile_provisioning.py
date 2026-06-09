@@ -168,6 +168,27 @@ def test_profile_soul_installed_then_preserved_when_edited(pd, fc):
     assert fc.files[soul_path] == "# Our House\n\nhand-tuned\n"
 
 
+# ── admin-gateway reboot-persistence boot hook (#299) ───────────────────────
+
+
+def test_admin_boot_hook_forces_running_before_reconcile(pd, fc):
+    # The hook is written VIA THE CONTAINER (the hermes data dir is 0700,
+    # unwritable host-side, #299) to the cont-init mount source path.
+    assert pd.write_admin_gateway_boot_hook() is True
+    target = f"/opt/data/{pd.ADMIN_GATEWAY_BOOT_HOOK}"
+    body = fc.files[target]
+    # Sorts before the image's 02-reconcile-profiles so the reconciler reads the
+    # forced state.
+    assert pd.ADMIN_GATEWAY_BOOT_HOOK < "02-reconcile-profiles"
+    # Targets the admin gateway's recorded state and forces it to running.
+    assert "/opt/data/profiles/admin/gateway_state.json" in body
+    assert '"gateway_state"] = "running"' in body
+    # Writes as the hermes user so the file stays hermes-owned (gateway updates it).
+    assert "s6-setuidgid hermes" in body
+    # Idempotent on a second run with the same content.
+    assert pd.write_admin_gateway_boot_hook() is False
+
+
 # ── per-profile .env port (the only port lever that works, #293) ────────────
 
 
