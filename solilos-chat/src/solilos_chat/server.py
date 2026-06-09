@@ -176,6 +176,7 @@ def is_admin(request: web.Request, header: str, admin_group: str) -> bool:
 def build_app(
     *,
     hermes: HermesClient,
+    hermes_admin: HermesClient | None = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -212,8 +213,39 @@ def build_app(
     # connection is what actually interrupts the model's generation).
     cancels: dict[str, asyncio.Event] = {}
 
+    # Multi-profile routing (#293): household sessions ride `hermes` (the
+    # household gateway, :8642); admin/servicebay-maintenance sessions ride the
+    # admin gateway (:8643). A session created on the admin gateway is recorded
+    # here so its follow-up turns route back to the same gateway — Hermes session
+    # state is per-gateway, so a session must stay on the instance that holds it.
+    # When no admin gateway is configured both fall back to `hermes` (single-
+    # instance / offline-test topology).
+    household_gw = hermes
+    admin_gw = hermes_admin or hermes
+    admin_sessions: set[str] = set()
+
+    def gateway_for(
+        request: web.Request, session_id: str, persona: object = None
+    ) -> HermesClient:
+        """Pick the Hermes gateway for a turn (#293).
+
+        Admin gateway only when the caller is an Authelia admin AND either the
+        session was created on the admin gateway (recorded at create) or this
+        request explicitly selects the admin/maintenance persona. A non-admin
+        caller is ALWAYS routed to household — even if it presents a known admin
+        session_id — so the #209/#229 gate holds at the routing layer too.
+        """
+        if not is_admin(request, remote_groups_header, admin_group):
+            return household_gw
+        if session_id and session_id in admin_sessions:
+            return admin_gw
+        sel = request.rel_url.query.get("persona") or persona
+        if sel == personalities.MAINTENANCE_ID:
+            return admin_gw
+        return household_gw
+
     async def maybe_compact(
-        uid: str, session_id: str, system_prompt: str
+        uid: str, session_id: str, system_prompt: str, client: HermesClient
     ) -> tuple[str, bool]:
         """Hard-cap trigger (#210): if an existing session's running token usage
         is near the context-window cap, extract durable learnings to memory and
@@ -226,7 +258,7 @@ def build_app(
         """
         try:
             new_id = await compaction.compact_session(
-                hermes,
+                client,
                 uid,
                 session_id,
                 base_system_prompt=system_prompt,
@@ -273,6 +305,7 @@ def build_app(
         effort: str,
         text: str,
         ephemeral: bool,
+        client: HermesClient,
     ) -> str:
         """Create the session for a first turn; return its id.
 
@@ -283,13 +316,18 @@ def build_app(
         (re-titling would re-stamp the `[uid:]` marker and surface it), and never
         has a `session_topics` row — it carries no durable state. Normal chats
         bind topic model/persona and persist the auto-title.
+
+        `client` is the gateway the caller routed to (#293): household for a
+        resident chat (the common case), or the admin gateway when an admin
+        selected the admin persona. An admin-gateway create is recorded in
+        `admin_sessions` so the session's follow-up turns route back to it.
         """
         if ephemeral:
             # A unique suffix rides after the `[temp:]` marker so a second temp
             # chat can't 400 against the first's bare-marker title (#286, same
             # collision #267/#277 fixed). The marker prefix is preserved, so the
             # chat stays incognito (not-persisted / not-listed).
-            session_id = await hermes.create_session(
+            session_id = await client.create_session(
                 uid,
                 personalities.system_prompt_for(personality_id),
                 ephemeral=True,
@@ -306,9 +344,11 @@ def build_app(
         # marker), so a first turn can never 400 against an abandoned
         # bare-marker stub already holding it — the same collision #267 fixed
         # for the compaction path, here on the main first-turn path (#277).
-        session_id = await hermes.create_session(
+        session_id = await client.create_session(
             uid, system_prompt, model=model, title=_title_from(text)
         )
+        if client is admin_gw and client is not household_gw:
+            admin_sessions.add(session_id)
         log.info(
             "chat.session.created",
             uid=uid,
@@ -639,11 +679,14 @@ def build_app(
                     {"ok": False, "reason": "soul_unavailable"}, status=502
                 )
             try:
-                session_id = await hermes.create_session(uid, soul, maintenance=True)
+                session_id = await admin_gw.create_session(uid, soul, maintenance=True)
             except HermesError:
                 return web.json_response(
                     {"ok": False, "reason": "hermes_unavailable"}, status=502
                 )
+            # Pin this session to the admin gateway so its follow-up turns route
+            # back to the same instance (Hermes session state is per-gateway).
+            admin_sessions.add(session_id)
             log.info(
                 "chat.session.created",
                 uid=uid,
@@ -846,6 +889,7 @@ def build_app(
             selector=body.get("reasoning"),
             admin=is_admin(request, remote_groups_header, admin_group),
         )
+        client = gateway_for(request, session_id, body.get("personality"))
 
         clock = asyncio.get_event_loop().time
         t_start = clock() * 1000.0
@@ -857,17 +901,23 @@ def build_app(
             # therefore Ollama model eviction, not a per-turn session (#268).
             if not session_id:
                 session_id = await create_turn_session(
-                    uid, topic_slug, body.get("personality"), effort, text, ephemeral
+                    uid,
+                    topic_slug,
+                    body.get("personality"),
+                    effort,
+                    text,
+                    ephemeral,
+                    client,
                 )
             elif not ephemeral:
                 session_id, compacted = await maybe_compact(
-                    uid, session_id, system_prompt
+                    uid, session_id, system_prompt, client
                 )
             turn_text = topic_turn_text(
                 text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
             )
             persist_mentions(uid, session_id, text, ephemeral=ephemeral)
-            reply = await hermes.chat(session_id, turn_text, images, effort)
+            reply = await client.chat(session_id, turn_text, images, effort)
         except HermesError:
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
@@ -913,6 +963,7 @@ def build_app(
             selector=body.get("reasoning"),
             admin=is_admin(request, remote_groups_header, admin_group),
         )
+        client = gateway_for(request, session_id, body.get("personality"))
 
         resp = web.StreamResponse(
             headers={
@@ -939,11 +990,17 @@ def build_app(
             compacted = False
             if not session_id:
                 session_id = await create_turn_session(
-                    uid, topic_slug, body.get("personality"), effort, text, ephemeral
+                    uid,
+                    topic_slug,
+                    body.get("personality"),
+                    effort,
+                    text,
+                    ephemeral,
+                    client,
                 )
             elif not ephemeral:
                 session_id, compacted = await maybe_compact(
-                    uid, session_id, system_prompt
+                    uid, session_id, system_prompt, client
                 )
             cancels[session_id] = cancel
             await _send_event(
@@ -957,7 +1014,7 @@ def build_app(
                 text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
             )
             persist_mentions(uid, session_id, text, ephemeral=ephemeral)
-            stream = hermes.chat_stream(session_id, turn_text, images, effort)
+            stream = client.chat_stream(session_id, turn_text, images, effort)
             async for event in stream:
                 if cancel.is_set():
                     # Closing the upstream generator aborts the Hermes/Ollama
@@ -1344,6 +1401,7 @@ async def serve(
     port: int,
     *,
     hermes: HermesClient,
+    hermes_admin: HermesClient | None = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -1366,6 +1424,7 @@ async def serve(
         context_window = ContextWindow.static(context_window)
     app = build_app(
         hermes=hermes,
+        hermes_admin=hermes_admin,
         remote_user_header=remote_user_header,
         default_uid=default_uid,
         remote_groups_header=remote_groups_header,
