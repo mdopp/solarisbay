@@ -402,6 +402,11 @@ spec:
     # inside the Hermes runtime.
     - name: NOTES_DIR
       value: "/opt/data/notes"
+    # The always-on Ollama trace proxy (the `trace` container, loopback). At turn
+    # time the chat server pulls its /__traces__ calls in the turn window to
+    # correlate them to a per-message trace_id and persist the trace (#306).
+    - name: TRACE_PROXY_URL
+      value: "http://127.0.0.1:{{TRACE_PROXY_PORT}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{HERMES_CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint
