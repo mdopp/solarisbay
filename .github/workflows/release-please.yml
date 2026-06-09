@@ -29,11 +29,16 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Best-effort: trigger build-images for the new tag. GITHUB_TOKEN dispatch
-      # may be blocked by the same no-recursion rule as push events (#256).
-      # If this step is a no-op, use: gh workflow run build-images.yml --ref <tag>
+      # Trigger build-images for the new tag (a tag pushed by GITHUB_TOKEN does
+      # not fire build-images' own `on: push: tags` — GitHub's no-recursion
+      # rule, #256). `-R` is load-bearing: the job has no checkout, so without an
+      # explicit repo `gh workflow run` dies with "fatal: not a git repository"
+      # (observed v0.6.0) and the images are never published for the tag.
       - name: Trigger image build for release tag
         if: ${{ steps.release.outputs.release_created }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run build-images.yml --ref ${{ steps.release.outputs.tag_name }}
+        run: >-
+          gh workflow run build-images.yml
+          --repo ${{ github.repository }}
+          --ref ${{ steps.release.outputs.tag_name }}
