@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from solilos_chat import trace_proxy as tp
 
 
@@ -119,3 +121,86 @@ def test_build_record_without_usage_falls_back_to_char_estimate():
     assert rec["prompt_tokens"] is None
     assert rec["context_free"] is None
     assert rec["tools_tok"] == round(800 / 4)
+
+
+@pytest.fixture
+def fresh_store(monkeypatch):
+    """Isolate the module-level ring buffers + id counter per test."""
+    from collections import deque
+
+    monkeypatch.setattr(tp, "_traces", deque(maxlen=tp.RING))
+    monkeypatch.setattr(tp, "_details", {})
+    monkeypatch.setattr(tp, "_next_id", 0)
+
+
+def test_detail_request_keeps_exact_content():
+    body = json.dumps(
+        {
+            "model": "gemma4:e2b",
+            "messages": [
+                {"role": "system", "content": "x" * 200},
+                {"role": "user", "content": "Welche Lichter sind an?"},
+            ],
+            "tools": [
+                {"function": {"name": "ha_list_entities", "parameters": {"a": 1}}},
+            ],
+        }
+    ).encode()
+    d = tp.detail_request(body)
+    assert d["model"] == "gemma4:e2b"
+    assert d["messages"][0]["content"] == "x" * 200
+    assert d["messages"][1]["content"] == "Welche Lichter sind an?"
+    # Full tool definition retained verbatim, not collapsed to a size.
+    assert d["tools"][0]["function"]["parameters"] == {"a": 1}
+
+
+def test_detail_response_json_final_and_tool_calls():
+    body = json.dumps(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "Das Sofalicht ist an.",
+                        "tool_calls": [{"function": {"name": "ha_list_entities"}}],
+                    }
+                }
+            ]
+        }
+    ).encode()
+    d = tp.detail_response(body)
+    assert d["final"] == "Das Sofalicht ist an."
+    assert d["tool_calls"][0]["function"]["name"] == "ha_list_entities"
+
+
+def test_detail_response_sse_reassembles_final_text():
+    sse = (
+        'data: {"choices":[{"delta":{"content":"Das "}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"Sofalicht "}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"ist an."}}]}\n\n'
+        'data: {"choices":[{"finish_reason":"stop"}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode()
+    d = tp.detail_response(sse)
+    assert d["final"] == "Das Sofalicht ist an."
+
+
+def test_store_trace_assigns_stable_ids_and_keeps_list_light(fresh_store):
+    id0 = tp.store_trace({"path": "/api/chat"}, {"request": {"big": "x" * 1000}})
+    id1 = tp.store_trace({"path": "/api/chat"}, {"request": {"big": "y" * 1000}})
+    assert (id0, id1) == (0, 1)
+    # The light list carries the id but not the full detail body.
+    light = list(tp._traces)
+    assert [r["id"] for r in light] == [0, 1]
+    assert "request" not in light[0]
+    # Detail is fetchable by id.
+    assert tp._details[0]["request"]["big"] == "x" * 1000
+    assert tp._details[1]["request"]["big"] == "y" * 1000
+
+
+def test_store_trace_caps_detail_fifo(fresh_store, monkeypatch):
+    monkeypatch.setattr(tp, "DETAIL_RING", 3)
+    ids = [tp.store_trace({"path": "/api/chat"}, {"n": i}) for i in range(5)]
+    # Only the last 3 details are retained; oldest evicted FIFO.
+    assert sorted(tp._details) == ids[-3:]
+    assert 0 not in tp._details and 1 not in tp._details
+    assert tp._details[ids[-1]] == {"n": 4}

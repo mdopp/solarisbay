@@ -31,11 +31,17 @@ UPSTREAM = os.environ.get("OLLAMA_UPSTREAM", "http://127.0.0.1:11434").rstrip("/
 HOST = os.environ.get("TRACE_PROXY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("TRACE_PROXY_PORT", "11436"))
 RING = int(os.environ.get("TRACE_RING", "200"))
+# Full per-call content is ~80 KB/call; keep far fewer detail records than the
+# light list so the in-pod buffer stays bounded. Detail eviction is FIFO by id.
+DETAIL_RING = int(os.environ.get("TRACE_DETAIL_RING", "30"))
 # The LLM-call paths we summarise; everything else (GET /api/tags, /api/show,
 # embeddings, …) is forwarded transparently but not traced.
 CAPTURE_PATHS = ("/v1/chat/completions", "/api/chat")
 
 _traces: deque[dict[str, Any]] = deque(maxlen=RING)
+# Full-content detail keyed by stable record id (insertion-ordered; FIFO-capped).
+_details: dict[int, dict[str, Any]] = {}
+_next_id = 0
 
 
 def _toks(chars: int) -> int:
@@ -111,6 +117,52 @@ def summarize_response(raw: bytes) -> dict[str, Any]:
     return {"usage": usage, "finish_reason": finish, "tool_calls": tool_calls}
 
 
+def detail_request(body: bytes) -> dict[str, Any]:
+    """The EXACT request content for the per-call detail view: the full system
+    block text, the tools[] with their complete definitions, and the messages[]
+    history/user/tool turns verbatim — no size collapsing."""
+    d = json.loads(body)
+    return {
+        "model": d.get("model"),
+        "tools": d.get("tools", []) or [],
+        "messages": d.get("messages", []) or [],
+    }
+
+
+def detail_response(raw: bytes) -> dict[str, Any]:
+    """The EXACT response content: the final assistant text and any tool_calls
+    (full function objects), from a single JSON body or an SSE stream (the
+    streamed deltas reassembled into the final text)."""
+    text = raw.decode("utf-8", "replace")
+    final = ""
+    tool_calls: list[Any] = []
+    if text.lstrip().startswith("{"):
+        try:
+            d = json.loads(text)
+            msg = ((d.get("choices") or [{}])[0]).get("message") or {}
+            final = msg.get("content") or ""
+            tool_calls = msg.get("tool_calls") or []
+        except (ValueError, TypeError):
+            pass
+    else:
+        for line in text.splitlines():
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload in ("", "[DONE]"):
+                continue
+            try:
+                ch = (json.loads(payload).get("choices") or [{}])[0]
+            except ValueError:
+                continue
+            delta = ch.get("delta") or {}
+            if isinstance(delta.get("content"), str):
+                final += delta["content"]
+            if delta.get("tool_calls"):
+                tool_calls.extend(delta["tool_calls"])
+    return {"final": final, "tool_calls": tool_calls}
+
+
 def build_record(
     path: str, req: dict[str, Any], resp: dict[str, Any], wall: float
 ) -> dict[str, Any]:
@@ -155,11 +207,31 @@ def build_record(
     }
 
 
+def store_trace(record: dict[str, Any], detail: dict[str, Any]) -> int:
+    """Assign the next stable id, append the light record to the list ring, and
+    keep the full detail in a smaller FIFO-capped store. Returns the id."""
+    global _next_id
+    rec_id = _next_id
+    _next_id += 1
+    record["id"] = rec_id
+    _traces.append(record)
+    _details[rec_id] = detail
+    while len(_details) > DETAIL_RING:
+        del _details[next(iter(_details))]
+    return rec_id
+
+
 async def handle(request: web.Request) -> web.StreamResponse:
     path = request.rel_url.path
     if path.startswith("/__traces__"):
         if path.endswith("/health"):
             return web.json_response({"ok": True, "count": len(_traces)})
+        tail = path[len("/__traces__") :].strip("/")
+        if tail:  # GET /__traces__/<id> — exact content for one call
+            detail = _details.get(int(tail)) if tail.isdigit() else None
+            if detail is None:
+                return web.json_response({"error": "not found"}, status=404)
+            return web.json_response(detail)
         return web.json_response(list(_traces)[::-1])  # newest first
 
     body = await request.read()
@@ -202,7 +274,13 @@ async def handle(request: web.Request) -> web.StreamResponse:
         try:
             req_sum = summarize_request(body)
             resp_sum = summarize_response(bytes(captured))
-            _traces.append(build_record(path, req_sum, resp_sum, time.time() - t0))
+            record = build_record(path, req_sum, resp_sum, time.time() - t0)
+            detail = {
+                "path": path,
+                "request": detail_request(body),
+                "response": detail_response(bytes(captured)),
+            }
+            store_trace(record, detail)
         except Exception as e:  # noqa: BLE001 — capture must never break the path
             log.warn("trace.capture_error", path=path, error=str(e))
     return resp
