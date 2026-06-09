@@ -4,9 +4,14 @@
     "description": "Host port for Hermes' HTTP API. Default 8642. Bound to 127.0.0.1 (API_SERVER_HOST in template.yml). The chat / gatekeeper / config-agent containers in this Pod reach it via host loopback; remote callers go through NPM + Authelia.",
     "default": "8642"
   },
+  "HERMES_ADMIN_API_PORT": {
+    "type": "text",
+    "description": "Host port for the admin-profile Hermes gateway's HTTP API (#293). The single hermes container serves the household persona (its DEFAULT profile) on HERMES_API_PORT and additionally starts the isolated `admin` profile's gateway in the same container (`hermes -p admin gateway start`); that admin gateway binds its API server here via its per-profile `.env` (API_SERVER_PORT). Bound to 127.0.0.1; the chat proxy routes the maintenance/admin embed to it. Default 8643; change only if it clashes.",
+    "default": "8643"
+  },
   "HERMES_API_KEY": {
     "type": "secret",
-    "description": "Bearer token clients send as `Authorization: Bearer <key>` on requests to Hermes' API. Auto-generated; the chat proxy and gatekeeper in this Pod reuse it server-side. Regenerate from the wizard if it leaks."
+    "description": "Bearer token clients send as `Authorization: Bearer <key>` on requests to Hermes' API. Auto-generated; the chat proxy and gatekeeper in this Pod reuse it server-side. Regenerate from the wizard if it leaks. Both Hermes profile gateways (household + admin) run in the one container and share this key."
   },
   "HERMES_LLM_PROVIDER_URL": {
     "type": "text",

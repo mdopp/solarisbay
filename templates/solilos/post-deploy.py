@@ -1841,6 +1841,523 @@ def ensure_admin_mcp_entry() -> bool:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# 4b. PROFILE PROVISIONING — the multi-profile Hermes foundation (#293a).
+#
+# Instead of one global config.yaml shared by every session, provision two
+# Hermes profiles and configure each. A profile lives under
+# /opt/data/profiles/<name> (host <DATA_DIR>/hermes/profiles/<name>, inside the
+# hermes-data volume) and carries its own config.yaml + SOUL.md + skills +
+# `.no-bundled-skills` marker. The per-profile gateway containers + routing land
+# in #293b/c; this step only provisions the profile *configs* so the foundation
+# is in place and box-verifiable.
+#
+# Box-confirmed recipe baked in per profile:
+#   - model.provider: ollama + providers.ollama.api (+ a dummy api_key). Without
+#     an explicit providers.ollama block the profile falls back to openrouter and
+#     401s (no reply) — the single most load-bearing line here.
+#   - `.no-bundled-skills` marker → drops Hermes' 105-skill bundled catalog so
+#     each lean profile loads only its own pack (#291 bloat fix).
+#   - household: gemma4:e2b, the resident-facing sol-* skills, servicebay-mcp +
+#     gatekeeper-mcp (NO servicebay_admin). admin: gemma4:12b, the sol-admin-*
+#     pack, servicebay_admin + servicebay-mcp.
+# ════════════════════════════════════════════════════════════════════════════
+
+# A profile's MCP entries are (name, url, token); a token-less entry gets no
+# headers (an empty Bearer makes Hermes reject it — same rule as render_mcp_block).
+#
+# The household persona is the DEFAULT profile (served by the container's bare
+# `gateway run` on :8642; its solilos skills are already bind-mounted in the
+# default home's /opt/data/skills and its mcp is merged into the global config),
+# so there is no separate `household` profile. Only `admin` is a named profile.
+ADMIN_PROFILE = "admin"
+# The shared, bind-mounted admin skill pack symlinked into the admin profile.
+ADMIN_SKILL_PACK = "admin-soul"
+
+
+def render_ollama_model_block(provider_url: str, model: str) -> str:
+    """Render the per-profile `model:` + `providers.ollama:` blocks.
+
+    Box-confirmed: the profile must declare `model.provider: ollama` AND a
+    matching `providers.ollama.api` (the Ollama OpenAI base) + an api_key, or
+    Hermes falls back to openrouter and 401s. The api_key is a documented dummy
+    — Ollama ignores it — but Hermes refuses an empty one."""
+    return (
+        "model:\n"
+        "  provider: ollama\n"
+        f"  model: {model}\n"
+        "providers:\n"
+        "  ollama:\n"
+        f"    api: {provider_url}\n"
+        '    api_key: "ollama"\n'
+    )
+
+
+# The disabled-toolsets list is shared by both profiles (the #230/#268 cold-cache
+# prefill trim); cronjob STAYS enabled (timers/alarms/reminders + the 3 crons).
+_DISABLED_TOOLSETS = (
+    "browser",
+    "code_execution",
+    "image_gen",
+    "video_gen",
+    "delegation",
+    "discord_admin",
+    "x_search",
+    "yuanbao",
+    "moa",
+    "computer_use",
+    "kanban",
+)
+
+
+def _profile_container_dir(profile: str) -> str:
+    """The profile's home INSIDE the hermes container (/opt/data/profiles/<p>)."""
+    return f"/opt/data/profiles/{profile}"
+
+
+def write_file_in_container(container_path: str, content: str) -> bool:
+    """Write a file INSIDE the hermes container via `podman exec -i` so it lands
+    owned by the hermes user.
+
+    Per-profile dirs are created by `hermes profile create` inside the container
+    and are hermes-owned, mode 0700 — the post-deploy runs as a different host
+    uid, so its host-side open()/makedirs() into a profile dir silently FAIL
+    (box-verified #293). Every per-profile file write therefore goes through the
+    container, same as write_config_via_container. Creates the parent dir.
+    Returns True on success."""
+    try:
+        proc = subprocess.run(
+            [
+                "podman",
+                "exec",
+                "-i",
+                HERMES_CONTAINER,
+                "sh",
+                "-c",
+                f"mkdir -p $(dirname {container_path}) && cat > {container_path}",
+            ],
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        jlog(
+            "error",
+            "profile:write",
+            "could not exec container file write",
+            path=container_path,
+            error=str(e),
+        )
+        return False
+    if proc.returncode != 0:
+        jlog(
+            "error",
+            "profile:write",
+            "container file write failed",
+            path=container_path,
+            stderr=proc.stderr.strip(),
+        )
+        return False
+    return True
+
+
+def read_file_in_container(container_path: str) -> str | None:
+    """Read a file from inside the hermes container (None if absent / exec
+    fails)."""
+    try:
+        proc = subprocess.run(
+            ["podman", "exec", HERMES_CONTAINER, "cat", container_path],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def write_profile_env_port(profile: str, port: str) -> bool:
+    """Pin a profile gateway's API-server port via its per-profile `.env`
+    (`API_SERVER_PORT=<port>`), the ONLY lever that actually works (box-verified
+    2026-06-09, #293).
+
+    The container hard-sets `API_SERVER_PORT=8642` in the pod env; the image's
+    s6 `gateway-<profile>/run` script runs `with-contenv`, so that env OVERRIDES
+    any `api_server:` / `platforms.api_server.port` written into the profile
+    `config.yaml` — every started profile gateway would otherwise collide on
+    :8642 ("Port 8642 already in use"). Hermes loads the per-profile `.env` with
+    override, so a sibling `.env` carrying `API_SERVER_PORT=<port>` is what binds
+    the admin gateway to its own port (:8643). Written via the container (the
+    profile dir is unwritable host-side). Returns True on write."""
+    if not port:
+        return False
+    return write_file_in_container(
+        f"{_profile_container_dir(profile)}/.env", f"API_SERVER_PORT={port}\n"
+    )
+
+
+def render_profile_config_yaml(
+    provider_url: str,
+    model: str,
+    mcp_servers: list[tuple[str, str, str]],
+) -> str:
+    """Build a full per-profile config.yaml string: the ollama model+providers
+    block (#293a critical recipe), holographic memory, the shared display +
+    disabled_toolsets, and the profile's own mcp_servers block. The gateway's
+    bind PORT is NOT set here — it comes from the per-profile `.env`
+    (`API_SERVER_PORT`, see write_profile_env_port), because the container env
+    overrides any api_server port written into config.yaml (box-verified #293)."""
+    parts = [
+        "# Written by ServiceBay's solilos template post-deploy.py (per-profile, #293).\n",
+        "# Edit and restart the solilos service to apply.\n",
+        "timezone: Europe/Berlin\n",
+        render_ollama_model_block(provider_url, model),
+    ]
+    parts.extend(
+        [
+            "memory:\n  provider: holographic\n",
+            "tts:\n  provider: piper\n",
+            "browser:\n  engine: disabled\n",
+            "model_catalog:\n  enabled: false\n",
+            "network:\n  force_ipv4: true\n",
+            "display:\n  personality: default\n  show_reasoning: false\n",
+            "agent:\n  disabled_toolsets:\n",
+        ]
+    )
+    for toolset in _DISABLED_TOOLSETS:
+        parts.append(f"    - {toolset}\n")
+    block = render_mcp_block(mcp_servers)
+    if block:
+        parts.append("\n" + block)
+    return "".join(parts)
+
+
+def hermes_profile_create(profile: str, no_skills: bool = False) -> bool:
+    """`hermes profile create <name>` via the hermes container, idempotently.
+    Treats an already-exists exit as success (Hermes prints "already exists" and
+    exits non-zero) so a redeploy is a no-op. Returns True when the profile is
+    present afterwards (created or pre-existing).
+
+    `no_skills=True` passes `--no-skills` so the image creates an EMPTY profile
+    (no ~105-skill bundled-catalog copy + opts out of `hermes update` skill sync)
+    — the box-verified way to keep a profile lean. Don't pre-place a marker to
+    suppress bundled skills: `create` ERRORS if the profile dir already exists
+    (#293)."""
+    cmd = ["podman", "exec", HERMES_CONTAINER, "hermes", "profile", "create", profile]
+    if no_skills:
+        cmd.append("--no-skills")
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        jlog(
+            "warn",
+            "profile:create",
+            "could not exec hermes profile create",
+            profile=profile,
+            error=str(e),
+        )
+        return False
+    out = (proc.stdout + proc.stderr).lower()
+    if proc.returncode == 0:
+        jlog("info", "profile:create", "created hermes profile", profile=profile)
+        return True
+    if "already" in out and "exist" in out:
+        jlog("info", "profile:create", "hermes profile already exists", profile=profile)
+        return True
+    jlog(
+        "warn",
+        "profile:create",
+        "hermes profile create failed",
+        profile=profile,
+        returncode=proc.returncode,
+        stderr=proc.stderr.strip(),
+    )
+    return False
+
+
+def hermes_gateway_start(
+    profile: str, attempts: int = 3, backoff_s: float = 3.0
+) -> bool:
+    """`hermes -p <profile> gateway start` via the hermes container — bring a
+    secondary profile's gateway UP ALONGSIDE the container's default `gateway
+    run`, in the SAME container (#293, box-validated 2026-06-09). The image's
+    /etc/cont-init.d/02-reconcile-profiles manages the started gateway's own s6
+    slot, so this does NOT crash-loop s6 the way overriding the container
+    `command:` with `-p` did (the #294 trap). Idempotent: an already-running
+    gateway exits non-zero with an "already running" message, treated as success.
+    Retries a few times for the just-restarted-Hermes readiness race. Returns
+    True when the gateway is up afterwards."""
+    for attempt in range(1, attempts + 1):
+        try:
+            proc = subprocess.run(
+                [
+                    "podman",
+                    "exec",
+                    HERMES_CONTAINER,
+                    "hermes",
+                    "-p",
+                    profile,
+                    "gateway",
+                    "start",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            jlog(
+                "warn",
+                "profile:gateway-start",
+                "could not exec hermes gateway start",
+                profile=profile,
+                attempt=attempt,
+                error=str(e),
+            )
+            if attempt < attempts:
+                time.sleep(backoff_s)
+            continue
+        out = (proc.stdout + proc.stderr).lower()
+        if proc.returncode == 0:
+            jlog(
+                "info",
+                "profile:gateway-start",
+                "started profile gateway alongside the default",
+                profile=profile,
+            )
+            return True
+        if "already" in out and ("run" in out or "start" in out):
+            jlog(
+                "info",
+                "profile:gateway-start",
+                "profile gateway already running",
+                profile=profile,
+            )
+            return True
+        jlog(
+            "warn",
+            "profile:gateway-start",
+            "hermes gateway start failed",
+            profile=profile,
+            attempt=attempt,
+            returncode=proc.returncode,
+            stderr=proc.stderr.strip(),
+        )
+        if attempt < attempts:
+            time.sleep(backoff_s)
+    return False
+
+
+def symlink_profile_skill(profile: str, skill_name: str) -> bool:
+    """Make a named profile see a shared, bind-mounted skill pack by symlinking it
+    into the profile's own skills dir (#293 — "share the same drive"). A named
+    Hermes profile loads skills from /opt/data/profiles/<profile>/skills, but the
+    Solilos packs are bind-mounted at /opt/data/skills/<name> (the DEFAULT
+    profile's home), so a named profile can't see them without this bridge.
+    Created via `podman exec` so the symlink target resolves inside the container
+    namespace (the host has a different /opt/data path). Idempotent. Returns True
+    when the link was created."""
+    target = f"/opt/data/skills/{skill_name}"
+    link = f"/opt/data/profiles/{profile}/skills/{skill_name}"
+    try:
+        proc = subprocess.run(
+            [
+                "podman",
+                "exec",
+                HERMES_CONTAINER,
+                "sh",
+                "-c",
+                f"mkdir -p /opt/data/profiles/{profile}/skills && ln -sfn {target} {link}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        jlog(
+            "warn",
+            "profile:skill-link",
+            "could not symlink shared skill into profile",
+            profile=profile,
+            skill=skill_name,
+            error=str(e),
+        )
+        return False
+    if proc.returncode != 0:
+        jlog(
+            "warn",
+            "profile:skill-link",
+            "symlink exec failed",
+            profile=profile,
+            skill=skill_name,
+            stderr=proc.stderr.strip(),
+        )
+        return False
+    jlog(
+        "info",
+        "profile:skill-link",
+        "linked shared skill pack into profile",
+        profile=profile,
+        skill=skill_name,
+    )
+    return True
+
+
+def write_profile_config(profile: str, content: str) -> bool:
+    """Write a profile's config.yaml via the container (the profile dir is
+    hermes-owned 0700, unwritable host-side — #293). Returns True on write."""
+    if write_file_in_container(
+        f"{_profile_container_dir(profile)}/config.yaml", content
+    ):
+        jlog("info", "profile:config", "wrote profile config.yaml", profile=profile)
+        return True
+    return False
+
+
+def write_profile_soul(profile: str, soul_container_source: str) -> bool:
+    """Install a profile's SOUL.md from a shipped source, via the container
+    (the profile dir is unwritable host-side — #293), preserving an operator-
+    edited soul. `hermes profile create` drops a stock soul; we overwrite that
+    and our own previously-shipped soul, but leave a hand-customised one
+    untouched. Returns True on write.
+
+    `soul_container_source` is read THROUGH the container (a bind-mounted
+    in-container path, e.g. /opt/data/skills/admin-soul/SOUL.md): the post-deploy
+    can't rely on a host-side template path because ServiceBay's staging dir may
+    not carry the skills/ subtree (box-verified #293 — the host read silently
+    returned nothing and the stock soul stuck)."""
+    soul = read_file_in_container(soul_container_source)
+    if not soul:
+        jlog(
+            "warn",
+            "profile:soul",
+            "shipped SOUL.md not readable in container — skipping",
+            source=soul_container_source,
+        )
+        return False
+    target = f"{_profile_container_dir(profile)}/SOUL.md"
+    existing = read_file_in_container(target) or ""
+    if existing == soul:
+        return False
+    # Overwrite the stock soul Hermes drops at `profile create` (it is the
+    # "You are Hermes Agent … created by Nous Research" text, NOT the
+    # STOCK_SOUL_MARKER heading the first-boot stock soul uses) and our own
+    # previously-shipped soul; preserve a genuine operator hand-edit.
+    is_stock = (
+        STOCK_SOUL_MARKER in existing
+        or "Nous Research" in existing
+        or "You are Hermes Agent" in existing
+    )
+    is_ours = "Solilos" in existing or "operator" in existing.lower()
+    if existing.strip() and not is_stock and not is_ours:
+        jlog(
+            "info",
+            "profile:soul",
+            "leaving customised profile SOUL.md untouched",
+            profile=profile,
+        )
+        return False
+    if write_file_in_container(target, soul):
+        jlog("info", "profile:soul", "installed profile SOUL.md", profile=profile)
+        return True
+    return False
+
+
+def admin_mcp_servers() -> list[tuple[str, str, str]]:
+    """The admin profile's MCP entries: servicebay_admin (read+lifecycle+mutate)
+    + servicebay-mcp. Mints the admin bearer with mint_admin_token (the same
+    full-admin token the admin-soul splice uses)."""
+    servers: list[tuple[str, str, str]] = []
+    if SERVICEBAY_MCP_URL:
+        token = mint_admin_token()
+        if token:
+            servers.append((ADMIN_MCP_NAME, SERVICEBAY_MCP_URL, token))
+        else:
+            jlog(
+                "warn",
+                "profile:admin-mcp",
+                "servicebay_admin skipped",
+                reason="admin token mint failed (will retry on next redeploy)",
+            )
+        current = existing_servicebay_mcp_token()
+        if current and probe_servicebay_mcp_token(current):
+            servers.append(("servicebay-mcp", SERVICEBAY_MCP_URL, current))
+        else:
+            sb_token = mint_servicebay_mcp_token()
+            if sb_token:
+                servers.append(("servicebay-mcp", SERVICEBAY_MCP_URL, sb_token))
+    else:
+        jlog("info", "profile:admin-mcp", "admin MCP skipped", reason="missing url")
+    return servers
+
+
+def provision_profiles(data_dir: str, provider_url: str, admin_port: str = "") -> None:
+    """Provision the ONE named profile — `admin` — that runs alongside the
+    household default in the same container (#293, native-reconciler design).
+
+    The household persona IS the DEFAULT profile (served by the bare `gateway
+    run` on :8642; its config is the global /opt/data/config.yaml and its solilos
+    skills are already mounted at /opt/data/skills — no separate profile, no
+    `profile use`). So only admin needs provisioning: `hermes profile create
+    --no-skills` (an EMPTY, lean profile — no ~105-skill bundled-catalog copy),
+    then its config.yaml (ollama model+providers, gemma4:12b, servicebay_admin +
+    servicebay-mcp), a per-profile `.env` pinning API_SERVER_PORT so its gateway
+    binds :8643 (the config.yaml port is ignored — the container env overrides it,
+    #293), its admin-soul pack symlinked in from the shared bind mount, and its
+    SOUL.md. EVERY per-profile file is written via the container (the profile dir
+    is hermes-owned 0700 and unwritable host-side — box-verified #293). Idempotent
+    + fail-soft. The admin gateway is brought up by start_admin_gateway after the
+    final restart; the image's container_boot reconciler restarts it on every
+    subsequent boot (its recorded gateway_state is `running`). Trimming the
+    existing default/household profile's bundled skills is tracked separately
+    (#291); household = default works as-is here.
+
+    `data_dir` is accepted for signature symmetry with the other phases but the
+    admin profile is addressed by its in-container path (the host path is
+    unwritable), so it is unused."""
+    del data_dir  # admin files are written via the container, not host paths
+    admin_model = env("ADMIN_PROFILE_MODEL", "gemma4:12b")
+
+    hermes_profile_create(ADMIN_PROFILE, no_skills=True)
+    mcp_servers = admin_mcp_servers()
+    write_profile_config(
+        ADMIN_PROFILE,
+        render_profile_config_yaml(provider_url, admin_model, mcp_servers),
+    )
+    write_profile_env_port(ADMIN_PROFILE, admin_port)
+    symlink_profile_skill(ADMIN_PROFILE, ADMIN_SKILL_PACK)
+    # Read the operator soul from the bind-mounted admin-soul pack IN the
+    # container (host staging may omit skills/, box-verified #293).
+    write_profile_soul(ADMIN_PROFILE, f"/opt/data/skills/{ADMIN_SKILL_PACK}/SOUL.md")
+    jlog(
+        "info",
+        "profile:provision",
+        "provisioned admin profile",
+        model=admin_model,
+        api_port=admin_port,
+        mcp_servers=[name for name, _, _ in mcp_servers],
+    )
+
+
+def start_admin_gateway() -> None:
+    """Bring the admin profile's gateway up alongside the container's default
+    (household) `gateway run` (#293). Called AFTER the final restart so the
+    restart can't wipe the started gateway. Tolerant + idempotent
+    (hermes_gateway_start retries + treats already-running as success)."""
+    if not hermes_gateway_start(ADMIN_PROFILE):
+        jlog(
+            "warn",
+            "profile:gateway-start",
+            "admin gateway not confirmed up — the admin embed may be unreachable until the next redeploy; check `hermes profile list` on the box",
+            profile=ADMIN_PROFILE,
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # 5. THE SINGLE FINAL RESTART — POST /api/services/solilos/action {restart}.
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -1889,6 +2406,7 @@ def main() -> int:
     sb_api = env("SB_API_URL", "http://localhost:3000").rstrip("/")
     host = env("HOST", "<server-ip>")
     api_port = env("HERMES_API_PORT", "8642")
+    admin_api_port = env("HERMES_ADMIN_API_PORT", "8643")
     api_key = env("HERMES_API_KEY")
     provider_url = env("HERMES_LLM_PROVIDER_URL", "http://127.0.0.1:11434/v1")
     model = env("OLLAMA_DEFAULT_MODEL", "gemma4:12b")
@@ -1957,21 +2475,40 @@ def main() -> int:
     register_chronicle_cron()
     register_problem_summarizer_cron()
     register_chat_compactor_cron()
+    # Mirror the household MCP set into the global /opt/data/config.yaml too: the
+    # config-agent panel (model switch) reads that file, and the `default`
+    # profile uses it before `profile use household` takes effect. The
+    # household-facing gateway itself loads its OWN per-profile config (#293).
     servers = collect_mcp_servers()
     merged = merge_config_yaml(servers)
     if not merged:
         jlog(
             "warn",
             "solbay:config",
-            "household mcp_servers merge skipped — config.yaml not readable via the container yet",
+            "global mcp_servers merge skipped — config.yaml not readable via the container yet",
         )
 
-    # ── 4. admin-soul phase ──────────────────────────────────────────────────
-    ensure_admin_mcp_entry()
+    # ── 4. profile provisioning (#293) ───────────────────────────────────────
+    # household IS the default profile (served by the bare `gateway run` on
+    # :8642, config = the global config.yaml just written, solilos skills already
+    # mounted). The ONLY named profile is `admin`: gemma4:12b, lean admin-soul
+    # pack symlinked in, servicebay_admin ONLY here (the #268 structural fix), and
+    # its bind port pinned via a per-profile `.env` (API_SERVER_PORT=:8643 — the
+    # config.yaml port is overridden by the container env, box-verified #293).
+    provision_profiles(data_dir, provider_url, admin_port=admin_api_port)
 
-    # ── 5. ONE restart (last step) ───────────────────────────────────────────
+    # ── 5. restart, THEN start the admin gateway ─────────────────────────────
+    # The restart makes the container's bare `gateway run` serve the household
+    # default on :8642. The admin gateway is started AFTER (and after a fresh
+    # readiness wait) so the restart can't wipe it — it runs alongside the
+    # household gateway in the same container on :8643 (#293, s6-safe). On every
+    # later boot the image's container_boot reconciler restarts admin (its
+    # recorded gateway_state is `running`).
     time.sleep(3)
     restart_solilos(sb_api)
+    time.sleep(5)
+    wait_for_hermes()
+    start_admin_gateway()
 
     # Surface the API key for downstream wiring (MCP clients, operator scripts).
     if api_key:
