@@ -4,14 +4,9 @@
     "description": "Host port for Hermes' HTTP API. Default 8642. Bound to 127.0.0.1 (API_SERVER_HOST in template.yml). The chat / gatekeeper / config-agent containers in this Pod reach it via host loopback; remote callers go through NPM + Authelia.",
     "default": "8642"
   },
-  "HERMES_ADMIN_API_PORT": {
-    "type": "text",
-    "description": "Host port for the admin-profile Hermes gateway's HTTP API (#293). The `hermes-admin` container runs `hermes -p admin gateway run` and binds its API server here, beside the household gateway on HERMES_API_PORT. Bound to 127.0.0.1; the chat proxy routes the maintenance/admin embed to it. Default 8643; change only if it clashes.",
-    "default": "8643"
-  },
   "HERMES_API_KEY": {
     "type": "secret",
-    "description": "Bearer token clients send as `Authorization: Bearer <key>` on requests to Hermes' API. Auto-generated; the chat proxy and gatekeeper in this Pod reuse it server-side. Regenerate from the wizard if it leaks. Both Hermes gateways (household + admin) share this key."
+    "description": "Bearer token clients send as `Authorization: Bearer <key>` on requests to Hermes' API. Auto-generated; the chat proxy and gatekeeper in this Pod reuse it server-side. Regenerate from the wizard if it leaks."
   },
   "HERMES_LLM_PROVIDER_URL": {
     "type": "text",
@@ -233,6 +228,11 @@
   "SERVICEBAY_MCP_TOKEN": {
     "type": "secret",
     "description": "ServiceBay-MCP bearer token (Settings → Integrations → MCP → Generate token, scope `read+lifecycle`)."
+  },
+  "ADMIN_SOUL_IMAGE": {
+    "type": "text",
+    "description": "Image used as the admin-soul idle-presence container (run as `sleep infinity`); the operator soul itself runs inside the shared Hermes, so this is only here to own the operator skill pack in the Pod. Defaults to a stock minimal busybox image. Leave default unless running a fork PoC.",
+    "default": "docker.io/library/busybox:latest"
   },
   "LLDAP_GROUP": {
     "type": "text",

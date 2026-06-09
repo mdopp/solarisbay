@@ -95,17 +95,3 @@ def test_hermes_url_is_required(monkeypatch):
 
     with pytest.raises(KeyError):
         cfg_mod.Settings.from_env()
-
-
-def test_settings_has_single_hermes_url_no_admin_gateway(monkeypatch):
-    # Voice routes to the household gateway only (#293): residents speak to Sol,
-    # never the admin profile. The gatekeeper carries exactly one Hermes URL and
-    # has no admin-gateway field, so a voice turn can never reach hermes-admin.
-    s = _fresh_settings(monkeypatch, {"HERMES_URL": "http://127.0.0.1:8642"})
-    assert s.hermes_url == "http://127.0.0.1:8642"
-    fields = set(type(s).__dataclass_fields__)
-    assert not any("admin" in name for name in fields)
-    # No stray admin-gateway env is consulted, even if one is present.
-    monkeypatch.setenv("HERMES_ADMIN_URL", "http://127.0.0.1:8643")
-    s2 = _fresh_settings(monkeypatch, {"HERMES_URL": "http://127.0.0.1:8642"})
-    assert s2.hermes_url == "http://127.0.0.1:8642"

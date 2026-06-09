@@ -130,25 +130,3 @@ def test_household_chat_title_reads_zuhause():
         'ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat";'
         in _HTML
     )
-
-
-def test_admin_dropdown_option_selects_admin_gateway():
-    # The #293 admin profile is an admin-gated dropdown option whose value packs
-    # the maintenance persona id, so a new chat under it routes to the admin
-    # Hermes gateway server-side (the server re-checks Remote-Groups).
-    assert 'var ADMIN_PERSONA = "servicebay-maintenance";' in _HTML
-    assert "function addAdminOption()" in _HTML
-    # Gated: only added when the caller is an admin.
-    add = re.search(r"function addAdminOption\(\) \{(.*?)\n      \}", _HTML, re.S)
-    assert add, "addAdminOption not found"
-    body = add.group(1)
-    assert "if (!isAdmin) return;" in body
-    # The option value carries the maintenance persona (so parsePersonaSpeed +
-    # currentPersonality() send it as payload.personality → admin routing).
-    assert 'opt.value = ADMIN_PERSONA + "|none";' in body
-    assert 'opt.textContent = "Admin";' in body
-    # Appended only after BOTH the persona list and whoami (isAdmin) have loaded.
-    assert (
-        "Promise.all([loadPersonalities(), loadWhoami()]).then(addAdminOption);"
-        in _HTML
-    )

@@ -176,7 +176,6 @@ def is_admin(request: web.Request, header: str, admin_group: str) -> bool:
 def build_app(
     *,
     hermes: HermesClient,
-    hermes_admin: HermesClient | None = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -213,39 +212,8 @@ def build_app(
     # connection is what actually interrupts the model's generation).
     cancels: dict[str, asyncio.Event] = {}
 
-    # Multi-profile routing (#293): household sessions ride `hermes` (the
-    # household gateway, :8642); admin/servicebay-maintenance sessions ride the
-    # admin gateway (:8643). A session created on the admin gateway is recorded
-    # here so its follow-up turns route back to the same gateway — Hermes session
-    # state is per-gateway, so a session must stay on the instance that holds it.
-    # When no admin gateway is configured both fall back to `hermes` (single-
-    # instance / offline-test topology).
-    household_gw = hermes
-    admin_gw = hermes_admin or hermes
-    admin_sessions: set[str] = set()
-
-    def gateway_for(
-        request: web.Request, session_id: str, persona: object = None
-    ) -> HermesClient:
-        """Pick the Hermes gateway for a turn (#293).
-
-        Admin gateway only when the caller is an Authelia admin AND either the
-        session was created on the admin gateway (recorded at create) or this
-        request explicitly selects the admin/maintenance persona. A non-admin
-        caller is ALWAYS routed to household — even if it presents a known admin
-        session_id — so the #209/#229 gate holds at the routing layer too.
-        """
-        if not is_admin(request, remote_groups_header, admin_group):
-            return household_gw
-        if session_id and session_id in admin_sessions:
-            return admin_gw
-        sel = request.rel_url.query.get("persona") or persona
-        if sel == personalities.MAINTENANCE_ID:
-            return admin_gw
-        return household_gw
-
     async def maybe_compact(
-        uid: str, session_id: str, client: HermesClient
+        uid: str, session_id: str, system_prompt: str
     ) -> tuple[str, bool]:
         """Hard-cap trigger (#210): if an existing session's running token usage
         is near the context-window cap, extract durable learnings to memory and
@@ -255,16 +223,13 @@ def build_app(
         happened, else the original id unchanged. Failure to compact degrades to
         "use the original session" (compact_session returns None), so a turn is
         never lost or blocked by compaction.
-
-        No base_system_prompt is passed (#293): the gateway's profile supplies
-        the soul, so the continuation session inherits it without a per-session
-        overlay (default `base_system_prompt=""`).
         """
         try:
             new_id = await compaction.compact_session(
-                client,
+                hermes,
                 uid,
                 session_id,
+                base_system_prompt=system_prompt,
                 context_window=context_window.value,
                 threshold=compaction_threshold,
             )
@@ -274,26 +239,40 @@ def build_app(
             return new_id, True
         return session_id, False
 
-    def new_session_topic(topic_slug: str) -> str | None:
-        """The primary topic to persist for a new session, or None (#241/#242).
+    async def new_session_bindings(
+        topic_slug: str, personality_id: object, effort: str
+    ) -> tuple[str, str, str | None]:
+        """Resolve (model, system_prompt, primary_topic) for a session at create.
 
-        The household gateway's profile (#293) now OWNS the soul and the base
-        model, so a session no longer carries a per-session persona overlay or a
-        model override at create — those would fight the profile. What survives
-        is the topic binding: a chat started under a topic is tagged with it (the
-        picker selects one before the first message, or a pinned topic-chat #237
-        starts pre-assigned) so its turns get the #243 topic context hint and its
-        ingested notes are stamped `#topic/<slug>`. Returns the slug to persist
-        as primary, or None when no topic was supplied.
+        D2 (#242): a chat's primary topic carries a default model + persona, and
+        Hermes binds both only at session create (the latency bundle — model
+        can't switch per-turn). So when a new chat is started under a topic (the
+        picker selects one before the first message, or a pinned topic-chat
+        #237 starts pre-assigned), the topic's `default_model` /
+        `default_persona` win; each falls back independently to the normal
+        Schnell/Gründlich routing model / the body's personality overlay when
+        the topic leaves it null. Returns the slug to persist as primary, or
+        None when no topic was supplied.
         """
-        return topic_slug or None
+        routed_model = reasoning.model_for_effort(
+            effort, fast_model=fast_model, thorough_model=thorough_model
+        )
+        system_prompt = personalities.system_prompt_for(personality_id)
+        if not topic_slug:
+            return routed_model, system_prompt, None
+        defaults = topics_store.topic_defaults(solilos_db_path, topic_slug)
+        model = defaults["default_model"] or routed_model
+        if defaults["default_persona"]:
+            system_prompt = personalities.system_prompt_for(defaults["default_persona"])
+        return model, system_prompt, topic_slug
 
     async def create_turn_session(
         uid: str,
         topic_slug: str,
+        personality_id: object,
+        effort: str,
         text: str,
         ephemeral: bool,
-        client: HermesClient,
     ) -> str:
         """Create the session for a first turn; return its id.
 
@@ -303,24 +282,16 @@ def build_app(
         Hermes' unique-title constraint), is NOT bound to a topic, NOT re-titled
         (re-titling would re-stamp the `[uid:]` marker and surface it), and never
         has a `session_topics` row — it carries no durable state. Normal chats
-        bind a primary topic and persist the auto-title.
-
-        No system_prompt overlay or model override is passed (#293): the
-        gateway's profile supplies the soul + the base model, so an empty create
-        lets the profile decide instead of fighting it.
-
-        `client` is the gateway the caller routed to (#293): household for a
-        resident chat (the common case), or the admin gateway when an admin
-        selected the admin persona. An admin-gateway create is recorded in
-        `admin_sessions` so the session's follow-up turns route back to it.
+        bind topic model/persona and persist the auto-title.
         """
         if ephemeral:
             # A unique suffix rides after the `[temp:]` marker so a second temp
             # chat can't 400 against the first's bare-marker title (#286, same
             # collision #267/#277 fixed). The marker prefix is preserved, so the
             # chat stays incognito (not-persisted / not-listed).
-            session_id = await client.create_session(
+            session_id = await hermes.create_session(
                 uid,
+                personalities.system_prompt_for(personality_id),
                 ephemeral=True,
                 title=_title_from(text),
             )
@@ -328,18 +299,21 @@ def build_app(
                 "chat.session.created", uid=uid, session_id=session_id, ephemeral=True
             )
             return session_id
-        primary = new_session_topic(topic_slug)
+        model, system_prompt, primary = await new_session_bindings(
+            topic_slug, personality_id, effort
+        )
         # Born with a unique marker-embedded title (not the bare `[uid:...]`
         # marker), so a first turn can never 400 against an abandoned
         # bare-marker stub already holding it — the same collision #267 fixed
         # for the compaction path, here on the main first-turn path (#277).
-        session_id = await client.create_session(uid, title=_title_from(text))
-        if client is admin_gw and client is not household_gw:
-            admin_sessions.add(session_id)
+        session_id = await hermes.create_session(
+            uid, system_prompt, model=model, title=_title_from(text)
+        )
         log.info(
             "chat.session.created",
             uid=uid,
             session_id=session_id,
+            model=model,
             topic=primary or "",
         )
         if primary:
@@ -665,14 +639,11 @@ def build_app(
                     {"ok": False, "reason": "soul_unavailable"}, status=502
                 )
             try:
-                session_id = await admin_gw.create_session(uid, soul, maintenance=True)
+                session_id = await hermes.create_session(uid, soul, maintenance=True)
             except HermesError:
                 return web.json_response(
                     {"ok": False, "reason": "hermes_unavailable"}, status=502
                 )
-            # Pin this session to the admin gateway so its follow-up turns route
-            # back to the same instance (Hermes session state is per-gateway).
-            admin_sessions.add(session_id)
             log.info(
                 "chat.session.created",
                 uid=uid,
@@ -681,16 +652,20 @@ def build_app(
             )
             return web.json_response({"ok": True, "session_id": session_id})
 
-        # No system_prompt overlay (#293): the household gateway's profile owns
-        # the soul, so an empty create lets the profile supply it instead of a
-        # per-session persona overlay that would fight it.
+        personality_id = await _personality_from(request)
+        system_prompt = personalities.system_prompt_for(personality_id)
         try:
-            session_id = await hermes.create_session(uid)
+            session_id = await hermes.create_session(uid, system_prompt)
         except HermesError:
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
-        log.info("chat.session.created", uid=uid, session_id=session_id)
+        log.info(
+            "chat.session.created",
+            uid=uid,
+            session_id=session_id,
+            personality=personality_id or "",
+        )
         return web.json_response({"ok": True, "session_id": session_id})
 
     async def get_session(request: web.Request) -> web.Response:
@@ -865,12 +840,12 @@ def build_app(
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral = bool(body.get("ephemeral"))
+        system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
             selector=body.get("reasoning"),
             admin=is_admin(request, remote_groups_header, admin_group),
         )
-        client = gateway_for(request, session_id, body.get("personality"))
 
         clock = asyncio.get_event_loop().time
         t_start = clock() * 1000.0
@@ -882,19 +857,17 @@ def build_app(
             # therefore Ollama model eviction, not a per-turn session (#268).
             if not session_id:
                 session_id = await create_turn_session(
-                    uid,
-                    topic_slug,
-                    text,
-                    ephemeral,
-                    client,
+                    uid, topic_slug, body.get("personality"), effort, text, ephemeral
                 )
             elif not ephemeral:
-                session_id, compacted = await maybe_compact(uid, session_id, client)
+                session_id, compacted = await maybe_compact(
+                    uid, session_id, system_prompt
+                )
             turn_text = topic_turn_text(
                 text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
             )
             persist_mentions(uid, session_id, text, ephemeral=ephemeral)
-            reply = await client.chat(session_id, turn_text, images, effort)
+            reply = await hermes.chat(session_id, turn_text, images, effort)
         except HermesError:
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
@@ -934,12 +907,12 @@ def build_app(
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral = bool(body.get("ephemeral"))
+        system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
             selector=body.get("reasoning"),
             admin=is_admin(request, remote_groups_header, admin_group),
         )
-        client = gateway_for(request, session_id, body.get("personality"))
 
         resp = web.StreamResponse(
             headers={
@@ -966,14 +939,12 @@ def build_app(
             compacted = False
             if not session_id:
                 session_id = await create_turn_session(
-                    uid,
-                    topic_slug,
-                    text,
-                    ephemeral,
-                    client,
+                    uid, topic_slug, body.get("personality"), effort, text, ephemeral
                 )
             elif not ephemeral:
-                session_id, compacted = await maybe_compact(uid, session_id, client)
+                session_id, compacted = await maybe_compact(
+                    uid, session_id, system_prompt
+                )
             cancels[session_id] = cancel
             await _send_event(
                 resp, "session", {"session_id": session_id, "compacted": compacted}
@@ -986,7 +957,7 @@ def build_app(
                 text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
             )
             persist_mentions(uid, session_id, text, ephemeral=ephemeral)
-            stream = client.chat_stream(session_id, turn_text, images, effort)
+            stream = hermes.chat_stream(session_id, turn_text, images, effort)
             async for event in stream:
                 if cancel.is_set():
                     # Closing the upstream generator aborts the Hermes/Ollama
@@ -1170,6 +1141,19 @@ def _images_from(body: Any) -> list[str]:
         if len(out) >= _MAX_IMAGES:
             break
     return out
+
+
+async def _personality_from(request: web.Request) -> str | None:
+    """Pull an optional `personality` id from a JSON body (POST create).
+
+    Create is a body-less POST in the normal flow, so a missing/!JSON body
+    is fine — it just means the default personality.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — body-less or malformed = default
+        return None
+    return body.get("personality") if isinstance(body, dict) else None
 
 
 def _agent_headers(token: str) -> dict[str, str]:
@@ -1360,7 +1344,6 @@ async def serve(
     port: int,
     *,
     hermes: HermesClient,
-    hermes_admin: HermesClient | None = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -1383,7 +1366,6 @@ async def serve(
         context_window = ContextWindow.static(context_window)
     app = build_app(
         hermes=hermes,
-        hermes_admin=hermes_admin,
         remote_user_header=remote_user_header,
         default_uid=default_uid,
         remote_groups_header=remote_groups_header,
