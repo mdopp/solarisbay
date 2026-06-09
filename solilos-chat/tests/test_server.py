@@ -27,6 +27,7 @@ from solilos_chat.server import (
     build_app,
     is_admin,
     resolve_uid,
+    strip_internal_hints,
 )
 
 
@@ -1036,6 +1037,93 @@ async def test_get_session_without_stored_attachment_unchanged(
     body = await resp.json()
     assert resp.status == 200
     assert all("images" not in m for m in body["session"]["messages"])
+
+
+def test_strip_internal_hints_drops_each_known_prefix():
+    # Each leading internal-hint prefix the proxy/gatekeeper injects is hidden
+    # on display (#309), leaving only the resident's typed text.
+    cases = [
+        (
+            "[Aktuelle Zeit: Montag, 09.06.2026, 23:40 Uhr CEST]\n\nmach das Licht an",
+            "mach das Licht an",
+        ),
+        (
+            "[Temporary/incognito chat: this conversation is ephemeral and will be "
+            "deleted on close. Do NOT save notes.]\n\nhallo",
+            "hallo",
+        ),
+        (
+            "[Active topic: Wintergarten #topic/projekt/wintergarten]\n\nwie weit sind wir?",
+            "wie weit sind wir?",
+        ),
+        ("[Extract this to a note #topic/garten (Garten)]\n\nNotiz", "Notiz"),
+        ("[room: kueche]\nist der Herd aus?", "ist der Herd aus?"),
+        ("[uid:1a2b3c4d] eine frage", "eine frage"),
+    ]
+    for raw, expected in cases:
+        assert strip_internal_hints(raw) == expected
+
+
+def test_strip_internal_hints_drops_stacked_prefixes():
+    raw = (
+        "[Aktuelle Zeit: Montag, 09.06.2026, 23:40 Uhr CEST]\n\n"
+        "[Active topic: Garten #topic/garten]\n\n"
+        "Was steht heute an?"
+    )
+    assert strip_internal_hints(raw) == "Was steht heute an?"
+
+
+def test_strip_internal_hints_keeps_resident_brackets_and_midtext():
+    # A bracket the resident actually typed (not a known hint, or not leading) survives.
+    assert (
+        strip_internal_hints("[meine Notiz] bitte merken")
+        == "[meine Notiz] bitte merken"
+    )
+    assert (
+        strip_internal_hints("erinnere mich an [Aktuelle Zeit: ...] morgen")
+        == "erinnere mich an [Aktuelle Zeit: ...] morgen"
+    )
+
+
+async def test_get_session_strips_internal_hints_from_user_messages(
+    aiohttp_client, tmp_path
+):
+    # Reloading a chat shows user bubbles WITHOUT the injected hint prefixes
+    # (#309); the assistant reply is untouched.
+    store = [
+        {
+            "id": "sess-1",
+            "user_id": "mdopp",
+            "title": marker.embed("mdopp", "Licht"),
+            "last_activity": "2026-06-09T10:00:00Z",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "[Aktuelle Zeit: Montag, 09.06.2026, 23:40 Uhr CEST]\n\n"
+                    "[room: kueche]\nmach das Licht an",
+                },
+                {
+                    "role": "assistant",
+                    "content": "[Aktuelle Zeit: ...] bleibt sichtbar",
+                },
+            ],
+        }
+    ]
+    fake = _FakeHermes(store=store)
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/sessions/sess-1", headers={"Remote-User": "mdopp"})
+    body = await resp.json()
+    assert resp.status == 200
+    msgs = body["session"]["messages"]
+    assert msgs[0]["content"] == "mach das Licht an"
+    # The assistant message is never stripped.
+    assert msgs[1]["content"] == "[Aktuelle Zeit: ...] bleibt sichtbar"
 
 
 # --- Hard-cap compaction trigger (#210) ------------------------------------

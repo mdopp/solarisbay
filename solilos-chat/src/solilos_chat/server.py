@@ -74,6 +74,37 @@ def _now_hint() -> str:
     return f"[Aktuelle Zeit: {now.strftime('%A, %d.%m.%Y, %H:%M Uhr %Z')}]"
 
 
+# Leading internal-hint prefixes the proxy/gatekeeper inject into a user turn so
+# the agent reads context the resident never typed (#309). They must NOT appear
+# in the rendered history; this matches what's actually injected:
+#   server.topic_turn_text  -> "[Aktuelle Zeit: ...]", "[Active topic: ... #topic/<slug>]",
+#                              the "[Temporary/incognito ...]" ephemeral guard,
+#                              "[Extract this to a note #topic/<slug> (...)]"
+#   voice gatekeeper.hermes -> "[room: <location>]" (#312/#313)
+# Each rides as a leading bracketed block; topic_turn_text joins them with "\n\n",
+# the voice room hint with "\n". `[uid:...]` lives on the title (marker.py), but a
+# leading one is stripped too for safety. Only LEADING hints are removed so a hint
+# the resident actually typed mid-message survives.
+_HINT_PREFIX_RE = re.compile(
+    r"^\[(?:Aktuelle Zeit:|Temporary/incognito|Active topic:|Extract this to a note|room:|uid:)[^\]]*\]\s*",
+    re.IGNORECASE,
+)
+
+
+def strip_internal_hints(content: str) -> str:
+    """Drop leading internal-hint prefixes from a user message for DISPLAY (#309).
+
+    Display-only: what was sent to Hermes is unchanged — this runs on the way out
+    of the messages API. Strips each consecutive leading bracketed hint block,
+    then the whitespace it was joined with, leaving the resident's actual text.
+    """
+    prev = None
+    while content != prev:
+        prev = content
+        content = _HINT_PREFIX_RE.sub("", content, count=1)
+    return content
+
+
 def _version() -> str:
     """The Solilos release version, for the sidebar footer. '' if unavailable.
 
@@ -792,9 +823,13 @@ def build_app(
             )
         if session is None:
             return web.json_response({"ok": False, "reason": "not_found"}, status=404)
-        attach_to_messages(
-            session.get("messages") or [], attachments.batches(session_id)
-        )
+        messages = session.get("messages") or []
+        attach_to_messages(messages, attachments.batches(session_id))
+        # Hide the internal-hint prefixes the proxy injected into each user turn
+        # so history shows what the resident actually typed (#309).
+        for m in messages:
+            if m.get("role") == "user":
+                m["content"] = strip_internal_hints(m.get("content") or "")
         return web.json_response({"ok": True, "session": session})
 
     async def delete_session(request: web.Request) -> web.Response:

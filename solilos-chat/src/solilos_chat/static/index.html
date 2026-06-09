@@ -250,6 +250,14 @@
     }
     .msg.me .meta { text-align: right; }
     .meta .took { font-variant-numeric: tabular-nums; }
+    /* Per-turn "Wiederholen" re-run action (#308): hidden until the user turn
+       is hovered/focused so it doesn't clutter the transcript. */
+    .meta .rerun {
+      margin-left: 8px; cursor: pointer; color: var(--muted);
+      text-decoration: underline dotted; background: none; border: none;
+      font: inherit; padding: 0; opacity: 0; transition: opacity 0.12s;
+    }
+    .msg.me:hover .meta .rerun, .meta .rerun:focus-visible { opacity: 0.85; }
     .meta .stopped-note { color: var(--danger); margin-left: 6px; }
     /* Per-turn latency waterfall, collapsed by default (#225). */
     .meta details.trace { display: inline; }
@@ -1340,6 +1348,21 @@
         return m;
       }
 
+      // Append a "Wiederholen" action to a user turn's meta line that re-runs
+      // that turn's original text in the same session (#308). `text` is the
+      // resident's typed message (no internal hints — those are stripped on
+      // display, #309), so the re-run sends exactly what they sent.
+      function addRerunAction(metaEl, text) {
+        if (!text) return;
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "rerun";
+        b.textContent = "Wiederholen";
+        b.title = "Diese Frage erneut senden";
+        b.addEventListener("click", function () { rerunTurn(text); });
+        metaEl.appendChild(b);
+      }
+
       // Render a user turn's text, wrapping #tag / @person tokens in a styled
       // chip span while keeping everything else as plain text nodes (the bubble
       // is white-space: pre-wrap, so spacing/newlines are preserved). Mirrors
@@ -1429,7 +1452,11 @@
         el.className = "msg " + role;
         if (role === "me") tagUserBubble(el, appendMentionText(el, text) > 0);
         else el.appendChild(document.createTextNode(text));
-        if (role === "me" || role === "sol") el.appendChild(metaLine(when));
+        if (role === "me" || role === "sol") {
+          var meta = metaLine(when);
+          if (role === "me") addRerunAction(meta, text);
+          el.appendChild(meta);
+        }
         log.appendChild(el);
         scrollDown(true);
         return el;
@@ -2044,6 +2071,22 @@
         setStreaming(false);
       });
 
+      // Run one chat turn: stream `text`/`images` to the open session and append
+      // a fresh assistant reply. Shared by the composer submit and the per-turn
+      // Wiederholen re-run (#308) so both go through one send path.
+      function runTurn(text, images) {
+        var firstTurn = !sessionId;
+        var msg = addAssistant();
+        var controller = new AbortController();
+        var turn = { controller: controller, msg: msg, stopped: false };
+        activeTurn = turn;
+        setStreaming(true);
+        return streamChat(text, msg, images, controller.signal)
+          .then(function () { if (!turn.stopped) msg.finish(); if (firstTurn) loadSessions(); loadTagCloud(); loadSessionTrace(); })
+          .catch(function () { if (!turn.stopped) msg.fail("Network error. Please try again."); })
+          .finally(function () { if (activeTurn === turn) setStreaming(false); });
+      }
+
       form.addEventListener("submit", function (e) {
         e.preventDefault();
         slash.close();
@@ -2053,19 +2096,18 @@
         if (!text && !images.length) return;
         // Slash commands are browser-local — never carry an attachment.
         if (text.charAt(0) === "/" && !images.length) { input.value = ""; autosize(); handleCommand(text); return; }
-        var firstTurn = !sessionId;
         addUserTurn(text, images);
         input.value = ""; autosize();
-        var msg = addAssistant();
-        var controller = new AbortController();
-        var turn = { controller: controller, msg: msg, stopped: false };
-        activeTurn = turn;
-        setStreaming(true);
-        streamChat(text, msg, images, controller.signal)
-          .then(function () { if (!turn.stopped) msg.finish(); if (firstTurn) loadSessions(); loadTagCloud(); loadSessionTrace(); })
-          .catch(function () { if (!turn.stopped) msg.fail("Network error. Please try again."); })
-          .finally(function () { if (activeTurn === turn) setStreaming(false); });
+        runTurn(text, images);
       });
+
+      // Re-run a past turn in the SAME session without retyping (#308): re-send
+      // the resident's original text and append a fresh assistant reply below.
+      // Disabled while a turn is streaming so it can't race the active run.
+      function rerunTurn(text) {
+        if (send.disabled || !sessionId || !text) return;
+        runTurn(text, []);
+      }
 
       // A user turn that may carry image thumbnails above the (optional) text.
       // `when` defaults to now (live turn); history passes the message ts.
@@ -2084,7 +2126,9 @@
           el.appendChild(strip);
         }
         if (text) tagUserBubble(el, appendMentionText(el, text) > 0);
-        el.appendChild(metaLine(when || new Date()));
+        var meta = metaLine(when || new Date());
+        addRerunAction(meta, text);
+        el.appendChild(meta);
         log.appendChild(el);
         scrollDown(true);
       }
