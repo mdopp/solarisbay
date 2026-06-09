@@ -218,6 +218,43 @@ async def test_turn_persists_window_and_endpoint_serves_it(
     assert body["steps"][1]["finish_reason"] == "tool_calls"
 
 
+async def test_trace_detail_proxied_to_proxy(aiohttp_client, aiohttp_server, tmp_path):
+    # The browser can't reach the proxy port, so the chat server passes
+    # /__traces__/<id> through to the trace proxy's detail endpoint (#307 panel
+    # → #305 detail). Status + body are forwarded verbatim, including a 404 for
+    # an evicted-from-the-ring detail id.
+    async def detail(request):
+        if request.match_info["tail"] == "7":
+            return web.json_response(
+                {"model": "m", "tools": [{"a": 1}], "messages": [], "final": "hi"}
+            )
+        return web.json_response({"error": "not found"}, status=404)
+
+    proxy = web.Application()
+    proxy.router.add_get("/__traces__/{tail}", detail)
+    proxy_server = await aiohttp_server(proxy)
+    proxy_url = f"http://{proxy_server.host}:{proxy_server.port}"
+
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path / "att"),
+        solilos_db_path=_db(tmp_path),
+        trace_proxy_url=proxy_url,
+    )
+    client = await aiohttp_client(app)
+
+    r = await client.get("/__traces__/7", headers={"Remote-User": "mdopp"})
+    assert r.status == 200
+    body = await r.json()
+    assert body["final"] == "hi"
+    assert body["tools"] == [{"a": 1}]
+
+    r = await client.get("/__traces__/999", headers={"Remote-User": "mdopp"})
+    assert r.status == 404
+
+
 async def test_endpoint_empty_when_no_trace(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     app = build_app(

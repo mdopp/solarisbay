@@ -267,6 +267,34 @@
     .trace-row .tr-bar > span { display: block; height: 100%; background: var(--accent); }
     .trace-row .tr-num { flex: 0 0 78px; text-align: right; }
 
+    /* Per-turn LLM-step trace panel (#307): one row per Ollama call, click a
+       step to open the exact request/response in a modal. Loaded from the
+       persisted per-message trace so it survives chat reload. */
+    .meta details.steptrace { display: inline; }
+    .meta details.steptrace > summary {
+      display: inline; cursor: pointer; margin-left: 8px; list-style: none;
+      color: var(--muted); text-decoration: underline dotted;
+    }
+    .meta details.steptrace > summary::-webkit-details-marker { display: none; }
+    .meta details.steptrace > summary::before { content: "▸ steps"; }
+    .meta details.steptrace[open] > summary::before { content: "▾ steps"; }
+    .step-rows { display: block; margin: 6px 0 2px; max-width: 420px; }
+    .step-row {
+      display: flex; align-items: baseline; gap: 8px; margin: 2px 0;
+      padding: 2px 6px; border-radius: 6px; cursor: pointer;
+      font-variant-numeric: tabular-nums; border: 1px solid transparent;
+    }
+    .step-row:hover { border-color: var(--line); background: rgba(127,127,127,0.10); }
+    .step-row .st-model { flex: 1 1 auto; color: var(--ink); }
+    .step-row .st-num { flex: 0 0 auto; color: var(--muted); }
+    .step-detail-body {
+      max-height: 60vh; overflow: auto; margin: 0;
+      white-space: pre-wrap; word-break: break-word;
+      font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.45;
+    }
+    .step-detail-body h4 { margin: 14px 0 4px; font-size: 12px; color: var(--muted); }
+    .step-detail-body h4:first-child { margin-top: 0; }
+
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
     .md p { margin: 0 0 8px; }
@@ -945,6 +973,21 @@
     </div>
   </div>
 
+  <!-- Trace-step detail modal (#307): the exact request/response content for
+       one LLM call, fetched from /__traces__/<id> (the #305 detail endpoint). -->
+  <div class="modal-backdrop" id="trace-modal" hidden>
+    <div class="modal" role="dialog" aria-label="LLM-Call-Inhalt">
+      <div class="modal-head">
+        <span class="modal-title" id="trace-modal-title">LLM call</span>
+        <span class="grow"></span>
+        <button class="icon-btn" id="trace-close" type="button" aria-label="Schließen"><svg class="ic"><use href="#i-x"></use></svg></button>
+      </div>
+      <div class="modal-body">
+        <div class="step-detail-body" id="trace-detail-body"></div>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/markdown.js"></script>
   <script src="/static/mermaid.min.js"></script>
   <script>
@@ -1166,6 +1209,118 @@
         });
         det.appendChild(rows);
         return det;
+      }
+
+      // Per-turn LLM-step trace panel (#307). `steps` is the ordered list of
+      // Ollama calls for one turn (one trace_id), each `{model, wall_s,
+      // prompt_tokens, n_tools, detail_id, ...}`. Each row shows
+      // `model · wall_s · tokens` and, clicked, opens the exact request/response
+      // for that call (detail_id → /__traces__/<id>). Returns null when empty.
+      function renderStepTrace(steps) {
+        if (!steps || !steps.length) return null;
+        var det = document.createElement("details");
+        det.className = "steptrace";
+        var sum = document.createElement("summary");
+        sum.title = "LLM calls for this turn — click a step for its exact content";
+        det.appendChild(sum);
+        var rows = document.createElement("div");
+        rows.className = "step-rows";
+        steps.forEach(function (s) {
+          var row = document.createElement("div");
+          row.className = "step-row";
+          if (s.detail_id != null) row.setAttribute("data-detail-id", String(s.detail_id));
+          var model = document.createElement("span");
+          model.className = "st-model";
+          model.textContent = s.model || "(model?)";
+          var num = document.createElement("span");
+          num.className = "st-num";
+          var secs = s.wall_s != null ? Number(s.wall_s).toFixed(2) + "s" : "—";
+          var toks = s.prompt_tokens != null ? s.prompt_tokens + " tok" : "— tok";
+          var tools = s.n_tools ? " · " + s.n_tools + " tools" : "";
+          num.textContent = secs + " · " + toks + tools;
+          row.appendChild(model); row.appendChild(num);
+          if (s.detail_id != null) {
+            row.title = "Open exact request/response";
+            row.addEventListener("click", function () { openTraceDetail(s.detail_id); });
+          }
+          rows.appendChild(row);
+        });
+        det.appendChild(rows);
+        return det;
+      }
+
+      // The exact request/response content for one LLM call (#305 detail). The
+      // chat server proxies /__traces__/<id> to the trace proxy; the detail
+      // store is a FIFO ring, so an old turn's content may be gone (404) — show
+      // a note rather than a panel in that case.
+      function openTraceDetail(detailId) {
+        var modal = document.getElementById("trace-modal");
+        var bodyEl = document.getElementById("trace-detail-body");
+        bodyEl.textContent = "Loading…";
+        modal.hidden = false;
+        fetch("/__traces__/" + encodeURIComponent(detailId))
+          .then(function (r) { if (!r.ok) throw new Error("gone"); return r.json(); })
+          .then(function (d) { renderTraceDetail(bodyEl, d); })
+          .catch(function () { bodyEl.textContent = "This call's exact content is no longer retained."; });
+      }
+      function renderTraceDetail(bodyEl, d) {
+        bodyEl.textContent = "";
+        function section(title, text) {
+          var h = document.createElement("h4"); h.textContent = title;
+          var pre = document.createElement("div"); pre.textContent = text;
+          bodyEl.appendChild(h); bodyEl.appendChild(pre);
+        }
+        // The detail is the proxy's exact-content record: model + the tools[]
+        // dragged in + the messages[] (system/history) + the response. System
+        // text rides as the first message with role "system".
+        var msgs = d.messages || [];
+        var sys = msgs.filter(function (m) { return m.role === "system"; })
+          .map(function (m) { return m.content || ""; }).join("\n\n");
+        if (d.model) section("model", d.model);
+        if (sys) section("system", sys);
+        if (d.tools && d.tools.length) section("tools[] (" + d.tools.length + ")", JSON.stringify(d.tools, null, 2));
+        if (msgs.length) section("messages[] (" + msgs.length + ")", JSON.stringify(msgs, null, 2));
+        if (d.final) section("response", d.final);
+        if (d.tool_calls && d.tool_calls.length) section("tool_calls", JSON.stringify(d.tool_calls, null, 2));
+        if (!bodyEl.childNodes.length) bodyEl.textContent = "(empty)";
+      }
+      (function () {
+        var modal = document.getElementById("trace-modal");
+        function close() { modal.hidden = true; }
+        document.getElementById("trace-close").addEventListener("click", close);
+        modal.addEventListener("click", function (e) { if (e.target === modal) close(); });
+      })();
+
+      // Load the persisted per-turn LLM trace for the open chat and attach each
+      // turn's step panel to its assistant bubble, in order. The endpoint
+      // returns all steps flat, ordered, each tagged with its turn's `trace_id`;
+      // grouping consecutive same-`trace_id` runs reconstructs the turns, which
+      // line up 1:1 with the assistant bubbles in DOM order. Loaded on session
+      // open and after each completed turn — so it survives chat reload (#307).
+      function loadSessionTrace() {
+        if (!sessionId) return;
+        var sid = sessionId;
+        fetch("/api/sessions/" + encodeURIComponent(sid) + "/trace")
+          .then(function (r) { return r.ok ? r.json() : { steps: [] }; })
+          .then(function (j) {
+            if (sid !== sessionId) return; // session switched mid-fetch
+            var groups = [];
+            (j.steps || []).forEach(function (s) {
+              var g = groups[groups.length - 1];
+              if (!g || g.trace_id !== s.trace_id) { g = { trace_id: s.trace_id, steps: [] }; groups.push(g); }
+              g.steps.push(s);
+            });
+            var bubbles = log.querySelectorAll(".msg.sol");
+            groups.forEach(function (g, i) {
+              var bubble = bubbles[i];
+              if (!bubble) return;
+              var meta = bubble.querySelector(".meta");
+              if (!meta || meta.querySelector("details.steptrace")) return;
+              var panel = renderStepTrace(g.steps);
+              if (panel) meta.appendChild(panel);
+            });
+          })
+          .catch(function () {});
       }
 
       function metaLine(when, tookMs, trace) {
@@ -1905,7 +2060,7 @@
         activeTurn = turn;
         setStreaming(true);
         streamChat(text, msg, images, controller.signal)
-          .then(function () { if (!turn.stopped) msg.finish(); if (firstTurn) loadSessions(); loadTagCloud(); })
+          .then(function () { if (!turn.stopped) msg.finish(); if (firstTurn) loadSessions(); loadTagCloud(); loadSessionTrace(); })
           .catch(function () { if (!turn.stopped) msg.fail("Network error. Please try again."); })
           .finally(function () { if (activeTurn === turn) setStreaming(false); });
       });
@@ -2069,6 +2224,7 @@
             scrollDown(true);
             loadSessions();
             loadTagCloud();
+            loadSessionTrace();
             input.focus();
           })
           .catch(function () { addText("system", "Could not open that chat."); });
