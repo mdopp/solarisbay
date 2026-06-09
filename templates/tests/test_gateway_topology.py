@@ -90,6 +90,23 @@ def test_single_hermes_container(raw_template):
     assert "hermes-admin" not in names
 
 
+def test_trace_proxy_container_wired(raw_template, variables):
+    # The always-on Ollama trace proxy (permanent LLM traceability): a `trace`
+    # container on the chat image, and Hermes' provider points THROUGH it.
+    names = _names(_section(raw_template, "containers"))
+    assert "trace" in names
+    trace = _block(raw_template, "trace")
+    assert "{{HERMES_CHAT_IMAGE}}" in trace
+    assert "solilos_chat.trace_proxy" in trace
+    # It forwards to the REAL Ollama, listens on TRACE_PROXY_PORT.
+    assert "{{OLLAMA_URL}}" in trace  # OLLAMA_UPSTREAM = the real ollama
+    assert "{{TRACE_PROXY_PORT}}" in trace
+    # Hermes calls the proxy (TRACE_PROXY_PORT), not Ollama directly.
+    assert variables["TRACE_PROXY_PORT"]["default"] == "11436"
+    assert "11436" in variables["HERMES_LLM_PROVIDER_URL"]["default"]
+    assert variables["OLLAMA_URL"]["default"].endswith("11434")
+
+
 def _hermes_args(block: str) -> list[str]:
     args = re.split(r"\n    args:\n", block, 1)[1]
     args = re.split(r"\n    [a-zA-Z]", args, 1)[0]

@@ -421,6 +421,29 @@ spec:
     - mountPath: /opt/data/notes
       name: solilos-notes
 
+  # trace — the ALWAYS-ON Ollama trace proxy (permanent LLM traceability).
+  # Hermes' providers.ollama.api (HERMES_LLM_PROVIDER_URL) points at this on
+  # TRACE_PROXY_PORT; it forwards transparently to the real Ollama (OLLAMA_URL)
+  # and captures a per-call trace — prompt block sizes (system/tools/history/
+  # user), the full tool list with per-tool sizes, token usage, and timing —
+  # into a ring buffer served at /__traces__ so the chat client can enrich each
+  # turn's trace (which skills / MCP tool descriptions get dragged in, where the
+  # tokens/time go). FAIL-OPEN: a capture error never breaks the LLM path. Reuses
+  # the chat image (no new image), different entrypoint.
+  - name: trace
+    image: "{{HERMES_CHAT_IMAGE}}"
+    command: ["python", "-m", "solilos_chat.trace_proxy"]
+    env:
+    - name: SOLILOS_COMPONENT
+      value: "trace"
+    - name: TRACE_PROXY_HOST
+      value: "127.0.0.1"
+    - name: TRACE_PROXY_PORT
+      value: "{{TRACE_PROXY_PORT}}"
+    # The REAL Ollama the proxy forwards to (not itself). hostNetwork loopback.
+    - name: OLLAMA_UPSTREAM
+      value: "{{OLLAMA_URL}}"
+
   # gatekeeper — Solilos-published Wyoming-to-Hermes bridge. Phase 0/1
   # runs pass-through with uid = DEFAULT_UID; Phase 2 reads
   # voice_embeddings from solilos.db and resolves uid per turn.

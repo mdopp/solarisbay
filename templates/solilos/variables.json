@@ -15,8 +15,13 @@
   },
   "HERMES_LLM_PROVIDER_URL": {
     "type": "text",
-    "description": "OpenAI-compatible LLM endpoint Hermes calls. Default points at the `ollama` service on the same host (127.0.0.1:11434 is reachable because both pods are hostNetwork). Override to point at a remote vLLM, a different Ollama, or a cloud provider — the post-deploy script writes this into Hermes' config.yaml.",
-    "default": "http://127.0.0.1:11434/v1"
+    "description": "OpenAI-compatible LLM endpoint Hermes calls. Default points at the ALWAYS-ON trace proxy (the `trace` container, 127.0.0.1:TRACE_PROXY_PORT) which forwards transparently to the real Ollama (OLLAMA_URL) and captures a per-call trace (prompt blocks, tool sizes, token usage, timing) for the chat client's per-turn breakdown — permanent LLM traceability. Override to point straight at the real Ollama / a remote vLLM / a cloud provider to bypass the proxy. The post-deploy writes this into Hermes' config.yaml (providers.ollama.api).",
+    "default": "http://127.0.0.1:11436/v1"
+  },
+  "TRACE_PROXY_PORT": {
+    "type": "text",
+    "description": "Host loopback port the always-on Ollama trace proxy (the `trace` container) listens on. Hermes' HERMES_LLM_PROVIDER_URL points here; the proxy forwards to the real Ollama (OLLAMA_URL) and serves captured traces at /__traces__. Bound to 127.0.0.1 (hostNetwork pod). Default 11436; change only if it clashes.",
+    "default": "11436"
   },
   "OLLAMA_DEFAULT_MODEL": {
     "type": "text",
