@@ -2426,6 +2426,24 @@ def start_admin_gateway() -> None:
 # ════════════════════════════════════════════════════════════════════════════
 
 
+def hermes_container_env(name: str) -> str:
+    """Read an env var from inside the running hermes container — the rendered
+    template value (e.g. HERMES_LLM_PROVIDER_URL substituted from variables.json
+    / an operator override). The post-deploy runs in ServiceBay's context, which
+    does NOT export the template variables to it, so the container is the source
+    of truth. Returns '' if the container or var is unavailable."""
+    try:
+        proc = subprocess.run(
+            ["podman", "exec", HERMES_CONTAINER, "printenv", name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def restart_solilos(sb_api: str) -> bool:
     """POST /api/services/solilos/action {action: 'restart'} so all containers
     pick up the final config.yaml + .env. Risk-2-safe (#271 spike): SB runs
@@ -2472,7 +2490,15 @@ def main() -> int:
     api_port = env("HERMES_API_PORT", "8642")
     admin_api_port = env("HERMES_ADMIN_API_PORT", "8643")
     api_key = env("HERMES_API_KEY")
-    provider_url = env("HERMES_LLM_PROVIDER_URL", "http://127.0.0.1:11434/v1")
+    # ServiceBay does NOT export the template variables into the post-deploy's
+    # own environment, so read the rendered HERMES_LLM_PROVIDER_URL from the
+    # hermes container's env (it carries the substituted value, respecting an
+    # operator override); default to the always-on trace proxy (#traceability).
+    provider_url = (
+        env("HERMES_LLM_PROVIDER_URL")
+        or hermes_container_env("HERMES_LLM_PROVIDER_URL")
+        or "http://127.0.0.1:11436/v1"
+    )
     model = env("OLLAMA_DEFAULT_MODEL", "gemma4:12b")
     dashboard_port = env("HERMES_DASHBOARD_PORT")
     honcho_port = env("HONCHO_PORT")
