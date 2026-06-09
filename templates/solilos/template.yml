@@ -7,13 +7,16 @@ metadata:
   annotations:
     servicebay.label: "AI Assistant (Solilos)"
     servicebay.schema-version: "1"
-    # All four merged surfaces' host ports on one tile (#271): Hermes API +
-    # dashboard (hermes), the chat proxy (chat), and the gatekeeper's Wyoming
-    # listener (gatekeeper). config-agent + admin-soul bind loopback only and
-    # expose nothing. ServiceBay can't substitute {{VAR}} inside an annotation
-    # block scalar (#136) but DOES substitute in this inline annotation, so the
-    # ports stay variable-driven.
-    servicebay.ports: "{{HERMES_API_PORT}}/tcp,{{HERMES_DASHBOARD_PORT}}/tcp,{{HERMES_CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp"
+    # Host ports on one tile: the household Hermes gateway's API (the sticky
+    # default the single hermes container serves, HERMES_API_PORT) + its
+    # dashboard, the admin-profile gateway's API (HERMES_ADMIN_API_PORT — the
+    # SAME container additionally starts `hermes -p admin gateway start`, #293),
+    # the chat proxy (chat), and the gatekeeper's Wyoming listener (gatekeeper).
+    # config-agent + admin-soul bind loopback only and expose nothing.
+    # ServiceBay can't substitute {{VAR}} inside an annotation block scalar
+    # (#136) but DOES substitute in this inline annotation, so the ports stay
+    # variable-driven.
+    servicebay.ports: "{{HERMES_API_PORT}}/tcp,{{HERMES_ADMIN_API_PORT}}/tcp,{{HERMES_DASHBOARD_PORT}}/tcp,{{HERMES_CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp"
     # External dependencies only (#271). hermes/solilos-chat/solbay/admin-soul
     # no longer depend on each other — they are now one Pod — so the only
     # remaining edges are to services OUTSIDE this Pod: ollama (the LLM Hermes
@@ -109,6 +112,21 @@ spec:
       name: solilos-data
 
   containers:
+  # The single Hermes container (#293). It runs ONE s6 entrypoint. The bare
+  # `args: [gateway, run]` (CMD) serves the DEFAULT profile = the household
+  # persona on HERMES_API_PORT — household's config is the global config.yaml and
+  # its solilos skills are already mounted in the default home, so there is no
+  # separate household profile and no `profile use`. The SAME container ALSO runs
+  # the `admin` profile's gateway: post-deploy.py fires `hermes -p admin gateway
+  # start` once Hermes is up, the image's /etc/cont-init.d/02-reconcile-profiles
+  # restarts it on every later boot (its gateway_state is `running`), and admin
+  # binds HERMES_ADMIN_API_PORT alongside household via its per-profile `.env`
+  # (API_SERVER_PORT — the container env overrides any config.yaml port, so the
+  # `.env` is the only lever that works; box-verified 2026-06-09). Both gateways
+  # in one container, box-confirmed s6-safe. Do NOT override `command:` with
+  # `hermes -p <profile> gateway run`: that bypasses the entrypoint, s6 tries to
+  # exec `-p`, and the container crash-loops (the #294 revert — `args: [gateway,
+  # run]` is load-bearing).
   - name: hermes
     image: docker.io/nousresearch/hermes-agent:latest
     # The image's entrypoint is `/usr/bin/tini -g -- /opt/hermes/docker/entrypoint.sh`,
@@ -188,6 +206,11 @@ spec:
       value: "{{HERMES_DASHBOARD_PORT}}"
     ports:
     - containerPort: {{HERMES_API_PORT}}
+    # The in-container admin-profile gateway (#293) binds this on hostNetwork;
+    # declare it so the port is documented on the Pod even though the listener
+    # is brought up by post-deploy's `hermes -p admin gateway start`, not by
+    # the container's own `args`.
+    - containerPort: {{HERMES_ADMIN_API_PORT}}
     - containerPort: {{HERMES_DASHBOARD_PORT}}
     volumeMounts:
     - mountPath: /opt/data
@@ -221,6 +244,11 @@ spec:
       name: solilos-skills-pending
     - mountPath: /opt/data/notes
       name: syncthing-notes
+    # solilos.db (rooms / voice / domain data) — shared with the chat +
+    # gatekeeper containers so both profile gateways running in this container
+    # read the same structured household data (#293 "auf den gleichen Daten").
+    - mountPath: /var/lib/solilos
+      name: solilos-data
     - mountPath: /etc/cont-init.d/99-install-ddgs
       name: hermes-data
       subPath: 99-install-ddgs
@@ -284,6 +312,13 @@ spec:
       value: "{{HERMES_CHAT_PORT}}"
     - name: HERMES_URL
       value: "http://127.0.0.1:{{HERMES_API_PORT}}"
+    # The admin-profile gateway (#293), started in the hermes container on
+    # HERMES_ADMIN_API_PORT. The chat proxy routes only the admin-gated
+    # servicebay-maintenance embed here (Remote-Groups∋admins, #209/#229); every
+    # resident session stays on HERMES_URL. A non-admin can never reach it — the
+    # server re-checks the gate at the routing layer.
+    - name: HERMES_ADMIN_URL
+      value: "http://127.0.0.1:{{HERMES_ADMIN_API_PORT}}"
     # Bearer for Hermes' native API — held server-side, never in browser JS.
     - name: API_SERVER_KEY
       value: "{{HERMES_API_KEY}}"
@@ -396,6 +431,12 @@ spec:
       value: "{{PIPER_URI}}"
     - name: OPENWAKEWORD_URI
       value: "{{OPENWAKEWORD_URI}}"
+    # Voice always talks to the HOUSEHOLD gateway (#293): residents speak to
+    # Sol, never the admin profile. HERMES_API_PORT is the sticky-default
+    # household gateway (:8642). The gatekeeper is deliberately given NO admin
+    # URL — there is no HERMES_ADMIN_URL here — so a voice turn can never reach
+    # the admin gateway (:8643). The chat proxy is the only component that
+    # routes to admin, behind the #209/#229 Remote-Groups gate.
     - name: HERMES_URL
       value: "http://127.0.0.1:{{HERMES_API_PORT}}"
     - name: HERMES_TOKEN

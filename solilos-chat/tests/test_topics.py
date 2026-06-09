@@ -344,11 +344,14 @@ async def test_session_topics_empty_slug_rejected(aiohttp_client, tmp_path, payl
     assert resp.status == 400
 
 
-async def test_topic_binds_model_persona_and_persists_primary(aiohttp_client, tmp_path):
-    # A new chat started under a topic adopts the topic's default model +
-    # persona at session create (D2/#242): default_model wins over the FAST
-    # routing model, default_persona over the body's overlay; the topic is
-    # persisted as the session's primary assignment.
+async def test_topic_persists_primary_without_model_or_persona_override(
+    aiohttp_client, tmp_path
+):
+    # #241/#242: a new chat started under a topic is persisted with it as the
+    # session's primary assignment (so its turns get the topic context hint and
+    # its notes are stamped #topic/<slug>). #293: the household gateway's profile
+    # now owns the model + soul, so the proxy no longer overrides the model or
+    # injects a persona overlay at create — even when the topic has defaults.
     db = _db(tmp_path)
     _seed_topic_defaults(db, "projekt/wintergarten", "gemma4:12b", "technical")
     fake = _FakeHermes()
@@ -364,59 +367,26 @@ async def test_topic_binds_model_persona_and_persists_primary(aiohttp_client, tm
     resp = await client.post(
         "/api/chat",
         json={
-            "input": "welche Lichter sind an",  # a FAST turn → would route to e2b
-            "personality": "concise",  # would set the concise overlay
+            "input": "welche Lichter sind an",
+            "personality": "concise",  # no longer injects an overlay
             "topic": "projekt/wintergarten",
         },
         headers={"Remote-User": "mdopp"},
     )
     assert resp.status == 200
-    from solilos_chat import personalities
-
-    assert fake.models == ["gemma4:12b"]
-    assert fake.created_prompts == [personalities.system_prompt_for("technical")]
+    assert fake.models == [""]  # profile pins the model, no per-session override
+    assert fake.created_prompts == [""]  # profile supplies the soul, no overlay
     sid = (await resp.json())["session_id"]
     assigned = topics_store.get_session_topics(db, sid, "mdopp")
     assert assigned["primary"] == "projekt/wintergarten"
 
 
-async def test_topic_without_defaults_falls_back(aiohttp_client, tmp_path):
-    # A topic with no default_model/persona (household seed) → normal routing
-    # model + the body's personality overlay (independent fallbacks).
-    db = _db(tmp_path)
-    fake = _FakeHermes()
-    app = build_app(
-        hermes=fake,
-        remote_user_header="Remote-User",
-        default_uid="household",
-        solilos_db_path=db,
-        fast_model="gemma4:e2b",
-        thorough_model="gemma4:12b",
-    )
-    client = await aiohttp_client(app)
-    resp = await client.post(
-        "/api/chat",
-        json={
-            "input": "welche Lichter sind an",
-            "personality": "concise",
-            "topic": "household",
-        },
-        headers={"Remote-User": "mdopp"},
-    )
-    assert resp.status == 200
-    from solilos_chat import personalities
-
-    assert fake.models == ["gemma4:e2b"]
-    assert fake.created_prompts == [personalities.system_prompt_for("concise")]
-
-
-async def test_pinned_household_chat_binds_e2b_and_soul(aiohttp_client, tmp_path):
+async def test_pinned_household_chat_persists_primary(aiohttp_client, tmp_path):
     # The pinned household chat (#237) starts a new chat carrying
-    # `topic: household`. The seeded household topic (migration 0004) pins
-    # default_model='gemma4:e2b', so the topic default LOCKS the model to e2b
-    # even when the turn would otherwise route thorough (reasoning='high'),
-    # and persists `household` as the session's primary. default_persona is
-    # NULL on the seed → the household soul rides the body's persona overlay.
+    # `topic: household`. #293: the household profile pins the model (e2b) + soul,
+    # so the proxy creates with no model override and no persona overlay even
+    # when the turn carries reasoning='high'; the topic is still persisted as the
+    # session's primary assignment.
     db = _db(tmp_path)
     _seed_topic_defaults(db, "household", "gemma4:e2b", None)
     fake = _FakeHermes()
@@ -433,24 +403,22 @@ async def test_pinned_household_chat_binds_e2b_and_soul(aiohttp_client, tmp_path
         "/api/chat",
         json={
             "input": "rechne mir das mal vor",
-            "reasoning": "high",  # would route to the thorough model (12b)
+            "reasoning": "high",
             "topic": "household",
         },
         headers={"Remote-User": "mdopp"},
     )
     assert resp.status == 200
-    from solilos_chat import personalities
-
-    # The topic default e2b wins over the thorough routing model.
-    assert fake.models == ["gemma4:e2b"]
-    # No default_persona → the body's overlay (none here → default Sol soul).
-    assert fake.created_prompts == [personalities.system_prompt_for(None)]
+    assert fake.models == [""]
+    assert fake.created_prompts == [""]
     sid = (await resp.json())["session_id"]
     assigned = topics_store.get_session_topics(db, sid, "mdopp")
     assert assigned["primary"] == "household"
 
 
-async def test_no_topic_uses_routing_default(aiohttp_client, tmp_path):
+async def test_no_topic_no_model_override(aiohttp_client, tmp_path):
+    # #293: with the profile owning the model, an untopiced turn creates with no
+    # per-session model override (Hermes' profile default).
     db = _db(tmp_path)
     fake = _FakeHermes()
     app = build_app(
@@ -468,14 +436,14 @@ async def test_no_topic_uses_routing_default(aiohttp_client, tmp_path):
         headers={"Remote-User": "mdopp"},
     )
     assert resp.status == 200
-    assert fake.models == ["gemma4:e2b"]
+    assert fake.models == [""]
 
 
-async def test_changing_topic_mid_session_does_not_rebind(aiohttp_client, tmp_path):
-    # The bound model/persona are fixed at create (Hermes binds them only then).
+async def test_changing_topic_mid_session_reuses_one_session(aiohttp_client, tmp_path):
     # Re-assigning the primary topic on an EXISTING session updates the label +
-    # future ingestion tag but cannot retroactively change the live session's
-    # model/persona — the limitation #242 documents.
+    # future ingestion tag but reuses the SAME Hermes session (one create) — the
+    # #242 limitation. #293: the model is profile-owned, so create carries no
+    # override; the invariant under test is "no second create on re-assign".
     db = _db(tmp_path)
     _seed_topic_defaults(db, "projekt/wintergarten", "gemma4:12b", "technical")
     fake = _FakeHermes()
@@ -489,25 +457,25 @@ async def test_changing_topic_mid_session_does_not_rebind(aiohttp_client, tmp_pa
     )
     client = await aiohttp_client(app)
     hdr = {"Remote-User": "mdopp"}
-    # First turn creates the session under no topic → fast model.
+    # First turn creates the session under no topic.
     resp = await client.post(
         "/api/chat", json={"input": "welche Lichter sind an"}, headers=hdr
     )
     sid = (await resp.json())["session_id"]
-    assert fake.models == ["gemma4:e2b"]
-    # Now assign a topic with a 12b default to the existing session.
+    assert fake.created == ["mdopp"]  # exactly one create
+    # Now assign a topic to the existing session.
     await client.post(
         f"/api/sessions/{sid}/topics",
         json={"action": "primary", "slug": "projekt/wintergarten"},
         headers=hdr,
     )
-    # A follow-up turn reuses the SAME session: no new create_session, so the
-    # model stays e2b — the topic default does not retroactively rebind it.
+    # A follow-up turn reuses the SAME session: no new create_session.
     resp = await client.post(
         "/api/chat", json={"input": "und jetzt", "session_id": sid}, headers=hdr
     )
     assert resp.status == 200
-    assert fake.models == ["gemma4:e2b"]  # unchanged — still one create, e2b
+    assert fake.created == ["mdopp"]  # still exactly one create
+    assert fake.models == [""]  # profile-owned, no override
 
 
 def test_topic_context_hint_for_primary(tmp_path):

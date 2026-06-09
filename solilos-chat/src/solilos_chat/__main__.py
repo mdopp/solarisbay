@@ -13,6 +13,7 @@ from solilos_chat.server import serve
 
 async def _run() -> None:
     hermes = HermesClient(settings.hermes_url, settings.hermes_token)
+    hermes_admin = HermesClient(settings.hermes_admin_url, settings.hermes_token)
     context_window = await build_context_window(
         settings.ollama_url, settings.context_window_override
     )
@@ -20,6 +21,7 @@ async def _run() -> None:
         settings.host,
         settings.port,
         hermes=hermes,
+        hermes_admin=hermes_admin,
         remote_user_header=settings.remote_user_header,
         default_uid=settings.default_uid,
         remote_groups_header=settings.remote_groups_header,

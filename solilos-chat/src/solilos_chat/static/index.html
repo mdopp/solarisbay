@@ -2167,6 +2167,24 @@
         localStorage.setItem("sol.persona-speed", personalitySel.value);
       });
 
+      // The admin profile (#293): a single fixed option (12b, no speed cross)
+      // whose value packs the maintenance persona id, so a new chat under it is
+      // routed to the admin gateway server-side. Appended only for admins; the
+      // server re-checks Remote-Groups, so the dropdown is convenience, not the
+      // gate. Re-selects it if it was the persisted choice from a prior session.
+      var ADMIN_PERSONA = "servicebay-maintenance";
+      function addAdminOption() {
+        if (!isAdmin) return;
+        if (personalitySel.querySelector('option[value="' + ADMIN_PERSONA + '|none"]')) return;
+        var opt = document.createElement("option");
+        opt.value = ADMIN_PERSONA + "|none";
+        opt.textContent = "Admin";
+        opt.title = "ServiceBay admin profile (12b + admin tools) — admins only.";
+        personalitySel.appendChild(opt);
+        var saved = localStorage.getItem("sol.persona-speed");
+        if (saved === opt.value) opt.selected = true;
+      }
+
       // ---- Identity (footer + admin affordances) ----
       var isAdmin = false;
       var contextWindow = 131072;
@@ -2611,8 +2629,11 @@
           .finally(function () { modelApply.disabled = false; });
       });
 
-      loadPersonalities();
-      loadWhoami();
+      // The Admin option (#293) is admin-gated: it appears only once both the
+      // persona list and whoami have resolved and the caller is an Authelia
+      // admin. Selecting it routes new chats to the admin Hermes gateway (:8643)
+      // — the server re-enforces the gate, so a non-admin can never reach it.
+      Promise.all([loadPersonalities(), loadWhoami()]).then(addAdminOption);
       loadTopics().then(loadSessions);
     })();
   </script>

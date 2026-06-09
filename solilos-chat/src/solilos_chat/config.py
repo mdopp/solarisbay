@@ -18,6 +18,7 @@ class Settings:
     host: str
     port: int
     hermes_url: str
+    hermes_admin_url: str
     hermes_token: str
     remote_user_header: str
     remote_groups_header: str
@@ -43,6 +44,13 @@ class Settings:
             host=os.environ.get("CHAT_HOST", "127.0.0.1"),
             port=int(os.environ.get("CHAT_PORT", "8787")),
             hermes_url=os.environ.get("HERMES_URL", "http://127.0.0.1:8642"),
+            # The admin/maintenance Hermes gateway (#293): a second instance
+            # running the `admin` profile (12b + servicebay_admin MCP), reached
+            # only by the admin-gated servicebay-maintenance path. The household
+            # gateway (HERMES_URL, :8642) serves every resident session.
+            hermes_admin_url=os.environ.get(
+                "HERMES_ADMIN_URL", "http://127.0.0.1:8643"
+            ),
             hermes_token=os.environ.get("API_SERVER_KEY", ""),
             # Authelia forwards the authenticated identity on this header
             # via the trusted reverse proxy. We never trust it from an
