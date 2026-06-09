@@ -1270,18 +1270,20 @@
           var pre = document.createElement("div"); pre.textContent = text;
           bodyEl.appendChild(h); bodyEl.appendChild(pre);
         }
-        // The detail is the proxy's exact-content record: model + the tools[]
-        // dragged in + the messages[] (system/history) + the response. System
-        // text rides as the first message with role "system".
-        var msgs = d.messages || [];
+        // The detail is the proxy's exact-content record, nested as
+        // {path, request:{model,tools,messages}, response:{final,tool_calls}}.
+        // System text rides as the first message with role "system".
+        var req = d.request || {};
+        var resp = d.response || {};
+        var msgs = req.messages || [];
         var sys = msgs.filter(function (m) { return m.role === "system"; })
           .map(function (m) { return m.content || ""; }).join("\n\n");
-        if (d.model) section("model", d.model);
+        if (req.model) section("model", req.model);
         if (sys) section("system", sys);
-        if (d.tools && d.tools.length) section("tools[] (" + d.tools.length + ")", JSON.stringify(d.tools, null, 2));
+        if (req.tools && req.tools.length) section("tools[] (" + req.tools.length + ")", JSON.stringify(req.tools, null, 2));
         if (msgs.length) section("messages[] (" + msgs.length + ")", JSON.stringify(msgs, null, 2));
-        if (d.final) section("response", d.final);
-        if (d.tool_calls && d.tool_calls.length) section("tool_calls", JSON.stringify(d.tool_calls, null, 2));
+        if (resp.final) section("response", resp.final);
+        if (resp.tool_calls && resp.tool_calls.length) section("tool_calls", JSON.stringify(resp.tool_calls, null, 2));
         if (!bodyEl.childNodes.length) bodyEl.textContent = "(empty)";
       }
       (function () {

@@ -52,11 +52,21 @@ def test_clicking_a_step_opens_the_detail_modal():
     assert '<div class="modal-backdrop" id="trace-modal" hidden>' in _HTML
 
 
-def test_detail_modal_renders_request_and_response_blocks():
-    # The modal shows the exact system / tools[] / messages[] + response.
-    assert 'section("tools[] (" + d.tools.length + ")"' in _HTML
+def test_detail_modal_reads_nested_request_response_shape():
+    # /__traces__/<id> returns {path, request:{model,tools,messages},
+    # response:{final,tool_calls}} — the modal must read from the nested shape,
+    # not flat d.model/d.tools/d.final (#316: flat reads always rendered empty).
+    assert "var req = d.request || {};" in _HTML
+    assert "var resp = d.response || {};" in _HTML
+    assert "var msgs = req.messages || [];" in _HTML
+    assert 'section("model", req.model)' in _HTML
+    assert 'section("tools[] (" + req.tools.length + ")"' in _HTML
     assert 'section("messages[] (" + msgs.length + ")"' in _HTML
-    assert 'section("response", d.final)' in _HTML
+    assert 'section("response", resp.final)' in _HTML
+    assert 'section("tool_calls", JSON.stringify(resp.tool_calls, null, 2))' in _HTML
+    # No leftover flat-shape reads that the proxy never returns at top level.
+    assert "d.model" not in _HTML
+    assert "d.final" not in _HTML
 
 
 def test_panel_not_double_appended_on_refetch():
