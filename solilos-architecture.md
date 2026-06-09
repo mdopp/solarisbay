@@ -15,10 +15,17 @@ Ollama on the box (RTX 2000 Ada 16 GB).
 | `gemma4:12b` | Default / thorough reasoning |
 | `gemma4:e2b` | Fast / tool-heavy turns |
 
-**Adaptive model routing** — every session carries a *speed hint*:
+**Model per profile, speed per turn** — post-#293 (§2) the **profile** pins the
+base model (household → `e2b`, admin → `12b`); the per-turn speed hint maps to
+`reasoning_effort`, not a per-session model swap:
 
-- **Schnell** (fast) → `e2b`: ~4× faster prefill, reliable HA tool-calls, voice-latency budget.
-- **Gründlich** (thorough) → `12b`: complex reasoning, longer context synthesis.
+- **fast** (Schnell) → `reasoning_effort: none`: skips the thinking block (#222),
+  voice-latency budget, reliable HA tool-calls.
+- **thinking** (Gründlich) → `reasoning_effort: high`: surfaces a reasoning block
+  for complex turns.
+
+(Pre-#293 the speed hint swapped the model per session; that override is retired
+— the model is now profile-owned, the effort is the per-turn lever.)
 
 Context window: 131 072 tokens (`OLLAMA_CONTEXT_LENGTH=131072`).
 
@@ -31,7 +38,88 @@ not compete for the generation slot.
 
 ---
 
-## 2. Knowledge architecture (4 layers, CQRS)
+## 2. Multi-profile Hermes (#293)
+
+Each persona is a **Hermes profile**, and Solilos runs **one gateway instance
+per profile** in parallel inside the single `solilos` ServiceBay service. A lean
+profile is the perf lever (benchmark #291/#292): ~1.9–4k prompt + ~2–3s warm
+turns vs the default profile's ~28–30k / 25–80s.
+
+### Profiles + gateways
+
+| Profile | Gateway container | Port | Model | Soul / skills / tools |
+|---|---|---|---|---|
+| `household` (Sol) | `hermes-household` (`hermes -p household gateway run`) | 8642 | `gemma4:e2b` | resident soul, `.no-bundled-skills` + the ~5 household skills, holographic memory, HA toolset, `servicebay-mcp` + `gatekeeper-mcp` — **no admin MCP** |
+| `admin` (operator) | `hermes-admin` (`hermes -p admin gateway run`) | 8643 | `gemma4:12b` | operator soul, `sol-admin-*` skills, `servicebay_admin` + `servicebay-mcp`, admin-gated |
+
+The `solilos` post-deploy **provisions each profile** (`hermes profile create`,
+then sets model / toolsets / skills / MCP / SOUL + drops `.no-bundled-skills`)
+instead of one global `config.yaml`. This structurally fixes the #268
+`servicebay_admin` leak (admin MCP lives only in the admin profile) and the #291
+skills bloat (household loads ~5 skills, not 105).
+
+Each named profile is a separately-locked Hermes instance: a named profile gets
+its own `/opt/data/profiles/<name>/gateway.lock` + `logs/gateways/<name>/lock`,
+so the two gateways coexist on the shared volume without the #271 `default`-lock
+deadlock.
+
+### Shared data vs isolated profile state
+
+Both gateways mount the **same** volumes, so they run "auf den gleichen Daten":
+
+| Data | Shared across both gateways? | Where |
+|---|---|---|
+| `solilos.db` (rooms / voice / domain, L3) | **shared** | `/var/lib/solilos` (`solilos-data`) |
+| Notes vault (L2) | **shared** | `/opt/data/notes` |
+| Chat attachments | **shared** | attachments volume |
+| HA + Ollama access | **shared** | container env (`HASS_URL`/`HASS_TOKEN`, Ollama) |
+| Hermes per-profile **memory** (holographic, L1), **skills**, soul, config | **isolated per profile** | `/opt/data/profiles/<name>/` (under the shared `hermes-data` volume) |
+
+So `solilos.db` + notes are read/written by **both** profiles, but each profile's
+holographic memory, skills, and soul are its own. **Holographic memory is
+household-scoped**: the household profile's `/opt/data/profiles/household/memory`
+is **not** shared with admin (the operator decision — admin must not see
+household facts), and vice-versa.
+
+### Routing (chat + voice → the right instance)
+
+- **solilos-chat proxy** picks the gateway per session/persona/admin-gate:
+  household chat + pinned Zuhause + every resident session → `hermes-household`
+  (8642); the `?persona=servicebay-maintenance` admin embed (#209) →
+  `hermes-admin` (8643), admin-gated. A session is pinned to the gateway it was
+  created on (Hermes session state is per-gateway), and the #209/#229 admin gate
+  holds at the router — a non-admin is always routed to household, even
+  presenting a known admin `session_id`. Falls back to household when no admin
+  gateway is configured.
+- **gatekeeper (voice)** → always `hermes-household` (residents speak to Sol,
+  never the admin profile); it carries no admin URL / admin port.
+- The #278 persona×speed dropdown selects a **profile**: Sol-fast / Sol-thinking
+  → household profile (the speed maps to per-turn reasoning_effort, below);
+  Admin → admin profile.
+
+### What the profile subsumes (#293 finalization)
+
+The household gateway's profile now **owns the soul + the base model**, so the
+chat proxy no longer injects a per-session **persona overlay** (the
+`personalities.py` `system_prompt` injection at create) or a per-session **model
+override** — those would fight the profile. The `personalities.py` catalog is
+kept for the dropdown labels; only the redundant *injection* is dropped. A
+session is created with an empty `system_prompt`/`model`, which lets the profile
+supply both.
+
+What the profile does **not** pin stays in the proxy, per turn / per session:
+
+- **speed → `reasoning_effort`** (#222/#278): "fast"/"thinking" → `none`/`high`,
+  chosen per turn (the profile pins the model, not the per-turn effort).
+- **topic binding** (#241/#242): a chat under a topic is still persisted as its
+  primary assignment + gets the `#topic/<slug>` context hint (the topic no
+  longer overrides model/persona — the profile owns those).
+- **pinned Zuhause** (#237), **`[Aktuelle Zeit]` per-turn injection** (#265),
+  **incognito `[temp:]` prefix + guard** (#246).
+
+---
+
+## 3. Knowledge architecture (4 layers, CQRS)
 
 Reads go to the right layer; writes and actions flow via MCP/API (CQRS).
 
@@ -48,7 +136,7 @@ See [`database/README.md`](database/README.md) for the migration runbook.
 
 ---
 
-## 3. Topics / Contexts
+## 4. Topics / Contexts
 
 A **Topic** is a cross-cutting, persistent label that groups a theme, project,
 or context across chats, notes, and future graph nodes.
@@ -58,8 +146,9 @@ or context across chats, notes, and future graph nodes.
 > user-facing entry point: the topic list couldn't be user-edited and residents
 > don't want to curate a fixed list. It is replaced by inline **`#tag`**
 > (tags) and **`@person`** (persons) mentions typed directly in the chat. The
-> **system topic *binding* stays internal** — the Zuhause chat still binds
-> `gemma4:e2b` + the household soul, the `topics` table and its
+> **system topic *binding* stays internal** — the Zuhause chat still runs on
+> `gemma4:e2b` + the household soul (now via the household **profile**, §2,
+> not a per-session topic override), the `topics` table and its
 > `household` / `servicebay-admin` system rows remain as internal plumbing. Only
 > the *user-facing picker* is replaced. The split is explicit: **internal
 > binding** (D2, unchanged) vs **user-facing tagging** (mentions, below). The
@@ -84,23 +173,25 @@ or context across chats, notes, and future graph nodes.
 A chat has exactly one *primary* topic and may carry any number of *secondary*
 tags. This keeps routing and persona assignment deterministic.
 
-**D2 — a topic carries a primary model + persona.**
-Assigning a topic to a chat sets the chat's default model and persona (e.g.
-`household` → e2b + household soul; a project topic → operator-chosen
-model/persona). This is the mechanism that ties adaptive model routing (#187)
-to the pinned-persona pattern (#229/#237). The topic's `default_model` /
-`default_persona` each fall back independently — to the Schnell/Gründlich
-routing model and the session's normal persona — when the topic leaves that
-column null.
+**D2 — a topic carries a primary model + persona.** *(model/persona override
+superseded-by-#293 — see §2.)*
+Originally, assigning a topic to a chat set the chat's default model and persona
+via the topic's `default_model` / `default_persona` columns, injected by the
+proxy at session create. **#293 retired that override:** the household gateway's
+profile now owns the model + soul, so the proxy no longer injects a per-session
+model override or persona overlay (the topic columns stay in the schema but are
+no longer consulted at create). What survives of D2 is the **topic binding as a
+tag**: a chat started under a topic is persisted as its primary assignment and
+its turns get the `#topic/<slug>` context hint (#241/#242), routing ingestion —
+it just no longer changes the model/persona, which the profile pins.
 
 *Binding is at session create.* Hermes binds model + system_prompt only when a
-session is born (the latency bundle — the model can't switch per-turn), so the
-topic default applies when a **new** chat is started under a topic: a pinned
-topic-chat (#237) starts pre-assigned, or — in the picker era, superseded-by-#279
-— the picker selected a topic before the first message. Changing the primary topic on an **existing** session updates the
-chip/label and future `#topic/` ingestion tags but does **not** retroactively
-rebind the live session's model/persona — those hold until the next new chat.
-To run a topic under its model/persona, start a new chat in it.
+session is born (the latency bundle — the model can't switch per-turn). Post-#293
+the **profile** supplies both at create; the proxy passes neither. Changing the
+primary topic on an **existing** session still updates the chip/label and future
+`#topic/` ingestion tags but reuses the same Hermes session (one create), so it
+never rebinds the live session — the #242 limitation, now moot for model/persona
+since those are profile-owned.
 
 **D3 — scope default is per-resident.**
 Per-resident isolation is the baseline (#153). A topic can be widened to
@@ -169,10 +260,11 @@ header picker:
   anchor).
 
 **Internal vs user-facing.** This replaces only the *user-facing picker*. The
-system topic **binding** (D2) is untouched: the Zuhause chat still binds
-`gemma4:e2b` + the household soul, and the `topics` table keeps its system rows
-(`household`, `servicebay-admin`) as internal plumbing the chat app binds
-against — residents simply never pick from a topic list anymore.
+system topic **binding** (D2) survives as the internal primary-tag + context
+hint: the Zuhause chat still runs `gemma4:e2b` + the household soul (now via the
+household **profile**, §2 — not a per-session topic override, superseded-by-#293),
+and the `topics` table keeps its system rows (`household`, `servicebay-admin`)
+as internal plumbing — residents simply never pick from a topic list anymore.
 
 **Storage (open — child units decide).** Where mentions are persisted per
 chat + per message is left open by this note: either a dedicated **`tags`
@@ -216,7 +308,7 @@ context. Any ingestion skill that runs during that turn reads it and stamps
 
 ---
 
-## 4. Temporary / Incognito chats
+## 5. Temporary / Incognito chats
 
 Ephemeral by default: no durable session persistence, no auto-ingestion, no
 memory/learning writes, no compaction. The session is deleted on close — like
@@ -235,15 +327,19 @@ via the normal ingestion path, and leaves everything else ephemeral.
 | Explicit "extract to note" | available | n/a |
 | Session on close | deleted | persisted |
 
-Mechanism: an ephemeral flag on the session (alongside the persona/topic
-markers); the proxy checks it before every write path.
+Mechanism: an ephemeral flag on the session (carried in the `[temp:]` title
+marker alongside the topic markers); the proxy checks it before every write
+path. The incognito `[temp:]` prefix + the per-turn guard hint are retained as a
+per-session lever after the #293 overlay simplification (§2) — the profile owns
+the soul, but incognito is still the proxy's.
 
 ---
 
-## 5. Phasing
+## 6. Phasing
 
 **v1 (no gbrain dependency):**
-Topics registry + `session_topics` + per-topic model/persona (system bindings) +
+Topics registry + `session_topics` + per-topic primary-tag binding (model/persona
+now profile-owned, §2, superseded-by-#293) +
 auto-`#topic/` tagging + topic-filtered notes-search + topic suggestion +
 temporary/incognito chats. The user-facing **topic picker** (#241/#242) is
 *superseded by #279* — replaced by inline `#tag`/`@person` mentions +
@@ -258,12 +354,14 @@ no migration of tagged notes required.
 
 ---
 
-## 6. Cross-cutting constraints
+## 7. Cross-cutting constraints
 
 - **Per-resident isolation** (#153) — session ownership, topic scope, and data
   writes are all resident-scoped by default.
 - **Pinned-persona / marker pattern** (#229/#237) — topic assignment reuses the
-  same session-marker mechanism as persona pinning.
+  same session-marker mechanism as persona pinning. Post-#293 (§2) the soul is
+  pinned by the gateway **profile**, not a per-session overlay; the marker
+  pattern persists for topic + incognito tagging.
 - **Notes `#tag` mechanism** — already used by media-ingestion, dynamic-skills,
   and daily-chronicle; topic tagging extends it without a new convention.
 - **Minimal knobs** — one global/automatic mechanism per concern, not per-feature

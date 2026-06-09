@@ -565,7 +565,9 @@ async def test_chat_selector_overrides_to_thorough(aiohttp_client, tmp_path):
     assert fake.efforts == ["high"]
 
 
-async def test_chat_routes_fast_turn_to_fast_model(aiohttp_client, tmp_path):
+async def test_fast_turn_keeps_effort_none_without_model_override(
+    aiohttp_client, tmp_path
+):
     fake = _FakeHermes()
     app = build_app(
         hermes=fake,
@@ -576,15 +578,18 @@ async def test_chat_routes_fast_turn_to_fast_model(aiohttp_client, tmp_path):
         thorough_model="gemma4:12b",
     )
     client = await aiohttp_client(app)
-    # A default (FAST/Schnell) household-control turn binds the new session to
-    # the fast model (latency bundle).
+    # #278/#222: a default (fast) household-control turn still maps to
+    # reasoning_effort "none" per turn. #293: the household profile owns the
+    # base model (e2b), so the proxy no longer overrides the model at create.
     resp = await client.post("/api/chat", json={"input": "welche Lichter sind an"})
     assert resp.status == 200
     assert fake.efforts == ["none"]
-    assert fake.models == ["gemma4:e2b"]
+    assert fake.models == [""]
 
 
-async def test_chat_routes_thorough_turn_to_thorough_model(aiohttp_client, tmp_path):
+async def test_thinking_turn_keeps_effort_high_without_model_override(
+    aiohttp_client, tmp_path
+):
     fake = _FakeHermes()
     app = build_app(
         hermes=fake,
@@ -595,11 +600,12 @@ async def test_chat_routes_thorough_turn_to_thorough_model(aiohttp_client, tmp_p
         thorough_model="gemma4:12b",
     )
     client = await aiohttp_client(app)
-    # The Gründlich selector binds the new session to the thorough model.
+    # #278/#222: the "thinking" selector still maps to reasoning_effort "high"
+    # per turn. #293: no per-session model override — the profile pins the model.
     resp = await client.post("/api/chat", json={"input": "hallo", "reasoning": "high"})
     assert resp.status == 200
     assert fake.efforts == ["high"]
-    assert fake.models == ["gemma4:12b"]
+    assert fake.models == [""]
 
 
 async def test_chat_no_routing_tags_no_model_override(aiohttp_client, tmp_path):
@@ -1377,6 +1383,43 @@ async def test_turn_carries_current_time_line(aiohttp_client, tmp_path):
     assert eph_turn.endswith("und jetzt?")
 
 
+async def test_overlay_simplification_keeps_per_turn_levers(aiohttp_client, tmp_path):
+    # #293: after dropping the redundant per-session model override + persona
+    # overlay (the household profile owns both), a single chat turn still keeps
+    # every per-turn lever the profile does NOT pin: the #265 time line leads the
+    # turn text, the #278 thinking selector maps to reasoning_effort high, and
+    # the session is created with no model override and no persona overlay.
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+        solilos_db_path=str(tmp_path / "solilos.db"),
+        fast_model="gemma4:e2b",
+        thorough_model="gemma4:12b",
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat",
+        json={
+            "input": "rechne mir das vor",
+            "reasoning": "high",  # #278 thinking selector
+            "personality": "technical",  # no longer injects an overlay (#293)
+        },
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    # Per-turn levers retained:
+    turn_text = fake.turns[-1][1]
+    assert turn_text.startswith("[Aktuelle Zeit:")  # #265
+    assert turn_text.endswith("rechne mir das vor")
+    assert fake.efforts == ["high"]  # #278 → reasoning_effort
+    # Redundant injection dropped (#293): profile owns model + soul.
+    assert fake.models == [""]
+    assert fake.created_prompts == [""]
+
+
 def _two_user_store():
     # Titles carry each resident's immutable uid marker (#153); an extra
     # legacy session has no marker at all.
@@ -1578,18 +1621,21 @@ async def test_list_personalities_endpoint(aiohttp_client):
     assert {p["id"] for p in body["personalities"]} >= {"sol", "concise"}
 
 
-async def test_chat_passes_personality_system_prompt(aiohttp_client):
+async def test_chat_does_not_inject_persona_overlay(aiohttp_client):
     fake = _FakeHermes()
     app = build_app(
         hermes=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
+    # #293: the household gateway's profile owns the soul/persona, so the proxy
+    # no longer injects a per-session persona overlay that would fight it — the
+    # session is created with an empty system_prompt even for a named persona.
     resp = await client.post(
         "/api/chat", json={"input": "hi", "personality": "concise"}
     )
     assert resp.status == 200
-    assert fake.created_prompts == [personalities.system_prompt_for("concise")]
+    assert fake.created_prompts == [""]
 
 
 async def test_chat_default_personality_no_overlay(aiohttp_client):
@@ -1604,16 +1650,18 @@ async def test_chat_default_personality_no_overlay(aiohttp_client):
     assert fake.created_prompts == [""]
 
 
-async def test_create_session_with_personality(aiohttp_client):
+async def test_create_session_ignores_persona_overlay(aiohttp_client):
     fake = _FakeHermes()
     app = build_app(
         hermes=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
+    # #293: /api/sessions also defers the soul to the profile — a named persona
+    # in the body no longer injects an overlay at create.
     resp = await client.post("/api/sessions", json={"personality": "teacher"})
     assert resp.status == 200
-    assert fake.created_prompts == [personalities.system_prompt_for("teacher")]
+    assert fake.created_prompts == [""]
 
 
 # --- Skills (filesystem) --------------------------------------------------
@@ -2282,8 +2330,9 @@ async def test_maint_persona_soul_fetch_failure_fails_safe(aiohttp_client, monke
 
 
 async def test_household_create_unaffected_by_query_persona(aiohttp_client):
-    # A normal (non-maintenance) create is unchanged: body personality applies,
-    # no soul fetch, no maintenance marker. An unrelated query string is inert.
+    # A normal (non-maintenance) create stays on the household gateway: no soul
+    # fetch, no maintenance marker, and (#293) no per-session persona overlay —
+    # the profile supplies the soul. An unrelated query string is inert.
     fake = _FakeHermes()
     app = build_app(
         hermes=fake, remote_user_header="Remote-User", default_uid="household"
@@ -2296,7 +2345,7 @@ async def test_household_create_unaffected_by_query_persona(aiohttp_client):
         headers={"Remote-User": "mdopp", "Remote-Groups": "family"},
     )
     assert resp.status == 200
-    assert fake.created_prompts == [personalities.system_prompt_for("teacher")]
+    assert fake.created_prompts == [""]
     assert fake.maintenance == [False]
 
 

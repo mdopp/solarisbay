@@ -245,7 +245,7 @@ def build_app(
         return household_gw
 
     async def maybe_compact(
-        uid: str, session_id: str, system_prompt: str, client: HermesClient
+        uid: str, session_id: str, client: HermesClient
     ) -> tuple[str, bool]:
         """Hard-cap trigger (#210): if an existing session's running token usage
         is near the context-window cap, extract durable learnings to memory and
@@ -255,13 +255,16 @@ def build_app(
         happened, else the original id unchanged. Failure to compact degrades to
         "use the original session" (compact_session returns None), so a turn is
         never lost or blocked by compaction.
+
+        No base_system_prompt is passed (#293): the gateway's profile supplies
+        the soul, so the continuation session inherits it without a per-session
+        overlay (default `base_system_prompt=""`).
         """
         try:
             new_id = await compaction.compact_session(
                 client,
                 uid,
                 session_id,
-                base_system_prompt=system_prompt,
                 context_window=context_window.value,
                 threshold=compaction_threshold,
             )
@@ -271,38 +274,23 @@ def build_app(
             return new_id, True
         return session_id, False
 
-    async def new_session_bindings(
-        topic_slug: str, personality_id: object, effort: str
-    ) -> tuple[str, str, str | None]:
-        """Resolve (model, system_prompt, primary_topic) for a session at create.
+    def new_session_topic(topic_slug: str) -> str | None:
+        """The primary topic to persist for a new session, or None (#241/#242).
 
-        D2 (#242): a chat's primary topic carries a default model + persona, and
-        Hermes binds both only at session create (the latency bundle — model
-        can't switch per-turn). So when a new chat is started under a topic (the
-        picker selects one before the first message, or a pinned topic-chat
-        #237 starts pre-assigned), the topic's `default_model` /
-        `default_persona` win; each falls back independently to the normal
-        Schnell/Gründlich routing model / the body's personality overlay when
-        the topic leaves it null. Returns the slug to persist as primary, or
-        None when no topic was supplied.
+        The household gateway's profile (#293) now OWNS the soul and the base
+        model, so a session no longer carries a per-session persona overlay or a
+        model override at create — those would fight the profile. What survives
+        is the topic binding: a chat started under a topic is tagged with it (the
+        picker selects one before the first message, or a pinned topic-chat #237
+        starts pre-assigned) so its turns get the #243 topic context hint and its
+        ingested notes are stamped `#topic/<slug>`. Returns the slug to persist
+        as primary, or None when no topic was supplied.
         """
-        routed_model = reasoning.model_for_effort(
-            effort, fast_model=fast_model, thorough_model=thorough_model
-        )
-        system_prompt = personalities.system_prompt_for(personality_id)
-        if not topic_slug:
-            return routed_model, system_prompt, None
-        defaults = topics_store.topic_defaults(solilos_db_path, topic_slug)
-        model = defaults["default_model"] or routed_model
-        if defaults["default_persona"]:
-            system_prompt = personalities.system_prompt_for(defaults["default_persona"])
-        return model, system_prompt, topic_slug
+        return topic_slug or None
 
     async def create_turn_session(
         uid: str,
         topic_slug: str,
-        personality_id: object,
-        effort: str,
         text: str,
         ephemeral: bool,
         client: HermesClient,
@@ -315,7 +303,11 @@ def build_app(
         Hermes' unique-title constraint), is NOT bound to a topic, NOT re-titled
         (re-titling would re-stamp the `[uid:]` marker and surface it), and never
         has a `session_topics` row — it carries no durable state. Normal chats
-        bind topic model/persona and persist the auto-title.
+        bind a primary topic and persist the auto-title.
+
+        No system_prompt overlay or model override is passed (#293): the
+        gateway's profile supplies the soul + the base model, so an empty create
+        lets the profile decide instead of fighting it.
 
         `client` is the gateway the caller routed to (#293): household for a
         resident chat (the common case), or the admin gateway when an admin
@@ -329,7 +321,6 @@ def build_app(
             # chat stays incognito (not-persisted / not-listed).
             session_id = await client.create_session(
                 uid,
-                personalities.system_prompt_for(personality_id),
                 ephemeral=True,
                 title=_title_from(text),
             )
@@ -337,23 +328,18 @@ def build_app(
                 "chat.session.created", uid=uid, session_id=session_id, ephemeral=True
             )
             return session_id
-        model, system_prompt, primary = await new_session_bindings(
-            topic_slug, personality_id, effort
-        )
+        primary = new_session_topic(topic_slug)
         # Born with a unique marker-embedded title (not the bare `[uid:...]`
         # marker), so a first turn can never 400 against an abandoned
         # bare-marker stub already holding it — the same collision #267 fixed
         # for the compaction path, here on the main first-turn path (#277).
-        session_id = await client.create_session(
-            uid, system_prompt, model=model, title=_title_from(text)
-        )
+        session_id = await client.create_session(uid, title=_title_from(text))
         if client is admin_gw and client is not household_gw:
             admin_sessions.add(session_id)
         log.info(
             "chat.session.created",
             uid=uid,
             session_id=session_id,
-            model=model,
             topic=primary or "",
         )
         if primary:
@@ -695,20 +681,16 @@ def build_app(
             )
             return web.json_response({"ok": True, "session_id": session_id})
 
-        personality_id = await _personality_from(request)
-        system_prompt = personalities.system_prompt_for(personality_id)
+        # No system_prompt overlay (#293): the household gateway's profile owns
+        # the soul, so an empty create lets the profile supply it instead of a
+        # per-session persona overlay that would fight it.
         try:
-            session_id = await hermes.create_session(uid, system_prompt)
+            session_id = await hermes.create_session(uid)
         except HermesError:
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
-        log.info(
-            "chat.session.created",
-            uid=uid,
-            session_id=session_id,
-            personality=personality_id or "",
-        )
+        log.info("chat.session.created", uid=uid, session_id=session_id)
         return web.json_response({"ok": True, "session_id": session_id})
 
     async def get_session(request: web.Request) -> web.Response:
@@ -883,7 +865,6 @@ def build_app(
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral = bool(body.get("ephemeral"))
-        system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
             selector=body.get("reasoning"),
@@ -903,16 +884,12 @@ def build_app(
                 session_id = await create_turn_session(
                     uid,
                     topic_slug,
-                    body.get("personality"),
-                    effort,
                     text,
                     ephemeral,
                     client,
                 )
             elif not ephemeral:
-                session_id, compacted = await maybe_compact(
-                    uid, session_id, system_prompt, client
-                )
+                session_id, compacted = await maybe_compact(uid, session_id, client)
             turn_text = topic_turn_text(
                 text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
             )
@@ -957,7 +934,6 @@ def build_app(
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral = bool(body.get("ephemeral"))
-        system_prompt = personalities.system_prompt_for(body.get("personality"))
         effort = reasoning.choose_effort(
             text,
             selector=body.get("reasoning"),
@@ -992,16 +968,12 @@ def build_app(
                 session_id = await create_turn_session(
                     uid,
                     topic_slug,
-                    body.get("personality"),
-                    effort,
                     text,
                     ephemeral,
                     client,
                 )
             elif not ephemeral:
-                session_id, compacted = await maybe_compact(
-                    uid, session_id, system_prompt, client
-                )
+                session_id, compacted = await maybe_compact(uid, session_id, client)
             cancels[session_id] = cancel
             await _send_event(
                 resp, "session", {"session_id": session_id, "compacted": compacted}
@@ -1198,19 +1170,6 @@ def _images_from(body: Any) -> list[str]:
         if len(out) >= _MAX_IMAGES:
             break
     return out
-
-
-async def _personality_from(request: web.Request) -> str | None:
-    """Pull an optional `personality` id from a JSON body (POST create).
-
-    Create is a body-less POST in the normal flow, so a missing/!JSON body
-    is fine — it just means the default personality.
-    """
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001 — body-less or malformed = default
-        return None
-    return body.get("personality") if isinstance(body, dict) else None
 
 
 def _agent_headers(token: str) -> dict[str, str]:
