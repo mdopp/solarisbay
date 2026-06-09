@@ -465,6 +465,24 @@ def build_app(
         steps = trace_store.list_session_trace(solilos_db_path, session_id, uid)
         return web.json_response({"ok": True, "steps": steps})
 
+    async def trace_detail(request: web.Request) -> web.Response:
+        # Exact per-call content for one trace step (#307 panel → #305 detail):
+        # the browser can't reach the proxy port directly, so the chat server
+        # passes its `/__traces__/<id>` through. The detail store is the proxy's
+        # FIFO ring, so an old turn may 404 — the panel degrades to no modal.
+        detail_id = request.match_info["detail_id"]
+        url = f"{trace_proxy_url.rstrip('/')}/__traces__/{detail_id}"
+        timeout = aiohttp.ClientTimeout(total=5)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as client:
+                async with client.get(url) as r:
+                    body = await r.read()
+                    return web.Response(
+                        body=body, status=r.status, content_type="application/json"
+                    )
+        except aiohttp.ClientError:
+            return web.json_response({"error": "trace proxy unavailable"}, status=502)
+
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
 
@@ -1152,6 +1170,7 @@ def build_app(
     app.router.add_get("/api/mentions/persons", mentions_persons)
     app.router.add_get("/api/sessions/{session_id}/mentions", session_mentions)
     app.router.add_get("/api/sessions/{session_id}/trace", session_trace)
+    app.router.add_get("/__traces__/{detail_id}", trace_detail)
     app.router.add_post("/api/chat", chat)
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_post("/api/chat/cancel", cancel_chat)
