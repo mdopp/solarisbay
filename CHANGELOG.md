@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/mdopp/solbay/compare/v0.5.0...v0.6.0) (2026-06-09)
+
+
+### Features
+
+* **solilos-chat:** route chat turns to the household or admin Hermes gateway ([c4872c7](https://github.com/mdopp/solbay/commit/c4872c77f543613d518a04e4478c97d5c759e6f3)), closes [#293](https://github.com/mdopp/solbay/issues/293)
+* **template:** instance-per-profile Hermes — household + admin gateway containers ([75adeb4](https://github.com/mdopp/solbay/commit/75adeb4b3df449ac3e877dd401ce4b722fac9982)), closes [#293](https://github.com/mdopp/solbay/issues/293)
+* **template:** multi-profile Hermes — household + admin gateways per profile ([2d83c16](https://github.com/mdopp/solbay/commit/2d83c162977d6c8cc0af914ce1a28eec43ec8a0b))
+* **template:** multi-profile Hermes — household + isolated admin gateway in one container ([#293](https://github.com/mdopp/solbay/issues/293)) ([f30dead](https://github.com/mdopp/solbay/commit/f30dead91f0f501c9013387f088f08ac86738a47))
+* **template:** multi-profile Hermes via one container, household=default + admin secondary ([b03297f](https://github.com/mdopp/solbay/commit/b03297f690201b423e3735089705a2eb61ce3e99))
+* **template:** pin voice gatekeeper to the household Hermes gateway ([2159088](https://github.com/mdopp/solbay/commit/2159088ba4b7cc120570cbd6970727504dc3aa66)), closes [#293](https://github.com/mdopp/solbay/issues/293)
+* **template:** provision household + admin Hermes profiles in post-deploy ([c40276e](https://github.com/mdopp/solbay/commit/c40276ee355fa581d77a9460e0ba0bc3dd13e1b4)), closes [#293](https://github.com/mdopp/solbay/issues/293)
+
 ## [0.5.0](https://github.com/mdopp/solbay/compare/v0.4.1...v0.5.0) (2026-06-08)
 
 
