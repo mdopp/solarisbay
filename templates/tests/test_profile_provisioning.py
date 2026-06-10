@@ -192,13 +192,34 @@ def test_admin_boot_hook_forces_running_before_reconcile(pd, fc):
 # ── default-home .no-bundled-skills marker (#292), written via the container ─
 
 
-def test_no_bundled_marker_written_to_default_home(pd, fc):
-    # The household persona is the DEFAULT profile served from /opt/data; the
-    # marker drops Hermes' ~27 bundled packs so it loads only the solilos pack.
+def test_default_home_opts_out_and_removes_bundled(pd, monkeypatch):
+    # The household persona is the DEFAULT profile served from /opt/data. We run
+    # `hermes skills opt-out --remove` THROUGH the container so it both writes the
+    # marker and deletes already-seeded bundled skills — the bare marker only
+    # stopped re-seeding, leaving an older home loading the full catalog.
+    import types
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        return types.SimpleNamespace(
+            returncode=0, stdout="Removed 73; kept 2.", stderr=""
+        )
+
+    monkeypatch.setattr(pd.subprocess, "run", fake_run)
     assert pd.mark_default_home_no_bundled_skills() is True
-    assert "/opt/data/.no-bundled-skills" in fc.files
-    # Written via the container (the 0700 default home is unwritable host-side).
-    # Idempotent: a redeploy sees the marker and is a no-op.
+    cmd = calls[0]
+    assert cmd[:2] == ["podman", "exec"]
+    assert pd.HERMES_CONTAINER in cmd
+    assert "HERMES_HOME=/opt/data" in cmd
+    assert cmd[-4:] == ["skills", "opt-out", "--remove", "--yes"]
+
+    # A non-zero exit (e.g. container down) fails closed, not silently green.
+    def fail_run(args, **kw):
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="not found")
+
+    monkeypatch.setattr(pd.subprocess, "run", fail_run)
     assert pd.mark_default_home_no_bundled_skills() is False
 
 

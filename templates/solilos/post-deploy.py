@@ -1601,30 +1601,60 @@ def collect_mcp_servers() -> list[tuple[str, str, str]]:
 
 
 def mark_default_home_no_bundled_skills() -> bool:
-    """Drop a `.no-bundled-skills` marker in the DEFAULT profile home (/opt/data)
-    so Hermes loads ONLY the bind-mounted solilos pack at /opt/data/skills, not
-    its ~27 bundled skill packs (#292 — the trim deferred from #293).
+    """Opt the DEFAULT profile home (/opt/data) out of Hermes' bundled skills, so
+    the household persona loads ONLY the bind-mounted solilos pack (+ admin-soul
+    + any hub installs), not Hermes' ~75 bundled skill defs (#292 — the trim
+    deferred from #293).
 
     The household persona IS the default profile, served from /opt/data; unlike a
-    named profile (created `--no-skills`), the default home is populated with the
-    bundled catalog on boot, so the marker is how we keep it lean here. The
-    bundled defs are the other half of the household first-turn prefill alongside
-    servicebay-mcp.
+    named profile (created `--no-skills`), the default home is seeded with the
+    bundled catalog on boot. `hermes skills opt-out --remove` does both halves:
+    it writes the `.no-bundled-skills` marker (stop future seeding) AND deletes
+    the already-seeded *pristine* bundled skills. The bare marker only stopped
+    re-seeding, so a home an earlier boot had already populated kept loading the
+    full catalog every turn (box-verified 2026-06-10: bare marker left 105 skills
+    / ~13k-token prefill; opt-out --remove cut it to ~32). User-edited and
+    hub/local skills are never touched.
 
-    Written VIA THE CONTAINER: /opt/data is hermes-owned mode 0700, so a host-side
-    open() silently fails (#299 lesson). The marker only STOPS re-population — any
-    bundled skill dirs an older boot already materialised under /opt/data/skills
-    must be cleared on the box separately (a verify step). Idempotent."""
-    target = "/opt/data/.no-bundled-skills"
-    if read_file_in_container(target) is not None:
+    Run THROUGH THE CONTAINER: /opt/data is hermes-owned 0700, and the hermes CLI
+    targets the default home via the container's HERMES_HOME. Idempotent — once
+    lean, a re-run removes nothing."""
+    try:
+        proc = subprocess.run(
+            [
+                "podman",
+                "exec",
+                "-e",
+                "HERMES_HOME=/opt/data",
+                HERMES_CONTAINER,
+                "hermes",
+                "skills",
+                "opt-out",
+                "--remove",
+                "--yes",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        jlog(
+            "error", "solbay:skills", "hermes skills opt-out exec failed", error=str(e)
+        )
         return False
-    if not write_file_in_container(target, ""):
+    if proc.returncode != 0:
+        jlog(
+            "error",
+            "solbay:skills",
+            "hermes skills opt-out failed",
+            stderr=proc.stderr.strip(),
+        )
         return False
     jlog(
         "info",
         "solbay:skills",
-        "marked default home .no-bundled-skills — household loads only the solilos pack (#292)",
-        path=target,
+        "default home opted out of bundled skills — marker + removed pristine bundled (#292)",
+        detail=proc.stdout.strip()[-200:],
     )
     return True
 
