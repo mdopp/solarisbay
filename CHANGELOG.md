@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.0](https://github.com/mdopp/solbay/compare/v0.8.1...v0.9.0) (2026-06-10)
+
+
+### Features
+
+* **chat:** route the Sol Gründlich persona to the sol-deep gateway ([ec6ab02](https://github.com/mdopp/solbay/commit/ec6ab021e47b59f4bf619f797c514f167e73b28e))
+* Sol Gründlich — the Sol identity on 12b for thorough chat + crons ([8aa3b61](https://github.com/mdopp/solbay/commit/8aa3b612f383e5e0dbff4d375b126b3c4cad0d0a))
+* **template:** provision a sol-deep Hermes profile on 12b for the Gründlich mode and crons ([0039880](https://github.com/mdopp/solbay/commit/00398808c8532a3dc00e51148a6fe146637019d3))
+
 ## [0.8.1](https://github.com/mdopp/solbay/compare/v0.8.0...v0.8.1) (2026-06-10)
 
 
