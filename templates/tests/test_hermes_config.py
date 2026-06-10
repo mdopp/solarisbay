@@ -55,3 +55,19 @@ def test_cronjob_stays_enabled(hermes, tmp_path, monkeypatch):
     content = _render(hermes, tmp_path, monkeypatch)
     # Each disabled toolset is a "    - <name>\n" line; cronjob must not be one.
     assert "    - cronjob\n" not in content
+
+
+def test_unused_agent_toolsets_disabled(hermes, tmp_path, monkeypatch):
+    """session_search + todo are agent/dev tools no household skill uses
+    (trace-measured prompt-token waste) — trimmed from the household prompt."""
+    content = _render(hermes, tmp_path, monkeypatch)
+    assert "    - session_search\n" in content
+    assert "    - todo\n" in content
+
+
+def test_household_skill_toolsets_stay_enabled(hermes, tmp_path, monkeypatch):
+    """file/terminal/skills are load-bearing for the household crons (file +
+    shell) and skill loading — they must NOT be disabled."""
+    content = _render(hermes, tmp_path, monkeypatch)
+    for ts in ("    - file\n", "    - terminal\n", "    - skills\n"):
+        assert ts not in content
