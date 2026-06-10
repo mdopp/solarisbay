@@ -28,13 +28,13 @@ def test_separate_reasoning_control_is_gone():
     assert 'id="personality"' in _HTML
 
 
-def test_dropdown_crosses_persona_with_speed():
-    # Each persona is crossed with the two speeds; the option value packs
-    # `<persona-id>|<reasoning>` and the label appends the German speed suffix.
-    assert '{ suffix: "schnell", reasoning: "none" }' in _HTML
-    assert '{ suffix: "Thinking", reasoning: "high" }' in _HTML
+def test_dropdown_is_fast_only():
+    # The household runs one model at one strength: fast. Personas are no longer
+    # crossed with a speed — the only speed is fast (reasoning none). Thinking +
+    # 12b are reserved for other tasks (the Admin option below).
+    assert '[{ suffix: "", reasoning: "none" }]' in _HTML
+    assert '{ suffix: "Thinking", reasoning: "high" }' not in _HTML
     assert 'opt.value = p.id + "|" + sp.reasoning;' in _HTML
-    assert 'opt.textContent = p.label + " (" + sp.suffix + ")";' in _HTML
 
 
 def test_selection_maps_back_to_persona_and_reasoning():
