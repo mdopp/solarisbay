@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.1](https://github.com/mdopp/solbay/compare/v0.8.0...v0.8.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* chat turns ≤2s — stop fast-model thinking + keep chat/embed models resident ([1e750a7](https://github.com/mdopp/solbay/commit/1e750a7f580da77c621235bc12b3df4a75330635))
+* **chat:** stop the fast model thinking on every turn so chat turns are sub-2s ([19b03be](https://github.com/mdopp/solbay/commit/19b03bed0110cd7fc2f9ebc4ca330fd16fb5c695))
+* **template:** drop session_search + todo from the household toolset prefill ([1f1d9c6](https://github.com/mdopp/solbay/commit/1f1d9c6b80b1e2237dbda4bc2d565b419635ab18))
+* **template:** drop session_search + todo from the household toolset prefill ([bd2abb4](https://github.com/mdopp/solbay/commit/bd2abb4a604a65cc79068290d4a68e34ac1fc9ac))
+* **template:** keep chat + embed models resident with OLLAMA_MAX_LOADED_MODELS=2 ([2b0a8a2](https://github.com/mdopp/solbay/commit/2b0a8a2d6f5f4931c53014a0cc6a5f646286f8d1))
+* **template:** remove already-seeded bundled skills from the household home ([a4d1f76](https://github.com/mdopp/solbay/commit/a4d1f76976c264d2cc9fcccd203241264e03c378))
+* **template:** remove already-seeded bundled skills from the household home ([a7cf447](https://github.com/mdopp/solbay/commit/a7cf44780ed8491e2a77aabe1959ecf82c9c97e3))
+
 ## [0.8.0](https://github.com/mdopp/solbay/compare/v0.7.0...v0.8.0) (2026-06-10)
 
 
