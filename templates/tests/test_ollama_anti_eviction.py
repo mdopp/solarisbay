@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 
@@ -74,3 +75,112 @@ def test_gpu_unit_honors_env_overrides(ollama_pd, monkeypatch):
     unit = ollama_pd.render_gpu_container_unit("11434", "/mnt/data/stacks")
     assert "Environment=OLLAMA_MAX_LOADED_MODELS=2" in unit
     assert "Environment=OLLAMA_KEEP_ALIVE=60m" in unit
+
+
+# ── #322: activation idempotency — content match must NOT skip activation ──
+
+
+@pytest.fixture
+def fallback_box(ollama_pd, tmp_path, monkeypatch):
+    """Drive install_gpu_quadlet_fallback against a fake on-disk systemd
+    dir + recorded systemctl calls. Returns a handle exposing the
+    rendered unit, file paths, the recorded systemctl argv list, and
+    knobs for the SourcePath probe so a test can simulate "service is
+    sourced from .kube vs .container"."""
+    systemd_dir = tmp_path / ".config" / "containers" / "systemd"
+    systemd_dir.mkdir(parents=True)
+    kube_path = systemd_dir / "ollama.kube"
+    container_path = systemd_dir / "ollama.container"
+
+    real_exists = os.path.exists
+    monkeypatch.setattr(
+        ollama_pd.os.path,
+        "expanduser",
+        lambda p: p.replace("~", str(tmp_path)),
+    )
+    # CDI registered so we clear the early gate; everything else is real.
+    monkeypatch.setattr(
+        ollama_pd.os.path,
+        "exists",
+        lambda p: (p == "/etc/cdi/nvidia.yaml") or real_exists(p),
+    )
+
+    calls: list[list[str]] = []
+    state = {"source": "ollama.kube"}  # SourcePath the probe reports
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        out = ""
+        if argv[:4] == ["systemctl", "--user", "show", "-p"]:
+            out = f"SourcePath=/x/y/{state['source']}"
+
+        class _R:
+            returncode = 0
+            stdout = out
+            stderr = ""
+
+        return _R()
+
+    monkeypatch.setattr(ollama_pd.subprocess, "run", fake_run)
+
+    class Handle:
+        def __init__(self):
+            self.kube_path = kube_path
+            self.container_path = container_path
+            self.calls = calls
+            self.state = state
+            self.unit = ollama_pd.render_gpu_container_unit("11434", "/mnt/data/stacks")
+
+        def run(self):
+            return ollama_pd.install_gpu_quadlet_fallback("11434", "/mnt/data/stacks")
+
+    return Handle()
+
+
+def _did_activate(calls):
+    return ["systemctl", "--user", "start", "ollama.service"] in calls
+
+
+def test_content_match_but_kube_recreated_reactivates(fallback_box):
+    """Regression #322: `.container` byte-identical to what we'd render,
+    but `podman kube play` re-created `ollama.kube` and the live service
+    is sourced from `.kube` → the function MUST stop→remove-kube→
+    daemon-reload→start, not take the skip path."""
+    h = fallback_box
+    h.container_path.write_text(h.unit)  # matches rendered exactly
+    h.kube_path.write_text("[KubeUnit]\nYaml=ollama.yml\n")  # re-created on redeploy
+    h.state["source"] = "ollama.kube"  # live service is CPU-sourced
+
+    assert h.run() is True
+    assert _did_activate(h.calls), "must re-activate the GPU unit, not skip"
+    assert not h.kube_path.exists(), "CPU ollama.kube must be removed"
+    assert ["systemctl", "--user", "daemon-reload"] in h.calls
+    # File already matched → no redundant rewrite, but content is correct.
+    assert h.container_path.read_text() == h.unit
+
+
+def test_gpu_already_live_is_noop(fallback_box):
+    """The genuinely-correct path stays a no-op: `.container` matches, it is
+    the live source, and no `.kube` lingers → do NOT flap Ollama."""
+    h = fallback_box
+    h.container_path.write_text(h.unit)
+    # no ollama.kube on disk
+    h.state["source"] = "ollama.container"
+
+    assert h.run() is True
+    assert not _did_activate(h.calls), "already GPU-live → must not restart"
+    assert ["systemctl", "--user", "stop", "ollama.service"] not in h.calls
+
+
+def test_container_source_but_kube_lingers_reactivates(fallback_box):
+    """Even when the live source already reads `.container`, a lingering
+    `ollama.kube` on disk must be cleaned up + re-activated (Quadlet would
+    otherwise regenerate a conflicting CPU service on the next reload)."""
+    h = fallback_box
+    h.container_path.write_text(h.unit)
+    h.kube_path.write_text("[KubeUnit]\nYaml=ollama.yml\n")
+    h.state["source"] = "ollama.container"
+
+    assert h.run() is True
+    assert _did_activate(h.calls)
+    assert not h.kube_path.exists()

@@ -323,6 +323,27 @@ def gpu_actually_engaged(ollama_url: str) -> bool:
     return False
 
 
+def gpu_container_is_live_source() -> bool:
+    """True iff the active `ollama.service` is generated from the GPU
+    `.container` Quadlet (and not from the CPU `.kube`). Quadlet stamps the
+    generated unit with `SourcePath=…/ollama.container` vs `…/ollama.kube`;
+    we read it via `systemctl --user show -p SourcePath`. On a redeploy
+    `podman kube play` re-creates `ollama.kube` and the active service flips
+    back to the `.kube` source, so a byte-identical `.container` file on disk
+    is NOT evidence the GPU unit is live — this is."""
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "show", "-p", "SourcePath", "ollama.service"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return False
+    # `SourcePath=/home/core/.config/containers/systemd/ollama.container`
+    return out.stdout.strip().endswith("ollama.container")
+
+
 def render_gpu_container_unit(port: str, data_dir: str) -> str:
     """Render the `.container` Quadlet text for the GPU fixup. Mirrors the
     .yml's runtime contract (image, OLLAMA_HOST, hostNetwork, the volume
@@ -395,10 +416,17 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
     library=cpu with total_vram=0; with it, library=CUDA + 16 GiB
     VRAM and 78% GPU offload on gemma4:26b.
 
-    Idempotent — re-running re-writes the Quadlet only when its content
-    drifts from what we'd render now (#146: an existing install written
-    before OLLAMA_CONTEXT_LENGTH support skips here forever otherwise,
-    so a re-deploy never heals it). An already-correct unit is a no-op.
+    Idempotent on both the file AND the active unit. The Quadlet is
+    re-written only when its content drifts (#146: an install written
+    before OLLAMA_CONTEXT_LENGTH support would otherwise skip forever).
+    But a byte-identical `.container` file is NOT proof the GPU unit is
+    live: a `podman kube play` redeploy re-creates `ollama.kube` and the
+    active `ollama.service` flips back to the CPU `.kube` source (#322).
+    So the content match guards only the redundant write — the stop →
+    remove `ollama.kube` → daemon-reload → start activation still runs
+    whenever the GPU `.container` isn't the live source or a `.kube`
+    lingers. A genuinely-live GPU unit (matching file, `.container`
+    source, no `.kube`) is the only no-op.
 
     Caveat: ServiceBay's discovery still tags `.container`-backed
     units as "unmanaged" (see agent.py — `is_managed` only when
@@ -419,20 +447,44 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
 
     container_unit = render_gpu_container_unit(port, data_dir)
 
+    # Decide independently (a) whether the on-disk `.container` file already
+    # matches what we'd render, and (b) whether the GPU `.container` is the
+    # LIVE service source with no CPU `.kube` lingering. (a) gates only the
+    # redundant file write; (b) is the authoritative activation check. A
+    # redeploy re-creates `ollama.kube` and flips the active service back to
+    # CPU even though the `.container` file is byte-identical (#322) — so a
+    # content match alone must NOT short-circuit the stop→remove-kube→
+    # daemon-reload→start activation below.
+    content_matches = False
     if os.path.exists(container_path):
         try:
             with open(container_path) as f:
                 existing = f.read()
         except OSError:
             existing = ""
-        if existing == container_unit:
-            jlog(
-                "info",
-                "ollama:gpu-fallback",
-                "ollama.container already up to date; skipping re-write",
-                path=container_path,
-            )
-            return True
+        content_matches = existing == container_unit
+
+    if (
+        content_matches
+        and gpu_container_is_live_source()
+        and not os.path.exists(kube_path)
+    ):
+        jlog(
+            "info",
+            "ollama:gpu-fallback",
+            "ollama.container already live (GPU source, no ollama.kube); no-op",
+            path=container_path,
+        )
+        return True
+
+    if content_matches:
+        jlog(
+            "info",
+            "ollama:gpu-fallback",
+            "ollama.container matches but GPU unit not live (ollama.kube re-created / service sourced from .kube #322); re-activating",
+            path=container_path,
+        )
+    elif os.path.exists(container_path):
         jlog(
             "info",
             "ollama:gpu-fallback",
@@ -463,20 +515,23 @@ def install_gpu_quadlet_fallback(port: str, data_dir: str) -> bool:
                 error=str(e),
             )
 
-    # 3. Write the .container Quadlet (rendered above).
-    try:
-        with open(container_path, "w") as f:
-            f.write(container_unit)
-        os.chmod(container_path, 0o644)
-    except OSError as e:
-        jlog(
-            "error",
-            "ollama:gpu-fallback",
-            "could not write ollama.container",
-            path=container_path,
-            error=str(e),
-        )
-        return False
+    # 3. Write the .container Quadlet (rendered above). Skip the write when
+    #    the on-disk file already matches — we only reached here to re-activate
+    #    (kube re-created), not because the content drifted (#322).
+    if not content_matches:
+        try:
+            with open(container_path, "w") as f:
+                f.write(container_unit)
+            os.chmod(container_path, 0o644)
+        except OSError as e:
+            jlog(
+                "error",
+                "ollama:gpu-fallback",
+                "could not write ollama.container",
+                path=container_path,
+                error=str(e),
+            )
+            return False
 
     # 4. Reload + start. Quadlet regenerates ollama.service from the new
     #    `.container` source on `daemon-reload`.
