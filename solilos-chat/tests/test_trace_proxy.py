@@ -82,19 +82,61 @@ def test_summarize_request_carries_profile():
     assert rec["profile"] == "admin"
 
 
-def test_thinking_policy_disables_reasoning_for_fast_model(monkeypatch):
+def test_thinking_policy_fast_turn_suppresses_reasoning(monkeypatch):
+    # No sentinel on the current turn → suppress the hidden reasoning block.
     monkeypatch.setattr(tp, "NOTHINK_MODELS", {"gemma4:e2b"})
     out = tp.apply_thinking_policy(
-        json.dumps({"model": "gemma4:e2b", "messages": []}).encode()
+        json.dumps(
+            {"model": "gemma4:e2b", "messages": [{"role": "user", "content": "hi"}]}
+        ).encode()
     )
     assert json.loads(out)["reasoning_effort"] == "none"
+
+
+def test_thinking_policy_thinking_turn_allows_and_strips_sentinel(monkeypatch):
+    # Sentinel on the current turn → leave it to reason, and strip the carrier.
+    monkeypatch.setattr(tp, "NOTHINK_MODELS", {"gemma4:e2b"})
+    body = json.dumps(
+        {
+            "model": "gemma4:e2b",
+            "messages": [{"role": "user", "content": f"denk nach {tp.THINK_SENTINEL}"}],
+        }
+    ).encode()
+    d = json.loads(tp.apply_thinking_policy(body))
+    assert "reasoning_effort" not in d  # not suppressed → model reasons
+    assert tp.THINK_SENTINEL not in d["messages"][0]["content"]  # carrier stripped
+    assert d["messages"][0]["content"] == "denk nach"
+
+
+def test_thinking_policy_decision_is_current_turn_not_history(monkeypatch):
+    # A past thinking turn's sentinel in history must NOT make a fast turn reason.
+    monkeypatch.setattr(tp, "NOTHINK_MODELS", {"gemma4:e2b"})
+    body = json.dumps(
+        {
+            "model": "gemma4:e2b",
+            "messages": [
+                {"role": "user", "content": f"alte frage {tp.THINK_SENTINEL}"},
+                {"role": "assistant", "content": "..."},
+                {"role": "user", "content": "schnelle frage"},
+            ],
+        }
+    ).encode()
+    d = json.loads(tp.apply_thinking_policy(body))
+    assert d["reasoning_effort"] == "none"  # current (last) turn is fast
+    assert all(tp.THINK_SENTINEL not in m["content"] for m in d["messages"])
 
 
 def test_thinking_policy_leaves_thorough_model_and_explicit_choice(monkeypatch):
     monkeypatch.setattr(tp, "NOTHINK_MODELS", {"gemma4:e2b"})
     thorough = json.dumps({"model": "gemma4:12b", "messages": []}).encode()
     assert tp.apply_thinking_policy(thorough) == thorough
-    explicit = json.dumps({"model": "gemma4:e2b", "reasoning_effort": "high"}).encode()
+    explicit = json.dumps(
+        {
+            "model": "gemma4:e2b",
+            "reasoning_effort": "high",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+    ).encode()
     assert json.loads(tp.apply_thinking_policy(explicit))["reasoning_effort"] == "high"
 
 

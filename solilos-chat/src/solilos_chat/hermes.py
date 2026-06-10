@@ -24,6 +24,7 @@ import aiohttp
 
 from solilos_chat import marker
 from solilos_chat.logging import log
+from solilos_chat.reasoning import mark_text_effort
 
 
 class HermesError(Exception):
@@ -369,7 +370,12 @@ def _chat_body(
     Hermes surfaces the thinking block — the live config has it off, so without
     this the UI would have nothing to render. A fast ("none") turn sends neither
     `show_reasoning` nor a thinking block, so it stays clean.
+
+    The per-turn Schnell/Thinking choice also rides the user text as a sentinel
+    (`mark_text_effort`): Hermes drops `reasoning_effort`, so that marker is how
+    the trace proxy learns whether to suppress the model's hidden reasoning.
     """
+    text = mark_text_effort(text, reasoning_effort)
     if not images:
         body: dict[str, Any] = {"input": text}
     else:

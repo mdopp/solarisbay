@@ -86,3 +86,12 @@ def test_model_for_effort_empty_when_tag_unset():
         reasoning.model_for_effort(reasoning.HIGH, fast_model="", thorough_model="")
         == ""
     )
+
+
+def test_mark_text_effort_tags_only_thinking_turns():
+    from solilos_chat import reasoning as r
+
+    assert r.mark_text_effort("hallo", r.FAST) == "hallo"
+    out = r.mark_text_effort("denk nach", r.HIGH)
+    assert out.startswith("denk nach ")
+    assert r.THINK_SENTINEL in out
