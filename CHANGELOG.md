@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.0](https://github.com/mdopp/solbay/compare/v0.7.0...v0.8.0) (2026-06-10)
+
+
+### Features
+
+* **chat:** tag each LLM trace step with its Hermes profile ([e8021fd](https://github.com/mdopp/solbay/commit/e8021fda34cf8dbab1b22c050bf2dfe703862242))
+* **chat:** tag each LLM trace step with its Hermes profile ([c0956d5](https://github.com/mdopp/solbay/commit/c0956d555416a5c09b3f4b1b595bdcca9512d6e8))
+
+
+### Bug Fixes
+
+* **chat:** keepalive heartbeat so tool-turn answers survive the long Ollama prefill ([51b5419](https://github.com/mdopp/solbay/commit/51b54195585186fa9880b02f2846df032e1340c9))
+* **chat:** keepalive the SSE stream through the tool round-trip so the answer renders ([7150559](https://github.com/mdopp/solbay/commit/7150559847af013de9a0ac0cb5b80f116aa13854)), closes [#319](https://github.com/mdopp/solbay/issues/319)
+* **template:** make install_gpu_quadlet_fallback activation-idempotent ([761a0fd](https://github.com/mdopp/solbay/commit/761a0fd6efac3e48cdcd43221378cb2708450bb4)), closes [#322](https://github.com/mdopp/solbay/issues/322)
+* **template:** make ollama GPU-quadlet fallback activation-idempotent so redeploys keep the GPU ([8eff436](https://github.com/mdopp/solbay/commit/8eff4360e38c1bd6fb860eb827796189ac5a214d))
+
 ## [0.7.0](https://github.com/mdopp/solbay/compare/v0.6.0...v0.7.0) (2026-06-09)
 
 
