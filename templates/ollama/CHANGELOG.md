@@ -1,3 +1,7 @@
+## v6
+
+- **Eviction fix**: `OLLAMA_MAX_LOADED_MODELS` default raised `1 → 2`. Box-measured 2026-06-10: the v5 assumption that the embed model runs in a separate runner "not counted against this chat-model slot" was **wrong** — the cap is GLOBAL. At `1`, any embedding (notes/memory/search uses `nomic-embed-text`) evicts `gemma4:e2b`, and the next chat turn pays a **~6.75s model reload + ~2.6s cold prefill (~9.4s turns)**. `2` keeps gemma4:e2b (~2.15 GB) + nomic (~0.3 GB) co-resident — trivial on the 16 GB GPU. The v5 chat↔chat concern only applies if a second *chat* model (gemma4:12b) must also stay warm → then use `3`.
+
 ## v5
 
 - **Anti-eviction (#268)**: `OLLAMA_KEEP_ALIVE` default raised from `60m` to `24h` — an overnight gap no longer evicts the chat model, so the cached prefix and loaded weights survive across the morning's first turn (the 60m cap existed only to let a co-resident idle model release VRAM; with the new `OLLAMA_MAX_LOADED_MODELS=1` there is no second chat model to co-reside, so the cap is unnecessary).

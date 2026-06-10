@@ -36,8 +36,8 @@
   },
   "OLLAMA_MAX_LOADED_MODELS": {
     "type": "text",
-    "description": "Maximum number of models Ollama keeps loaded at once (per Ollama's `OLLAMA_MAX_LOADED_MODELS`; `0` = unlimited). Default `1`: keep exactly one chat model resident so a secondary chat model (e.g. switching gemma4:12b ↔ gemma4:e2b) can never co-reside and evict the cached-prefix model under the tight 128k VRAM footprint — the chat↔chat eviction race that defeated KV-prefix reuse across turns (#268). The dedicated embed model (`OLLAMA_EMBED_MODEL`, nomic-embed-text) runs in its OWN llama-server runner, so embeddings still serve in parallel and are not counted against this chat-model slot. Operators who accept the VRAM risk to keep two chat models warm can raise this, but the household default is one resident chat model + the separate embed runner.",
-    "default": "1"
+    "description": "Maximum number of models Ollama keeps loaded at once (per Ollama's `OLLAMA_MAX_LOADED_MODELS`; `0` = unlimited). Default `2`: keep the chat model AND the embed model resident together. CORRECTION (box-measured 2026-06-10): this is a GLOBAL cap counting EVERY model — the embed model (`OLLAMA_EMBED_MODEL`, nomic-embed-text) is NOT exempt. With `1`, any embedding (notes/memory/search) evicts the chat model, and the next chat turn pays a ~6.75s model RELOAD + ~2.6s cold prefill (~9.4s turns) — the original #268 reasoning that embeddings ran in a separate uncounted runner was wrong. `2` keeps gemma4:e2b (~2.15 GB) + nomic-embed-text (~0.3 GB) co-resident, trivial on the 16 GB GPU. Raise to `3` only if a second CHAT model (gemma4:12b for the thorough path) must also stay warm.",
+    "default": "2"
   },
   "OLLAMA_FLASH_ATTENTION": {
     "type": "text",

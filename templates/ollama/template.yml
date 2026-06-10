@@ -53,10 +53,10 @@ spec:
     # this at 60m is gone. See OLLAMA_KEEP_ALIVE.
     - name: OLLAMA_KEEP_ALIVE
       value: "{{OLLAMA_KEEP_ALIVE}}"
-    # Cap resident models at one chat model (#268 anti-eviction): a secondary
-    # chat model can never co-reside and evict the cached-prefix model under
-    # the tight 128k VRAM footprint. The embed model runs its own runner and
-    # is not counted against this slot. See OLLAMA_MAX_LOADED_MODELS.
+    # Keep BOTH chat + embed models resident (default 2). Box-measured
+    # 2026-06-10: this cap is GLOBAL and the embed model IS counted, so at 1
+    # every embedding evicts the chat model → next turn pays a ~6.75s reload +
+    # ~2.6s cold prefill. See OLLAMA_MAX_LOADED_MODELS.
     - name: OLLAMA_MAX_LOADED_MODELS
       value: "{{OLLAMA_MAX_LOADED_MODELS}}"
     # Flash attention: negligible speed change on this GPU class but

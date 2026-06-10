@@ -356,7 +356,7 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
     context_length = env("OLLAMA_CONTEXT_LENGTH", "131072")
     keep_alive = env("OLLAMA_KEEP_ALIVE", "24h")
     flash_attention = env("OLLAMA_FLASH_ATTENTION", "1")
-    max_loaded_models = env("OLLAMA_MAX_LOADED_MODELS", "1")
+    max_loaded_models = env("OLLAMA_MAX_LOADED_MODELS", "2")
     return (
         "[Unit]\n"
         "Description=Ollama (Local LLM Server, GPU passthrough #1026 fixup)\n"
@@ -378,9 +378,11 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
         "# MAX_LOADED_MODELS=1 the old co-residency concern that capped this\n"
         "# at 60m is gone.\n"
         f"Environment=OLLAMA_KEEP_ALIVE={keep_alive}\n"
-        "# Cap resident models at one chat model (#268 anti-eviction): a\n"
-        "# secondary chat model can never evict the cached-prefix model. The\n"
-        "# embed model runs its own runner and isn't counted here.\n"
+        "# Keep BOTH the chat model and the embed model resident (default 2).\n"
+        "# Box-measured 2026-06-10: this cap is GLOBAL — the embed model IS\n"
+        "# counted, so at 1 every embedding evicts the chat model and the next\n"
+        "# turn pays a ~6.75s reload + ~2.6s cold prefill (the #268 'separate\n"
+        "# uncounted runner' assumption was wrong).\n"
         f"Environment=OLLAMA_MAX_LOADED_MODELS={max_loaded_models}\n"
         "# Flash attention — negligible speed change here but harmless and\n"
         "# the prerequisite for optional KV-cache quant.\n"

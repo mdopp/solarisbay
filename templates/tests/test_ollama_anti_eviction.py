@@ -39,8 +39,10 @@ def ollama_pd():
 # ── variables.json defaults ───────────────────────────────────────────────
 
 
-def test_max_loaded_models_default_is_one(variables):
-    assert variables["OLLAMA_MAX_LOADED_MODELS"]["default"] == "1"
+def test_max_loaded_models_default_keeps_chat_and_embed(variables):
+    # Box-measured 2026-06-10: the cap is GLOBAL — at 1 the embed model evicts
+    # the chat model (~9.4s reload+prefill turns). 2 keeps both resident.
+    assert variables["OLLAMA_MAX_LOADED_MODELS"]["default"] == "2"
 
 
 def test_keep_alive_default_is_24h(variables):
@@ -65,7 +67,7 @@ def test_gpu_unit_carries_max_loaded_models_and_24h(ollama_pd, monkeypatch):
     monkeypatch.delenv("OLLAMA_MAX_LOADED_MODELS", raising=False)
     monkeypatch.delenv("OLLAMA_KEEP_ALIVE", raising=False)
     unit = ollama_pd.render_gpu_container_unit("11434", "/mnt/data/stacks")
-    assert "Environment=OLLAMA_MAX_LOADED_MODELS=1" in unit
+    assert "Environment=OLLAMA_MAX_LOADED_MODELS=2" in unit
     assert "Environment=OLLAMA_KEEP_ALIVE=24h" in unit
 
 
