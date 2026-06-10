@@ -832,7 +832,7 @@
         <span class="chat-head-grow"></span>
         <span class="persona" id="persona-control">
           <label for="personality">Persona</label>
-          <select id="personality" aria-label="Persona and speed for new sessions" title="Persona × Geschwindigkeit: schnell antwortet sofort, Thinking lässt Sol nachdenken."></select>
+          <select id="personality" aria-label="Persona for new sessions" title="Persona — gilt für den nächsten neuen Chat. Household antwortet immer schnell."></select>
         </span>
         <button class="icon-btn embed-settings" id="embed-settings" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"></use></svg></button>
       </header>
@@ -2346,13 +2346,12 @@
       incognitoBtn.addEventListener("click", newIncognito);
       householdBtn.addEventListener("click", startHouseholdChat);
 
-      // ---- Persona × speed (#278) ----
-      // Each persona from /api/personalities is crossed with the two speeds, so
-      // a single header dropdown carries e.g. "Sol (schnell)" / "Sol (Thinking)".
-      var PERSONA_SPEEDS = [
-        { suffix: "schnell", reasoning: "none" },
-        { suffix: "Thinking", reasoning: "high" },
-      ];
+      // ---- Persona (fast-only) ----
+      // The household runs one model at one strength: fast (gemma4:e2b, no
+      // thinking). Thinking + the 12b model are reserved for other tasks (the
+      // Admin option below routes to the 12b admin gateway). So personas are NOT
+      // crossed with a speed anymore — every household persona is fast.
+      var PERSONA_SPEEDS = [{ suffix: "", reasoning: "none" }];
       function loadPersonalities() {
         return fetch("/api/personalities")
           .then(function (r) { return r.ok ? r.json() : { personalities: [] }; })
@@ -2366,13 +2365,13 @@
               PERSONA_SPEEDS.forEach(function (sp) {
                 var opt = document.createElement("option");
                 opt.value = p.id + "|" + sp.reasoning;
-                opt.textContent = p.label + " (" + sp.suffix + ")";
+                opt.textContent = sp.suffix ? p.label + " (" + sp.suffix + ")" : p.label;
                 opt.title = p.description;
                 if (opt.value === saved) opt.selected = true;
                 personalitySel.appendChild(opt);
               });
             });
-            personalitySel.title = "Persona × Geschwindigkeit — gilt für den nächsten neuen Chat";
+            personalitySel.title = "Persona — gilt für den nächsten neuen Chat";
           })
           .catch(function () {});
       }

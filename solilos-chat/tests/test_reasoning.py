@@ -55,43 +55,7 @@ def test_unknown_selector_falls_back_to_adaptive(bad):
     )
 
 
-def test_model_for_effort_routes_fast_to_e2b():
-    # FAST (Schnell, the household-control default) → the fast model.
-    assert (
-        reasoning.model_for_effort(
-            reasoning.FAST, fast_model="gemma4:e2b", thorough_model="gemma4:12b"
-        )
-        == "gemma4:e2b"
-    )
-
-
-@pytest.mark.parametrize("effort", [reasoning.LOW, reasoning.HIGH])
-def test_model_for_effort_routes_reasoning_to_12b(effort):
-    # Any reasoning level (Gründlich) → the thorough model.
-    assert (
-        reasoning.model_for_effort(
-            effort, fast_model="gemma4:e2b", thorough_model="gemma4:12b"
-        )
-        == "gemma4:12b"
-    )
-
-
-def test_model_for_effort_empty_when_tag_unset():
-    # Routing off (no tags) → no override; Hermes' configured model is used.
-    assert (
-        reasoning.model_for_effort(reasoning.FAST, fast_model="", thorough_model="")
-        == ""
-    )
-    assert (
-        reasoning.model_for_effort(reasoning.HIGH, fast_model="", thorough_model="")
-        == ""
-    )
-
-
-def test_mark_text_effort_tags_only_thinking_turns():
-    from solilos_chat import reasoning as r
-
-    assert r.mark_text_effort("hallo", r.FAST) == "hallo"
-    out = r.mark_text_effort("denk nach", r.HIGH)
-    assert out.startswith("denk nach ")
-    assert r.THINK_SENTINEL in out
+# model selection (model_for_effort) was removed: the household is fixed to the
+# fast model per profile (#293), and thinking follows the model — the fast model
+# is suppressed by the trace proxy, the thorough model (admin/other tasks) keeps
+# reasoning. There is no per-effort model routing on the household path.

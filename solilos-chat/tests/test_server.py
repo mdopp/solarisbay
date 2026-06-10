@@ -544,19 +544,16 @@ def test_chat_body_images_become_content_parts():
 
 
 def test_chat_body_reasoning_surfaces_thinking_when_on():
-    # A reasoning turn asks Hermes to surface the block (#224) AND carries the
-    # think sentinel on the text so the proxy lets the model actually reason
-    # (Hermes drops reasoning_effort). The live config has show_reasoning off.
-    from solilos_chat.reasoning import THINK_SENTINEL
-
-    body = _chat_body("explain", None, "high")
-    assert body["reasoning_effort"] == "high"
-    assert body["show_reasoning"] is True
-    assert body["input"] == f"explain {THINK_SENTINEL}"
-    # Fast turn: no show_reasoning, no sentinel, no thinking block.
-    fast = _chat_body("hi", None, "none")
-    assert "show_reasoning" not in fast
-    assert THINK_SENTINEL not in fast["input"]
+    # A reasoning turn asks Hermes to surface the block (#224) so the UI can
+    # render it — the live config has show_reasoning off. Thinking itself is a
+    # function of the model: the household fast model is suppressed by the proxy.
+    assert _chat_body("explain", None, "high") == {
+        "input": "explain",
+        "reasoning_effort": "high",
+        "show_reasoning": True,
+    }
+    # Fast turn carries no show_reasoning and no thinking block.
+    assert "show_reasoning" not in _chat_body("hi", None, "none")
 
 
 def test_images_from_keeps_data_url_prefix_and_caps():
