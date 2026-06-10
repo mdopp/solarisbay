@@ -318,7 +318,12 @@ def write_config_yaml(
         "  show_reasoning: false\n"
         # Cold-cache prefill trim (#230 + #268 latency bundle): disable only the
         # clearly-unused dev/external/generation toolsets. cronjob STAYS enabled
-        # (load-bearing for timers/alarms/reminders + the 3 system crons).
+        # (load-bearing for timers/alarms/reminders + the 3 system crons), and so
+        # do file/terminal/skills/vision — the household crons (daily-chronicle,
+        # problem-summarizer, media-ingestion, notes-search) write files + run
+        # shell, and skill_view loads the solilos pack. session_search + todo are
+        # agent/dev tools no household skill uses (trace-measured ~1.3k + ~0.3k
+        # prompt tokens, 2026-06-10).
         "agent:\n"
         "  disabled_toolsets:\n"
         "    - browser\n"
@@ -332,6 +337,8 @@ def write_config_yaml(
         "    - moa\n"
         "    - computer_use\n"
         "    - kanban\n"
+        "    - session_search\n"
+        "    - todo\n"
     )
     if custom_providers_block:
         content += "\n" + custom_providers_block
