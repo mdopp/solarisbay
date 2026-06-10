@@ -477,6 +477,7 @@ def build_app(
         return [
             {
                 "model": rec.get("model"),
+                "profile": rec.get("profile"),
                 "wall_s": rec.get("wall_s"),
                 "prompt_tokens": rec.get("prompt_tokens"),
                 "completion_tokens": rec.get("completion_tokens"),

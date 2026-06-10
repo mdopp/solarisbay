@@ -26,6 +26,7 @@ CREATE TABLE session_traces (
   step_order        INTEGER NOT NULL,
   owner_uid         TEXT NOT NULL,
   model             TEXT,
+  profile           TEXT,
   wall_s            REAL,
   prompt_tokens     INTEGER,
   completion_tokens INTEGER,
@@ -53,6 +54,7 @@ def _db(tmp_path) -> str:
 def _step(model="gemma4:e2b", detail_id=0, **over):
     base = {
         "model": model,
+        "profile": "household",
         "wall_s": 1.2,
         "prompt_tokens": 100,
         "completion_tokens": 10,
@@ -74,6 +76,7 @@ def test_persist_then_list_keeps_step_order(tmp_path):
     assert [s["detail_id"] for s in got] == [0, 1]
     assert got[0]["finish_reason"] == "tool_calls"
     assert got[1]["model"] == "gemma4:e2b"
+    assert got[0]["profile"] == "household"
 
 
 def test_multiple_turns_list_in_chronological_order(tmp_path):
@@ -147,6 +150,7 @@ async def _trace_proxy_app():
                     "id": 2,
                     "ts": ts,
                     "model": "m",
+                    "profile": "household",
                     "wall_s": 0.5,
                     "prompt_tokens": 90,
                     "completion_tokens": 5,
@@ -216,6 +220,8 @@ async def test_turn_persists_window_and_endpoint_serves_it(
     # detail_id for the per-step content fetch.
     assert [s["detail_id"] for s in body["steps"]] == [2, 1]
     assert body["steps"][1]["finish_reason"] == "tool_calls"
+    # The proxy's profile tag survives persist → reopen.
+    assert body["steps"][0]["profile"] == "household"
 
 
 async def test_trace_detail_proxied_to_proxy(aiohttp_client, aiohttp_server, tmp_path):

@@ -43,6 +43,13 @@ def test_step_row_shows_model_time_tokens():
     assert "s.model" in _HTML
 
 
+def test_step_row_shows_profile_badge():
+    # Each row carries the Hermes profile that served the call, so household vs
+    # admin turns are unambiguous in the trace.
+    assert 'prof.className = "st-profile"' in _HTML
+    assert "prof.textContent = s.profile" in _HTML
+
+
 def test_clicking_a_step_opens_the_detail_modal():
     # A step click opens the exact-content modal via its detail_id, fetched from
     # the chat server's /__traces__/<id> pass-through (#305 detail).

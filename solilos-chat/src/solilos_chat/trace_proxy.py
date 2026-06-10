@@ -50,6 +50,27 @@ def _toks(chars: int) -> int:
     return round(chars / 4)
 
 
+# Hermes injects this line into the system prompt; it is the only per-call
+# signal of which profile made the call (the request body carries no profile,
+# and one shared proxy serves every profile).
+_PROFILE_RE = re.compile(r"Active Hermes profile:\s*([^.\s]+)")
+
+
+def extract_profile(messages: list[Any]) -> str | None:
+    """Which Hermes profile produced this call, read from the system block's
+    `Active Hermes profile: <name>.` line. None when the line is absent (older
+    Hermes) — the trace degrades to an untagged step, never an error."""
+    for m in messages:
+        if m.get("role") != "system":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            match = _PROFILE_RE.search(c)
+            if match:
+                return match.group(1)
+    return None
+
+
 def summarize_request(body: bytes) -> dict[str, Any]:
     """Break a /v1/chat/completions (or /api/chat) request into its blocks:
     per-role message char sizes and the tool list with per-tool sizes."""
@@ -81,6 +102,7 @@ def summarize_request(body: bytes) -> dict[str, Any]:
         "n_tools": len(tools),
         "tools_chars": tools_chars,
         "tools": tool_list,
+        "profile": extract_profile(msgs),
     }
 
 
@@ -190,6 +212,7 @@ def build_record(
         "wall_s": round(wall, 3),
         "path": path,
         "model": req.get("model"),
+        "profile": req.get("profile"),
         "stream": req.get("stream"),
         "num_ctx": num_ctx,
         "prompt_tokens": prompt_tokens,

@@ -293,6 +293,10 @@
       font-variant-numeric: tabular-nums; border: 1px solid transparent;
     }
     .step-row:hover { border-color: var(--line); background: rgba(127,127,127,0.10); }
+    .step-row .st-profile {
+      flex: 0 0 auto; color: var(--muted); font-size: 11px;
+      padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px;
+    }
     .step-row .st-model { flex: 1 1 auto; color: var(--ink); }
     .step-row .st-num { flex: 0 0 auto; color: var(--muted); }
     .step-detail-body {
@@ -1237,6 +1241,13 @@
           var row = document.createElement("div");
           row.className = "step-row";
           if (s.detail_id != null) row.setAttribute("data-detail-id", String(s.detail_id));
+          if (s.profile) {
+            var prof = document.createElement("span");
+            prof.className = "st-profile";
+            prof.textContent = s.profile;
+            prof.title = "Hermes profile that served this call";
+            row.appendChild(prof);
+          }
           var model = document.createElement("span");
           model.className = "st-model";
           model.textContent = s.model || "(model?)";

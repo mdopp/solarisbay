@@ -27,6 +27,7 @@ from typing import Any
 # owner_uid). Order matches the INSERT below.
 _STEP_FIELDS = (
     "model",
+    "profile",
     "wall_s",
     "prompt_tokens",
     "completion_tokens",
@@ -80,9 +81,9 @@ def persist_trace(
                 """
                 INSERT INTO session_traces
                   (session_id, trace_id, step_order, owner_uid,
-                   model, wall_s, prompt_tokens, completion_tokens,
+                   model, profile, wall_s, prompt_tokens, completion_tokens,
                    context_free, finish_reason, n_tools, detail_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -107,9 +108,9 @@ def list_session_trace(
         with _connect(db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT trace_id, step_order, model, wall_s, prompt_tokens,
-                       completion_tokens, context_free, finish_reason,
-                       n_tools, detail_id
+                SELECT trace_id, step_order, model, profile, wall_s,
+                       prompt_tokens, completion_tokens, context_free,
+                       finish_reason, n_tools, detail_id
                   FROM session_traces
                  WHERE session_id = ? AND owner_uid = ?
                  ORDER BY rowid

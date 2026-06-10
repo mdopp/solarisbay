@@ -46,6 +46,40 @@ def test_summarize_request_splits_blocks_and_tools():
         "mcp_servicebay_mcp_reboot_node",
     }
     assert all(t["tok_est"] > 0 for t in s["tools"])
+    # No `Active Hermes profile:` line in this system block → untagged.
+    assert s["profile"] is None
+
+
+def test_extract_profile_reads_system_line():
+    msgs = [
+        {
+            "role": "system",
+            "content": "...\nActive Hermes profile: household. Other...",
+        },
+        {"role": "user", "content": "hi"},
+    ]
+    assert tp.extract_profile(msgs) == "household"
+
+
+def test_extract_profile_absent_line_returns_none():
+    msgs = [{"role": "system", "content": "no profile here"}]
+    assert tp.extract_profile(msgs) is None
+
+
+def test_summarize_request_carries_profile():
+    body = json.dumps(
+        {
+            "model": "gemma4:e2b",
+            "messages": [
+                {"role": "system", "content": "Active Hermes profile: admin. x"},
+                {"role": "user", "content": "hi"},
+            ],
+        }
+    ).encode()
+    s = tp.summarize_request(body)
+    assert s["profile"] == "admin"
+    rec = tp.build_record("/api/chat", s, {"usage": None}, 1.0)
+    assert rec["profile"] == "admin"
 
 
 def test_summarize_response_json_tool_call():
