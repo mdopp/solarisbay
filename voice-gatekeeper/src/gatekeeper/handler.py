@@ -28,7 +28,7 @@ from wyoming.server import AsyncEventHandler
 
 from .config import settings
 from .embeddings_store import list_embeddings, touch_last_seen
-from .hermes import HermesClient
+from .sol import SolClient
 from .rooms_store import get_room
 from .speaker import get_extractor, resolve_speaker
 from .tts import synthesize_to_writer
@@ -58,7 +58,7 @@ class GatekeeperHandler(AsyncEventHandler):
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         info: Info | None = None,
-        hermes: HermesClient | None = None,
+        sol: SolClient | None = None,
     ):
         super().__init__(reader, writer)
         self._info = info
@@ -66,11 +66,7 @@ class GatekeeperHandler(AsyncEventHandler):
         self.client_id = self._resolve_client_id()
         self._audio_start: AudioStart | None = None
         self._audio_buffer: list[AudioChunk] = []
-        self._hermes = hermes or HermesClient(
-            settings.hermes_url,
-            settings.hermes_token,
-            fast_model=settings.fast_hermes_model,
-        )
+        self._sol = sol or SolClient(settings.engine_url, settings.engine_token)
         log.info(
             "gatekeeper.session.open",
             trace_id=self.trace_id,
@@ -140,7 +136,7 @@ class GatekeeperHandler(AsyncEventHandler):
         uid = await self._resolve_uid()
         endpoint = f"voice-pe:{self.client_id or 'unknown'}"
         location = await self._resolve_location()
-        response = await self._hermes.converse(
+        response = await self._sol.converse(
             text=transcript,
             uid=uid,
             endpoint=endpoint,
@@ -148,7 +144,7 @@ class GatekeeperHandler(AsyncEventHandler):
             trace_id=self.trace_id,
         )
         if not response:
-            log.warn("gatekeeper.hermes.empty", trace_id=self.trace_id)
+            log.warn("gatekeeper.sol.empty", trace_id=self.trace_id)
             return
         log.info("gatekeeper.response", trace_id=self.trace_id, length=len(response))
 

@@ -15,7 +15,7 @@ from wyoming.server import AsyncServer
 from . import __version__ as GATEKEEPER_VERSION
 from .config import settings
 from .handler import GatekeeperHandler
-from .hermes import HermesClient
+from .sol import SolClient
 from .mcp_server import serve as serve_mcp
 from .push import serve as serve_push
 
@@ -46,7 +46,7 @@ def _info() -> Info:
                 models=[
                     AsrModel(
                         name="solilos-gatekeeper",
-                        description="Gatekeeper pipeline (Whisper -> HERMES -> Piper)",
+                        description="Gatekeeper pipeline (Whisper -> Sol -> Piper)",
                         attribution=Attribution(
                             name="Solilos", url="https://github.com/mdopp/servicebay"
                         ),
@@ -75,14 +75,10 @@ def _info() -> Info:
 async def _serve_wyoming() -> None:
     server = AsyncServer.from_uri(settings.gatekeeper_uri)
     log.info("gatekeeper.boot", uri=settings.gatekeeper_uri)
-    # One shared Hermes client so its per-conversation session cache survives
+    # One shared Sol client so its per-conversation rolling history survives
     # across connections — each Wyoming turn is its own connection (#142).
-    hermes = HermesClient(
-        settings.hermes_url,
-        settings.hermes_token,
-        fast_model=settings.fast_hermes_model,
-    )
-    await server.run(lambda r, w: GatekeeperHandler(r, w, _info(), hermes))
+    sol = SolClient(settings.engine_url, settings.engine_token)
+    await server.run(lambda r, w: GatekeeperHandler(r, w, _info(), sol))
 
 
 async def _serve() -> None:
