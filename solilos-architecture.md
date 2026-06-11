@@ -8,26 +8,39 @@ deployment layout (templates, images, install paths) see
 
 ## 1. Inference engine
 
-Ollama on the box (RTX 2000 Ada 16 GB).
+Ollama on the box (RTX 2000 Ada 16 GB). All three models stay resident
+(`OLLAMA_MAX_LOADED_MODELS=3`, ≈12 GB total at the 32k window) — the
+night-cron eviction of the fast model is structurally impossible.
 
 | Model | Role |
 |---|---|
-| `gemma4:12b` | Default / thorough reasoning |
-| `gemma4:e2b` | Fast / tool-heavy turns |
+| `gemma4:e2b` | Fast: household/voice and fast everyday turns |
+| `gemma4:12b` | Thorough: deep mode, admin, background crons |
+| `nomic-embed-text` | Embeddings (own runner, never competes for the gen slot) |
 
-**Model per profile, speed per turn** — post-#293 (§2) the **profile** pins the
-base model (household → `e2b`, admin → `12b`); the per-turn speed hint maps to
-`reasoning_effort`, not a per-session model swap:
+`gemma4:e4b` is deliberately NOT in the map. Box bench 2026-06-12
+(`solilos-chat/scripts/bench_models.py`, engine-shaped ~2.5k-token prompt with
+the injected entity registry, think=false, 3 runs):
 
-- **fast** (Schnell) → `reasoning_effort: none`: skips the thinking block (#222),
-  voice-latency budget, reliable HA tool-calls.
-- **thinking** (Gründlich) → `reasoning_effort: high`: surfaces a reasoning block
-  for complex turns.
+| Model | wall p50 | wall p95 | TTFT p50 | tool accuracy |
+|---|---|---|---|---|
+| e2b | 0.72 s | 1.04 s | 0.78 s | 18/18 |
+| e4b | 0.90 s | 1.39 s | 0.97 s | 18/18 |
+| 12b | 1.57 s | 2.51 s | 1.54 s | 18/18 |
 
-(Pre-#293 the speed hint swapped the model per session; that override is retired
-— the model is now profile-owned, the effort is the per-turn lever.)
+With the lean prompt all three pick entities perfectly, so e4b buys no
+measurable accuracy for +25% latency. Revisit only if e2b shows quality
+failures in trace data — e4b is the designated next candidate then.
 
-Context window: 131 072 tokens (`OLLAMA_CONTEXT_LENGTH=131072`).
+**Model and thinking are per-turn parameters** of the Sol Engine (the
+in-process agent core that replaced the Hermes gateways): household/voice
+turns run e2b with `think=false`; thorough turns run 12b with thinking.
+No gateway indirection, no per-session model binding.
+
+Context window: 32 768 tokens (`OLLAMA_CONTEXT_LENGTH=32768`). The earlier
+131k window existed only because the Hermes-era base prompt had grown to
+~25k tokens; the engine's ≤3k prompt leaves ~29k conversation room and the
+saved KV budget is what fits all three models on the GPU.
 
 Speculative decoding / MTP is not attainable on the current CUDA/GGUF stack;
 that decision is final (see repo history / #189).
