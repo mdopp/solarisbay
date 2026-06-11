@@ -139,9 +139,24 @@ class TimerScheduler:
             timeout = aiohttp.ClientTimeout(total=15)
             headers = {"Authorization": f"Bearer {self._hass_token}"}
             async with aiohttp.ClientSession(timeout=timeout) as client:
+                # The announce service requires a target; ring every satellite
+                # in the house (box-verified: a target-less call is a 400).
+                async with client.get(
+                    f"{self._hass_url}/api/states", headers=headers
+                ) as resp:
+                    resp.raise_for_status()
+                    states = await resp.json()
+                satellites = [
+                    s["entity_id"]
+                    for s in states
+                    if str(s.get("entity_id", "")).startswith("assist_satellite.")
+                ]
+                if not satellites:
+                    log.warn("engine.timer.no_satellites")
+                    return False
                 async with client.post(
                     f"{self._hass_url}/api/services/assist_satellite/announce",
-                    json={"message": text},
+                    json={"entity_id": satellites, "message": text},
                     headers=headers,
                 ) as resp:
                     return resp.status < 400
