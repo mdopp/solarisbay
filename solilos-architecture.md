@@ -51,103 +51,80 @@ not compete for the generation slot.
 
 ---
 
-## 2. Multi-profile Hermes (#293)
+## 2. The Sol Engine (Hermes fully replaced)
 
-Each persona is a **Hermes profile**, and Solilos runs **one gateway instance
-per profile** — both inside the **single `hermes` container** of the `solilos`
-ServiceBay service. A lean profile is the perf lever (benchmark #291/#292):
-~1.9–4k prompt + ~2–3s warm turns vs the default profile's ~28–30k / 25–80s.
+Decision 2026-06-11: Hermes was a generic multi-platform agent framework;
+Solilos needs a narrow, latency-critical household agent. Measured on the
+box, the Hermes household prefill was 12,689 tokens p50 (66% tool
+definitions) and the workaround stack (mutating trace proxy, 3-gateway
+construct, `.no-bundled-skills`, config-agent sidecar, 2,800-line
+post-deploy) grew with every feature. The system was not live, so Hermes
+was replaced **outright** — no strangler.
 
-### One container, two profile gateways (the s6-safe mechanism)
+The engine is a module inside `solilos-chat`
+(`src/solilos_chat/engine/`): one process owns turn, loop and capture.
 
-The hermes image runs an **s6-overlay** entrypoint. The container's CMD must be
-`args: [gateway, run]` (NO `command:` override, NO `-p` in the CMD): overriding
-`command:` with `hermes -p <profile> gateway run` bypasses the entrypoint, s6
-tries to exec `-p`, and the container crash-loops — that is the **#294 revert**
-(it took the live assistant down 2026-06-09). The validated mechanism instead
-runs **two gateways in the one container**:
+- **Agent loop** directly on Ollama `/api/chat` (streaming, tool dispatch,
+  ≤6 passes). Model + thinking are **per turn**; a "profile" is a
+  constructor call (`household` = e2b/no-think + registry, `sol-deep` =
+  12b/think, `admin` = 12b + operator prompt + `servicebay_admin` MCP) —
+  what used to be a container-and-port.
+- **Prompt assembly per profile**: soul (mtime-cached file) + skill
+  markdown + the **HA entity registry** (controllable domains,
+  `entity_id | name | area`, NO live state — HA Assist's own approach,
+  saves the list-entities pass) + per-session overlay. Household prefill:
+  ~2.1k tokens (was 12.7k, −84%, box-verified).
+- **Tools** are hand-written and token-lean: `ha_call_service` /
+  `ha_get_state` / `ha_list_entities`, `timer_set/list/cancel`,
+  `web_search`/`web_extract` (ddgs, Tavily optional), `notes_search` /
+  `notes_read` / `note_write` / `fact_store`. The notes tools are the
+  retrieval seam future Immich/CalDAV retrievers plug into (§3).
+- **Sessions** live in `solilos.db` (`engine_sessions`/`engine_messages`,
+  ownership a plain column — the `[uid:]` title-marker era is over).
+- **Native tracing**: every Ollama call recorded at the call site, same
+  ring/detail/`session_traces` shapes as the retired proxy; calls carry
+  the session id directly (no wall-clock correlation).
+- **Scheduler**: timers/alarms/reminders in `engine_timers`; firing rings
+  the Voice PE via HA `assist_satellite.announce` (target required —
+  box-verified). HA stays the device tool; the schedule lives here.
+- **Night crons** (daily-chronicle 23:59, problem-summarizer Mo 04:30,
+  chat-compactor 04:15) are code-defined jobs on the deep profile with
+  durable last-run stamps (`engine_cron_runs`) — idempotent by
+  construction; first boot baselines instead of back-running.
 
-- `household` is set as the **sticky default** (`hermes profile use household`),
-  so the container's bare `gateway run` serves it on `HERMES_API_PORT` (8642).
-- the `admin` gateway is **started alongside** it with
-  `hermes -p admin gateway start` (the `start` subcommand, fired from the
-  post-deploy after the restart). The image's
-  `/etc/cont-init.d/02-reconcile-profiles` init manages that gateway's own s6
-  slot, so it binds `HERMES_ADMIN_API_PORT` (8643) beside the household gateway
-  in the **same** container — box-confirmed s6-safe (2026-06-09).
+### Voice (the PE speaker path)
 
-| Profile | Gateway | Port | Model | Soul / skills / tools |
-|---|---|---|---|---|
-| `household` (Sol) | container default (`gateway run`, sticky-default profile) | 8642 | `gemma4:e2b` | resident soul, `.no-bundled-skills` + the ~5 household skills, holographic memory, HA toolset, `servicebay-mcp` + `gatekeeper-mcp` — **no admin MCP** |
-| `admin` (operator) | started in the same container (`hermes -p admin gateway start`) | 8643 | `gemma4:12b` | operator soul, `sol-admin-*` skills, `servicebay_admin` + `servicebay-mcp`, admin-gated |
+The Voice PE is an ESPHome device that speaks only to HA, so the path is
+**Speaker → HA Assist pipeline → Sol → HA → Speaker**. HA 2026.6's
+`openai_conversation` has no custom base_url; its **`ollama` integration**
+takes a free URL + Bearer api_key — so the engine exposes an
+**Ollama-compatible facade** (`/ollama/api/tags`, `/ollama/api/chat`) and
+is wired as the Assist conversation agent (`conversation.sol`, model
+`sol`). The post-deploy registers wyoming whisper/piper, creates the
+entry + conversation subentry and the "Sol" pipeline, sets it preferred
+and assigns the PE's pipeline select. The facade is stateless: HA owns
+the conversation history; the engine folds HA's prompt after its own
+system block and runs its tool loop server-side (HA never sees
+tool_calls). The **voice-gatekeeper** speaks the same facade
+(`stream:false`, rolling per-conversation history) for wyoming-satellite
+hardware.
 
-The `solilos` post-deploy **provisions each profile** (`hermes profile create`,
-then writes its `config.yaml` — model / `providers.ollama` / its own `api_server`
-port / toolsets / MCP / SOUL + drops `.no-bundled-skills`) instead of one global
-`config.yaml`. Each profile's config pins its **own** `api_server` port, so the
-two gateways bind distinct host ports without a race. This structurally fixes the
-#268 `servicebay_admin` leak (admin MCP lives only in the admin profile's config)
-and the #291 skills bloat (household loads ~5 skills, not 105).
+### Routing
 
-Each named profile is a separately-locked Hermes gateway: a named profile gets
-its own `/opt/data/profiles/<name>/gateway.lock` + `logs/gateways/<name>/lock`,
-so the two gateways coexist in the one container without the #271 `default`-lock
-deadlock (which was two *containers* fighting the same `default` lock).
+- Chat surface: pinned Zuhause + household topic → `household` (e2b);
+  "Sol Gründlich" persona / thorough preference → `sol-deep` (12b); the
+  `?persona=servicebay-maintenance` embed → `admin`, gated on
+  Remote-Groups∋admins at the router.
+- The admin profile is the only one carrying `servicebay_admin` (token
+  scopes read+lifecycle+mutate, no destroy/exec; minted by the post-deploy
+  into `<DATA_DIR>/solbay/sb-admin-token`, read lazily per connection).
+- Voice (facade) defaults to `sol`; an explicit "think harder" cue routes
+  the gatekeeper to `sol-deep`.
 
-### Shared data vs isolated profile state
-
-Both gateways run in the one container, mounting the **same** volumes, so they
-run "auf den gleichen Daten":
-
-| Data | Shared across both gateways? | Where |
-|---|---|---|
-| `solilos.db` (rooms / voice / domain, L3) | **shared** | `/var/lib/solilos` (`solilos-data`) |
-| Notes vault (L2) | **shared** | `/opt/data/notes` |
-| Chat attachments | **shared** | attachments volume |
-| HA + Ollama access | **shared** | container env (`HASS_URL`/`HASS_TOKEN`, Ollama) |
-| Hermes per-profile **memory** (holographic, L1), **skills**, soul, config | **isolated per profile** | `/opt/data/profiles/<name>/` (under the shared `hermes-data` volume) |
-
-So `solilos.db` + notes are read/written by **both** profiles, but each profile's
-holographic memory, skills, and soul are its own. **Holographic memory is
-household-scoped**: the household profile's `/opt/data/profiles/household/memory`
-is **not** shared with admin (the operator decision — admin must not see
-household facts), and vice-versa.
-
-### Routing (chat + voice → the right instance)
-
-- **solilos-chat proxy** picks the gateway per session/persona/admin-gate:
-  household chat + pinned Zuhause + every resident session → the household
-  gateway (`HERMES_URL`, 8642); the `?persona=servicebay-maintenance` admin
-  embed (#209) → the admin gateway (`HERMES_ADMIN_URL`, 8643), admin-gated. A
-  session is pinned to the gateway it was created on (Hermes session state is
-  per-gateway), and the #209/#229 admin gate holds at the router — a non-admin
-  is always routed to household, even presenting a known admin `session_id`.
-  Falls back to household when no admin gateway is configured.
-- **gatekeeper (voice)** → always the household gateway (residents speak to Sol,
-  never the admin profile); it carries no admin URL / admin port.
-- The #278 persona×speed dropdown selects a **profile**: Sol-fast / Sol-thinking
-  → household profile (the speed maps to per-turn reasoning_effort, below);
-  Admin → admin profile.
-
-### What the profile subsumes (#293 finalization)
-
-The household gateway's profile now **owns the soul + the base model**, so the
-chat proxy no longer injects a per-session **persona overlay** (the
-`personalities.py` `system_prompt` injection at create) or a per-session **model
-override** — those would fight the profile. The `personalities.py` catalog is
-kept for the dropdown labels; only the redundant *injection* is dropped. A
-session is created with an empty `system_prompt`/`model`, which lets the profile
-supply both.
-
-What the profile does **not** pin stays in the proxy, per turn / per session:
-
-- **speed → `reasoning_effort`** (#222/#278): "fast"/"thinking" → `none`/`high`,
-  chosen per turn (the profile pins the model, not the per-turn effort).
-- **topic binding** (#241/#242): a chat under a topic is still persisted as its
-  primary assignment + gets the `#topic/<slug>` context hint (the topic no
-  longer overrides model/persona — the profile owns those).
-- **pinned Zuhause** (#237), **`[Aktuelle Zeit]` per-turn injection** (#265),
-  **incognito `[temp:]` prefix + guard** (#246).
+What stays per turn in the chat server: speed → think (#222/#278), topic
+binding + `#topic/<slug>` hint (#241/#243), pinned Zuhause (#237),
+`[Aktuelle Zeit]` injection (#265), incognito guard (#246), compaction
+(#210 — per-turn hard cap + the nightly stale-chat pass).
 
 ---
 
