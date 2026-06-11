@@ -35,6 +35,7 @@ from solilos_chat import (
 )
 from solilos_chat.attachments import AttachmentStore, attach_to_messages
 from solilos_chat.context import STATIC_DEFAULT, ContextWindow
+from solilos_chat.engine.client import EngineError
 from solilos_chat.hermes import HermesClient, HermesError, _answer_from_messages
 from solilos_chat.logging import log
 
@@ -238,6 +239,7 @@ def build_app(
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
     notes_dir: str = "/opt/data/notes",
     trace_proxy_url: str = "http://127.0.0.1:11436",
+    trace_recorder: Any = None,
     residents: list[str] | None = None,
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
@@ -355,7 +357,7 @@ def build_app(
                 context_window=context_window.value,
                 threshold=compaction_threshold,
             )
-        except HermesError:
+        except (HermesError, EngineError):
             return session_id, False
         if new_id:
             return new_id, True
@@ -503,7 +505,25 @@ def build_app(
         if ephemeral:
             return
         try:
-            steps = await fetch_turn_steps(t0)
+            if trace_recorder is not None:
+                # Native engine tracing: records carry the session id, so the
+                # turn's steps are an exact filter — no time-window guessing.
+                steps = [
+                    {
+                        "model": rec.get("model"),
+                        "profile": rec.get("profile"),
+                        "wall_s": rec.get("wall_s"),
+                        "prompt_tokens": rec.get("prompt_tokens"),
+                        "completion_tokens": rec.get("completion_tokens"),
+                        "context_free": rec.get("context_free"),
+                        "finish_reason": rec.get("finish_reason"),
+                        "n_tools": rec.get("n_tools"),
+                        "detail_id": rec.get("id"),
+                    }
+                    for rec in trace_recorder.for_session(session_id, t0)
+                ]
+            else:
+                steps = await fetch_turn_steps(t0)
             if steps:
                 trace_store.persist_trace(
                     solilos_db_path, session_id, uuid.uuid4().hex, uid, steps
@@ -554,11 +574,19 @@ def build_app(
         return web.json_response({"ok": True, "steps": steps})
 
     async def trace_detail(request: web.Request) -> web.Response:
-        # Exact per-call content for one trace step (#307 panel → #305 detail):
-        # the browser can't reach the proxy port directly, so the chat server
-        # passes its `/__traces__/<id>` through. The detail store is the proxy's
-        # FIFO ring, so an old turn may 404 — the panel degrades to no modal.
+        # Exact per-call content for one trace step (#307 panel → #305 detail).
+        # Native engine tracing serves the detail in-process; the HTTP pass-
+        # through remains for the Hermes-era proxy topology. Either way the
+        # detail store is a FIFO ring, so an old turn may 404 — the panel
+        # degrades to no modal.
         detail_id = request.match_info["detail_id"]
+        if trace_recorder is not None:
+            detail = (
+                trace_recorder.detail(int(detail_id)) if detail_id.isdigit() else None
+            )
+            if detail is None:
+                return web.json_response({"error": "not found"}, status=404)
+            return web.json_response(detail)
         url = f"{trace_proxy_url.rstrip('/')}/__traces__/{detail_id}"
         timeout = aiohttp.ClientTimeout(total=5)
         try:
@@ -592,7 +620,7 @@ def build_app(
     async def list_toolsets(_request: web.Request) -> web.Response:
         try:
             toolsets = await hermes.list_toolsets()
-        except HermesError:
+        except (HermesError, EngineError):
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
@@ -803,7 +831,7 @@ def build_app(
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
             sessions = await hermes.list_sessions(uid)
-        except HermesError:
+        except (HermesError, EngineError):
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
@@ -842,7 +870,7 @@ def build_app(
                 )
             try:
                 session_id = await admin_gw.create_session(uid, soul, maintenance=True)
-            except HermesError:
+            except (HermesError, EngineError):
                 return web.json_response(
                     {"ok": False, "reason": "hermes_unavailable"}, status=502
                 )
@@ -862,7 +890,7 @@ def build_app(
         # per-session persona overlay that would fight it.
         try:
             session_id = await hermes.create_session(uid)
-        except HermesError:
+        except (HermesError, EngineError):
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
@@ -874,7 +902,7 @@ def build_app(
         session_id = request.match_info["session_id"]
         try:
             session = await hermes.get_session(session_id, uid)
-        except HermesError:
+        except (HermesError, EngineError):
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
@@ -896,7 +924,7 @@ def build_app(
         session_id = request.match_info["session_id"]
         try:
             ok = await hermes.delete_session(session_id)
-        except HermesError:
+        except (HermesError, EngineError):
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
@@ -1088,7 +1116,7 @@ def build_app(
             )
             persist_mentions(uid, session_id, text, ephemeral=ephemeral)
             reply = await client.chat(session_id, turn_text, images, effort)
-        except HermesError:
+        except (HermesError, EngineError):
             return web.json_response(
                 {"ok": False, "reason": "hermes_unavailable"}, status=502
             )
@@ -1243,7 +1271,7 @@ def build_app(
                 )
                 await _send_event(resp, "trace", trace)
                 await persist_turn_trace(uid, session_id, wall_t0, ephemeral=ephemeral)
-        except HermesError:
+        except (HermesError, EngineError):
             await _send_event(resp, "error", {"reason": "hermes_unavailable"})
         finally:
             cancels.pop(session_id, None)
@@ -1587,6 +1615,7 @@ async def serve(
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
     notes_dir: str = "/opt/data/notes",
     trace_proxy_url: str = "http://127.0.0.1:11436",
+    trace_recorder: Any = None,
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -1612,6 +1641,7 @@ async def serve(
         solilos_db_path=solilos_db_path,
         notes_dir=notes_dir,
         trace_proxy_url=trace_proxy_url,
+        trace_recorder=trace_recorder,
     )
     runner = web.AppRunner(app)
     await runner.setup()

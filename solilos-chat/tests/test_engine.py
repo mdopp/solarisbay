@@ -1,0 +1,336 @@
+"""Tests for the Sol Engine core: store, agent loop, tools, scheduler.
+
+The loop tests run against a scripted fake Ollama (no network): each call
+pops the next scripted result, so a tool-chain turn (tool_calls -> dispatch
+-> final answer) exercises the real loop, store and trace paths.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from solilos_chat.engine import scheduler, store
+from solilos_chat.engine.client import EngineClient, EngineProfile
+from solilos_chat.engine.ollama import ChatResult
+from solilos_chat.engine.registry import EntityRegistry
+from solilos_chat.engine.tools import Tool, Toolbox
+from solilos_chat.engine.tools.ha import build_ha_tools
+from solilos_chat.engine.trace import TraceRecorder
+
+_SCHEMA = """
+CREATE TABLE engine_sessions (
+  id            TEXT PRIMARY KEY,
+  owner_uid     TEXT NOT NULL,
+  title         TEXT NOT NULL DEFAULT '',
+  profile       TEXT NOT NULL DEFAULT 'household',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  ephemeral     INTEGER NOT NULL DEFAULT 0,
+  maintenance   INTEGER NOT NULL DEFAULT 0,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_activity TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE engine_messages (
+  session_id  TEXT NOT NULL,
+  seq         INTEGER NOT NULL,
+  role        TEXT NOT NULL,
+  content     TEXT NOT NULL DEFAULT '',
+  reasoning   TEXT,
+  tool_calls  TEXT,
+  images      TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (session_id, seq)
+);
+CREATE TABLE engine_timers (
+  id         TEXT PRIMARY KEY,
+  owner_uid  TEXT NOT NULL,
+  kind       TEXT NOT NULL DEFAULT 'timer',
+  label      TEXT NOT NULL DEFAULT '',
+  fire_at    TEXT NOT NULL,
+  rrule      TEXT,
+  session_id TEXT,
+  status     TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+
+@pytest.fixture
+def db(tmp_path) -> str:
+    path = str(tmp_path / "solilos.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    conn.close()
+    return path
+
+
+@pytest.fixture
+def soul(tmp_path) -> str:
+    path = tmp_path / "SOUL.md"
+    path.write_text("Du bist Sol.", encoding="utf-8")
+    return str(path)
+
+
+class FakeOllama:
+    """Pops one scripted ChatResult per call; records what it was sent."""
+
+    def __init__(self, results: list[ChatResult]):
+        self.results = list(results)
+        self.calls: list[dict] = []
+
+    async def stream(self, model, messages, tools=None, think=False):
+        self.calls.append(
+            {"model": model, "messages": messages, "tools": tools, "think": think}
+        )
+        result = self.results.pop(0)
+        for chunk in result.content.split(" "):
+            if chunk:
+                yield "delta", chunk + " "
+        if result.thinking:
+            yield "thinking", result.thinking
+        yield "done", result
+
+
+def _client(db, soul, results, tools=None) -> tuple[EngineClient, FakeOllama]:
+    fake = FakeOllama(results)
+    client = EngineClient(
+        EngineProfile(
+            name="household",
+            model="gemma4:e2b",
+            soul_path=soul,
+            toolbox=Toolbox(tools or []),
+        ),
+        db_path=db,
+        ollama=fake,  # duck-typed
+        recorder=TraceRecorder(),
+        context_window=32768,
+    )
+    return client, fake
+
+
+# -- store ---------------------------------------------------------------
+
+
+def test_store_session_roundtrip(db):
+    sid = store.create_session(db, "anna", title="Einkauf")
+    assert store.session_owner(db, sid) == "anna"
+    store.append_message(db, sid, "user", "Hallo")
+    store.append_message(db, sid, "assistant", "Hi!")
+    fetched = store.get_session(db, sid, "anna")
+    assert fetched["title"] == "Einkauf"
+    assert [m["role"] for m in fetched["messages"]] == ["user", "assistant"]
+    # owner scope: a wrong uid sees nothing
+    assert store.get_session(db, sid, "bert") is None
+    listed = store.list_sessions(db, "anna")
+    assert listed[0]["id"] == sid
+    assert listed[0]["preview"] == "Hallo"
+
+
+def test_store_ephemeral_not_listed(db):
+    store.create_session(db, "anna", ephemeral=True)
+    assert store.list_sessions(db, "anna") == []
+
+
+def test_store_overlay_and_usage(db):
+    sid = store.create_session(db, "anna")
+    store.set_overlay(db, sid, "Fortsetzung: ...")
+    assert store.get_overlay(db, sid) == "Fortsetzung: ..."
+    store.add_usage(db, sid, 100, 20)
+    store.add_usage(db, sid, 50, 10)
+    session = store.get_session(db, sid, "anna")
+    assert session["input_tokens"] == 150
+    assert session["output_tokens"] == 30
+
+
+# -- agent loop ----------------------------------------------------------
+
+
+async def test_plain_turn_streams_and_persists(db, soul):
+    client, fake = _client(
+        db,
+        soul,
+        [ChatResult(content="Hallo zurück!", prompt_tokens=50, completion_tokens=5)],
+    )
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Hallo")]
+    kinds = [e["type"] for e in events]
+    assert kinds[0] == "assistant.delta"
+    assert kinds[-1] == "run.completed"
+    final = events[-1]["data"]["messages"][-1]
+    assert "Hallo" in final["content"]
+    # system prompt = soul; history persisted
+    assert fake.calls[0]["messages"][0]["role"] == "system"
+    assert "Du bist Sol." in fake.calls[0]["messages"][0]["content"]
+    session = await client.get_session(sid, "anna")
+    assert [m["role"] for m in session["messages"]] == ["user", "assistant"]
+    assert session["input_tokens"] == 50
+
+
+async def test_tool_chain_turn(db, soul):
+    seen = {}
+
+    async def handler(args):
+        seen.update(args)
+        return '{"success": true}'
+
+    tool = Tool(
+        name="ha_call_service",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    results = [
+        ChatResult(
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "ha_call_service",
+                        "arguments": {
+                            "domain": "light",
+                            "service": "turn_on",
+                            "entity_id": "light.buero",
+                        },
+                    }
+                }
+            ],
+            prompt_tokens=60,
+            completion_tokens=8,
+        ),
+        ChatResult(
+            content="Das Bürolicht ist an.", prompt_tokens=70, completion_tokens=6
+        ),
+    ]
+    client, fake = _client(db, soul, results, tools=[tool])
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Licht im Büro an")]
+    kinds = [e["type"] for e in events]
+    assert "tool.started" in kinds and "tool.completed" in kinds
+    assert seen["entity_id"] == "light.buero"
+    # the second pass got the tool result fed back
+    roles = [m["role"] for m in fake.calls[1]["messages"]]
+    assert "tool" in roles
+    # two trace records, tagged with the session
+    steps = client.recorder.for_session(sid, 0.0)
+    assert len(steps) == 2
+    assert steps[0]["finish_reason"] == "tool_calls"
+    assert steps[1]["finish_reason"] == "stop"
+
+
+async def test_chat_returns_final_answer(db, soul):
+    client, _ = _client(
+        db, soul, [ChatResult(content="42", prompt_tokens=10, completion_tokens=1)]
+    )
+    sid = await client.create_session("anna")
+    assert await client.chat(sid, "Antwort?") == "42"
+
+
+async def test_overlay_rides_system_prompt(db, soul):
+    client, fake = _client(db, soul, [ChatResult(content="ok")])
+    sid = await client.create_session("anna", "Fortsetzung einer früheren Unterhaltung")
+    await client.chat(sid, "weiter")
+    system = fake.calls[0]["messages"][0]["content"]
+    assert "Fortsetzung einer früheren" in system
+
+
+# -- HA tools ------------------------------------------------------------
+
+
+async def test_ha_blocked_domain_rejected():
+    tools = {t.name: t for t in build_ha_tools("http://ha", "token")}
+    out = await tools["ha_call_service"].handler(
+        {"domain": "shell_command", "service": "run", "entity_id": "x.y"}
+    )
+    assert "not allowed" in out
+    out = await tools["ha_call_service"].handler(
+        {"domain": "../../api", "service": "turn_on", "entity_id": "x.y"}
+    )
+    assert "invalid" in out
+
+
+# -- registry ------------------------------------------------------------
+
+
+async def test_registry_prompt_block(monkeypatch):
+    reg = EntityRegistry("http://ha", "token")
+
+    async def fake_states():
+        return [
+            {
+                "entity_id": "light.buero",
+                "attributes": {"friendly_name": "Bürolicht", "area": "Büro"},
+            },
+            {"entity_id": "sensor.temp", "attributes": {"friendly_name": "Temp"}},
+        ]
+
+    monkeypatch.setattr(reg, "_fetch_states", fake_states)
+    block = await reg.prompt_block()
+    assert "light.buero | Bürolicht | Büro" in block
+    assert "sensor.temp" not in block  # not a controllable domain
+
+
+# -- scheduler -----------------------------------------------------------
+
+
+def test_timer_crud(db):
+    timer = scheduler.add_timer(db, "anna", duration_s=600, label="Pizza")
+    listed = scheduler.list_timers(db, "anna")
+    assert listed[0]["label"] == "Pizza"
+    assert scheduler.list_timers(db, "bert") == []
+    assert scheduler.cancel_timer(db, "anna", timer["id"]) is True
+    assert scheduler.list_timers(db, "anna") == []
+
+
+async def test_timer_fires_and_announces(db, monkeypatch):
+    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    scheduler.add_timer(db, "anna", fire_at=past, label="Tee")
+    sched = scheduler.TimerScheduler(db, "http://ha", "token")
+    announced = []
+
+    async def fake_announce(timer):
+        announced.append(timer["label"])
+        return True
+
+    monkeypatch.setattr(sched, "_announce", fake_announce)
+    await sched._fire_due()
+    assert announced == ["Tee"]
+    with sqlite3.connect(db) as conn:
+        status = conn.execute("SELECT status FROM engine_timers").fetchone()[0]
+    assert status == "fired"
+
+
+# -- trace shape ---------------------------------------------------------
+
+
+def test_trace_record_shape():
+    rec = TraceRecorder()
+    record = rec.record(
+        session_id="s1",
+        profile="household",
+        model="gemma4:e2b",
+        messages=[
+            {"role": "system", "content": "x" * 400},
+            {"role": "user", "content": "y" * 100},
+        ],
+        tools=[{"type": "function", "function": {"name": "t1"}}],
+        content="answer",
+        thinking="",
+        tool_calls=[],
+        prompt_tokens=125,
+        completion_tokens=10,
+        wall_s=1.5,
+        context_window=32768,
+    )
+    assert record["prompt_tokens"] == 125
+    assert record["context_free"] == 32768 - 125
+    assert record["tools"][0]["name"] == "t1"
+    # block split sums to the ground-truth total
+    assert sum(record["blocks_tok"].values()) + record["tools_tok"] == 125
+    detail = rec.detail(record["id"])
+    assert detail["response"]["final"] == "answer"
+    assert json.dumps(detail)  # JSON-serialisable end to end

@@ -39,6 +39,10 @@ class Settings:
     solilos_db_path: str
     notes_dir: str
     trace_proxy_url: str
+    hass_url: str
+    hass_token: str
+    tavily_api_key: str
+    admin_soul_path: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -137,6 +141,17 @@ class Settings:
             # the turn window to persist the per-message trace (#306). Defaults
             # match the proxy's TRACE_PROXY_HOST/PORT (127.0.0.1:11436).
             trace_proxy_url=os.environ.get("TRACE_PROXY_URL", "http://127.0.0.1:11436"),
+            # The Sol Engine's direct Home Assistant access: device control
+            # tools + the prompt-injected entity registry. Same long-lived
+            # token the Hermes container used to hold.
+            hass_url=os.environ.get("HASS_URL", "").strip(),
+            hass_token=os.environ.get("HASS_TOKEN", "").strip(),
+            # Web search backend (the same Tavily key Hermes used). Empty =>
+            # the web tools are absent from the toolbox.
+            tavily_api_key=os.environ.get("TAVILY_API_KEY", "").strip(),
+            # The operator persona's soul for the admin profile; falls back to
+            # the household soul when unset.
+            admin_soul_path=os.environ.get("ADMIN_SOUL_PATH", "").strip(),
         )
 
 

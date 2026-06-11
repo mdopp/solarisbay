@@ -12,6 +12,9 @@ license = { text = "MIT" }
 authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
 dependencies = [
   "aiohttp>=3.9",
+  # Keyless web-search backend for the engine's web_search tool (the same
+  # DuckDuckGo client the Hermes-era post-deploy installed).
+  "ddgs>=9",
 ]
 
 [project.optional-dependencies]
