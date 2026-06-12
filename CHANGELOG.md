@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.10.0](https://github.com/mdopp/solbay/compare/v0.9.0...v0.10.0) (2026-06-12)
+
+
+### Features
+
+* **chat:** add the Sol Engine core replacing the Hermes gateways ([3542115](https://github.com/mdopp/solbay/commit/35421153b8b93559d4c004e51f0a3df585520596))
+* **chat:** complete the Sol Engine — facade, crons, admin MCP, Hermes retired ([34da56f](https://github.com/mdopp/solbay/commit/34da56f8f0a3e9eea1cf368e1d7fdd51fa4c15cb))
+* **chat:** decouple everyday-chat model preference from persona via settings toggle ([eb711e3](https://github.com/mdopp/solbay/commit/eb711e3a255e38e0ac27038d5e895812e79872f0))
+* **chat:** move the soul to the chat-owned volume with direct panel writes ([cebeca8](https://github.com/mdopp/solbay/commit/cebeca84c384cc5c5631fd4e3024988d7a0708fd))
+* **db:** add engine cron run stamps table ([33a8ab4](https://github.com/mdopp/solbay/commit/33a8ab4dd176b534d9406d6fa5cef2bef7633f9a))
+* **db:** add engine session, message and timer tables ([08925df](https://github.com/mdopp/solbay/commit/08925df14556a795044961944cf96108ed23b807))
+* **gatekeeper:** speak the engine facade instead of Hermes sessions ([79fd562](https://github.com/mdopp/solbay/commit/79fd5629a7ab679fb7d57bbb07efc553c4ee8be1))
+* Sol Engine Phase 0+1 — native agent core replaces the Hermes gateways ([e492e1c](https://github.com/mdopp/solbay/commit/e492e1c0573cea35b6829bc5e032ea0e0562194c))
+* **template:** engine-only solilos pod with HA voice-pipeline wiring ([cfa4eb0](https://github.com/mdopp/solbay/commit/cfa4eb0a3a6fbc7af2cb15d046e4dc65af186f28))
+* **template:** keep all three models resident with a right-sized 32k context ([9ecd96d](https://github.com/mdopp/solbay/commit/9ecd96d65e972c736d89e75b79e45c44b3b7e02f))
+* **template:** wire the chat container for the Sol Engine ([08bd478](https://github.com/mdopp/solbay/commit/08bd478c20907a0adf866679a79f5226d73401cd))
+
+
+### Bug Fixes
+
+* **chat:** target every assist satellite when a timer announces ([d25643c](https://github.com/mdopp/solbay/commit/d25643c4e3ecfa89a0c7be1122774dd4aca78189))
+* **template:** align the GPU render-path defaults with the v7 residency values ([a8364b5](https://github.com/mdopp/solbay/commit/a8364b51aae8831042e2bd5730acfff4d82b67b4))
+* **template:** box-verified voice-wiring fixes and an abort-path guard ([f303bbe](https://github.com/mdopp/solbay/commit/f303bbefd9a699c6d2047f5486701814d8f2f223))
+* **template:** pin the pipeline to the wyoming engines and both PE selects ([4279b65](https://github.com/mdopp/solbay/commit/4279b65e55383d71e6656574942d4554c44b9939))
+* **template:** retry async HA setup races in the voice wiring ([1459462](https://github.com/mdopp/solbay/commit/14594621aea1e95944a2c12979eaa7dc217beffb))
+
 ## [0.9.0](https://github.com/mdopp/solbay/compare/v0.8.1...v0.9.0) (2026-06-10)
 
 
