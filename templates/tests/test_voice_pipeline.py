@@ -124,6 +124,7 @@ def test_conversation_agent_idempotent_when_entity_exists(pd, monkeypatch):
 class _FakeWS:
     created: list[dict] = []
     preferred: list[str] = []
+    updated: list[dict] = []
     pipelines: list[dict] = []
 
     def __init__(self, token):
@@ -139,6 +140,9 @@ class _FakeWS:
         if t == "assist_pipeline/pipeline/set_preferred":
             _FakeWS.preferred.append(payload["pipeline_id"])
             return {}
+        if t == "assist_pipeline/pipeline/update":
+            _FakeWS.updated.append(payload)
+            return payload
         raise AssertionError(f"unexpected ws cmd {t}")
 
     def close(self):
@@ -165,6 +169,102 @@ def test_pipeline_created_and_preferred(pd, monkeypatch):
     assert create["language"] == "de"
     assert _FakeWS.preferred == ["p1"]
     assert assigned
+
+
+def test_pipeline_prefers_martin_bridge(pd, monkeypatch):
+    # GPU boxes carry the wyoming_openai bridge (servicebay#1815): the
+    # pipeline rides tts.openai_streaming with plain `de` + voice `kokoro`.
+    _FakeWS.created, _FakeWS.preferred, _FakeWS.pipelines = [], [], []
+
+    def find(token, prefix, needle=""):
+        if prefix == "stt.":
+            return "stt.faster_whisper"
+        if prefix == "tts." and needle == "openai":
+            return "tts.openai_streaming"
+        if prefix == "tts.":
+            return "tts.piper"
+        return ""
+
+    monkeypatch.setattr(pd, "_find_entity", find)
+    monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    assert pd.ensure_assist_pipeline("tok", "conversation.sol") is True
+    create = _FakeWS.created[0]
+    assert create["tts_engine"] == "tts.openai_streaming"
+    assert create["tts_language"] == "de"
+    assert create["tts_voice"] == "kokoro"
+
+
+def test_pipeline_piper_fallback_keeps_regional_language(pd, monkeypatch):
+    _FakeWS.created, _FakeWS.preferred, _FakeWS.pipelines = [], [], []
+
+    def find(token, prefix, needle=""):
+        if prefix == "stt.":
+            return "stt.faster_whisper"
+        if prefix == "tts." and needle == "openai":
+            return ""
+        if prefix == "tts.":
+            return "tts.piper"
+        return ""
+
+    monkeypatch.setattr(pd, "_find_entity", find)
+    monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    assert pd.ensure_assist_pipeline("tok", "conversation.sol") is True
+    create = _FakeWS.created[0]
+    assert create["tts_engine"] == "tts.piper"
+    assert create["tts_language"] == "de_DE"
+    assert create["tts_voice"] is None
+
+
+def test_existing_pipeline_converges_onto_martin(pd, monkeypatch):
+    # A box wired with piper before the Martin units landed gets its
+    # pipeline updated to the bridge entity on the next deploy.
+    _FakeWS.created, _FakeWS.preferred = [], []
+    _FakeWS.updated = []
+    _FakeWS.pipelines = [
+        {
+            "name": "Sol",
+            "id": "p-old",
+            "tts_engine": "tts.piper",
+            "tts_language": "de_DE",
+            "tts_voice": None,
+            "conversation_engine": "conversation.sol",
+            "conversation_language": "de",
+            "language": "de",
+            "stt_engine": "stt.faster_whisper",
+            "stt_language": "de",
+            "wake_word_entity": None,
+            "wake_word_id": None,
+        }
+    ]
+
+    def find(token, prefix, needle=""):
+        if prefix == "stt.":
+            return "stt.faster_whisper"
+        if prefix == "tts." and needle == "openai":
+            return "tts.openai_streaming"
+        if prefix == "tts.":
+            return "tts.piper"
+        return ""
+
+    class _WS(_FakeWS):
+        def cmd(self, payload):
+            if payload["type"] == "assist_pipeline/pipeline/update":
+                _FakeWS.updated.append(payload)
+                return payload
+            return super().cmd(payload)
+
+    monkeypatch.setattr(pd, "_find_entity", find)
+    monkeypatch.setattr(pd, "HAWebSocket", _WS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    assert pd.ensure_assist_pipeline("tok", "conversation.sol") is True
+    assert _FakeWS.created == []
+    upd = _FakeWS.updated[0]
+    assert upd["tts_engine"] == "tts.openai_streaming"
+    assert upd["tts_language"] == "de"
+    assert upd["tts_voice"] == "kokoro"
+    assert _FakeWS.preferred == ["p-old"]
 
 
 def test_pipeline_idempotent_on_name(pd, monkeypatch):

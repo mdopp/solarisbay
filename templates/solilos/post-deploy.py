@@ -404,6 +404,14 @@ def wait_for_chat(chat_port: str, timeout_secs: int = 120) -> bool:
     return False
 
 
+def _port_open(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def _flow_create(
     token: str, handler: str, steps: list[dict[str, object]]
 ) -> tuple[str, dict | None]:
@@ -700,8 +708,14 @@ def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
         stt_entity = _find_entity(token, "stt.", "whisper") or _find_entity(
             token, "stt.", "wyoming"
         )
-        tts_entity = _find_entity(token, "tts.", "piper") or _find_entity(
-            token, "tts.", "wyoming"
+        # Sol's Martin voice when its bridge entity exists (GPU boxes,
+        # servicebay#1815); piper otherwise. The two differ in language/
+        # voice fields: the bridge announces plain `de` + voice `kokoro`,
+        # piper needs the regional `de_DE` (a bare `de` 500s announces).
+        tts_entity = (
+            _find_entity(token, "tts.", "openai")
+            or _find_entity(token, "tts.", "piper")
+            or _find_entity(token, "tts.", "wyoming")
         )
         if stt_entity and tts_entity:
             break
@@ -731,6 +745,16 @@ def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
             ),
             None,
         )
+        martin = "openai" in tts_entity
+        tts_fields = {
+            "tts_engine": tts_entity,
+            # The Martin bridge announces plain `de` + voice `kokoro`; wyoming
+            # piper announces regional voice codes — there a bare "de" makes
+            # every announce/TTS call 500 with "Language 'de' not supported"
+            # (box-verified 2026-06-12).
+            "tts_language": "de" if martin else "de_DE",
+            "tts_voice": "kokoro" if martin else None,
+        }
         if existing is None:
             created = ws.cmd(
                 {
@@ -741,12 +765,7 @@ def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
                     "conversation_language": "de",
                     "stt_engine": stt_entity,
                     "stt_language": "de",
-                    "tts_engine": tts_entity,
-                    # Wyoming piper announces regional voice codes — a bare
-                    # "de" makes every announce/TTS call 500 with "Language
-                    # 'de' not supported" (box-verified 2026-06-12).
-                    "tts_language": "de_DE",
-                    "tts_voice": None,
+                    **tts_fields,
                     "wake_word_entity": None,
                     "wake_word_id": None,
                 }
@@ -755,7 +774,36 @@ def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
             jlog("info", "voice", "created Sol assist pipeline", id=pipeline_id)
         else:
             pipeline_id = existing.get("id")
-            jlog("info", "voice", "Sol assist pipeline already present")
+            # Converge an existing pipeline onto the preferred TTS (a GPU box
+            # may have been wired with piper before the Martin units landed).
+            if existing.get("tts_engine") != tts_entity:
+                upd = {
+                    k: existing.get(k)
+                    for k in (
+                        "conversation_engine",
+                        "conversation_language",
+                        "language",
+                        "name",
+                        "stt_engine",
+                        "stt_language",
+                        "tts_engine",
+                        "tts_language",
+                        "tts_voice",
+                        "wake_word_entity",
+                        "wake_word_id",
+                    )
+                }
+                upd.update(tts_fields)
+                ws.cmd(
+                    {
+                        "type": "assist_pipeline/pipeline/update",
+                        "pipeline_id": pipeline_id,
+                        **upd,
+                    }
+                )
+                jlog("info", "voice", "Sol pipeline TTS converged", tts=tts_entity)
+            else:
+                jlog("info", "voice", "Sol assist pipeline already present")
         if pipeline_id:
             ws.cmd(
                 {
@@ -814,6 +862,10 @@ def wire_voice_pipeline(token: str, chat_port: str, api_key: str) -> None:
         return
     ensure_wyoming_entry(token, "whisper", "127.0.0.1", 10300)
     ensure_wyoming_entry(token, "piper", "127.0.0.1", 10200)
+    # Sol's Martin voice (servicebay#1815): the wyoming_openai bridge only
+    # runs on GPU boxes — register it when it listens, skip silently when not.
+    if _port_open("127.0.0.1", 10203):
+        ensure_wyoming_entry(token, "openai", "127.0.0.1", 10203)
     if not wait_for_chat(chat_port):
         jlog("warn", "voice", "engine facade not up — conversation agent skipped")
         return
