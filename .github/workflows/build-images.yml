@@ -17,12 +17,15 @@ on:
       - 'voice-gatekeeper/**'
       - 'database/**'
       - 'solilos-chat/**'
+      - 'tts-martin/**'
+      - 'tts-martin/**'
       - '.github/workflows/build-images.yml'
   pull_request:
     paths:
       - 'voice-gatekeeper/**'
       - 'database/**'
       - 'solilos-chat/**'
+      - 'tts-martin/**'
       - '.github/workflows/build-images.yml'
   workflow_dispatch:
     inputs:
@@ -54,6 +57,9 @@ jobs:
           - image: solilos-schema-init
             context: database
             description: "Solilos schema-init sidecar — runs alembic upgrade head against the SolBay pod's local SQLite (solilos.db) on every pod start. Idempotent."
+          - image: solilos-tts
+            context: tts-martin
+            description: "Sol's voice — Kokoro-82M ONNX German single speaker Martin (Apache-2.0, vendored from Godelaune/Kokoro-82M-ONNX-German-Martin with the model baked in). OpenAI-compatible /v1/audio/speech on :8881; KOKORO_ONNX_PROVIDER=cuda puts the 82M model on the GPU."
           - image: solilos-chat
             context: solilos-chat
             inject_version: true
