@@ -244,6 +244,38 @@ def pull_model(ollama_url: str, model: str, stall_sec: int) -> bool:
     return True
 
 
+def warm_load_model(ollama_url: str, model: str, timeout_sec: int = 180) -> bool:
+    """Load `model` into VRAM with a 1-token generate so the first real turn
+    after a deploy is warm. Every (re)deploy restarts the ollama unit and
+    drops all residents — without this, the first voice turn lands on a cold
+    model and the PE gives up before the answer arrives (box-observed
+    2026-06-12: 9-66s intent stage, "blinkt nur blau"). Best-effort."""
+    body = json.dumps(
+        {"model": model, "prompt": "Hi", "stream": False, "options": {"num_predict": 1}}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{ollama_url}/api/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        t0 = time.time()
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            ok = 200 <= resp.status < 300
+        jlog(
+            "info",
+            "ollama:warm",
+            "model warm-loaded",
+            model=model,
+            seconds=round(time.time() - t0, 1),
+        )
+        return ok
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+        jlog("warn", "ollama:warm", "warm-load failed", model=model, error=str(e))
+        return False
+
+
 def register_http_check(sb_api: str, sb_token: str, ollama_url: str) -> None:
     """Best-effort: a non-200 here doesn't block the install."""
     headers = {}
@@ -673,6 +705,11 @@ def main() -> int:
                 % (port, embed_model),
                 model=embed_model,
             )
+
+    # Warm-load the chat models so the first post-deploy turn doesn't pay
+    # the cold reload (the fast/voice model first — it answers the PE).
+    for warm in [m for m in (*extra_models, model) if m]:
+        warm_load_model(ollama_url, warm)
 
     register_http_check(sb_api, sb_token, ollama_url)
 
