@@ -69,17 +69,23 @@ _TOOL_DISCIPLINE = (
 )
 
 # A present-tense German device-state assertion ("… ist an", "… ist aus",
-# "… ist eingeschaltet", "… läuft", "… ist gesperrt"). When the model emits one
-# of these as its final answer WITHOUT having called a tool this turn, it is
-# fabricating a result — the clarify→"Ja."→empty-tool_calls path (#356) that
-# survives low-temp + the discipline rule. Detection is German on purpose: the
-# hot path runs German, and the false-positive surface (a turn that merely
-# quotes a state read back from a tool) is excluded by the "no tool ran this
-# turn" gate, not by the text.
+# "… ist eingeschaltet", "… läuft", "… ist gesperrt") OR a perfect-tense action
+# claim ("habe das Licht eingeschaltet", "Das Licht wurde ausgeschaltet"). When
+# the model emits one of these as its final answer WITHOUT having called a tool
+# this turn, it is fabricating a result — the clarify→"Ja."→empty-tool_calls
+# path (#356) that survives low-temp + the discipline rule. Detection is German
+# on purpose: the hot path runs German, and the false-positive surface (a turn
+# that merely quotes a state read back from a tool) is excluded by the "no tool
+# ran this turn" gate, not by the text. The participle anchor (ge…schaltet) only
+# fires on a *completed* action, so an infinitive question ("Soll ich das Licht
+# einschalten?") or a future intent ("ich schalte gleich …") does not match.
 _DEVICE_CLAIM = re.compile(
     r"\bist\s+(an|aus|ein(geschaltet)?|aus(geschaltet)?|"
     r"gesperrt|entsperrt|gestartet|gestoppt|geschlossen|geöffnet|offen|zu)\b"
-    r"|\bist\s+jetzt\b|\bläuft\b|\bhabe\s+(ich\s+)?(an|aus|ein)geschaltet\b",
+    r"|\bist\s+jetzt\b|\bläuft\b"
+    # perfect-tense action: habe/hat/haben … (ein|aus|an)geschaltet, with an
+    # optional intervening accusative object, or the passive "wurde … geschaltet".
+    r"|\b(habe|hat|haben|wurde|wurden)\b[\wäöüß ]*?\b(ein|aus|an)geschaltet\b",
     re.IGNORECASE,
 )
 

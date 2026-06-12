@@ -14,7 +14,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from solilos_chat.engine import scheduler, store
-from solilos_chat.engine.client import EngineClient, EngineProfile
+from solilos_chat.engine.client import (
+    EngineClient,
+    EngineProfile,
+    _is_fabricated_device_claim,
+)
 from solilos_chat.engine.ollama import ChatResult
 from solilos_chat.engine.registry import EntityRegistry
 from solilos_chat.engine.tools import Tool, Toolbox
@@ -302,6 +306,62 @@ async def test_fabricated_device_claim_forces_tool_call(db, soul):
     tool_call_row, final_row = rows[1], rows[3]
     assert tool_call_row[1] == "" and tool_call_row[2]  # empty content, has tool_calls
     assert final_row[1] == "Das Sofa-Licht ist an." and final_row[2] is None
+
+
+async def test_perfect_tense_action_claim_forces_tool_call(db, soul):
+    """#360: 'Ich habe das Licht eingeschaltet' — the accusative-object perfect
+    form #356's regex missed. With no tool_calls it must trip the guard and
+    force the tool pass, same as the present-tense 'ist an' form."""
+    dispatched = []
+
+    async def handler(args):
+        dispatched.append(args)
+        return '{"success": true}'
+
+    tool = Tool(
+        name="ha_call_service",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    results = [
+        ChatResult(content="Ich habe das Licht eingeschaltet.", completion_tokens=6),
+        ChatResult(
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "ha_call_service",
+                        "arguments": {
+                            "domain": "light",
+                            "service": "turn_on",
+                            "entity_id": "light.dimmer_2_5",
+                        },
+                    }
+                }
+            ],
+            completion_tokens=8,
+        ),
+        ChatResult(content="Ich habe das Licht eingeschaltet.", completion_tokens=6),
+    ]
+    client, _ = _client(db, soul, results, tools=[tool])
+    sid = await client.create_session("household")
+    events = [e async for e in client.chat_stream(sid, "Ja.")]
+    kinds = [e["type"] for e in events]
+    assert "tool.started" in kinds and "tool.completed" in kinds
+    assert dispatched and dispatched[0]["entity_id"] == "light.dimmer_2_5"
+
+
+def test_device_claim_matches_perfect_and_passive_forms():
+    """#360: the accusative-object perfect and the passive form trip the guard;
+    an infinitive question and a future intent do not (no completed-action
+    participle)."""
+    assert _is_fabricated_device_claim("Ich habe das Licht eingeschaltet.")
+    assert _is_fabricated_device_claim("habe das Sofalicht angeschaltet")
+    assert _is_fabricated_device_claim("Ich habe den Fernseher ausgeschaltet.")
+    assert _is_fabricated_device_claim("Das Licht wurde eingeschaltet.")
+    assert not _is_fabricated_device_claim("Soll ich das Licht einschalten?")
+    assert not _is_fabricated_device_claim("Ich schalte gleich das Licht an.")
+    assert not _is_fabricated_device_claim("Welches Licht soll ich anschalten?")
 
 
 async def test_claim_passes_through_without_tools(db, soul):
