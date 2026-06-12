@@ -115,6 +115,9 @@ class EngineProfile:
     # one such reply in HA's history self-reinforces (box A/B 2026-06-12).
     temperature: float | None = None
     toolbox: Toolbox = field(default_factory=lambda: Toolbox([]))
+    # Guest profile (#353): a turn runs statelessly — nothing is written to the
+    # store, so no guest session, history or fact survives the conversation.
+    ephemeral: bool = False
 
 
 class EngineClient:
@@ -143,6 +146,10 @@ class EngineClient:
     @property
     def profile_name(self) -> str:
         return self._profile.name
+
+    @property
+    def ephemeral(self) -> bool:
+        return self._profile.ephemeral
 
     # -- session surface (HermesClient-compatible) --------------------------
 

@@ -17,7 +17,7 @@ async def _run() -> None:
     context_window = await build_context_window(
         settings.ollama_url, settings.context_window_override
     )
-    household, deep, admin, recorder, bus = build_engine_clients(
+    household, deep, admin, guest, recorder, bus = build_engine_clients(
         db_path=settings.solilos_db_path,
         ollama_url=settings.ollama_url,
         fast_model=settings.fast_model,
@@ -50,6 +50,7 @@ async def _run() -> None:
         hermes=household,
         hermes_admin=admin,
         hermes_deep=deep,
+        hermes_guest=guest,
         remote_user_header=settings.remote_user_header,
         default_uid=settings.default_uid,
         remote_groups_header=settings.remote_groups_header,

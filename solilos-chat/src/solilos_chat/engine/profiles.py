@@ -7,8 +7,11 @@ deep      — thorough model, thinks by default, same household toolbox + the
 admin     — thorough model + the admin soul + the operator skill pack as
             prompt, with the `servicebay_admin` MCP toolbox (read+lifecycle+
             mutate scopes — Phase 3).
+guest     — fast model, restricted toolbox (HA control/state + web Q&A, no
+            notes/timers/admin), and ephemeral: a guest turn writes nothing to
+            the store, so nothing about a guest survives the conversation (#353).
 
-All three share one store, one Ollama client, one trace recorder — a turn's
+They share one store, one Ollama client, one trace recorder — a turn's
 profile decides prompt + model + tools, nothing else.
 """
 
@@ -70,20 +73,30 @@ def build_engine_clients(
     tavily_api_key: str = "",
     notes_dir: str = "",
     context_window: int | None = None,
-) -> tuple[EngineClient, EngineClient, EngineClient, TraceRecorder, SessionBus]:
-    """Returns (household, deep, admin) clients + the shared recorder + bus."""
+) -> tuple[
+    EngineClient, EngineClient, EngineClient, EngineClient, TraceRecorder, SessionBus
+]:
+    """Returns (household, deep, admin, guest) clients + the recorder + bus."""
     ollama = OllamaChat(ollama_url)
     recorder = TraceRecorder()
     bus = SessionBus()
     registry = EntityRegistry(hass_url, hass_token)
 
-    household_tools: list[Tool] = []
-    if hass_url and hass_token:
-        household_tools += build_ha_tools(hass_url, hass_token)
+    ha_tools: list[Tool] = (
+        build_ha_tools(hass_url, hass_token) if hass_url and hass_token else []
+    )
+    web_tools = build_web_tools(tavily_api_key)
+
+    household_tools: list[Tool] = list(ha_tools)
     household_tools += build_timer_tools(db_path, _current_uid)
-    household_tools += build_web_tools(tavily_api_key)
+    household_tools += web_tools
     if notes_dir:
         household_tools += build_notes_tools(notes_dir, _current_uid)
+
+    # A guest may ask questions (web) and control devices/read state (HA), but
+    # may NOT write anything durable — no notes/fact_store, no timers, no admin
+    # MCP. The denial is the absence of those tool modules here (#353).
+    guest_tools: list[Tool] = list(ha_tools) + list(web_tools)
 
     def make(profile: EngineProfile) -> EngineClient:
         return EngineClient(
@@ -129,4 +142,16 @@ def build_engine_clients(
             toolbox=admin_toolbox,
         )
     )
-    return household, deep, admin, recorder, bus
+    guest = make(
+        EngineProfile(
+            name="sol-guest",
+            model=fast_model or "gemma4:e2b",
+            soul_path=soul_path,
+            registry=registry,
+            think_default=False,
+            temperature=0.2,
+            toolbox=Toolbox(guest_tools),
+            ephemeral=True,
+        )
+    )
+    return household, deep, admin, guest, recorder, bus

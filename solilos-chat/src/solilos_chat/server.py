@@ -222,6 +222,7 @@ def build_app(
     hermes: EngineClient | Any,
     hermes_admin: EngineClient | Any = None,
     hermes_deep: EngineClient | Any = None,
+    hermes_guest: EngineClient | Any = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -1328,9 +1329,14 @@ def build_app(
     # points here so Sol is the Assist conversation agent; the gatekeeper
     # speaks the same surface for wyoming-satellite hardware.
     if hasattr(hermes, "respond"):
+        facade_clients = {"sol": hermes, "sol-deep": deep_gw}
+        # The guest profile (#353) is reachable as its own model but not yet
+        # auto-triggered — speaker-ID routing into it is #351 (blocked).
+        if hermes_guest is not None:
+            facade_clients["sol-guest"] = hermes_guest
         add_facade_routes(
             app,
-            clients={"sol": hermes, "sol-deep": deep_gw},
+            clients=facade_clients,
             api_key=api_key,
             default_uid=default_uid,
         )
@@ -1547,6 +1553,7 @@ async def serve(
     hermes: EngineClient,
     hermes_admin: EngineClient | None = None,
     hermes_deep: EngineClient | None = None,
+    hermes_guest: EngineClient | None = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -1572,6 +1579,7 @@ async def serve(
         hermes=hermes,
         hermes_admin=hermes_admin,
         hermes_deep=hermes_deep,
+        hermes_guest=hermes_guest,
         remote_user_header=remote_user_header,
         default_uid=default_uid,
         remote_groups_header=remote_groups_header,

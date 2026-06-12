@@ -469,6 +469,77 @@ async def test_mirror_is_per_resident_scoped(aiohttp_client, db, soul):
     assert resp.status == 403
 
 
+# -- #353: guest profile — restricted toolbox + ephemeral session ------------
+
+
+async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
+    # The guest toolbox = HA control/state + web Q&A; it must NOT carry any
+    # durable-write tool (notes/fact_store, timers) or admin/MCP tool.
+    from solilos_chat.engine.profiles import build_engine_clients
+
+    _, _, _, guest, _, _ = build_engine_clients(
+        db_path=":memory:",
+        ollama_url="http://x",
+        fast_model="gemma4:e2b",
+        thorough_model="gemma4:12b",
+        soul_path="/nonexistent/SOUL.md",
+        hass_url="http://ha",
+        hass_token="t",
+        tavily_api_key="",
+        notes_dir="/tmp/notes",  # household gets notes; guest must not
+    )
+    toolsets = await guest.list_toolsets()
+    names = set(toolsets[0]["tools"])
+    # Allowed: device control + state reads + web Q&A.
+    assert {"ha_call_service", "ha_get_state", "web_search"} <= names
+    # Denied: durable writes and admin.
+    assert not (
+        names & {"note_write", "fact_store", "timer_set", "timer_list", "timer_cancel"}
+    )
+    assert guest.ephemeral is True
+
+
+async def test_guest_facade_turn_persists_nothing(aiohttp_client, db, soul):
+    # A guest turn runs the stateless `respond` path: no session row, no
+    # message row — nothing about the guest survives the conversation.
+    household, _ = _engine(db, soul, [])
+    guest, _ = _engine(
+        db,
+        soul,
+        [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)],
+        name="sol-guest",
+    )
+    guest._profile.ephemeral = True
+    app = build_app(
+        hermes=household,
+        hermes_guest=guest,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solilos_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    names = [
+        m["model"]
+        for m in (await (await http.get("/ollama/api/tags")).json())["models"]
+    ]
+    assert "sol-guest" in names
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "sol-guest",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Wie spät ist es?"}],
+            "user": "guest",
+        },
+    )
+    assert resp.status == 200
+    assert (await resp.json())["message"]["content"] == "Klar."
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM engine_sessions").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM engine_messages").fetchone()[0] == 0
+    conn.close()
+
+
 async def test_chat_latest_suffix_resolves(aiohttp_client, db, soul):
     app, _ = _app(
         db, soul, [ChatResult(content="ok", prompt_tokens=1, completion_tokens=1)]

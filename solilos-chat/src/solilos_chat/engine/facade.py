@@ -20,6 +20,7 @@ hardware.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -101,11 +102,18 @@ def add_facade_routes(
         # (HA still replays its whole list — we take the tail). The same session
         # the browser opens, so spoken + typed history are one conversation and
         # the turn mirrors live into open tabs (#344) via the persisted path.
+        # A guest profile (#353) is ephemeral: it runs the stateless `respond`
+        # path on HA's replayed history, so nothing about the guest persists.
         text = _last_user(messages)
+
+        def turns() -> AsyncIterator[dict[str, Any]]:
+            if client.ephemeral:
+                return client.respond(messages, uid=uid, source=model)
+            return client.respond_session(text, uid=uid)
 
         if not stream:
             try:
-                answer = await _drain(client, text, uid)
+                answer = await _drain(turns())
             except EngineError:
                 return web.json_response({"error": "engine unavailable"}, status=502)
             return web.Response(
@@ -117,7 +125,7 @@ def add_facade_routes(
         await resp.prepare(request)
         streamed = ""
         try:
-            async for event in client.respond_session(text, uid=uid):
+            async for event in turns():
                 if event["type"] == "assistant.delta":
                     delta = str(event["data"].get("delta") or "")
                     if delta:
@@ -150,10 +158,10 @@ def _last_user(messages: list[Any]) -> str:
     return ""
 
 
-async def _drain(client: EngineClient, text: str, uid: str) -> str:
+async def _drain(turns: AsyncIterator[dict[str, Any]]) -> str:
     answer = ""
     streamed = ""
-    async for event in client.respond_session(text, uid=uid):
+    async for event in turns:
         if event["type"] == "assistant.delta":
             streamed += str(event["data"].get("delta") or "")
         elif event["type"] == "run.completed":
