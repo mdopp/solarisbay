@@ -244,6 +244,25 @@ def pull_model(ollama_url: str, model: str, stall_sec: int) -> bool:
     return True
 
 
+def local_chat_tags(ollama_url: str) -> list[str]:
+    """The locally installed chat tags from /api/tags (embed models skipped).
+    The install env can't be trusted for the model list — OLLAMA_EXTRA_MODELS
+    arrived empty on the box (solbay#339) — but what's pulled locally is
+    ground truth for what should be warm."""
+    req = urllib.request.Request(f"{ollama_url}/api/tags")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return []
+    tags = []
+    for m in body.get("models") or []:
+        name = str(m.get("name") or m.get("model") or "")
+        if name and "embed" not in name:
+            tags.append(name)
+    return tags
+
+
 def warm_load_model(ollama_url: str, model: str, timeout_sec: int = 180) -> bool:
     """Load `model` into VRAM with a 1-token generate so the first real turn
     after a deploy is warm. Every (re)deploy restarts the ollama unit and
@@ -707,8 +726,12 @@ def main() -> int:
             )
 
     # Warm-load the chat models so the first post-deploy turn doesn't pay
-    # the cold reload (the fast/voice model first — it answers the PE).
-    for warm in [m for m in (*extra_models, model) if m]:
+    # the cold reload. Source of truth = the locally installed tags
+    # (solbay#339: the env-derived list missed e2b). Largest first, the
+    # fast/voice model last — if VRAM forces an eviction (solbay#340) the
+    # hot path stays the one left warm.
+    warm_tags = local_chat_tags(ollama_url) or [m for m in (*extra_models, model) if m]
+    for warm in sorted(set(warm_tags), key=lambda t: ("e2b" in t, t)):
         warm_load_model(ollama_url, warm)
 
     register_http_check(sb_api, sb_token, ollama_url)

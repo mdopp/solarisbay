@@ -67,5 +67,42 @@ def test_warm_load_fails_soft(pd, monkeypatch):
 def test_main_warms_after_pulls(pd):
     src = (TEMPLATES / "ollama" / "post-deploy.py").read_text(encoding="utf-8")
     assert src.index("def main") < src.index("warm_load_model(ollama_url, warm)")
-    # The fast/voice model (extras) warms before the default 12b.
+    # Ground truth = locally installed tags (solbay#339); env list only as
+    # fallback. e2b sorts last so an eviction (solbay#340) leaves the hot
+    # path warm.
+    assert "local_chat_tags(ollama_url)" in src
     assert "(*extra_models, model)" in src
+    assert '"e2b" in t' in src
+
+
+def test_local_chat_tags_skips_embed_models(pd, monkeypatch):
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "models": [
+                        {"name": "gemma4:12b"},
+                        {"name": "gemma4:e2b"},
+                        {"name": "nomic-embed-text:latest"},
+                    ]
+                }
+            ).encode()
+
+    monkeypatch.setattr(pd.urllib.request, "urlopen", lambda req, timeout=0: _Resp())
+    assert pd.local_chat_tags("http://x") == ["gemma4:12b", "gemma4:e2b"]
+
+
+def test_local_chat_tags_fails_soft(pd, monkeypatch):
+    def boom(req, timeout=0):
+        raise OSError("down")
+
+    monkeypatch.setattr(pd.urllib.request, "urlopen", boom)
+    assert pd.local_chat_tags("http://x") == []
