@@ -110,9 +110,12 @@ async def test_tool_discipline_pinned_last_before_caller_prompt(db, soul):
     [e async for e in client.respond(messages, uid="michael")]
     system = fake.calls[0]["messages"][0]["content"]
     assert "Sage NIEMALS nur" in system
-    # After the soul, before the caller (HA) prompt — i.e. adjacent to history.
-    assert system.index("Du bist Sol.") < system.index("Sage NIEMALS nur")
-    assert system.index("Sage NIEMALS nur") < system.index("Antworte kurz.")
+    # Recency regression (box 2026-06-12 evening): the rule must come AFTER
+    # the caller (HA) prompt — "Antworte kurz" as the last line re-broke the
+    # discipline and the model narrated device actions again.
+    assert system.index("Du bist Sol.") < system.index("Antworte kurz.")
+    assert system.index("Antworte kurz.") < system.index("Sage NIEMALS nur")
+    assert system.rstrip().endswith("angekündigt haben.")
 
 
 async def test_no_tool_discipline_without_tools(db, soul):
@@ -254,6 +257,83 @@ async def test_chat_unknown_model_404(aiohttp_client, db, soul):
         json={"model": "gpt-5", "messages": [{"role": "user", "content": "x"}]},
     )
     assert resp.status == 404
+
+
+async def test_tool_pass2_sees_the_turn_uid(db, soul):
+    # Regression: the SSE heartbeat runs each generator step in its own task,
+    # so the contextvar set at turn start is invisible from pass 2 on — the
+    # loop re-pins the uid in the dispatching task (timers/facts must never
+    # be written ownerless).
+    from solilos_chat.engine import client as engine_client
+
+    seen_uids = []
+
+    async def handler(args):
+        seen_uids.append(engine_client.current_uid.get())
+        return "{}"
+
+    tool = Tool(
+        name="timer_set",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    client, _ = _engine(
+        db,
+        soul,
+        [
+            ChatResult(
+                content="",
+                tool_calls=[{"function": {"name": "timer_set", "arguments": {}}}],
+                prompt_tokens=5,
+            ),
+            ChatResult(content="Ok.", prompt_tokens=6, completion_tokens=1),
+        ],
+        tools=[tool],
+    )
+
+    async def consume_each_step_in_own_task():
+        # Mirror server._heartbeat: every __anext__ in a fresh task.
+        import asyncio
+
+        gen = client.respond(
+            [{"role": "user", "content": "Timer bitte"}], uid="michael"
+        ).__aiter__()
+        while True:
+            try:
+                await asyncio.ensure_future(gen.__anext__())
+            except StopAsyncIteration:
+                break
+
+    await consume_each_step_in_own_task()
+    assert seen_uids == ["michael"]
+
+
+async def test_stream_abort_does_not_raise_foreign_context(aiohttp_client, db, soul):
+    # Regression for the panel "Network error": closing the SSE stream runs
+    # the generator finally in a foreign task context — the contextvar reset
+    # must never ValueError through the response (chat path, not facade).
+    household, _ = _engine(
+        db,
+        soul,
+        [ChatResult(content="Hallo zurück!", prompt_tokens=5, completion_tokens=2)],
+    )
+    app = build_app(
+        hermes=household,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solilos_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/api/chat/stream",
+        json={"input": "Hallo"},
+        headers={"Remote-User": "michael"},
+    )
+    body = await resp.text()
+    assert resp.status == 200
+    assert "event: done" in body
+    assert "ValueError" not in body
 
 
 async def test_chat_latest_suffix_resolves(aiohttp_client, db, soul):

@@ -199,7 +199,13 @@ class EngineClient:
             log.error("engine.turn.failed", session_id=session_id, error=str(e))
             raise EngineError(str(e)) from e
         finally:
-            current_uid.reset(token)
+            # The SSE heartbeat consumes each generator step in its own task,
+            # so this finally can run in a foreign context (box-observed:
+            # ValueError tore down the stream as a Network error).
+            try:
+                current_uid.reset(token)
+            except ValueError:
+                pass
 
     async def _run_turn(
         self,
@@ -215,8 +221,9 @@ class EngineClient:
         messages = [{"role": "system", "content": system}]
         messages += store.history(self._db_path, session_id)
         think = self._profile.think_default or reasoning_effort not in ("", "none")
+        owner = store.session_owner(self._db_path, session_id) or ""
         async for event in self._loop(
-            messages, think=think, session_id=session_id, persist=True
+            messages, think=think, session_id=session_id, persist=True, uid=owner
         ):
             yield event
 
@@ -244,8 +251,12 @@ class EngineClient:
                 for m in messages
                 if m.get("role") == "system" and m.get("content")
             ]
+            # Recency is load-bearing (box A/B): the tool-discipline rule must
+            # be the LAST system content — after the caller's prompt, which
+            # otherwise outweighs it again ("Antworte kurz" → narration).
+            tail = [_TOOL_DISCIPLINE] if self._profile.toolbox.names() else []
             msgs: list[dict[str, Any]] = [
-                {"role": "system", "content": "\n\n".join([system, *incoming])}
+                {"role": "system", "content": "\n\n".join([system, *incoming, *tail])}
             ]
             msgs += [dict(m) for m in messages if m.get("role") != "system"]
             for m in reversed(msgs):
@@ -257,6 +268,7 @@ class EngineClient:
                 think=self._profile.think_default,
                 session_id=source,
                 persist=False,
+                uid=uid,
             ):
                 yield event
         except OllamaError as e:
@@ -278,6 +290,7 @@ class EngineClient:
         think: bool,
         session_id: str,
         persist: bool,
+        uid: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         """The agent loop: stream, dispatch tools, feed results back, repeat.
 
@@ -358,6 +371,13 @@ class EngineClient:
                     except ValueError:
                         args = {}
                 yield {"type": "tool.started", "data": {"tool": name}}
+                # Re-pin the turn's resident here, IN the dispatching task:
+                # the SSE heartbeat runs each generator step in its own task,
+                # which inherits the handler context without the turn's
+                # set() — tools would otherwise see the default uid from
+                # pass 2 on (timers/facts written ownerless).
+                if uid:
+                    current_uid.set(uid)
                 output = await self._profile.toolbox.dispatch(name, args)
                 yield {"type": "tool.completed", "data": {"tool": name}}
                 if persist:
@@ -409,7 +429,9 @@ class EngineClient:
         return "\n\n".join(p for p in parts if p.strip())
 
     async def _system_prompt_stateless(self) -> str:
-        """Profile prompt without a session overlay (the facade path)."""
+        """Profile prompt without a session overlay (the facade path). The
+        tool-discipline tail is appended by respond() AFTER the caller's
+        system prompt — recency is load-bearing."""
         parts = [self._soul()]
         if self._profile.extra_prompt:
             parts.append(self._profile.extra_prompt)
@@ -417,8 +439,6 @@ class EngineClient:
             block = await self._profile.registry.prompt_block()
             if block:
                 parts.append(block)
-        if self._profile.toolbox.names():
-            parts.append(_TOOL_DISCIPLINE)
         return "\n\n".join(p for p in parts if p.strip())
 
     def _soul(self) -> str:
