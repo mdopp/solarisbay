@@ -10,11 +10,9 @@ per-message trace_id, persists them, and serves them at
 from __future__ import annotations
 
 import sqlite3
-import time
-
-from aiohttp import web
 
 from solilos_chat import trace_store
+from solilos_chat.engine.trace import TraceRecorder
 from solilos_chat.server import build_app
 
 # The schema the 0007 migration creates, replayed locally so the store + endpoint
@@ -133,75 +131,53 @@ class _FakeHermes:
         return f"echo: {text}"
 
 
-async def _trace_proxy_app():
-    """A stub for the trace proxy's `/__traces__` list (newest-first).
-
-    The two in-window records are stamped with the server-side `time.time()` at
-    request time — the proxy is hit *during* the turn (after Hermes, before t1),
-    so they reliably fall inside the turn's `[t0, t1]` window. The third carries a
-    fixed old `ts`, well before the turn, to assert the window filter drops it.
-    """
-
-    async def handle(_request):
-        ts = time.time()
-        return web.json_response(
-            [
-                {
-                    "id": 2,
-                    "ts": ts,
-                    "model": "m",
-                    "profile": "household",
-                    "wall_s": 0.5,
-                    "prompt_tokens": 90,
-                    "completion_tokens": 5,
-                    "context_free": 100,
-                    "finish_reason": "stop",
-                    "n_tools": 3,
-                },
-                {
-                    "id": 1,
-                    "ts": ts,
-                    "model": "m",
-                    "wall_s": 0.7,
-                    "prompt_tokens": 80,
-                    "completion_tokens": 4,
-                    "context_free": 120,
-                    "finish_reason": "tool_calls",
-                    "n_tools": 3,
-                },
-                {
-                    "id": 0,
-                    "ts": ts - 3600.0,
-                    "model": "m",
-                    "wall_s": 0.1,
-                    "prompt_tokens": 10,
-                    "completion_tokens": 1,
-                    "context_free": 0,
-                    "finish_reason": "stop",
-                    "n_tools": 0,
-                },
-            ]
+def _recorder_with(session_id: str, recorder: TraceRecorder, n: int = 2) -> None:
+    """Record `n` engine calls for `session_id` (mimics the engine loop)."""
+    for i in range(n):
+        recorder.record(
+            session_id=session_id,
+            profile="household",
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": f"t{i}"}}],
+            content="ok",
+            thinking="",
+            tool_calls=[] if i == n - 1 else [{"function": {"name": "t0"}}],
+            prompt_tokens=80 + i,
+            completion_tokens=4,
+            wall_s=0.5,
+            context_window=4096,
         )
 
-    app = web.Application()
-    app.router.add_get("/__traces__", handle)
-    return app
+
+class _RecordingHermes(_FakeHermes):
+    """Records trace entries during the turn, the way the engine loop does."""
+
+    def __init__(self, recorder):
+        self._recorder = recorder
+
+    async def chat(self, session_id, text, images=None, reasoning_effort="none"):
+        _recorder_with(session_id, self._recorder)
+        return f"echo: {text}"
 
 
-async def test_turn_persists_window_and_endpoint_serves_it(
-    aiohttp_client, aiohttp_server, tmp_path
+async def test_turn_persists_engine_steps_and_endpoint_serves_them(
+    aiohttp_client, tmp_path
 ):
     db = _db(tmp_path)
-    proxy = await aiohttp_server(await _trace_proxy_app())
-    proxy_url = f"http://{proxy.host}:{proxy.port}"
+    recorder = TraceRecorder()
+    # A pre-turn record for the same session must NOT land in the turn's trace
+    # (the t0 bound keeps the steps per-turn).
+    _recorder_with("sess-1", recorder, n=1)
+    recorder.list_traces()[0]["ts"] -= 3600.0
 
     app = build_app(
-        hermes=_FakeHermes(),
+        hermes=_RecordingHermes(recorder),
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path / "att"),
         solilos_db_path=db,
-        trace_proxy_url=proxy_url,
+        trace_recorder=recorder,
     )
     client = await aiohttp_client(app)
 
@@ -215,31 +191,18 @@ async def test_turn_persists_window_and_endpoint_serves_it(
     r = await client.get("/api/sessions/sess-1/trace", headers={"Remote-User": "mdopp"})
     body = await r.json()
     assert body["ok"] is True
-    # Only the two in-window calls (the pre-window call is dropped), kept in the
-    # list's order via the stable ts sort, each carrying the proxy id as
-    # detail_id for the per-step content fetch.
-    assert [s["detail_id"] for s in body["steps"]] == [2, 1]
-    assert body["steps"][1]["finish_reason"] == "tool_calls"
-    # The proxy's profile tag survives persist → reopen.
+    # Only the two in-turn calls (the pre-turn record is dropped), in step
+    # order, each carrying the recorder id as detail_id.
+    assert [s["detail_id"] for s in body["steps"]] == [1, 2]
+    assert body["steps"][0]["finish_reason"] == "tool_calls"
     assert body["steps"][0]["profile"] == "household"
 
 
-async def test_trace_detail_proxied_to_proxy(aiohttp_client, aiohttp_server, tmp_path):
-    # The browser can't reach the proxy port, so the chat server passes
-    # /__traces__/<id> through to the trace proxy's detail endpoint (#307 panel
-    # → #305 detail). Status + body are forwarded verbatim, including a 404 for
-    # an evicted-from-the-ring detail id.
-    async def detail(request):
-        if request.match_info["tail"] == "7":
-            return web.json_response(
-                {"model": "m", "tools": [{"a": 1}], "messages": [], "final": "hi"}
-            )
-        return web.json_response({"error": "not found"}, status=404)
-
-    proxy = web.Application()
-    proxy.router.add_get("/__traces__/{tail}", detail)
-    proxy_server = await aiohttp_server(proxy)
-    proxy_url = f"http://{proxy_server.host}:{proxy_server.port}"
+async def test_trace_detail_served_in_process(aiohttp_client, tmp_path):
+    # /__traces__/<id> serves the engine recorder's detail ring directly; an
+    # evicted/unknown id is a 404 the panel degrades on.
+    recorder = TraceRecorder()
+    _recorder_with("sess-1", recorder, n=1)
 
     app = build_app(
         hermes=_FakeHermes(),
@@ -247,15 +210,15 @@ async def test_trace_detail_proxied_to_proxy(aiohttp_client, aiohttp_server, tmp
         default_uid="household",
         attachments_dir=str(tmp_path / "att"),
         solilos_db_path=_db(tmp_path),
-        trace_proxy_url=proxy_url,
+        trace_recorder=recorder,
     )
     client = await aiohttp_client(app)
 
-    r = await client.get("/__traces__/7", headers={"Remote-User": "mdopp"})
+    r = await client.get("/__traces__/0", headers={"Remote-User": "mdopp"})
     assert r.status == 200
     body = await r.json()
-    assert body["final"] == "hi"
-    assert body["tools"] == [{"a": 1}]
+    assert body["response"]["final"] == "ok"
+    assert body["request"]["model"] == "m"
 
     r = await client.get("/__traces__/999", headers={"Remote-User": "mdopp"})
     assert r.status == 404

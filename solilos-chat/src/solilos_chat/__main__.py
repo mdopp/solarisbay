@@ -6,6 +6,7 @@ import asyncio
 
 from solilos_chat.config import settings
 from solilos_chat.context import build_context_window
+from solilos_chat.engine.crons import CronRunner
 from solilos_chat.engine.profiles import build_engine_clients
 from solilos_chat.engine.scheduler import TimerScheduler
 from solilos_chat.logging import log
@@ -23,6 +24,9 @@ async def _run() -> None:
         thorough_model=settings.thorough_model,
         soul_path=settings.soul_path,
         admin_soul_path=settings.admin_soul_path,
+        admin_skills_dir=settings.admin_skills_dir,
+        sb_mcp_url=settings.sb_mcp_url,
+        sb_mcp_token_path=settings.sb_mcp_token_path,
         hass_url=settings.hass_url,
         hass_token=settings.hass_token,
         tavily_api_key=settings.tavily_api_key,
@@ -33,6 +37,13 @@ async def _run() -> None:
         settings.solilos_db_path, settings.hass_url, settings.hass_token
     )
     scheduler.start()
+    crons = CronRunner(
+        db_path=settings.solilos_db_path,
+        deep=deep,
+        skills_dir=settings.skills_dir,
+        context_window=context_window.value,
+    )
+    crons.start()
     await serve(
         settings.host,
         settings.port,
@@ -45,8 +56,6 @@ async def _run() -> None:
         admin_group=settings.admin_group,
         skills_dir=settings.skills_dir,
         soul_path=settings.soul_path,
-        config_agent_url=settings.config_agent_url,
-        agent_token=settings.hermes_token,
         logout_url=settings.logout_url,
         context_window=context_window,
         compaction_threshold=settings.compaction_threshold,
@@ -56,8 +65,8 @@ async def _run() -> None:
         thorough_model=settings.thorough_model,
         solilos_db_path=settings.solilos_db_path,
         notes_dir=settings.notes_dir,
-        trace_proxy_url=settings.trace_proxy_url,
         trace_recorder=recorder,
+        api_key=settings.api_key,
     )
 
 

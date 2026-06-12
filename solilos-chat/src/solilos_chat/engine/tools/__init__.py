@@ -38,6 +38,10 @@ class Toolbox:
     def __init__(self, tools: list[Tool]):
         self._tools = {t.name: t for t in tools}
 
+    async def prepare(self) -> None:
+        """Hook for toolboxes that fetch definitions remotely (MCP); awaited
+        once per turn before `definitions()` is read. No-op here."""
+
     def definitions(self) -> list[dict[str, Any]]:
         return [t.definition() for t in self._tools.values()]
 

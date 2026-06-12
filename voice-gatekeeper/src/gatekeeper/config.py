@@ -18,9 +18,8 @@ class Settings:
     whisper_uri: str
     piper_uri: str
     openwakeword_uri: str
-    hermes_url: str
-    hermes_token: str
-    fast_hermes_model: str
+    engine_url: str
+    engine_token: str
     default_uid: str
     push_host: str
     push_port: int
@@ -56,15 +55,17 @@ class Settings:
             openwakeword_uri=os.environ.get(
                 "OPENWAKEWORD_URI", "tcp://127.0.0.1:10400"
             ),
-            hermes_url=os.environ["HERMES_URL"],
-            hermes_token=os.environ.get("HERMES_TOKEN", ""),
-            fast_hermes_model=os.environ.get("FAST_HERMES_MODEL", "").strip(),
+            # The Sol Engine's Ollama-compatible facade (the chat server's
+            # loopback port, /ollama prefix). Voice always speaks to the
+            # household profile — there is deliberately no admin URL here.
+            engine_url=os.environ.get("SOL_ENGINE_URL", "http://127.0.0.1:8787/ollama"),
+            engine_token=os.environ.get("SOL_API_KEY", ""),
             default_uid=os.environ.get("DEFAULT_UID", "michael"),
             # Loopback by default: the push + MCP listeners only ever serve
-            # Hermes, which shares the host netns (hostNetwork) and reaches
-            # them over 127.0.0.1. Binding 0.0.0.0 under hostNetwork would
-            # expose them on the host's LAN interface, where an empty token
-            # leaves them unauthenticated (#116). Only the Wyoming port
+            # in-pod callers, which share the host netns (hostNetwork) and
+            # reach them over 127.0.0.1. Binding 0.0.0.0 under hostNetwork
+            # would expose them on the host's LAN interface, where an empty
+            # token leaves them unauthenticated (#116). Only the Wyoming port
             # (GATEKEEPER_URI) needs the LAN, for satellites.
             push_host=os.environ.get("PUSH_HOST", "127.0.0.1"),
             push_port=int(os.environ.get("PUSH_PORT", "10750")),

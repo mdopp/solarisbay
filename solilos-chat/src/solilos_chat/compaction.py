@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any
 from solilos_chat.logging import log
 
 if TYPE_CHECKING:
-    from solilos_chat.hermes import HermesClient
+    from solilos_chat.engine.client import EngineClient
 
 # Default fraction of the context window at which a session is compacted. The
 # issue asks for ~90-95%; 0.90 leaves headroom so a turn never truncates while
@@ -142,7 +142,7 @@ def _continuation_prompt(base_system_prompt: str, summary: str) -> str:
 
 
 async def compact_session(
-    hermes: HermesClient,
+    hermes: EngineClient,
     uid: str,
     session_id: str,
     *,

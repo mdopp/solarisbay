@@ -2860,7 +2860,7 @@
 
       // The Admin option (#293) is admin-gated: it appears only once both the
       // persona list and whoami have resolved and the caller is an Authelia
-      // admin. Selecting it routes new chats to the admin Hermes gateway (:8643)
+      // admin. Selecting it routes new chats to the engine's admin profile
       // — the server re-enforces the gate, so a non-admin can never reach it.
       Promise.all([loadPersonalities(), loadWhoami()]).then(function () {
         addAdminOption();

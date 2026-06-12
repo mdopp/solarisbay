@@ -1,105 +1,75 @@
-# solilos-chat
+# solilos-chat — the Sol Engine
 
-A small, stateless, offline-capable household chat proxy. Serves a static
-chat page and forwards turns to Hermes' **native session API**. Replaces
-the fragile in-process `hermes-webui` (#139).
+The household assistant's agent core and its chat surface, in one small
+offline-capable process. The Hermes gateway era is over: the engine speaks
+to Ollama's native `/api/chat` directly, owns its sessions in `solilos.db`,
+and replaces what used to be three gateway containers, a config sidecar and
+a trace proxy.
 
-## Design
+## What one process owns
 
-- **Stateless** — holds no chat/session store. The browser keeps the
-  current session id; all chat/session/memory state lives in Hermes
-  (`~/.hermes`). No duplication, no ambiguity about where data is.
-- **Offline** — page → this proxy → Hermes API
-  (`127.0.0.1:{{HERMES_API_PORT}}`/8642) → local Ollama. No external hop;
-  the page bundles its own CSS/JS (no CDNs).
-- **Not fragile** — own tiny image, no foreign `:latest`, no in-process
-  agent.
+- **Agent loop** — streaming `/api/chat` with hand-written, token-lean tool
+  definitions (HA device control, timers, web, notes), bounded passes.
+  Model + reasoning are **per turn**: `sol` (fast, `FAST_MODEL`) for the
+  household hot path, `sol-deep` (`THOROUGH_MODEL`, thinks) for "Gründlich"
+  chats, the admin persona and the night crons.
+- **HA entity registry injection** — controllable domains (id | name | area,
+  no live state) ride the system prompt, so a device command needs no
+  list-entities round trip. Stable + sorted → prefix-cache friendly.
+- **Sessions** in `solilos.db` (`engine_sessions`/`engine_messages`) with
+  per-turn compaction (#210) and ownership as a plain column.
+- **Native tracing** — every Ollama call recorded at the call site (light
+  ring + detail ring, persisted per turn into `session_traces`); the trace
+  panel and waterfall work unchanged, without the `:11436` proxy hop.
+- **Scheduler** — timers/alarms/reminders in `engine_timers`; firing rings
+  the Voice PE speaker via HA `assist_satellite.announce`.
+- **Night crons** — daily-chronicle, problem-summarizer, chat-compactor as
+  code-defined jobs on the deep profile (durable last-run stamps in
+  `engine_cron_runs`; idempotent by construction).
+- **Admin persona** — operator soul + skill pack as prompt assembly, with
+  the `servicebay_admin` MCP toolbox (official `mcp` SDK; token scopes
+  read+lifecycle+mutate, minted by the post-deploy).
 
-## SSO (folds in #134)
+## The Ollama facade (`/ollama`)
 
-Behind Authelia forward-auth, NPM sets `Remote-User` after the user
-authenticates. This proxy reads that header and folds it into the Hermes
-`uid` — no second login. The bearer token (`API_SERVER_KEY`) is held
-server-side and never reaches the browser. The pod binds loopback, so only
-NPM (which sets the header after Authelia) can reach it.
+HA 2026.6's `openai_conversation` has no custom base_url, but its `ollama`
+integration takes a free URL + Bearer api_key — so the engine exposes a
+minimal Ollama-compatible surface and **is** the Assist conversation agent:
 
-Absent header (e.g. direct loopback access for offline testing) falls back
-to `DEFAULT_UID`.
+- `GET /ollama/api/tags` — lists the profiles as models (`sol`, `sol-deep`).
+- `POST /ollama/api/chat` — stateless turn; the caller owns the history.
+  NDJSON stream or single JSON (`stream: false`).
 
-## Hermes contract
+The Voice PE speaker path: Speaker → HA pipeline (wake on-device, wyoming
+whisper STT) → `conversation.sol` → this facade → wyoming piper TTS →
+Speaker. The voice-gatekeeper speaks the same facade for wyoming-satellite
+hardware. Timer rings go engine-scheduler → `assist_satellite.announce`.
 
-- `GET /api/sessions?user_id={uid}` — list the uid's sessions.
-- `POST /api/sessions` — create a session bound to the uid.
-- `GET /api/sessions/{id}` — get a session + its message history.
-- `POST /api/sessions/{id}/chat` — body `{"input": …}`. For an image turn,
-  `input` is an OpenAI content-parts array (a `text` part + one `image_url`
-  part per `data:image/…;base64,…` URL) — the only shape Hermes session-chat
-  consumes. Returns the reply.
+## SSO
 
-(Not the gatekeeper's placeholder `/converse`, which does not exist in the
-real Hermes API.)
+Behind Authelia forward-auth, NPM sets `Remote-User`; the server folds it
+into the resident uid — no second login. `SOL_API_KEY` (the facade bearer)
+stays server-side. The pod binds loopback; only NPM/HA/the gatekeeper reach
+it over the host loopback.
 
-## Multimodal input
-
-The composer has a microphone button (browser-local speech-to-text via the
-Web Speech API — the transcript pre-populates the message box) and an
-attachment button (upload or in-browser camera capture via
-`getUserMedia`, with a client-side crop). Attached images are sent to the
-proxy as `data:image/…;base64,…` URLs under the chat body's `images` key; the
-proxy folds them into Hermes' `input` as OpenAI `image_url` content parts so a
-vision model can act on them (an image with no typed text gets a default
-prompt so the turn still goes through). For the local Ollama model to receive
-the pixels natively, solbay's post-deploy sets `model.supports_vision: true`
-in Hermes' `config.yaml` — otherwise Hermes' `image_input_mode: auto` falls
-back to a vision tool that needs a separate provider and the model stays
-blind to the attachment. Mic/camera need a secure context (HTTPS or
-localhost) and degrade gracefully when the browser lacks support.
-
-Hermes does not retain inbound images (it persists a `[screenshot]`
-placeholder and exposes no attachment API), so the proxy keeps the sent data
-URLs in a small per-session store under `ATTACHMENTS_DIR` and re-attaches them
-on history load — the one stateful exception, so thumbnails survive a refresh.
-
-## Per-user privacy
-
-Every session is created with `user_id: uid` (the SSO identity). The proxy
-scopes both the list and single-session fetch to the caller's uid — it
-passes `user_id` to Hermes **and** re-filters by each session's own
-`user_id`, so a resident sees only their own sessions and cannot open
-another resident's session by guessing its id (returns 404).
-
-## Environment
+## Environment (the interesting ones)
 
 | Var | Default | Purpose |
 |---|---|---|
-| `CHAT_HOST` | `127.0.0.1` | Loopback bind for NPM. |
-| `CHAT_PORT` | `8787` | Host loopback port. |
-| `HERMES_URL` | `http://127.0.0.1:8642` | Hermes native API base. |
-| `API_SERVER_KEY` | — | Bearer for Hermes; server-side only. |
-| `REMOTE_USER_HEADER` | `Remote-User` | Authelia identity header → uid. |
-| `DEFAULT_UID` | `household` | uid when the header is absent. |
-
-## Endpoints
-
-- `GET /` — the chat page.
-- `GET /health` — `{"ok": true}`.
-- `GET /api/sessions` — `{"ok": true, "sessions": [{id, title, last_activity}]}`
-  (the caller's own sessions only).
-- `POST /api/sessions` — `{"ok": true, "session_id": …}` (new session for the uid).
-- `GET /api/sessions/{id}` — `{"ok": true, "session": {id, title, last_activity, messages}}`
-  or `404` if it isn't the caller's session.
-- `POST /api/chat` — `{"input": …, "session_id": …?}` →
-  `{"ok": true, "session_id": …, "reply": …}`.
-- `POST /api/chat/cancel` — `{"session_id": …}` → interrupts that session's
-  in-flight stream (the panel's Stop button); the stream closes its upstream
-  Hermes connection, ending the model run, and emits a `cancelled` frame.
-- `POST /api/mcp/{server}/test` — admin-only; `{"tool": …, "arguments": {…}}`
-  invokes one MCP tool via the sidecar (the Tools-panel tester) →
-  `{"ok": true, "result": …}` or `{"ok": false, "error": …}`.
+| `CHAT_HOST` / `CHAT_PORT` | `127.0.0.1` / `8787` | Loopback bind. |
+| `SOL_API_KEY` | — | Bearer for the `/ollama` facade. |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | The LLM backend. |
+| `FAST_MODEL` / `THOROUGH_MODEL` | `gemma4:e2b` / `gemma4:12b` | The model map. |
+| `HASS_URL` / `HASS_TOKEN` | — | HA tools + registry + announce. |
+| `SOUL_PATH` | `/var/lib/solilos/SOUL.md` | Household soul (mtime-cached). |
+| `ADMIN_SOUL_PATH` / `ADMIN_SKILLS_DIR` | — | Operator persona prompt. |
+| `SB_MCP_URL` / `SB_MCP_TOKEN_PATH` | — | servicebay_admin toolbox. |
+| `SOLILOS_DB_PATH` | `/var/lib/solilos/solilos.db` | Sessions, timers, traces. |
+| `NOTES_DIR` | `/opt/data/notes` | The notes vault (tools + topics). |
 
 ## Run
 
 ```
 pip install -e .
-HERMES_URL=http://127.0.0.1:8642 API_SERVER_KEY=… python -m solilos_chat
+OLLAMA_URL=http://127.0.0.1:11434 HASS_URL=… HASS_TOKEN=… python -m solilos_chat
 ```

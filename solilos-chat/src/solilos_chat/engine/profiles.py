@@ -3,9 +3,10 @@
 household — fast model, never thinks, full household toolbox + the injected
             entity registry (the voice/chat hot path, ≤3k-token prompt).
 deep      — thorough model, thinks by default, same household toolbox + the
-            registry (the "Sol Gründlich" mode and, later, the night crons).
-admin     — thorough model + the admin soul; ServiceBay MCP tools arrive in
-            Phase 3, until then it is a tool-less operator chat.
+            registry (the "Sol Gründlich" mode and the night crons).
+admin     — thorough model + the admin soul + the operator skill pack as
+            prompt, with the `servicebay_admin` MCP toolbox (read+lifecycle+
+            mutate scopes — Phase 3).
 
 All three share one store, one Ollama client, one trace recorder — a turn's
 profile decides prompt + model + tools, nothing else.
@@ -13,12 +14,15 @@ profile decides prompt + model + tools, nothing else.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from solilos_chat.engine import client as engine_client
 from solilos_chat.engine.client import EngineClient, EngineProfile
 from solilos_chat.engine.ollama import OllamaChat
 from solilos_chat.engine.registry import EntityRegistry
 from solilos_chat.engine.tools import Tool, Toolbox
 from solilos_chat.engine.tools.ha import build_ha_tools
+from solilos_chat.engine.tools.mcp_tools import McpToolbox
 from solilos_chat.engine.tools.notes import build_notes_tools
 from solilos_chat.engine.tools.timers import build_timer_tools
 from solilos_chat.engine.tools.web import build_web_tools
@@ -29,6 +33,26 @@ def _current_uid() -> str:
     return engine_client.current_uid.get()
 
 
+def _skills_prompt(skills_dir: str) -> str:
+    """Concatenated SKILL.md bodies (frontmatter stripped) — the prompt-
+    assembly form of a skill pack."""
+    if not skills_dir:
+        return ""
+    parts: list[str] = []
+    for path in sorted(Path(skills_dir).glob("*/SKILL.md")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if text.startswith("---"):
+            end = text.find("---", 3)
+            if end != -1:
+                text = text[end + 3 :]
+        if text.strip():
+            parts.append(text.strip())
+    return "\n\n".join(parts)
+
+
 def build_engine_clients(
     *,
     db_path: str,
@@ -37,6 +61,9 @@ def build_engine_clients(
     thorough_model: str,
     soul_path: str,
     admin_soul_path: str = "",
+    admin_skills_dir: str = "",
+    sb_mcp_url: str = "",
+    sb_mcp_token_path: str = "",
     hass_url: str = "",
     hass_token: str = "",
     tavily_api_key: str = "",
@@ -85,13 +112,17 @@ def build_engine_clients(
             toolbox=Toolbox(household_tools),
         )
     )
+    admin_toolbox: Toolbox = (
+        McpToolbox(sb_mcp_url, sb_mcp_token_path) if sb_mcp_url else Toolbox([])
+    )
     admin = make(
         EngineProfile(
             name="admin",
             model=thorough_model or "gemma4:12b",
             soul_path=admin_soul_path or soul_path,
+            extra_prompt=_skills_prompt(admin_skills_dir),
             think_default=True,
-            toolbox=Toolbox([]),
+            toolbox=admin_toolbox,
         )
     )
     return household, deep, admin, recorder

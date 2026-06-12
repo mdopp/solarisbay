@@ -107,15 +107,7 @@ async def test_resident_followup_turn_routes_to_household(aiohttp_client):
     assert admin.turns == []
 
 
-async def test_maintenance_session_create_and_turns_route_to_admin(
-    aiohttp_client, monkeypatch
-):
-    from solilos_chat import server as server_mod
-
-    async def fake_soul(url, token):
-        return "# Admin Soul"
-
-    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_soul)
+async def test_maintenance_session_create_and_turns_route_to_admin(aiohttp_client):
     household, admin = _FakeHermes(), _FakeHermes()
     client = await aiohttp_client(_app(household, admin))
 
@@ -142,17 +134,8 @@ async def test_maintenance_session_create_and_turns_route_to_admin(
 
 
 async def test_non_admin_maintenance_create_forbidden_no_admin_gateway(
-    aiohttp_client, monkeypatch
+    aiohttp_client,
 ):
-    from solilos_chat import server as server_mod
-
-    called = []
-
-    async def fake_soul(url, token):
-        called.append(1)
-        return "# Admin Soul"
-
-    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_soul)
     household, admin = _FakeHermes(), _FakeHermes()
     client = await aiohttp_client(_app(household, admin))
 
@@ -160,9 +143,8 @@ async def test_non_admin_maintenance_create_forbidden_no_admin_gateway(
         "/api/sessions?persona=servicebay-maintenance", headers=RESIDENT_HDRS
     )
     assert resp.status == 403
-    # Neither gateway created a session; the soul was never even fetched.
+    # Neither gateway created a session.
     assert admin.created == [] and household.created == []
-    assert called == []
 
 
 async def test_non_admin_admin_persona_turn_never_reaches_admin(aiohttp_client):
@@ -230,13 +212,7 @@ async def test_admin_household_persona_still_routes_to_household(aiohttp_client)
     assert household.turns and admin.turns == []
 
 
-async def test_stream_maintenance_session_routes_to_admin(aiohttp_client, monkeypatch):
-    from solilos_chat import server as server_mod
-
-    async def fake_soul(url, token):
-        return "# Admin Soul"
-
-    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_soul)
+async def test_stream_maintenance_session_routes_to_admin(aiohttp_client):
     household = _FakeHermes()
     admin = _FakeHermes(events=[{"type": "assistant.delta", "data": {"delta": "ok"}}])
     client = await aiohttp_client(_app(household, admin))

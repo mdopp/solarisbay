@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "solilos-chat"
 version = "0.1.0"
-description = "Solilos household chat — stateless aiohttp proxy serving a static chat page over Hermes' native session API."
+description = "Solilos household chat — the Sol Engine agent core and its chat surface."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -15,6 +15,8 @@ dependencies = [
   # Keyless web-search backend for the engine's web_search tool (the same
   # DuckDuckGo client the Hermes-era post-deploy installed).
   "ddgs>=9",
+  # Official MCP SDK — the admin profile's servicebay_admin toolbox.
+  "mcp>=1.9",
 ]
 
 [project.optional-dependencies]

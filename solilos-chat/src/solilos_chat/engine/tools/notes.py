@@ -56,6 +56,22 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
         text = path.read_text(encoding="utf-8", errors="replace")
         return json.dumps({"path": rel, "content": text[:8000]}, ensure_ascii=False)
 
+    async def write(args: dict[str, Any]) -> str:
+        rel = str(args.get("path") or "").strip().lstrip("/")
+        content = str(args.get("content") or "")
+        if not rel.endswith(".md") or not content.strip():
+            return '{"error": "path must end in .md and content must be non-empty"}'
+        path = (root / rel).resolve()
+        if not str(path).startswith(str(root.resolve())):
+            return '{"error": "path outside the vault"}'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if bool(args.get("append")) and path.is_file():
+            with path.open("a", encoding="utf-8") as f:
+                f.write("\n" + content.rstrip("\n") + "\n")
+        else:
+            path.write_text(content.rstrip("\n") + "\n", encoding="utf-8")
+        return json.dumps({"written": rel})
+
     async def fact_store(args: dict[str, Any]) -> str:
         fact = str(args.get("fact") or "").strip()
         if not fact:
@@ -91,6 +107,23 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
                 "required": ["path"],
             },
             handler=read,
+        ),
+        Tool(
+            name="note_write",
+            description=(
+                "Schreibt eine Notiz in den Haushalts-Vault (Markdown)."
+                " append=true hängt an eine bestehende Notiz an."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "relativ, endet .md"},
+                    "content": {"type": "string"},
+                    "append": {"type": "boolean"},
+                },
+                "required": ["path", "content"],
+            },
+            handler=write,
         ),
         Tool(
             name="fact_store",

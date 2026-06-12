@@ -5,16 +5,7 @@ from __future__ import annotations
 from importlib.metadata import version
 
 from solilos_chat import compaction, marker, personalities, skills, topics_store
-from solilos_chat.hermes import (
-    _chat_body,
-    _extract_messages,
-    _extract_reply,
-    _extract_session_id,
-    _iter_session_items,
-    _maybe_json,
-    _session_owner,
-    _session_summary,
-)
+from solilos_chat.engine.tools.mcp_tools import McpToolbox
 import solilos_chat.server as server_mod
 from solilos_chat.server import (
     _IMAGE_PROMPT,
@@ -66,44 +57,6 @@ def test_resolve_uid_falls_back_when_header_absent():
 def test_resolve_uid_falls_back_on_empty_header():
     req = _FakeRequest({"Remote-User": "   "})
     assert resolve_uid(req, "Remote-User", "household") == "household"
-
-
-def test_extract_session_id_shapes():
-    assert _extract_session_id({"id": "abc"}) == "abc"
-    assert _extract_session_id({"session_id": "def"}) == "def"
-    assert _extract_session_id({"session": {"id": "ghi"}}) == "ghi"
-    assert _extract_session_id({}) == ""
-    assert _extract_session_id(None) == ""
-
-
-def test_extract_reply_shapes():
-    assert _extract_reply({"output": "hi"}) == "hi"
-    assert _extract_reply({"reply": "yo"}) == "yo"
-    assert _extract_reply({"response": "ok"}) == "ok"
-    assert (
-        _extract_reply({"message": {"role": "assistant", "content": "hello"}})
-        == "hello"
-    )
-    assert _extract_reply({}) == ""
-
-
-def test_extract_reply_tool_turn_uses_messages():
-    # A tool-invocation turn (HA state query) leaves message.content empty and
-    # carries the summary in the last assistant message of `messages` (#258).
-    body = {
-        "message": {"role": "assistant", "content": ""},
-        "messages": [
-            {"role": "user", "content": "welche lichter sind an"},
-            {"role": "tool", "content": '{"on": ["Küche"]}'},
-            {"role": "assistant", "content": "Die Küche-Lampe ist an."},
-        ],
-    }
-    assert _extract_reply(body) == "Die Küche-Lampe ist an."
-    # Content parts array (multimodal-shaped) is joined.
-    parts = {"messages": [{"role": "assistant", "content": [{"text": "Licht an."}]}]}
-    assert _extract_reply(parts) == "Licht an."
-    # No assistant content => empty, no tool/user leakage.
-    assert _extract_reply({"messages": [{"role": "tool", "content": "x"}]}) == ""
 
 
 class _FakeHermes:
@@ -213,70 +166,6 @@ class _FakeHermes:
                 "output_tokens": s.get("output_tokens", 0),
             }
         return None
-
-
-def test_iter_session_items_envelopes():
-    assert _iter_session_items([{"id": "a"}]) == [{"id": "a"}]
-    assert _iter_session_items({"sessions": [{"id": "b"}]}) == [{"id": "b"}]
-    assert _iter_session_items({"items": [{"id": "c"}]}) == [{"id": "c"}]
-    assert _iter_session_items({"nope": 1}) == []
-
-
-def test_session_owner_and_summary():
-    assert _session_owner({"user_id": "mdopp"}) == "mdopp"
-    assert _session_owner({"owner": "lena"}) == "lena"
-    assert _session_owner({}) == ""
-    # Real list-item shape: title set, epoch `last_active`, `preview`.
-    summ = _session_summary(
-        {
-            "id": "x",
-            "title": "Trip",
-            "preview": "plan the trip",
-            "last_active": 1780677907.7,
-            "started_at": 1780677881.8,
-        }
-    )
-    assert summ == {
-        "id": "x",
-        "title": "Trip",
-        "preview": "plan the trip",
-        "last_activity": "1780677907.7",
-        "input_tokens": None,
-        "output_tokens": None,
-        "message_count": None,
-        "estimated_cost_usd": None,
-    }
-
-
-def test_session_summary_null_title_surfaces_preview():
-    # Chat-created sessions have title:null; the preview carries the label.
-    summ = _session_summary(
-        {"id": "y", "title": None, "preview": "buy milk", "started_at": 1780677881.8}
-    )
-    assert summ["title"] == ""
-    assert summ["preview"] == "buy milk"
-    assert summ["last_activity"] == "1780677881.8"
-
-
-def test_extract_messages_data_envelope():
-    # The real /messages payload: {"object": "list", "data": [...]}.
-    body = {
-        "object": "list",
-        "data": [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": [{"text": "he"}, {"text": "llo"}]},
-            {"role": "system", "content": ""},
-        ],
-    }
-    assert _extract_messages(body) == [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-    ]
-    assert _extract_messages({}) == []
-    # Tolerate a bare `messages` key too.
-    assert _extract_messages({"messages": [{"role": "user", "content": "yo"}]}) == [
-        {"role": "user", "content": "yo"}
-    ]
 
 
 def test_title_from_first_message():
@@ -437,11 +326,6 @@ def test_reasoning_from_completed_shapes():
     )
 
 
-def test_maybe_json():
-    assert _maybe_json('{"a": 1}') == {"a": 1}
-    assert _maybe_json("not json") == "not json"
-
-
 # --- Tool-turn keepalive + late completed-answer relay (#319) --------------
 
 
@@ -518,42 +402,6 @@ def test_completed_answer_surfaces_after_tool_turn():
 
 
 # --- Image attachments (#183) ---------------------------------------------
-
-
-def test_chat_body_text_only_is_plain_string():
-    # Default fast turn: reasoning_effort "none", no thinking surfaced (#222).
-    assert _chat_body("hi", None) == {"input": "hi", "reasoning_effort": "none"}
-    assert _chat_body("hi", []) == {"input": "hi", "reasoning_effort": "none"}
-
-
-def test_chat_body_images_become_content_parts():
-    # Hermes session-chat reads images ONLY as OpenAI content-parts inside
-    # `input`, with the full data: URL kept (#202). No top-level images key.
-    body = _chat_body("look", ["data:image/png;base64,AAAA"])
-    assert body == {
-        "input": [
-            {"type": "text", "text": "look"},
-            {
-                "type": "image_url",
-                "image_url": {"url": "data:image/png;base64,AAAA"},
-            },
-        ],
-        "reasoning_effort": "none",
-    }
-    assert "images" not in body
-
-
-def test_chat_body_reasoning_surfaces_thinking_when_on():
-    # A reasoning turn asks Hermes to surface the block (#224) so the UI can
-    # render it — the live config has show_reasoning off. Thinking itself is a
-    # function of the model: the household fast model is suppressed by the proxy.
-    assert _chat_body("explain", None, "high") == {
-        "input": "explain",
-        "reasoning_effort": "high",
-        "show_reasoning": True,
-    }
-    # Fast turn carries no show_reasoning and no thinking block.
-    assert "show_reasoning" not in _chat_body("hi", None, "none")
 
 
 def test_images_from_keeps_data_url_prefix_and_caps():
@@ -2173,143 +2021,113 @@ async def test_put_skill_missing_and_empty(aiohttp_client, tmp_path):
     assert resp.status == 400
 
 
-# --- MCP servers endpoint (proxied to the sidecar) ------------------------
+# --- MCP servers endpoint (the admin profile's servicebay_admin toolbox) ---
 
 
-async def test_mcp_endpoint_proxies_agent(aiohttp_client, monkeypatch):
-    from solilos_chat import server as server_mod
+class _FakeMcpToolbox(McpToolbox):
+    def __init__(self):
+        super().__init__("http://127.0.0.1:5888/mcp", "/tmp/nope")
+        self.prepared = 0
+        self.dispatched = []
 
-    async def fake_mcp(url, token):
-        return [
-            {
-                "name": "servicebay-mcp",
-                "url": "http://x/mcp",
-                "reachable": True,
-                "tools": ["restart_service"],
-            }
-        ]
+    async def prepare(self):
+        self.prepared += 1
+        self._names = ["restart_service", "get_services"]
 
-    monkeypatch.setattr(server_mod, "_agent_get_mcp", fake_mcp)
+    async def dispatch(self, name, arguments):
+        self.dispatched.append((name, arguments))
+        return '{"out": "ok"}'
+
+
+class _FakeProfile:
+    def __init__(self, toolbox):
+        self.toolbox = toolbox
+
+
+class _FakeAdminEngine(_FakeHermes):
+    def __init__(self, toolbox):
+        super().__init__()
+        self._profile = _FakeProfile(toolbox)
+
+
+def _mcp_app(toolbox):
+    return build_app(
+        hermes=_FakeHermes(),
+        hermes_admin=_FakeAdminEngine(toolbox),
+        remote_user_header="Remote-User",
+        default_uid="household",
+    )
+
+
+async def test_mcp_endpoint_reports_admin_toolbox(aiohttp_client):
+    toolbox = _FakeMcpToolbox()
+    client = await aiohttp_client(_mcp_app(toolbox))
+    body = await (await client.get("/api/mcp")).json()
+    assert body["ok"] is True
+    assert body["servers"][0]["name"] == "servicebay_admin"
+    assert body["servers"][0]["reachable"] is True
+    assert "restart_service" in body["servers"][0]["tools"]
+    assert "token" not in body["servers"][0]
+    assert toolbox.prepared == 1
+
+
+async def test_mcp_endpoint_empty_without_toolbox(aiohttp_client):
     app = build_app(
         hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
     body = await (await client.get("/api/mcp")).json()
-    assert body["ok"] is True
-    assert body["servers"][0]["name"] == "servicebay-mcp"
-    assert "token" not in body["servers"][0]
+    assert body == {"ok": True, "servers": []}
 
 
-async def test_mcp_endpoint_agent_unavailable(aiohttp_client, monkeypatch):
-    from solilos_chat import server as server_mod
-
-    async def fake_mcp(url, token):
-        return None
-
-    monkeypatch.setattr(server_mod, "_agent_get_mcp", fake_mcp)
-    app = build_app(
-        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
-    )
-    client = await aiohttp_client(app)
-    assert (await client.get("/api/mcp")).status == 502
-
-
-# --- Interactive MCP tester (#191) ----------------------------------------
-
-
-async def test_test_mcp_admin_proxies_agent(aiohttp_client, monkeypatch):
-    from solilos_chat import server as server_mod
-
-    calls = []
-
-    async def fake_test(url, token, server, tool, arguments):
-        calls.append((url, token, server, tool, arguments))
-        return {"ok": True, "result": {"out": "ok"}}
-
-    monkeypatch.setattr(server_mod, "_agent_test_mcp", fake_test)
-    app = build_app(
-        hermes=_FakeHermes(),
-        remote_user_header="Remote-User",
-        default_uid="household",
-        config_agent_url="http://agent:8650",
-        agent_token="k",
-    )
-    client = await aiohttp_client(app)
+async def test_test_mcp_admin_dispatches_toolbox(aiohttp_client):
+    toolbox = _FakeMcpToolbox()
+    client = await aiohttp_client(_mcp_app(toolbox))
     resp = await client.post(
-        "/api/mcp/servicebay-mcp/test",
-        json={"tool": "restart_service", "arguments": {"name": "hermes"}},
+        "/api/mcp/servicebay_admin/test",
+        json={"tool": "restart_service", "arguments": {"name": "solilos"}},
         headers={"Remote-Groups": "admins"},
     )
     body = await resp.json()
     assert resp.status == 200
-    assert body == {"ok": True, "result": {"out": "ok"}}
-    assert calls == [
-        (
-            "http://agent:8650",
-            "k",
-            "servicebay-mcp",
-            "restart_service",
-            {"name": "hermes"},
-        )
-    ]
+    assert body["ok"] is True
+    assert toolbox.dispatched == [("restart_service", {"name": "solilos"})]
 
 
-async def test_test_mcp_non_admin_forbidden_no_call(aiohttp_client, monkeypatch):
-    from solilos_chat import server as server_mod
-
-    called = []
-
-    async def fake_test(url, token, server, tool, arguments):
-        called.append(1)
-        return {"ok": True}
-
-    monkeypatch.setattr(server_mod, "_agent_test_mcp", fake_test)
-    app = build_app(
-        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
-    )
-    client = await aiohttp_client(app)
+async def test_test_mcp_non_admin_forbidden_no_call(aiohttp_client):
+    toolbox = _FakeMcpToolbox()
+    client = await aiohttp_client(_mcp_app(toolbox))
     resp = await client.post(
-        "/api/mcp/servicebay-mcp/test",
-        json={"tool": "x"},
+        "/api/mcp/servicebay_admin/test",
+        json={"tool": "restart_service", "arguments": {}},
         headers={"Remote-Groups": "family"},
     )
     assert resp.status == 403
-    assert called == []
+    assert toolbox.dispatched == []
+
+
+async def test_test_mcp_unknown_server_rejected(aiohttp_client):
+    toolbox = _FakeMcpToolbox()
+    client = await aiohttp_client(_mcp_app(toolbox))
+    resp = await client.post(
+        "/api/mcp/other-server/test",
+        json={"tool": "x", "arguments": {}},
+        headers={"Remote-Groups": "admins"},
+    )
+    body = await resp.json()
+    assert body["ok"] is False
+    assert toolbox.dispatched == []
 
 
 async def test_test_mcp_empty_tool_rejected(aiohttp_client):
-    app = build_app(
-        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
-    )
-    client = await aiohttp_client(app)
+    toolbox = _FakeMcpToolbox()
+    client = await aiohttp_client(_mcp_app(toolbox))
     resp = await client.post(
-        "/api/mcp/servicebay-mcp/test",
-        json={"tool": "  "},
+        "/api/mcp/servicebay_admin/test",
+        json={"tool": "  ", "arguments": {}},
         headers={"Remote-Groups": "admins"},
     )
     assert resp.status == 400
-
-
-async def test_test_mcp_agent_unavailable_502(aiohttp_client, monkeypatch):
-    from solilos_chat import server as server_mod
-
-    async def fake_test(url, token, server, tool, arguments):
-        return None
-
-    monkeypatch.setattr(server_mod, "_agent_test_mcp", fake_test)
-    app = build_app(
-        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
-    )
-    client = await aiohttp_client(app)
-    resp = await client.post(
-        "/api/mcp/servicebay-mcp/test",
-        json={"tool": "x"},
-        headers={"Remote-Groups": "admins"},
-    )
-    assert resp.status == 502
-
-
-# --- Stop / cancel generation (#192) --------------------------------------
 
 
 async def test_cancel_unknown_session_is_noop(aiohttp_client):
@@ -2362,19 +2180,17 @@ async def test_cancel_interrupts_active_stream(aiohttp_client):
 # --- ServiceBay-maintenance persona lock (#229) ---------------------------
 
 
-async def test_maint_persona_admin_gets_live_soul_locked(aiohttp_client, monkeypatch):
-    # An admin creating a session via ?persona=servicebay-maintenance gets the
-    # LIVE admin SOUL.md as the locked system prompt, the maintenance marker,
-    # and any body `personality` is ignored (the lock can't be overridden).
-    from solilos_chat import server as server_mod
-
-    async def fake_soul(url, token):
-        return "# Admin Soul\nServiceBay maintenance persona."
-
-    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_soul)
-    fake = _FakeHermes()
+async def test_maint_persona_admin_locked_to_admin_profile(aiohttp_client):
+    # An admin creating a session via ?persona=servicebay-maintenance lands on
+    # the admin engine profile (which OWNS the operator soul — no per-session
+    # prompt), tagged maintenance; any body `personality` is ignored.
+    household = _FakeHermes()
+    admin = _FakeHermes()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        hermes=household,
+        hermes_admin=admin,
+        remote_user_header="Remote-User",
+        default_uid="household",
     )
     client = await aiohttp_client(app)
 
@@ -2386,25 +2202,17 @@ async def test_maint_persona_admin_gets_live_soul_locked(aiohttp_client, monkeyp
     body = await resp.json()
     assert resp.status == 200
     assert body["session_id"] == "sess-1"
-    # System prompt is the live soul, NOT the body personality's overlay.
-    assert fake.created_prompts == ["# Admin Soul\nServiceBay maintenance persona."]
-    assert fake.created_prompts != [personalities.system_prompt_for("concise")]
-    # Tagged as a maintenance session (isolated from the household list).
-    assert fake.maintenance == [True]
+    # Created on the ADMIN profile with no per-session overlay — the profile
+    # supplies the operator soul + skill pack.
+    assert admin.created == ["mdopp"]
+    assert admin.created_prompts == [""]
+    assert admin.maintenance == [True]
+    assert household.created == []
 
 
-async def test_maint_persona_non_admin_forbidden_no_create(aiohttp_client, monkeypatch):
+async def test_maint_persona_non_admin_forbidden_no_create(aiohttp_client):
     # A non-admin requesting the maintenance persona is refused (403) and no
     # session is created — the Authelia admin gate is enforced server-side.
-    from solilos_chat import server as server_mod
-
-    called = []
-
-    async def fake_soul(url, token):
-        called.append(1)
-        return "# Admin Soul"
-
-    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_soul)
     fake = _FakeHermes()
     app = build_app(
         hermes=fake, remote_user_header="Remote-User", default_uid="household"
@@ -2417,30 +2225,6 @@ async def test_maint_persona_non_admin_forbidden_no_create(aiohttp_client, monke
     )
     assert resp.status == 403
     assert fake.created == []
-    assert called == []  # never even fetched the soul for a non-admin
-
-
-async def test_maint_persona_soul_fetch_failure_fails_safe(aiohttp_client, monkeypatch):
-    # Fail safe: if the live soul can't be fetched, the maintenance session is
-    # refused (502) rather than silently falling back to the household persona.
-    from solilos_chat import server as server_mod
-
-    async def fake_soul(url, token):
-        return None
-
-    monkeypatch.setattr(server_mod, "_agent_get_soul", fake_soul)
-    fake = _FakeHermes()
-    app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
-    )
-    client = await aiohttp_client(app)
-
-    resp = await client.post(
-        "/api/sessions?persona=servicebay-maintenance",
-        headers={"Remote-User": "mdopp", "Remote-Groups": "admins"},
-    )
-    assert resp.status == 502
-    assert fake.created == []  # never created a session with a leaked persona
 
 
 async def test_household_create_unaffected_by_query_persona(aiohttp_client):

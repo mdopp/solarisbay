@@ -7,86 +7,47 @@ metadata:
   annotations:
     servicebay.label: "AI Assistant (Solilos)"
     servicebay.schema-version: "1"
-    # Host ports on one tile: the household Hermes gateway's API (the sticky
-    # default the single hermes container serves, HERMES_API_PORT) + its
-    # dashboard, the admin-profile gateway's API (HERMES_ADMIN_API_PORT — the
-    # SAME container additionally starts `hermes -p admin gateway start`, #293),
-    # the sol-deep-profile gateway's API (HERMES_DEEP_API_PORT — that container
-    # also starts `hermes -p sol-deep gateway start`, Sol on 12b for the
-    # "Gründlich" mode + crons, #332), the chat proxy (chat), and the gatekeeper's
-    # Wyoming listener (gatekeeper). config-agent + admin-soul bind loopback only
-    # and expose nothing. ServiceBay can't substitute {{VAR}} inside an annotation
-    # block scalar (#136) but DOES substitute in this inline annotation, so the
-    # ports stay variable-driven.
-    servicebay.ports: "{{HERMES_API_PORT}}/tcp,{{HERMES_ADMIN_API_PORT}}/tcp,{{HERMES_DEEP_API_PORT}}/tcp,{{HERMES_DASHBOARD_PORT}}/tcp,{{HERMES_CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp"
-    # External dependencies only (#271). hermes/solilos-chat/solbay/admin-soul
-    # no longer depend on each other — they are now one Pod — so the only
-    # remaining edges are to services OUTSIDE this Pod: ollama (the LLM Hermes
-    # talks to on startup), home-assistant (the post-deploy adopts its
-    # long-lived token + auto-installs the jellyfin integration), voice
-    # (Whisper/Piper the gatekeeper reaches over loopback), nginx (NPM proxies
-    # the chat + dashboard), auth (Authelia forward-auth gates them).
+    # Host ports on one tile: the chat server (the Sol Engine + chat surface +
+    # the Ollama-compatible facade HA's conversation agent calls) and the
+    # gatekeeper's Wyoming listener. ServiceBay can't substitute {{VAR}} inside
+    # an annotation block scalar (#136) but DOES substitute in this inline
+    # annotation, so the ports stay variable-driven.
+    servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp"
+    # External dependencies only (#271): ollama (the engine's LLM backend),
+    # home-assistant (device control + the Assist pipeline that fronts the
+    # Voice PE speaker), voice (Whisper/Piper that HA's pipeline and the
+    # gatekeeper reach over loopback), nginx (NPM proxies the chat), auth
+    # (Authelia forward-auth gates it).
     servicebay.dependencies: "ollama,home-assistant,voice,nginx,auth"
-    # One health probe for the merged service: the chat proxy serves /health
-    # (200, no auth) once up — the same HTTP probe the standalone solilos-chat
-    # pod used. ServiceBay can't substitute {{VAR}} inside an annotation block
-    # scalar (#136), so the port is the literal default; an operator changing
-    # HERMES_CHAT_PORT must update this literal by hand too.
+    # One health probe for the service: the chat server serves /health (200,
+    # no auth) once up. ServiceBay can't substitute {{VAR}} inside an
+    # annotation block scalar (#136), so the port is the literal default; an
+    # operator changing CHAT_PORT must update this literal by hand too.
     servicebay.healthcheck: |
       url: http://127.0.0.1:8787/health
       interval: 30s
       timeout: 5s
       startup_timeout: 5m
 spec:
-  # hostNetwork so the merged Pod's containers reach each other and the
-  # external services over the host loopback (every cooperating ServiceBay pod
-  # shares the host netns):
-  #   - hermes ↔ ollama at 127.0.0.1:11434
-  #   - chat / gatekeeper / config-agent ↔ Hermes' API at 127.0.0.1:{{HERMES_API_PORT}}
+  # hostNetwork so the Pod's containers reach the external services over the
+  # host loopback (every cooperating ServiceBay pod shares the host netns):
+  #   - chat ↔ ollama at 127.0.0.1:11434, HA at 127.0.0.1:8123
+  #   - HA's Assist pipeline ↔ the chat facade at 127.0.0.1:{{CHAT_PORT}}/ollama
   #   - gatekeeper ↔ voice (Whisper/Piper) at 127.0.0.1:10300 / 10200
-  #   - NPM (also hostNetwork) proxies the chat + dashboard from the host loopback
-  #   - HA Voice PE satellites on the LAN reach the gatekeeper at <host-ip>:<GATEKEEPER_PORT>
+  #   - NPM (also hostNetwork) proxies the chat from the host loopback
+  #   - HA Voice PE satellites on the LAN reach HA; wyoming-satellite hardware
+  #     reaches the gatekeeper at <host-ip>:<GATEKEEPER_PORT>
   hostNetwork: true
   restartPolicy: Always
-  # Init order (run-to-completion, in sequence) before any app container:
-  #   1. hermes-chown-home  — chown /opt/data to the hermes uid (10000) so the
-  #      gateway can open gateway.lock read-write (else the API never binds).
-  #   2. hermes-notes-perms — open the Syncthing notes share (host uid 1000)
-  #      to a+rwX so hermes (10000) can write notes.
-  #   3. schema-init        — alembic-migrate solilos.db on the solilos-data
-  #      volume (distinct volume from the two above — no conflict).
   initContainers:
-  # The image seeds $HERMES_HOME (/opt/data) from a skeleton whose files
-  # (gateway.lock, SOUL.md, kanban.db, …) stay owned by the image build
-  # uid, not the `hermes` runtime user — so `hermes gateway run`, which
-  # runs as `hermes` and opens /opt/data/gateway.lock read-write, dies
-  # with PermissionError and the API server never binds {{HERMES_API_PORT}}.
-  # Chown the whole home to the hermes uid (10000) once, before the
-  # gateway starts. Idempotent; runs as userns-root so it can chown.
-  - name: hermes-chown-home
-    image: docker.io/nousresearch/hermes-agent:latest
-    command: ["chown", "-R", "10000:10000", "/opt/data"]
-    securityContext:
-      runAsUser: 0
-      runAsGroup: 0
-    volumeMounts:
-    - mountPath: /opt/data
-      name: hermes-data
   # The notes vault is the file-share Syncthing share (host uid 1000),
-  # bind-mounted in at /opt/data/notes. The gateway runs as hermes (10000,
-  # a different host subuid), so without this it cannot write — every Solilos
-  # note-writing skill (media-ingestion, dynamic-skills, daily-chronicle and
-  # its cron) silently fails to persist. We can't chown across the userns to
-  # 10000 without breaking the file-share services (samba/syncthing/
-  # filebrowser, uid 1000), and the hermes pod can't chmod it from the
-  # chown-home init (that init doesn't mount the share). This init does:
-  # it maps to the share owner via the pod userns (runAsUser 0 == host 1000),
-  # so it can open the share's perms to a+rwX, letting hermes create/append
-  # notes while the file-share services keep owning it. (Two-way edit of each
-  # other's files is still umask-limited; the robust shared-RW model is a
-  # file-share-template concern — see the upstream issue.)
-  - name: hermes-notes-perms
-    image: docker.io/nousresearch/hermes-agent:latest
+  # bind-mounted at /opt/data/notes. The engine's notes tools (note_write,
+  # fact_store) must be able to create/append notes regardless of which
+  # subuid the share's files carry, so open the perms to a+rwX once per pod
+  # start. Runs as userns-root (maps to the share owner) — same pattern the
+  # Hermes-era init used.
+  - name: notes-perms
+    image: "{{CHAT_IMAGE}}"
     command: ["chmod", "-R", "a+rwX", "/opt/data/notes"]
     securityContext:
       runAsUser: 0
@@ -114,275 +75,81 @@ spec:
       name: solilos-data
 
   containers:
-  # The single Hermes container (#293). It runs ONE s6 entrypoint. The bare
-  # `args: [gateway, run]` (CMD) serves the DEFAULT profile = the household
-  # persona on HERMES_API_PORT — household's config is the global config.yaml and
-  # its solilos skills are already mounted in the default home, so there is no
-  # separate household profile and no `profile use`. The SAME container ALSO runs
-  # the `admin` profile's gateway: post-deploy.py fires `hermes -p admin gateway
-  # start` once Hermes is up, the image's /etc/cont-init.d/02-reconcile-profiles
-  # restarts it on every later boot (its gateway_state is `running`), and admin
-  # binds HERMES_ADMIN_API_PORT alongside household via its per-profile `.env`
-  # (API_SERVER_PORT — the container env overrides any config.yaml port, so the
-  # `.env` is the only lever that works; box-verified 2026-06-09). Both gateways
-  # in one container, box-confirmed s6-safe. Do NOT override `command:` with
-  # `hermes -p <profile> gateway run`: that bypasses the entrypoint, s6 tries to
-  # exec `-p`, and the container crash-loops (the #294 revert — `args: [gateway,
-  # run]` is load-bearing).
-  - name: hermes
-    image: docker.io/nousresearch/hermes-agent:latest
-    # The image's entrypoint is `/usr/bin/tini -g -- /opt/hermes/docker/entrypoint.sh`,
-    # which at the end does `exec hermes "$@"`. Without args the
-    # interactive TUI starts, detects no terminal, exits with
-    # "Goodbye!", systemd restarts → infinite TUI-exit loop (#706
-    # initial fix dropped `command:` entirely, which IS what produced
-    # this loop — the pre-#706 `command: [gateway, run]` was using
-    # `gateway` as if it were a binary, which podman kube interprets
-    # as `command:` → looks for `gateway` on PATH → not found → exit
-    # 125. Both forms were wrong.
-    #
-    # Correct invocation: pass `gateway run` as `args:` (CMD), let
-    # the image's entrypoint receive them and `exec hermes gateway
-    # run`. The entrypoint's first-arg-is-executable shortcut doesn't
-    # fire because `gateway` isn't an exec on PATH — falls through to
-    # the `exec hermes "$@"` branch, which is exactly what we want.
-    args:
-    - gateway
-    - run
-    env:
-    # API server config (per upstream Docker docs at
-    # https://hermes-agent.nousresearch.com/docs/user-guide/docker).
-    # Each value is wired non-interactively — `hermes setup` is NOT
-    # invoked. UX_PHILOSOPHY.md § 2 bans operator-facing `podman exec`
-    # instructions; everything Hermes needs at first boot lives here
-    # or in DATA_DIR/hermes/config.yaml (written by post-deploy.py).
-    - name: API_SERVER_ENABLED
-      value: "true"
-    - name: API_SERVER_HOST
-      value: "127.0.0.1"
-    - name: API_SERVER_PORT
-      value: "{{HERMES_API_PORT}}"
-    - name: API_SERVER_KEY
-      value: "{{HERMES_API_KEY}}"
-    - name: API_SERVER_CORS_ORIGINS
-      value: "*"
-    - name: HASS_URL
-      value: "{{HASS_URL}}"
-    - name: HASS_TOKEN
-      value: "{{HASS_TOKEN}}"
-    # OpenAI-compatible inference target for Hermes' API server platform.
-    # The config.yaml `model:` block (provider/base_url/api_key — written
-    # by post-deploy.py) is read by `hermes` CLI / dashboard but NOT by
-    # `gateway run`'s `api_server` platform when resolving credentials
-    # for /v1/chat/completions: `_resolve_runtime_agent_kwargs()` calls
-    # `resolve_runtime_provider(requested=os.getenv('HERMES_INFERENCE_PROVIDER'))`
-    # and that path's `_resolve_named_custom_runtime` short-circuits on
-    # `provider: custom` (config.yaml's value) before ever consulting
-    # `model.base_url`. Without OPENAI_BASE_URL + OPENAI_API_KEY in env,
-    # every chat completion through Open WebUI / Solilos / external API
-    # hits its auto-detect fallback and raises "No inference provider
-    # configured. Run 'hermes model'…" — observed live 2026-05-26.
-    # Setting these here makes the env path's openrouter-with-custom-
-    # endpoint detection route every API-server chat through Ollama,
-    # matching the `model.base_url` the config.yaml already declares.
-    - name: OPENAI_BASE_URL
-      value: "{{HERMES_LLM_PROVIDER_URL}}"
-    - name: OPENAI_API_KEY
-      value: "ollama"
-    # Web dashboard (config / API-key / session UI). The image runs it as
-    # its own s6 service gated by HERMES_DASHBOARD — designed to run beside
-    # `gateway run` in the same container, so we enable it here rather than
-    # as a second container. A second container from this image can't
-    # coexist on the shared hermes-data volume: each starts a full s6 tree
-    # whose `gateway-default` logger flock()s
-    # $HERMES_HOME/logs/gateways/default/lock, and two of them deadlock that
-    # lock — which left the gateway's API server unable to bind
-    # {{HERMES_API_PORT}}. One container = one s6 tree = no lock fight. Bind
-    # 127.0.0.1 so the dashboard refuses `--insecure` (it exposes API keys)
-    # and is reachable only through NPM + Authelia forward-auth.
-    - name: HERMES_DASHBOARD
-      value: "1"
-    - name: HERMES_DASHBOARD_HOST
-      value: "127.0.0.1"
-    - name: HERMES_DASHBOARD_PORT
-      value: "{{HERMES_DASHBOARD_PORT}}"
-    ports:
-    - containerPort: {{HERMES_API_PORT}}
-    # The in-container admin-profile gateway (#293) binds this on hostNetwork;
-    # declare it so the port is documented on the Pod even though the listener
-    # is brought up by post-deploy's `hermes -p admin gateway start`, not by
-    # the container's own `args`.
-    - containerPort: {{HERMES_ADMIN_API_PORT}}
-    # The in-container sol-deep-profile gateway (#332) — Sol on 12b for the
-    # "Gründlich" mode + crons — binds this the same way (post-deploy's
-    # `hermes -p sol-deep gateway start`); declared for documentation.
-    - containerPort: {{HERMES_DEEP_API_PORT}}
-    - containerPort: {{HERMES_DASHBOARD_PORT}}
-    volumeMounts:
-    - mountPath: /opt/data
-      name: hermes-data
-    # Read-only: hermes only *reads* skills (the loader scans them). The
-    # image chowns $HERMES_HOME (/opt/data) to the `hermes` user at init;
-    # a writable bind mount here lets that chown reach the host skills dir
-    # (leaving it owned by a container subuid), so the asset transport —
-    # running as the host user — then hits EACCES writing skills on every
-    # (re)install. A read-only mount can't be chowned, so the host dir
-    # keeps its host-user ownership.
-    - mountPath: /opt/data/skills/solilos
-      name: solilos-skills
-      readOnly: true
-    # Operator/admin skill pack (#176). Read-only for the same reason as
-    # solilos-skills above — Hermes only scans it. The asset transport ships
-    # this template's skills/admin-soul/ to the hostPath below; mounting it
-    # under the loader's scan root is what makes Hermes list the operator
-    # skills (admin-diagnose/admin-logs/admin-act).
-    - mountPath: /opt/data/skills/admin-soul
-      name: admin-soul-skills
-      readOnly: true
-    # Drafted skills go here, NOT under /opt/data/skills/solilos. Hermes'
-    # skill loader scans /opt/data/skills/solilos; anything that lands
-    # there is live immediately. Solilos's dynamic-skills SKILL.md writes
-    # drafts here instead, and an admin promotes them via the
-    # ServiceBay dashboard (issue #940). Keeping the pending dir
-    # outside the loader's scan root is the structural half of that
-    # gate — the SKILL.md is the prompt-level half.
-    - mountPath: /opt/data/skills-pending
-      name: solilos-skills-pending
-    - mountPath: /opt/data/notes
-      name: syncthing-notes
-    # solilos.db (rooms / voice / domain data) — shared with the chat +
-    # gatekeeper containers so both profile gateways running in this container
-    # read the same structured household data (#293 "auf den gleichen Daten").
-    - mountPath: /var/lib/solilos
-      name: solilos-data
-    - mountPath: /etc/cont-init.d/99-install-ddgs
-      name: hermes-data
-      subPath: 99-install-ddgs
-    # #299 — keep the admin gateway up across reboots. Sorts before the image's
-    # 02-reconcile-profiles hook; forces admin's recorded gateway_state to
-    # `running` so the reconciler auto-starts it on every boot.
-    - mountPath: /etc/cont-init.d/016-ensure-admin-gateway
-      name: hermes-data
-      subPath: 016-ensure-admin-gateway
-    # #332 — same reboot-survival hook for the sol-deep gateway (Sol on 12b).
-    - mountPath: /etc/cont-init.d/017-ensure-sol-deep-gateway
-      name: hermes-data
-      subPath: 017-ensure-sol-deep-gateway
-
-  # Privileged config sidecar (Solilos). The public chat pod can't write
-  # Hermes' own data dir (0700, owned by a foreign subuid), so an admin's
-  # soul edit from the panel is applied here instead: this container runs as
-  # the hermes user (10000) — owning /opt/data — and exposes a loopback-only
-  # API the chat container calls with the shared Hermes API key (no new
-  # secret). SOUL.md is read fresh per message, so a soul edit takes effect
-  # live, no restart. Reuses the chat image with a different entrypoint;
-  # model switching (which needs a restart) joins this agent too.
-  - name: config-agent
-    image: "{{CONFIG_AGENT_IMAGE}}"
-    command: ["python", "-m", "solilos_chat.config_agent"]
-    securityContext:
-      runAsUser: 10000
-      runAsGroup: 10000
-    env:
-    - name: AGENT_HOST
-      value: "127.0.0.1"
-    - name: AGENT_PORT
-      value: "{{CONFIG_AGENT_PORT}}"
-    # Same key Hermes' API server uses; the chat container presents it to reach
-    # this agent. No `ports:` block — loopback bind in a hostNetwork pod.
-    - name: API_SERVER_KEY
-      value: "{{HERMES_API_KEY}}"
-    - name: SOUL_PATH
-      value: "/opt/data/SOUL.md"
-    # Model switch: read config.yaml's model.model, list Ollama tags, and on
-    # change rewrite config.yaml + restart this merged service using the SB-MCP
-    # token already in config.yaml (read+lifecycle scope) — no new credential.
-    - name: CONFIG_PATH
-      value: "/opt/data/config.yaml"
-    - name: OLLAMA_URL
-      value: "{{HERMES_LLM_PROVIDER_URL}}"
-    # The merged ServiceBay service name (#271) — the config-agent restarts it
-    # via the SB API when an operator switches the model.
-    - name: HERMES_SERVICE
-      value: "solilos"
-    volumeMounts:
-    - mountPath: /opt/data
-      name: hermes-data
-
-  # Stateless household chat surface (#140). A static chat page served over
-  # Hermes' native session API. No own data store; all chat/session/memory
-  # lives in Hermes (~/.hermes). Behind Authelia forward-auth, the proxy reads
-  # the Remote-User header → Hermes uid so there's no second login (#134);
-  # API_SERVER_KEY stays server-side. The container is named `chat` so the
-  # podman pod-container name is `solilos-chat` (not `solilos-solilos-chat`).
+  # chat — the Sol Engine: one process owns the agent loop (direct Ollama
+  # /api/chat with per-turn model + reasoning), the session store
+  # (solilos.db), native LLM tracing, the timer scheduler with speaker
+  # delivery via HA assist_satellite.announce, the night crons, the chat
+  # surface, and the Ollama-compatible facade (/ollama) that HA's `ollama`
+  # integration uses so Sol is the Assist conversation agent. Behind Authelia
+  # forward-auth; the server reads the Remote-User header → resident uid so
+  # there's no second login (#134). The container is named `chat` so the
+  # podman pod-container name is `solilos-chat`.
   - name: chat
-    image: "{{HERMES_CHAT_IMAGE}}"
+    image: "{{CHAT_IMAGE}}"
     env:
     - name: SOLILOS_COMPONENT
       value: "chat"
     # Bind loopback only — a 0.0.0.0 bind under hostNetwork would put the
-    # chat surface on the LAN, bypassing Authelia. Only NPM reaches it.
+    # chat surface on the LAN, bypassing Authelia. NPM, HA and the gatekeeper
+    # reach it over the host loopback.
     - name: CHAT_HOST
       value: "127.0.0.1"
     - name: CHAT_PORT
-      value: "{{HERMES_CHAT_PORT}}"
-    - name: HERMES_URL
-      value: "http://127.0.0.1:{{HERMES_API_PORT}}"
-    # The admin-profile gateway (#293), started in the hermes container on
-    # HERMES_ADMIN_API_PORT. The chat proxy routes only the admin-gated
-    # servicebay-maintenance embed here (Remote-Groups∋admins, #209/#229); every
-    # resident session stays on HERMES_URL. A non-admin can never reach it — the
-    # server re-checks the gate at the routing layer.
-    - name: HERMES_ADMIN_URL
-      value: "http://127.0.0.1:{{HERMES_ADMIN_API_PORT}}"
-    # Bearer for Hermes' native API — held server-side, never in browser JS.
-    - name: API_SERVER_KEY
-      value: "{{HERMES_API_KEY}}"
+      value: "{{CHAT_PORT}}"
+    # Server-side bearer: HA's conversation agent and the gatekeeper present
+    # it on the Ollama facade. Never in browser JS.
+    - name: SOL_API_KEY
+      value: "{{SOL_API_KEY}}"
     # Authelia forwards the authenticated identity on Remote-User via NPM;
-    # the proxy folds it into the Hermes uid (#134). Absent header (direct
+    # the server folds it into the resident uid (#134). Absent header (direct
     # loopback offline test) falls back to DEFAULT_UID.
     - name: REMOTE_USER_HEADER
       value: "Remote-User"
     # Authelia also forwards the user's groups (comma-separated). The panel
-    # surfaces admin-only controls (skill/soul/model edits — phase 2) when
-    # this header lists ADMIN_GROUP.
+    # surfaces admin-only controls (skill/soul/model edits) when this header
+    # lists ADMIN_GROUP.
     - name: REMOTE_GROUPS_HEADER
       value: "Remote-Groups"
     - name: ADMIN_GROUP
       value: "admins"
     - name: DEFAULT_UID
       value: "{{DEFAULT_UID}}"
-    # Read-write mount of the skill pack so admins can edit the standard set
-    # from the panel (Hermes exposes no skill-body API). Soul + model are
-    # read AND written through the config sidecar, so the chat container needs
-    # no SOUL.md / config mount of its own.
+    # Read-write mount of the household skill pack: the panel edits it, the
+    # engine reads cron-job skill bodies from it.
     - name: SKILLS_DIR
       value: "/data/skills"
-    # The config sidecar in this Pod (loopback). The panel reads + writes the
-    # soul and switches the model through it, because the chat container can't
-    # touch Hermes' own data dir. Auth reuses API_SERVER_KEY (above).
-    - name: CONFIG_AGENT_URL
-      value: "{{CONFIG_AGENT_URL}}"
+    # The household soul on the chat-owned solilos-data volume (post-deploy
+    # seeds it; the panel writes it directly). Read fresh per turn,
+    # mtime-cached — an edit lands on the next turn, no restart.
+    - name: SOUL_PATH
+      value: "/var/lib/solilos/SOUL.md"
+    # The operator persona: soul + skill pack folded into the admin profile's
+    # prompt (read-only mount below).
+    - name: ADMIN_SOUL_PATH
+      value: "/data/admin-soul/SOUL.md"
+    - name: ADMIN_SKILLS_DIR
+      value: "/data/admin-soul"
+    # The servicebay_admin MCP endpoint + the token file the post-deploy
+    # mints (scopes read+lifecycle+mutate — no destroy/exec). Only the admin
+    # profile's toolbox uses it; household turns never see these tools.
+    - name: SB_MCP_URL
+      value: "{{SERVICEBAY_MCP_URL}}"
+    - name: SB_MCP_TOKEN_PATH
+      value: "/var/lib/solilos/sb-admin-token"
     # Context window (tokens) = the chat-compaction cap (#210) + /context.
     # Empty/auto => AUTO-DERIVE from the live Ollama active model at runtime
-    # (#235): the proxy reads OLLAMA_URL's /api/ps for the window the model is
-    # actually loaded at, so the cap matches the loaded model and adapts per
-    # model. A positive integer OVERRIDES the derivation (ops control).
+    # (#235). A positive integer OVERRIDES the derivation (ops control).
     - name: CONTEXT_WINDOW
       value: "{{CONTEXT_WINDOW}}"
-    # Where Ollama's API lives (host loopback; hostNetwork pod). Queried for the
-    # active model's loaded context window when CONTEXT_WINDOW auto-derives.
+    # Where Ollama's API lives (host loopback; hostNetwork pod) — the
+    # engine's LLM backend.
     - name: OLLAMA_URL
       value: "{{OLLAMA_URL}}"
     # Optional Authelia logout URL for the sidebar footer; empty hides the
     # link (no dead link when unset).
     - name: LOGOUT_URL
       value: "{{LOGOUT_URL}}"
-    # Where the proxy persists image attachments Hermes drops (#202): Hermes
-    # stores an inbound image as a `[screenshot]` placeholder with no way to
-    # read the pixels back, so the proxy holds them here and re-attaches them
-    # on history load. The one stateful store in an otherwise stateless
-    # container.
+    # Where the server persists image attachments (#202).
     - name: ATTACHMENTS_DIR
       value: "/data/attachments"
     # CSP `frame-ancestors` source list (#228): who may iframe the chat.
@@ -390,98 +157,53 @@ spec:
     # `'self' https://admin.dopp.cloud` so admin.dopp.cloud can frame it.
     - name: FRAME_ANCESTORS
       value: "{{FRAME_ANCESTORS}}"
-    # Adaptive model routing (latency bundle): the model is bound at Hermes
-    # session create from the chosen reasoning effort. A Schnell/FAST
-    # conversation → FAST_MODEL (gemma4:e2b: ~4× faster prefill + reliable HA
-    # tool-calls); a Gründlich/thorough one → THOROUGH_MODEL (gemma4:12b).
-    # Empty leaves routing off (Hermes' configured model.model is used).
+    # The engine model map (box-benched 2026-06-12): the household/voice hot
+    # path runs FAST_MODEL; "Gründlich" chats, the admin persona and the
+    # night crons run THOROUGH_MODEL.
     - name: FAST_MODEL
       value: "{{FAST_MODEL}}"
     - name: THOROUGH_MODEL
       value: "{{THOROUGH_MODEL}}"
     - name: TZ
       value: "{{TZ}}"
-    # solilos.db holds the topics registry + chat<->topic assignments (#241).
-    # Same file the schema-init initContainer migrates and the gatekeeper
-    # reads for voice speaker-ID. Bind-mounted read-write so topic operations
-    # can write session_topics rows.
+    # solilos.db holds the engine sessions/messages/timers/cron stamps plus
+    # topics, mentions and traces. Same file the schema-init initContainer
+    # migrates and the gatekeeper reads for voice speaker-ID.
     - name: SOLILOS_DB_PATH
       value: "/var/lib/solilos/solilos.db"
-    # The Obsidian notes vault (Syncthing-synced), read for the topic dashboard's
-    # per-topic note list (#244). Same path the ingestion/notes-search skills use
-    # inside the Hermes runtime.
+    # The Obsidian notes vault (Syncthing-synced) — the engine's notes tools
+    # write here, the topic dashboard reads (#244).
     - name: NOTES_DIR
       value: "/opt/data/notes"
-    # The always-on Ollama trace proxy (the `trace` container, loopback). At turn
-    # time the chat server pulls its /__traces__ calls in the turn window to
-    # correlate them to a per-message trace_id and persist the trace (#306).
-    - name: TRACE_PROXY_URL
-      value: "http://127.0.0.1:{{TRACE_PROXY_PORT}}"
-    # Sol Engine (Hermes replacement): the chat server runs the agent loop
-    # itself — direct HA access for the device tools + the prompt-injected
-    # entity registry. Same long-lived token the hermes container held.
+    # The engine's direct Home Assistant access: device-control tools, the
+    # prompt-injected entity registry, and timer announcements on the PE
+    # speaker (assist_satellite.announce).
     - name: HASS_URL
       value: "{{HASS_URL}}"
     - name: HASS_TOKEN
       value: "{{HASS_TOKEN}}"
-    # Souls for the engine's prompt assembly: the household soul lives on the
-    # chat-owned solilos-data volume (the Hermes data dir is 0700/foreign-subuid
-    # and unreadable here; post-deploy seeds/moves the file). Read fresh per
-    # turn, mtime-cached — a panel edit lands on the next turn, no restart.
-    - name: SOUL_PATH
-      value: "/var/lib/solilos/SOUL.md"
-    - name: ADMIN_SOUL_PATH
-      value: "/data/admin-soul/SOUL.md"
     # No `ports:` block — hostNetwork pod, the listener binds the host
-    # directly (loopback:{{HERMES_CHAT_PORT}}); a ports mapping alongside
+    # directly (loopback:{{CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint
     # as the gatekeeper).
-    # Skills mount read-write so admins can edit the standard set: the skills
-    # host dir is owned by the host user and this container is rootless
-    # (container-root maps to that user), so it can replace files there. A
-    # body edit is live; a frontmatter change needs a Hermes restart, which
-    # the panel surfaces.
     volumeMounts:
     - mountPath: /data/skills
       name: solilos-skills
+    - mountPath: /data/admin-soul
+      name: admin-soul-skills
+      readOnly: true
     - mountPath: /data/attachments
       name: solilos-chat-attachments
     - mountPath: /var/lib/solilos
       name: solilos-data
     - mountPath: /opt/data/notes
-      name: solilos-notes
-    # Operator soul for the engine's admin profile (read-only; the household
-    # soul rides the solilos-data volume already mounted above).
-    - mountPath: /data/admin-soul
-      name: admin-soul-skills
-      readOnly: true
+      name: syncthing-notes
 
-  # trace — the ALWAYS-ON Ollama trace proxy (permanent LLM traceability).
-  # Hermes' providers.ollama.api (HERMES_LLM_PROVIDER_URL) points at this on
-  # TRACE_PROXY_PORT; it forwards transparently to the real Ollama (OLLAMA_URL)
-  # and captures a per-call trace — prompt block sizes (system/tools/history/
-  # user), the full tool list with per-tool sizes, token usage, and timing —
-  # into a ring buffer served at /__traces__ so the chat client can enrich each
-  # turn's trace (which skills / MCP tool descriptions get dragged in, where the
-  # tokens/time go). FAIL-OPEN: a capture error never breaks the LLM path. Reuses
-  # the chat image (no new image), different entrypoint.
-  - name: trace
-    image: "{{HERMES_CHAT_IMAGE}}"
-    command: ["python", "-m", "solilos_chat.trace_proxy"]
-    env:
-    - name: SOLILOS_COMPONENT
-      value: "trace"
-    - name: TRACE_PROXY_HOST
-      value: "127.0.0.1"
-    - name: TRACE_PROXY_PORT
-      value: "{{TRACE_PROXY_PORT}}"
-    # The REAL Ollama the proxy forwards to (not itself). hostNetwork loopback.
-    - name: OLLAMA_UPSTREAM
-      value: "{{OLLAMA_URL}}"
-
-  # gatekeeper — Solilos-published Wyoming-to-Hermes bridge. Phase 0/1
-  # runs pass-through with uid = DEFAULT_UID; Phase 2 reads
-  # voice_embeddings from solilos.db and resolves uid per turn.
+  # gatekeeper — Solilos-published Wyoming bridge for wyoming-satellite
+  # hardware (the Voice PE speaker rides HA's Assist pipeline instead, which
+  # fronts the same engine via the chat facade). Resolves the speaking
+  # resident (speaker-ID, #84) and the satellite's room, then runs the turn
+  # against the engine's Ollama facade.
   - name: gatekeeper
     image: "{{GATEKEEPER_IMAGE}}"
     env:
@@ -495,39 +217,26 @@ spec:
       value: "{{PIPER_URI}}"
     - name: OPENWAKEWORD_URI
       value: "{{OPENWAKEWORD_URI}}"
-    # Voice always talks to the HOUSEHOLD gateway (#293): residents speak to
-    # Sol, never the admin profile. HERMES_API_PORT is the sticky-default
-    # household gateway (:8642). The gatekeeper is deliberately given NO admin
-    # URL — there is no HERMES_ADMIN_URL here — so a voice turn can never reach
-    # the admin gateway (:8643). The chat proxy is the only component that
-    # routes to admin, behind the #209/#229 Remote-Groups gate.
-    - name: HERMES_URL
-      value: "http://127.0.0.1:{{HERMES_API_PORT}}"
-    - name: HERMES_TOKEN
-      value: "{{HERMES_API_KEY}}"
-    # Optional fast/slow adaptive routing (#187): blank = single-session
-    # passthrough on Hermes' default model; set to a small model id to try
-    # it first per turn and escalate to the default on a low-quality reply.
-    - name: FAST_HERMES_MODEL
-      value: "{{FAST_HERMES_MODEL}}"
+    # Voice always talks to the engine's household profile via the Ollama
+    # facade on the chat server (host loopback). There is deliberately no
+    # admin URL here — a voice turn can never reach the admin persona.
+    - name: SOL_ENGINE_URL
+      value: "http://127.0.0.1:{{CHAT_PORT}}/ollama"
+    - name: SOL_API_KEY
+      value: "{{SOL_API_KEY}}"
     - name: DEFAULT_UID
       value: "{{DEFAULT_UID}}"
-    # Push endpoint — Hermes calls POST /push for cron-fire / proactive
-    # deliveries. Bound to loopback: Hermes shares the host netns
-    # (hostNetwork) and reaches it at 127.0.0.1. A 0.0.0.0 bind under
-    # hostNetwork would put this on the LAN, where a blank PUSH_TOKEN is
-    # unauthenticated (#116). Not exposed via hostPort.
+    # Push endpoint — proactive deliveries land here. Bound to loopback: a
+    # 0.0.0.0 bind under hostNetwork would put this on the LAN, where a
+    # blank PUSH_TOKEN is unauthenticated (#116). Not exposed via hostPort.
     - name: PUSH_HOST
       value: "127.0.0.1"
     - name: PUSH_PORT
       value: "10750"
     - name: PUSH_TOKEN
       value: "{{PUSH_TOKEN}}"
-    # Room MCP server — Hermes calls set_room/list_rooms here to self-enrol
-    # a satellite's room without holding PUSH_TOKEN (#104). Bound to
-    # loopback for the same reason as PUSH_HOST (#116): Hermes reaches it
-    # at 127.0.0.1 via GATEKEEPER_MCP_URL. MCP_PORT is hard-coded like
-    # PUSH_PORT and must match the port in GATEKEEPER_MCP_URL (10760).
+    # Room MCP server (set_room/list_rooms). Bound to loopback for the same
+    # reason as PUSH_HOST (#116). MCP_PORT is hard-coded like PUSH_PORT.
     - name: MCP_HOST
       value: "127.0.0.1"
     - name: MCP_PORT
@@ -538,16 +247,16 @@ spec:
     # Empty by default; populated per household once devices are paired.
     - name: VOICE_PE_DEVICES
       value: '{{VOICE_PE_DEVICES}}'
-    # Path to solilos.db so Phase 2 speaker-ID can read voice_embeddings.
+    # Path to solilos.db so speaker-ID can read voice_embeddings.
     - name: SOLILOS_DB_PATH
       value: "/var/lib/solilos/solilos.db"
-    # Phase-2 speaker-ID (#84). Off by default. Turning it on requires the
-    # ML image (set GATEKEEPER_IMAGE to ghcr.io/mdopp/solilos-gatekeeper-ml,
-    # which bakes in SpeechBrain/torch) — with the default image the
-    # extractor isn't importable and the gatekeeper safely falls back to
-    # DEFAULT_UID. The ECAPA model is cached under /var/lib/solilos (the
-    # solilos-data volume), so it downloads once. Biometric: stores per-
-    # resident voice embeddings in solilos.db.voice_embeddings.
+    # Speaker-ID (#84). Off by default. Turning it on requires the ML image
+    # (set GATEKEEPER_IMAGE to ghcr.io/mdopp/solilos-gatekeeper-ml, which
+    # bakes in SpeechBrain/torch) — with the default image the extractor
+    # isn't importable and the gatekeeper safely falls back to DEFAULT_UID.
+    # The ECAPA model is cached under /var/lib/solilos (the solilos-data
+    # volume), so it downloads once. Biometric: stores per-resident voice
+    # embeddings in solilos.db.voice_embeddings.
     - name: SOLILOS_SPEAKER_ID_ENABLED
       value: "{{SOLILOS_SPEAKER_ID_ENABLED}}"
     - name: SOLILOS_SPEAKER_ID_THRESHOLD
@@ -565,54 +274,26 @@ spec:
     # mappings alongside hostNetwork makes `podman kube play` reject the
     # spec with "PortMappings can only be used with Bridge, slirp4netns,
     # or pasta networking" — observed during a household-stack install
-    # 2026-05-25. GATEKEEPER_PORT remains in variables.json and drives
-    # the servicebay.ports annotation, the NPM proxy host, and the
-    # GATEKEEPER_URI env above via {{VAR}} substitution.
-
-  # The admin soul ships no service of its own — the operator persona lives
-  # in the shared Hermes (skills under /opt/data/skills/admin-soul + the
-  # mutate-scoped servicebay_admin MCP entry the post-deploy splices into
-  # Hermes' config.yaml). This container is only an idle presence so the
-  # operator skill pack has a clearly-named owner in the Pod; it never reads
-  # the skills itself. A stock minimal busybox `sleep infinity` rather than a
-  # second Hermes/LLM.
-  - name: admin-soul
-    image: "{{ADMIN_SOUL_IMAGE}}"
-    command: ["sleep", "infinity"]
-    env:
-    - name: SOLILOS_COMPONENT
-      value: "admin-soul"
-    - name: TZ
-      value: "{{TZ}}"
-    volumeMounts:
-    - mountPath: /opt/data/skills/admin-soul
-      name: admin-soul-skills
+    # 2026-05-25.
 
   volumes:
-  - name: hermes-data
-    hostPath:
-      path: {{DATA_DIR}}/hermes
-      type: DirectoryOrCreate
   # Household skill pack: shipped by ServiceBay's asset transport from this
   # template's skills/household/ to {{DATA_DIR}}/solilos/skills/household/.
-  # Mounted read-only into the hermes container at /opt/data/skills/solilos
-  # and read-write into the chat container at /data/skills (panel edits).
+  # Mounted read-write into the chat container (panel edits; the engine
+  # reads cron-job skill bodies).
   - name: solilos-skills
     hostPath:
       path: {{DATA_DIR}}/solilos/skills/household
       type: DirectoryOrCreate
-  # Operator skill pack (#176): shipped by the asset transport from this
-  # template's skills/admin-soul/ to {{DATA_DIR}}/solilos/skills/admin-soul/.
-  # Mounted read-only into hermes at /opt/data/skills/admin-soul (a distinct
-  # loader scan root) and into the admin-soul idle container.
+  # Operator skill pack + soul (#176): shipped by the asset transport from
+  # this template's skills/admin-soul/. Read-only — the admin profile's
+  # prompt assembly reads it.
   - name: admin-soul-skills
     hostPath:
       path: {{DATA_DIR}}/solilos/skills/admin-soul
       type: DirectoryOrCreate
-  - name: solilos-skills-pending
-    hostPath:
-      path: {{DATA_DIR}}/solbay/skills-pending
-      type: DirectoryOrCreate
+  # Notes vault (Syncthing share): the engine's notes tools write, the topic
+  # dashboard reads.
   - name: syncthing-notes
     hostPath:
       path: {{DATA_DIR}}/file-share/data/notes
@@ -623,26 +304,22 @@ spec:
       path: {{DATA_DIR}}/solbay/chat-attachments
       type: DirectoryOrCreate
   # The Solilos data volume holds solilos.db (SQLite, populated by the
-  # schema-init initContainer, read by the gatekeeper for Phase 2
-  # voice_embeddings and by the chat container for topics). Reused as-is
-  # ({{DATA_DIR}}/solbay) across the #271 merge — NO data migration.
+  # schema-init initContainer), the engine SOUL.md and the sb-admin-token
+  # file. Reused as-is ({{DATA_DIR}}/solbay) — NO data migration.
   - name: solilos-data
     hostPath:
       path: {{DATA_DIR}}/solbay
       type: DirectoryOrCreate
-  # Notes vault (Syncthing): topic dashboard reads notes tagged #topic/<slug>.
-  - name: solilos-notes
-    hostPath:
-      path: {{DATA_DIR}}/file-share/data/notes
-      type: DirectoryOrCreate
 
 # Post-deploy: ./post-deploy.py
 #
-# One ordered script sequencing the four merged surfaces' setup (#271):
-#   1. hermes phase  — write config.yaml + SB-MCP block + SOUL.md + HA token
-#                      adopt + jellyfin + gateway env + ddgs install script.
-#   2. chat phase    — decommission the retired open-webui / hermes-webui pods.
-#   3. solbay phase  — wait_for_hermes → register crons → collect + merge
-#                      household mcp_servers (servicebay-mcp + gatekeeper-mcp).
-#   4. admin-soul    — splice the servicebay_admin (full-admin) mcp entry.
-#   5. ONE restart   — POST /api/services/solilos/action {restart} (last step).
+# The slim engine-era sequence:
+#   1. engine soul   — seed/sync SOUL.md on the solilos-data volume (#283 guard).
+#   2. HA            — adopt the long-lived token; auto-install the jellyfin
+#                      integration; wire the VOICE PIPELINE (wyoming whisper +
+#                      piper entries, the ollama-integration conversation agent
+#                      pointing at the chat facade, the "Sol" Assist pipeline,
+#                      preferred + assigned to the Voice PE).
+#   3. admin MCP     — mint the servicebay_admin token (read+lifecycle+mutate)
+#                      and drop it at {{DATA_DIR}}/solbay/sb-admin-token.
+#   4. ONE restart   — POST /api/services/solilos/action {restart} (last step).

@@ -57,7 +57,7 @@ jobs:
           - image: solilos-chat
             context: solilos-chat
             inject_version: true
-            description: "Solilos chat — stateless aiohttp proxy serving a static chat page over Hermes' native session API. Reads the Authelia Remote-User header for SSO; holds API_SERVER_KEY server-side. Replaces the fragile in-process hermes-webui."
+            description: "Solilos chat — the Sol Engine agent core (direct Ollama agent loop, HA tools, scheduler, crons) with its chat surface and the Ollama-compatible facade for HA Assist. Reads the Authelia Remote-User header for SSO; holds SOL_API_KEY server-side."
     steps:
       - name: Checkout
         uses: actions/checkout@v6

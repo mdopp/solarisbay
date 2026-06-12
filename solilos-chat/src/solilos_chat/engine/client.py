@@ -19,8 +19,10 @@ import contextvars
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from solilos_chat.engine import store
 from solilos_chat.engine.ollama import OllamaChat, OllamaError
@@ -39,6 +41,13 @@ current_uid: contextvars.ContextVar[str] = contextvars.ContextVar(
 # Tool-call passes per turn: enough for list->act->confirm chains plus a
 # retry, small enough that a confused model can't spin.
 _MAX_PASSES = 6
+
+_LOCAL_TZ = ZoneInfo("Europe/Berlin")
+
+
+def _now_hint() -> str:
+    now = datetime.now(_LOCAL_TZ)
+    return f"[Aktuelle Zeit: {now.strftime('%A, %d.%m.%Y, %H:%M Uhr %Z')}]"
 
 
 class EngineError(Exception):
@@ -186,8 +195,73 @@ class EngineClient:
         system = await self._system_prompt(session_id)
         messages = [{"role": "system", "content": system}]
         messages += store.history(self._db_path, session_id)
-        tools = self._profile.toolbox.definitions()
         think = self._profile.think_default or reasoning_effort not in ("", "none")
+        async for event in self._loop(
+            messages, think=think, session_id=session_id, persist=True
+        ):
+            yield event
+
+    async def respond(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        uid: str = "",
+        source: str = "assist",
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stateless turn for the Ollama facade (HA Assist / gatekeeper).
+
+        The caller owns the conversation history and resends it per turn;
+        nothing persists to the store. Incoming system messages (HA's
+        configurable prompt) are folded after the profile's own system block,
+        and the wall-clock hint rides the last user message — same lever the
+        session path uses, and prefix-cache-friendly (the stable soul+registry
+        block stays byte-identical across turns).
+        """
+        token = current_uid.set(uid)
+        try:
+            system = await self._system_prompt_stateless()
+            incoming = [
+                str(m.get("content") or "")
+                for m in messages
+                if m.get("role") == "system" and m.get("content")
+            ]
+            msgs: list[dict[str, Any]] = [
+                {"role": "system", "content": "\n\n".join([system, *incoming])}
+            ]
+            msgs += [dict(m) for m in messages if m.get("role") != "system"]
+            for m in reversed(msgs):
+                if m.get("role") == "user":
+                    m["content"] = f"{_now_hint()}\n\n{m.get('content') or ''}"
+                    break
+            async for event in self._loop(
+                msgs,
+                think=self._profile.think_default,
+                session_id=source,
+                persist=False,
+            ):
+                yield event
+        except OllamaError as e:
+            log.error("engine.respond.failed", source=source, error=str(e))
+            raise EngineError(str(e)) from e
+        finally:
+            current_uid.reset(token)
+
+    async def _loop(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        think: bool,
+        session_id: str,
+        persist: bool,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """The agent loop: stream, dispatch tools, feed results back, repeat.
+
+        `persist=False` runs the identical loop without store writes (the
+        stateless facade path); traces record either way — session turns under
+        their session id, stateless ones under the source label.
+        """
+        await self._profile.toolbox.prepare()
+        tools = self._profile.toolbox.definitions()
 
         final_content = ""
         final_thinking = ""
@@ -215,12 +289,13 @@ class EngineClient:
                 wall_s=result.wall_s,
                 context_window=self._context_window,
             )
-            store.add_usage(
-                self._db_path,
-                session_id,
-                result.prompt_tokens,
-                result.completion_tokens,
-            )
+            if persist:
+                store.add_usage(
+                    self._db_path,
+                    session_id,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                )
             final_thinking = result.thinking or final_thinking
 
             if not result.tool_calls:
@@ -228,13 +303,14 @@ class EngineClient:
                 break
 
             # Tool pass: persist the call, dispatch, feed results back.
-            store.append_message(
-                self._db_path,
-                session_id,
-                "assistant",
-                result.content,
-                tool_calls=result.tool_calls,
-            )
+            if persist:
+                store.append_message(
+                    self._db_path,
+                    session_id,
+                    "assistant",
+                    result.content,
+                    tool_calls=result.tool_calls,
+                )
             messages.append(
                 {
                     "role": "assistant",
@@ -254,7 +330,8 @@ class EngineClient:
                 yield {"type": "tool.started", "data": {"tool": name}}
                 output = await self._profile.toolbox.dispatch(name, args)
                 yield {"type": "tool.completed", "data": {"tool": name}}
-                store.append_message(self._db_path, session_id, "tool", output)
+                if persist:
+                    store.append_message(self._db_path, session_id, "tool", output)
                 messages.append({"role": "tool", "content": output, "tool_name": name})
         else:
             # Pass budget exhausted mid-tool-chain: surface what we have.
@@ -263,13 +340,14 @@ class EngineClient:
                 or "Entschuldige, das hat zu viele Schritte gebraucht — ich breche hier ab."
             )
 
-        store.append_message(
-            self._db_path,
-            session_id,
-            "assistant",
-            final_content,
-            reasoning=final_thinking,
-        )
+        if persist:
+            store.append_message(
+                self._db_path,
+                session_id,
+                "assistant",
+                final_content,
+                reasoning=final_thinking,
+            )
         yield {
             "type": "run.completed",
             "data": {
@@ -292,6 +370,17 @@ class EngineClient:
         overlay = store.get_overlay(self._db_path, session_id)
         if overlay:
             parts.append(overlay)
+        if self._profile.registry is not None:
+            block = await self._profile.registry.prompt_block()
+            if block:
+                parts.append(block)
+        return "\n\n".join(p for p in parts if p.strip())
+
+    async def _system_prompt_stateless(self) -> str:
+        """Profile prompt without a session overlay (the facade path)."""
+        parts = [self._soul()]
+        if self._profile.extra_prompt:
+            parts.append(self._profile.extra_prompt)
         if self._profile.registry is not None:
             block = await self._profile.registry.prompt_block()
             if block:

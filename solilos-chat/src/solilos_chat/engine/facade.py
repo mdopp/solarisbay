@@ -1,0 +1,152 @@
+"""Ollama-compatible facade — the engine as a Home Assistant conversation agent.
+
+HA 2026.6's core `openai_conversation` integration has no custom base_url, but
+its `ollama` integration takes a free URL + optional Bearer api_key and speaks
+exactly the protocol the engine already uses downstream. So the engine exposes
+a minimal Ollama surface under `/ollama` on the chat port:
+
+  GET  /ollama/api/tags     — the config-flow validation call (`client.list()`)
+  GET  /ollama/api/version  — cheap liveness some ollama clients ping
+  POST /ollama/api/chat     — the conversation call, NDJSON-streamed or single
+
+"Models" are engine profiles: `sol` (household, fast) and `sol-deep` (12b,
+thinks). HA resends its conversation history per turn; the engine runs its
+own tool loop server-side and streams only content deltas back — HA never
+sees tool_calls, so its MAX_TOOL_ITERATIONS loop runs exactly once. The
+voice-gatekeeper speaks the same surface (stream=false) for wyoming-satellite
+hardware.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from typing import Any
+
+from aiohttp import web
+
+from solilos_chat.engine.client import EngineClient, EngineError
+from solilos_chat.logging import log
+
+
+def _model_entry(name: str) -> dict[str, Any]:
+    # Enough fields for the ollama python client's pydantic ListResponse.
+    return {
+        "name": name,
+        "model": name,
+        "modified_at": "2026-01-01T00:00:00Z",
+        "size": 0,
+        "digest": "sol-engine",
+        "details": {"family": "sol", "parameter_size": "", "format": ""},
+    }
+
+
+def _authorized(request: web.Request, api_key: str) -> bool:
+    if not api_key:
+        return True
+    return request.headers.get("Authorization", "") == f"Bearer {api_key}"
+
+
+def _chunk(model: str, content: str, done: bool, done_reason: str = "") -> bytes:
+    body: dict[str, Any] = {
+        "model": model,
+        "created_at": datetime.now(UTC).isoformat(),
+        "message": {"role": "assistant", "content": content},
+        "done": done,
+    }
+    if done:
+        body["done_reason"] = done_reason or "stop"
+    return (json.dumps(body, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def add_facade_routes(
+    app: web.Application,
+    *,
+    clients: dict[str, EngineClient],
+    api_key: str,
+    default_uid: str,
+) -> None:
+    async def tags(request: web.Request) -> web.Response:
+        if not _authorized(request, api_key):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return web.json_response({"models": [_model_entry(name) for name in clients]})
+
+    async def version(request: web.Request) -> web.Response:
+        if not _authorized(request, api_key):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return web.json_response({"version": "sol-engine"})
+
+    async def chat(request: web.Request) -> web.StreamResponse:
+        if not _authorized(request, api_key):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response({"error": "invalid json"}, status=400)
+        model = str(body.get("model") or "")
+        client = clients.get(model.removesuffix(":latest"))
+        if client is None:
+            return web.json_response(
+                {"error": f"model '{model}' not found"}, status=404
+            )
+        messages = body.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return web.json_response({"error": "messages required"}, status=400)
+        stream = body.get("stream", True)
+        uid = str(body.get("user") or default_uid)
+        log.info("engine.facade.turn", model=model, uid=uid, n_messages=len(messages))
+
+        if not stream:
+            try:
+                answer = await _drain(client, messages, uid)
+            except EngineError:
+                return web.json_response({"error": "engine unavailable"}, status=502)
+            return web.Response(
+                body=_chunk(model, answer, done=True),
+                content_type="application/json",
+            )
+
+        resp = web.StreamResponse(headers={"Content-Type": "application/x-ndjson"})
+        await resp.prepare(request)
+        streamed = ""
+        try:
+            async for event in client.respond(messages, uid=uid, source="assist"):
+                if event["type"] == "assistant.delta":
+                    delta = str(event["data"].get("delta") or "")
+                    if delta:
+                        streamed += delta
+                        await resp.write(_chunk(model, delta, done=False))
+                elif event["type"] == "run.completed":
+                    final = _final_answer(event)
+                    # A tool turn can finish with no streamed deltas — surface
+                    # the final answer as one late chunk (the #258 pattern).
+                    if final and not streamed.strip():
+                        await resp.write(_chunk(model, final, done=False))
+        except EngineError as e:
+            log.error("engine.facade.failed", model=model, error=str(e))
+            await resp.write(_chunk(model, "", done=True, done_reason="error"))
+            return resp
+        await resp.write(_chunk(model, "", done=True))
+        return resp
+
+    app.router.add_get("/ollama/api/tags", tags)
+    app.router.add_get("/ollama/api/version", version)
+    app.router.add_post("/ollama/api/chat", chat)
+
+
+async def _drain(client: EngineClient, messages: list[Any], uid: str) -> str:
+    answer = ""
+    streamed = ""
+    async for event in client.respond(messages, uid=uid, source="assist"):
+        if event["type"] == "assistant.delta":
+            streamed += str(event["data"].get("delta") or "")
+        elif event["type"] == "run.completed":
+            answer = _final_answer(event)
+    return answer or streamed
+
+
+def _final_answer(event: dict[str, Any]) -> str:
+    for msg in event.get("data", {}).get("messages", []):
+        if msg.get("role") == "assistant" and msg.get("content"):
+            return str(msg["content"])
+    return ""

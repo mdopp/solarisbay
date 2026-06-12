@@ -1,10 +1,11 @@
 # Solilos — house rules
 
 Solilos is a household AI assistant packaged as ServiceBay artifacts: ServiceBay
-Pod-YAML templates, a Hermes skill pack, the `voice-gatekeeper` Wyoming↔Hermes
-bridge (Python, the code-heavy part), the `database` alembic schema-init
-sidecar, and the bundled `solbay` stack. It runs **on ServiceBay**. See
-`README.md` for the full layout and the two install paths.
+Pod-YAML templates, the `solilos-chat` Sol Engine (agent core + chat surface,
+the code-heavy part), its skill packs (markdown prompt content), the
+`voice-gatekeeper` Wyoming bridge, the `database` alembic schema-init sidecar,
+and the bundled `solbay` stack. It runs **on ServiceBay**. See `README.md` for
+the full layout.
 
 These rules apply to every session, human or agent.
 
@@ -33,11 +34,11 @@ These rules apply to every session, human or agent.
 ## Verify in the real environment
 
 - Type-check + tests prove code correctness, not **feature** correctness.
-- Template (`templates/**`), Hermes skill (`**/skills/*/SKILL.md`),
-  `voice-gatekeeper`, `database`/migration, `stacks/**`, and `plugin.yaml`/
-  `__init__.py` changes are verified by **deploying the changed artifact through
-  ServiceBay onto the box** and checking the Solilos runtime — not by CI alone
-  (CI only builds images). If you can't verify on the box, say so explicitly.
+- Template (`templates/**`), skill (`**/skills/*/SKILL.md`), `solilos-chat`,
+  `voice-gatekeeper`, `database`/migration and `stacks/**` changes are verified
+  by **deploying the changed artifact through ServiceBay onto the box** and
+  checking the Solilos runtime — not by CI alone (CI only builds images). If
+  you can't verify on the box, say so explicitly.
 
 ## Releases
 

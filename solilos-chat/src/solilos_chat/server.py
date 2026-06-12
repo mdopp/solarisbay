@@ -1,9 +1,9 @@
-"""aiohttp app: serve the static chat page and proxy turns to Hermes.
+"""aiohttp app: the chat surface over the in-process Sol Engine.
 
-Stateless by design — the server holds no chat/session store. The browser
-keeps the current session id and sends it back with each turn; on the first
-turn (no id) the server creates a session bound to the SSO identity and
-returns the id. All chat/session state lives in Hermes (`~/.hermes`).
+The browser keeps the current session id and sends it back with each turn;
+on the first turn (no id) the server creates a session bound to the SSO
+identity and returns the id. Chat/session state lives in solilos.db via the
+engine's store; the server itself stays a thin routing layer.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import aiohttp
 from aiohttp import web
 
 from solilos_chat import (
@@ -35,8 +34,9 @@ from solilos_chat import (
 )
 from solilos_chat.attachments import AttachmentStore, attach_to_messages
 from solilos_chat.context import STATIC_DEFAULT, ContextWindow
-from solilos_chat.engine.client import EngineError
-from solilos_chat.hermes import HermesClient, HermesError, _answer_from_messages
+from solilos_chat.engine.client import EngineClient, EngineError
+from solilos_chat.engine.facade import add_facade_routes
+from solilos_chat.engine.tools.mcp_tools import McpToolbox
 from solilos_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -218,17 +218,15 @@ def is_admin(request: web.Request, header: str, admin_group: str) -> bool:
 
 def build_app(
     *,
-    hermes: HermesClient,
-    hermes_admin: HermesClient | None = None,
-    hermes_deep: HermesClient | None = None,
+    hermes: EngineClient | Any,
+    hermes_admin: EngineClient | Any = None,
+    hermes_deep: EngineClient | Any = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
     admin_group: str = "admins",
     skills_dir: str = "/data/skills",
     soul_path: str = "/data/SOUL.md",
-    config_agent_url: str = "http://127.0.0.1:8650",
-    agent_token: str = "",
     logout_url: str = "",
     context_window: ContextWindow | int = STATIC_DEFAULT,
     compaction_threshold: float = compaction.DEFAULT_THRESHOLD,
@@ -238,9 +236,9 @@ def build_app(
     thorough_model: str = "",
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
     notes_dir: str = "/opt/data/notes",
-    trace_proxy_url: str = "http://127.0.0.1:11436",
     trace_recorder: Any = None,
     residents: list[str] | None = None,
+    api_key: str = "",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -259,13 +257,11 @@ def build_app(
     # connection is what actually interrupts the model's generation).
     cancels: dict[str, asyncio.Event] = {}
 
-    # Multi-profile routing (#293): household sessions ride `hermes` (the
-    # household gateway, :8642); admin/servicebay-maintenance sessions ride the
-    # admin gateway (:8643). A session created on the admin gateway is recorded
-    # here so its follow-up turns route back to the same gateway — Hermes session
-    # state is per-gateway, so a session must stay on the instance that holds it.
-    # When no admin gateway is configured both fall back to `hermes` (single-
-    # instance / offline-test topology).
+    # Profile routing: household sessions ride `hermes` (the engine's
+    # household profile); admin/servicebay-maintenance sessions ride the
+    # admin profile. A session created on the admin profile is recorded here
+    # so its follow-up turns route back to the same profile. When no admin
+    # client is configured both fall back to `hermes` (offline-test topology).
     household_gw = hermes
     admin_gw = hermes_admin or hermes
     deep_gw = hermes_deep or hermes
@@ -300,7 +296,7 @@ def build_app(
         *,
         uid: str = "",
         topic_slug: str = "",
-    ) -> HermesClient:
+    ) -> EngineClient:
         """Pick the Hermes gateway for a turn (#293/#332/#332-followup).
 
         The pinned household ("Zuhause") chat is ALWAYS the fast e2b household
@@ -334,7 +330,7 @@ def build_app(
         return deep_gw if other_model_pref == "thorough" else household_gw
 
     async def maybe_compact(
-        uid: str, session_id: str, client: HermesClient
+        uid: str, session_id: str, client: EngineClient
     ) -> tuple[str, bool]:
         """Hard-cap trigger (#210): if an existing session's running token usage
         is near the context-window cap, extract durable learnings to memory and
@@ -357,7 +353,7 @@ def build_app(
                 context_window=context_window.value,
                 threshold=compaction_threshold,
             )
-        except (HermesError, EngineError):
+        except EngineError:
             return session_id, False
         if new_id:
             return new_id, True
@@ -382,7 +378,7 @@ def build_app(
         topic_slug: str,
         text: str,
         ephemeral: bool,
-        client: HermesClient,
+        client: EngineClient,
     ) -> str:
         """Create the session for a first turn; return its id.
 
@@ -491,78 +487,37 @@ def build_app(
     async def persist_turn_trace(
         uid: str, session_id: str, t0: float, *, ephemeral: bool
     ) -> None:
-        """Correlate this turn's Ollama calls to a stable trace_id and persist.
+        """Persist this turn's engine trace steps under a fresh trace_id.
 
-        The trace proxy sees the calls but not the Hermes session id; only this
-        turn knows both the session and its wall-clock window — `t0` (captured at
-        turn start) to now (the proxy has recorded every call by the time the
-        reply is back, so the fetch moment is a safe upper bound, #306). Pull the
-        proxy's calls in that window, assign them a fresh per-turn `trace_id`, and
-        persist the ordered steps so a reopen shows the same trace. Skipped for
-        ephemeral chats (no durable state); fail-open — a proxy/DB hiccup never
-        breaks the turn that already produced a reply.
+        Native engine tracing: records carry the session id, so the turn's
+        steps are an exact filter (`t0` bounds them to this turn) — no
+        time-window guessing. Skipped for ephemeral chats (no durable state);
+        fail-open — a DB hiccup never breaks the turn that already produced a
+        reply.
         """
-        if ephemeral:
+        if ephemeral or trace_recorder is None:
             return
         try:
-            if trace_recorder is not None:
-                # Native engine tracing: records carry the session id, so the
-                # turn's steps are an exact filter — no time-window guessing.
-                steps = [
-                    {
-                        "model": rec.get("model"),
-                        "profile": rec.get("profile"),
-                        "wall_s": rec.get("wall_s"),
-                        "prompt_tokens": rec.get("prompt_tokens"),
-                        "completion_tokens": rec.get("completion_tokens"),
-                        "context_free": rec.get("context_free"),
-                        "finish_reason": rec.get("finish_reason"),
-                        "n_tools": rec.get("n_tools"),
-                        "detail_id": rec.get("id"),
-                    }
-                    for rec in trace_recorder.for_session(session_id, t0)
-                ]
-            else:
-                steps = await fetch_turn_steps(t0)
+            steps = [
+                {
+                    "model": rec.get("model"),
+                    "profile": rec.get("profile"),
+                    "wall_s": rec.get("wall_s"),
+                    "prompt_tokens": rec.get("prompt_tokens"),
+                    "completion_tokens": rec.get("completion_tokens"),
+                    "context_free": rec.get("context_free"),
+                    "finish_reason": rec.get("finish_reason"),
+                    "n_tools": rec.get("n_tools"),
+                    "detail_id": rec.get("id"),
+                }
+                for rec in trace_recorder.for_session(session_id, t0)
+            ]
             if steps:
                 trace_store.persist_trace(
                     solilos_db_path, session_id, uuid.uuid4().hex, uid, steps
                 )
         except Exception as e:  # noqa: BLE001 — trace persistence is best-effort
             log.warn("chat.trace.persist_error", session_id=session_id, error=str(e))
-
-    async def fetch_turn_steps(t0: float) -> list[dict[str, Any]]:
-        """The proxy's captured Ollama calls for this turn — those whose timestamp
-        is at or after the turn start `t0` and at or before the fetch moment `t1`
-        (a record can't post-date the GET that read it). `/__traces__` returns
-        newest-first light records (each with `ts`, `model`, `wall_s`, tokens,
-        `context_free`, `finish_reason`, `n_tools`, and the `id` that fetches the
-        exact content) — we keep the window's calls in chronological (step) order
-        and tag the proxy `id` as `detail_id` for the per-step content fetch."""
-        url = f"{trace_proxy_url.rstrip('/')}/__traces__"
-        timeout = aiohttp.ClientTimeout(total=5)
-        async with aiohttp.ClientSession(timeout=timeout) as client:
-            async with client.get(url) as r:
-                if r.status >= 400:
-                    return []
-                records = await r.json()
-        t1 = time.time()
-        window = [rec for rec in records if t0 <= rec.get("ts", 0) <= t1]
-        window.sort(key=lambda rec: rec.get("ts", 0))
-        return [
-            {
-                "model": rec.get("model"),
-                "profile": rec.get("profile"),
-                "wall_s": rec.get("wall_s"),
-                "prompt_tokens": rec.get("prompt_tokens"),
-                "completion_tokens": rec.get("completion_tokens"),
-                "context_free": rec.get("context_free"),
-                "finish_reason": rec.get("finish_reason"),
-                "n_tools": rec.get("n_tools"),
-                "detail_id": rec.get("id"),
-            }
-            for rec in window
-        ]
 
     async def session_trace(request: web.Request) -> web.Response:
         # The persisted per-turn LLM trace for one chat (#306): the ordered steps
@@ -575,29 +530,17 @@ def build_app(
 
     async def trace_detail(request: web.Request) -> web.Response:
         # Exact per-call content for one trace step (#307 panel → #305 detail).
-        # Native engine tracing serves the detail in-process; the HTTP pass-
-        # through remains for the Hermes-era proxy topology. Either way the
-        # detail store is a FIFO ring, so an old turn may 404 — the panel
-        # degrades to no modal.
+        # Served in-process from the engine's recorder; the detail store is a
+        # FIFO ring, so an old turn may 404 — the panel degrades to no modal.
         detail_id = request.match_info["detail_id"]
-        if trace_recorder is not None:
-            detail = (
-                trace_recorder.detail(int(detail_id)) if detail_id.isdigit() else None
-            )
-            if detail is None:
-                return web.json_response({"error": "not found"}, status=404)
-            return web.json_response(detail)
-        url = f"{trace_proxy_url.rstrip('/')}/__traces__/{detail_id}"
-        timeout = aiohttp.ClientTimeout(total=5)
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as client:
-                async with client.get(url) as r:
-                    body = await r.read()
-                    return web.Response(
-                        body=body, status=r.status, content_type="application/json"
-                    )
-        except aiohttp.ClientError:
-            return web.json_response({"error": "trace proxy unavailable"}, status=502)
+        detail = (
+            trace_recorder.detail(int(detail_id))
+            if trace_recorder is not None and detail_id.isdigit()
+            else None
+        )
+        if detail is None:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response(detail)
 
     async def index(_request: web.Request) -> web.Response:
         return web.FileResponse(STATIC_DIR / "index.html")
@@ -620,21 +563,38 @@ def build_app(
     async def list_toolsets(_request: web.Request) -> web.Response:
         try:
             toolsets = await hermes.list_toolsets()
-        except (HermesError, EngineError):
+        except EngineError:
             return web.json_response(
-                {"ok": False, "reason": "hermes_unavailable"}, status=502
+                {"ok": False, "reason": "engine_unavailable"}, status=502
             )
         return web.json_response({"ok": True, "toolsets": toolsets})
 
+    def _admin_mcp() -> McpToolbox | None:
+        """The admin profile's ServiceBay MCP toolbox, when one is wired."""
+        toolbox = getattr(getattr(admin_gw, "_profile", None), "toolbox", None)
+        return toolbox if isinstance(toolbox, McpToolbox) else None
+
     async def list_mcp(_request: web.Request) -> web.Response:
-        # MCP servers aren't in Hermes' /v1/toolsets; the sidecar reports them
-        # (name/url/reachable/tools, no tokens) from config.yaml.
-        servers = await _agent_get_mcp(config_agent_url, agent_token)
-        if servers is None:
-            return web.json_response(
-                {"ok": False, "reason": "agent_unavailable"}, status=502
-            )
-        return web.json_response({"ok": True, "servers": servers})
+        # The engine's MCP surface is the admin profile's servicebay_admin
+        # toolbox — report it (name/url/reachable/tools, no tokens).
+        mcp = _admin_mcp()
+        if mcp is None:
+            return web.json_response({"ok": True, "servers": []})
+        await mcp.prepare()
+        names = mcp.names()
+        return web.json_response(
+            {
+                "ok": True,
+                "servers": [
+                    {
+                        "name": "servicebay_admin",
+                        "url": mcp.url,
+                        "reachable": bool(names),
+                        "tools": names,
+                    }
+                ],
+            }
+        )
 
     async def test_mcp(request: web.Request) -> web.Response:
         # Interactive Tools-panel tester (#191): run one MCP tool with operator
@@ -658,25 +618,18 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "invalid_arguments"}, status=400
             )
-        result = await _agent_test_mcp(
-            config_agent_url,
-            agent_token,
-            request.match_info["server"],
-            tool.strip(),
-            arguments,
-        )
-        if result is None:
-            return web.json_response(
-                {"ok": False, "reason": "agent_unavailable"}, status=502
-            )
+        mcp = _admin_mcp()
+        if mcp is None or request.match_info["server"] != "servicebay_admin":
+            return web.json_response({"ok": False, "error": "Unknown MCP server"})
+        await mcp.prepare()
+        output = await mcp.dispatch(tool.strip(), arguments)
         log.info(
             "chat.mcp.test",
             uid=resolve_uid(request, remote_user_header, default_uid),
             server=request.match_info["server"],
             tool=tool.strip(),
-            ok=bool(result.get("ok")),
         )
-        return web.json_response(result)
+        return web.json_response({"ok": True, "result": output})
 
     async def cancel_chat(request: web.Request) -> web.Response:
         # Interrupt an in-flight stream for a session (#192). Sets the cancel
@@ -836,9 +789,9 @@ def build_app(
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
             sessions = await hermes.list_sessions(uid)
-        except (HermesError, EngineError):
+        except EngineError:
             return web.json_response(
-                {"ok": False, "reason": "hermes_unavailable"}, status=502
+                {"ok": False, "reason": "engine_unavailable"}, status=502
             )
         # Annotate each session with its primary topic so the list can render a
         # chip (#241). Per-resident scope (D3): only the caller's assignments.
@@ -861,23 +814,15 @@ def build_app(
                 return web.json_response(
                     {"ok": False, "reason": "forbidden"}, status=403
                 )
-            # Option B: the locked system prompt is the LIVE admin SOUL.md
-            # (#175/#176), fetched through the sidecar. Any `personality` in the
-            # body is ignored — the lock cannot be overridden by the client.
-            soul = await _agent_get_soul(config_agent_url, agent_token)
-            if not soul or not soul.strip():
-                # Fail safe: never silently fall back to the household Sol
-                # persona (that would leak the resident-facing soul into a
-                # maintenance session). Refuse the session instead.
-                log.error("chat.maint.soul_unavailable", uid=uid)
-                return web.json_response(
-                    {"ok": False, "reason": "soul_unavailable"}, status=502
-                )
+            # The admin profile OWNS the operator soul + skill pack (prompt
+            # assembly, Phase 3) — an empty create lets the profile supply it.
+            # Any `personality` in the body is ignored; the lock cannot be
+            # overridden by the client.
             try:
-                session_id = await admin_gw.create_session(uid, soul, maintenance=True)
-            except (HermesError, EngineError):
+                session_id = await admin_gw.create_session(uid, maintenance=True)
+            except EngineError:
                 return web.json_response(
-                    {"ok": False, "reason": "hermes_unavailable"}, status=502
+                    {"ok": False, "reason": "engine_unavailable"}, status=502
                 )
             # Pin this session to the admin gateway so its follow-up turns route
             # back to the same instance (Hermes session state is per-gateway).
@@ -895,9 +840,9 @@ def build_app(
         # per-session persona overlay that would fight it.
         try:
             session_id = await hermes.create_session(uid)
-        except (HermesError, EngineError):
+        except EngineError:
             return web.json_response(
-                {"ok": False, "reason": "hermes_unavailable"}, status=502
+                {"ok": False, "reason": "engine_unavailable"}, status=502
             )
         log.info("chat.session.created", uid=uid, session_id=session_id)
         return web.json_response({"ok": True, "session_id": session_id})
@@ -907,9 +852,9 @@ def build_app(
         session_id = request.match_info["session_id"]
         try:
             session = await hermes.get_session(session_id, uid)
-        except (HermesError, EngineError):
+        except EngineError:
             return web.json_response(
-                {"ok": False, "reason": "hermes_unavailable"}, status=502
+                {"ok": False, "reason": "engine_unavailable"}, status=502
             )
         if session is None:
             return web.json_response({"ok": False, "reason": "not_found"}, status=404)
@@ -929,9 +874,9 @@ def build_app(
         session_id = request.match_info["session_id"]
         try:
             ok = await hermes.delete_session(session_id)
-        except (HermesError, EngineError):
+        except EngineError:
             return web.json_response(
-                {"ok": False, "reason": "hermes_unavailable"}, status=502
+                {"ok": False, "reason": "engine_unavailable"}, status=502
             )
         if not ok:
             return web.json_response(
@@ -1121,9 +1066,9 @@ def build_app(
             )
             persist_mentions(uid, session_id, text, ephemeral=ephemeral)
             reply = await client.chat(session_id, turn_text, images, effort)
-        except (HermesError, EngineError):
+        except EngineError:
             return web.json_response(
-                {"ok": False, "reason": "hermes_unavailable"}, status=502
+                {"ok": False, "reason": "engine_unavailable"}, status=502
             )
         attachments.add(session_id, images)
         await persist_turn_trace(uid, session_id, wall_t0, ephemeral=ephemeral)
@@ -1276,8 +1221,8 @@ def build_app(
                 )
                 await _send_event(resp, "trace", trace)
                 await persist_turn_trace(uid, session_id, wall_t0, ephemeral=ephemeral)
-        except (HermesError, EngineError):
-            await _send_event(resp, "error", {"reason": "hermes_unavailable"})
+        except EngineError:
+            await _send_event(resp, "error", {"reason": "engine_unavailable"})
         finally:
             cancels.pop(session_id, None)
         await _send_event(resp, "done", {})
@@ -1324,6 +1269,16 @@ def build_app(
     app.router.add_post("/api/chat/stream", chat_stream)
     app.router.add_post("/api/chat/cancel", cancel_chat)
     app.router.add_static("/static/", STATIC_DIR)
+    # Ollama-compatible facade under /ollama — HA's `ollama` integration
+    # points here so Sol is the Assist conversation agent; the gatekeeper
+    # speaks the same surface for wyoming-satellite hardware.
+    if hasattr(hermes, "respond"):
+        add_facade_routes(
+            app,
+            clients={"sol": hermes, "sol-deep": deep_gw},
+            api_key=api_key,
+            default_uid=default_uid,
+        )
     return app
 
 
@@ -1415,96 +1370,6 @@ def _images_from(body: Any) -> list[str]:
     return out
 
 
-def _agent_headers(token: str) -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-async def _agent_put_soul(agent_url: str, token: str, content: str) -> bool:
-    """Ask the hermes-pod config sidecar to write SOUL.md. True on 2xx."""
-    url = f"{agent_url.rstrip('/')}/soul"
-    try:
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as client:
-            async with client.put(
-                url, json={"content": content}, headers=_agent_headers(token)
-            ) as r:
-                if r.status < 400:
-                    return True
-                detail = (await r.text())[:300]
-                log.error(
-                    "chat.agent.error", op="put_soul", status=r.status, body=detail
-                )
-                return False
-    except (aiohttp.ClientError, TimeoutError, OSError) as e:
-        log.error("chat.agent.unreachable", op="put_soul", error=str(e))
-        return False
-
-
-async def _agent_get_soul(agent_url: str, token: str) -> str | None:
-    """Read SOUL.md content from the sidecar. None on failure."""
-    url = f"{agent_url.rstrip('/')}/soul"
-    try:
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as client:
-            async with client.get(url, headers=_agent_headers(token)) as r:
-                if r.status >= 400:
-                    return None
-                body = await r.json()
-        return str(body.get("content", "")) if isinstance(body, dict) else None
-    except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as e:
-        log.error("chat.agent.unreachable", op="get_soul", error=str(e))
-        return None
-
-
-async def _agent_get_mcp(agent_url: str, token: str) -> list[dict[str, Any]] | None:
-    """Read the MCP servers (name/url/reachable/tools, no tokens) from the
-    sidecar. None on failure."""
-    url = f"{agent_url.rstrip('/')}/mcp"
-    try:
-        timeout = aiohttp.ClientTimeout(total=20)
-        async with aiohttp.ClientSession(timeout=timeout) as client:
-            async with client.get(url, headers=_agent_headers(token)) as r:
-                if r.status >= 400:
-                    return None
-                body = await r.json()
-        servers = body.get("servers") if isinstance(body, dict) else None
-        return servers if isinstance(servers, list) else []
-    except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as e:
-        log.error("chat.agent.unreachable", op="get_mcp", error=str(e))
-        return None
-
-
-async def _agent_test_mcp(
-    agent_url: str, token: str, server: str, tool: str, arguments: dict[str, Any]
-) -> dict[str, Any] | None:
-    """Ask the sidecar to invoke `tool` on MCP `server` (#191). The agent's
-    JSON ({ok, result|error}) on 2xx, None when the sidecar is unreachable."""
-    url = f"{agent_url.rstrip('/')}/mcp/{server}/test"
-    try:
-        timeout = aiohttp.ClientTimeout(total=35)
-        async with aiohttp.ClientSession(timeout=timeout) as client:
-            async with client.post(
-                url,
-                json={"tool": tool, "arguments": arguments},
-                headers=_agent_headers(token),
-            ) as r:
-                if r.status == 404:
-                    return {"ok": False, "error": "Unknown MCP server"}
-                if r.status >= 400:
-                    detail = (await r.text())[:300]
-                    log.error(
-                        "chat.agent.error", op="test_mcp", status=r.status, body=detail
-                    )
-                    return {"ok": False, "error": f"Agent returned HTTP {r.status}"}
-                return await r.json()
-    except (aiohttp.ClientError, TimeoutError, OSError, ValueError) as e:
-        log.error("chat.agent.unreachable", op="test_mcp", error=str(e))
-        return None
-
-
 async def _send_event(
     resp: web.StreamResponse, event: str, data: dict[str, Any]
 ) -> None:
@@ -1574,6 +1439,31 @@ def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return "keepalive", {}
 
 
+def _answer_from_messages(messages: Any) -> str:
+    """Last assistant `content` from a `run.completed` messages array, else "".
+
+    Tool-invocation turns surface the model's final answer here rather than in
+    streaming deltas, so both chat paths fall back to it (#258). The reasoning
+    lives in a separate field and is skipped.
+    """
+    if not isinstance(messages, list):
+        return ""
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") not in (None, "assistant"):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            content = "".join(
+                str(p.get("text") or "") if isinstance(p, dict) else str(p)
+                for p in content
+            )
+        if content:
+            return str(content)
+    return ""
+
+
 def _reasoning_from_completed(payload: dict[str, Any]) -> str:
     """Pull the reasoning text out of a `run.completed` payload (#231).
 
@@ -1599,17 +1489,15 @@ async def serve(
     host: str,
     port: int,
     *,
-    hermes: HermesClient,
-    hermes_admin: HermesClient | None = None,
-    hermes_deep: HermesClient | None = None,
+    hermes: EngineClient,
+    hermes_admin: EngineClient | None = None,
+    hermes_deep: EngineClient | None = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
     admin_group: str = "admins",
     skills_dir: str = "/data/skills",
     soul_path: str = "/data/SOUL.md",
-    config_agent_url: str = "http://127.0.0.1:8650",
-    agent_token: str = "",
     logout_url: str = "",
     context_window: ContextWindow,
     compaction_threshold: float = compaction.DEFAULT_THRESHOLD,
@@ -1619,8 +1507,8 @@ async def serve(
     thorough_model: str = "",
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
     notes_dir: str = "/opt/data/notes",
-    trace_proxy_url: str = "http://127.0.0.1:11436",
     trace_recorder: Any = None,
+    api_key: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -1634,8 +1522,6 @@ async def serve(
         admin_group=admin_group,
         skills_dir=skills_dir,
         soul_path=soul_path,
-        config_agent_url=config_agent_url,
-        agent_token=agent_token,
         logout_url=logout_url,
         context_window=context_window,
         compaction_threshold=compaction_threshold,
@@ -1645,8 +1531,8 @@ async def serve(
         thorough_model=thorough_model,
         solilos_db_path=solilos_db_path,
         notes_dir=notes_dir,
-        trace_proxy_url=trace_proxy_url,
         trace_recorder=trace_recorder,
+        api_key=api_key,
     )
     runner = web.AppRunner(app)
     await runner.setup()
