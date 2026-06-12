@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -62,6 +63,33 @@ _TOOL_DISCIPLINE = (
     " Tool auf und antwortest erst mit dem Ergebnis — auch wenn frühere"
     " Antworten im Verlauf eine Aktion nur angekündigt haben."
 )
+
+# A present-tense German device-state assertion ("… ist an", "… ist aus",
+# "… ist eingeschaltet", "… läuft", "… ist gesperrt"). When the model emits one
+# of these as its final answer WITHOUT having called a tool this turn, it is
+# fabricating a result — the clarify→"Ja."→empty-tool_calls path (#356) that
+# survives low-temp + the discipline rule. Detection is German on purpose: the
+# hot path runs German, and the false-positive surface (a turn that merely
+# quotes a state read back from a tool) is excluded by the "no tool ran this
+# turn" gate, not by the text.
+_DEVICE_CLAIM = re.compile(
+    r"\bist\s+(an|aus|ein(geschaltet)?|aus(geschaltet)?|"
+    r"gesperrt|entsperrt|gestartet|gestoppt|geschlossen|geöffnet|offen|zu)\b"
+    r"|\bist\s+jetzt\b|\bläuft\b|\bhabe\s+(ich\s+)?(an|aus|ein)geschaltet\b",
+    re.IGNORECASE,
+)
+
+# The corrective nudge injected once per turn when a fabricated claim is caught:
+# the model asserted an action it never dispatched — force the tool pass.
+_CLAIM_CORRECTION = (
+    "STOPP: Du hast eine Geräteaktion als erledigt behauptet, aber kein Tool"
+    " aufgerufen. Rufe JETZT das passende Tool (ha_call_service) für diese"
+    " Aktion auf. Behaupte nichts ohne Tool-Ergebnis."
+)
+
+
+def _is_fabricated_device_claim(content: str) -> bool:
+    return bool(_DEVICE_CLAIM.search(content or ""))
 
 
 class EngineError(Exception):
@@ -306,6 +334,9 @@ class EngineClient:
             else None
         )
 
+        has_tools = bool(self._profile.toolbox.names())
+        tool_dispatched = False
+        corrected = False
         final_content = ""
         final_thinking = ""
         for _ in range(_MAX_PASSES):
@@ -342,6 +373,19 @@ class EngineClient:
             final_thinking = result.thinking or final_thinking
 
             if not result.tool_calls:
+                # Fabrication guard (#356): the model claims a device action is
+                # done but dispatched no tool this turn. Re-prompt once to force
+                # the tool pass instead of accepting the fabricated success.
+                if (
+                    has_tools
+                    and not tool_dispatched
+                    and not corrected
+                    and _is_fabricated_device_claim(result.content)
+                ):
+                    corrected = True
+                    messages.append({"role": "assistant", "content": result.content})
+                    messages.append({"role": "system", "content": _CLAIM_CORRECTION})
+                    continue
                 final_content = result.content
                 break
 
@@ -370,6 +414,7 @@ class EngineClient:
                         args = json.loads(args)
                     except ValueError:
                         args = {}
+                tool_dispatched = True
                 yield {"type": "tool.started", "data": {"tool": name}}
                 # Re-pin the turn's resident here, IN the dispatching task:
                 # the SSE heartbeat runs each generator step in its own task,
