@@ -779,9 +779,10 @@ def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
             pipeline_id = existing.get("id")
             # Converge an existing pipeline onto the preferred TTS (a GPU box
             # may have been wired with piper before the Martin units landed).
-            if existing.get("tts_engine") != tts_entity or existing.get(
-                "tts_voice"
-            ) != tts_fields["tts_voice"]:
+            if (
+                existing.get("tts_engine") != tts_entity
+                or existing.get("tts_voice") != tts_fields["tts_voice"]
+            ):
                 upd = {
                     k: existing.get(k)
                     for k in (
