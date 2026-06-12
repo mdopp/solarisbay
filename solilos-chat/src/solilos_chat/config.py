@@ -37,6 +37,8 @@ class Settings:
     notes_dir: str
     hass_url: str
     hass_token: str
+    alarm_sound_media_id: str
+    alarm_sound_path: str
     tavily_api_key: str
     admin_soul_path: str
     admin_skills_dir: str
@@ -114,6 +116,21 @@ class Settings:
             # tools + the prompt-injected entity registry + timer announce.
             hass_url=os.environ.get("HASS_URL", "").strip(),
             hass_token=os.environ.get("HASS_TOKEN", "").strip(),
+            # An alarm (kind=alarm) rings a sound instead of speaking. The
+            # media_id rides assist_satellite.announce — HA resolves the
+            # media-source URI server-side, then the Voice PE plays it. The
+            # path is the chat-visible copy of that same file: the scheduler
+            # checks it exists before choosing the sound, and falls back to the
+            # TTS sentence if it's missing/unreadable (HA can't tell us up
+            # front whether it'll play). Operators override the media_id with
+            # their own file dropped into HA's media folder.
+            alarm_sound_media_id=os.environ.get(
+                "ALARM_SOUND_MEDIA_ID",
+                "media-source://media_source/local/solilos-alarm.ogg",
+            ).strip(),
+            alarm_sound_path=os.environ.get(
+                "ALARM_SOUND_PATH", "/data/skills/media/solilos-alarm.ogg"
+            ).strip(),
             # Web search backend. Empty => the keyless ddgs backend.
             tavily_api_key=os.environ.get("TAVILY_API_KEY", "").strip(),
             # The operator persona's soul for the admin profile; falls back to

@@ -35,6 +35,8 @@ _STEP_FIELDS = (
     "finish_reason",
     "n_tools",
     "detail_id",
+    "step_kind",
+    "tool_name",
 )
 
 
@@ -82,8 +84,9 @@ def persist_trace(
                 INSERT INTO session_traces
                   (session_id, trace_id, step_order, owner_uid,
                    model, profile, wall_s, prompt_tokens, completion_tokens,
-                   context_free, finish_reason, n_tools, detail_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   context_free, finish_reason, n_tools, detail_id,
+                   step_kind, tool_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -110,7 +113,8 @@ def list_session_trace(
                 """
                 SELECT trace_id, step_order, model, profile, wall_s,
                        prompt_tokens, completion_tokens, context_free,
-                       finish_reason, n_tools, detail_id
+                       finish_reason, n_tools, detail_id,
+                       step_kind, tool_name
                   FROM session_traces
                  WHERE session_id = ? AND owner_uid = ?
                  ORDER BY rowid

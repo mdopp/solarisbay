@@ -1605,7 +1605,7 @@
           function handle(event, data) {
             var d = {};
             try { d = JSON.parse(data); } catch (e) {}
-            if (event === "session") { if (d.session_id) { sessionId = d.session_id; pendingTopic = ""; } }
+            if (event === "session") { if (d.session_id) { var fresh = d.session_id !== sessionId; sessionId = d.session_id; pendingTopic = ""; if (fresh) subscribeMirror(sessionId); } }
             else if (event === "delta") { if (d.text) msg.append(d.text); }
             else if (event === "reasoning") { if (d.text) msg.setReasoning(d.text); }
             else if (event === "tool") {
@@ -1636,6 +1636,55 @@
             });
           }
           return pump();
+        });
+      }
+
+      // ---- Live mirror (#344): turns that originate elsewhere ----
+      // A turn can start on voice (the facade) or in another tab of the same
+      // person; only the originating request streams it back. This EventSource
+      // subscribes to the OPEN session's mirror so those turns render here
+      // near-live: the user transcript on `mirror_user`, then the answer via
+      // the same delta/tool/completed shapes the direct stream uses. Skipped
+      // while THIS tab has its own turn in flight (it already shows it) and
+      // when incognito (an ephemeral session is never mirrored). Per-resident:
+      // the server only streams a session the caller's uid owns.
+      var mirrorSource = null;
+      var mirrorMsg = null;
+
+      function closeMirror() {
+        if (mirrorSource) { try { mirrorSource.close(); } catch (e) {} mirrorSource = null; }
+        mirrorMsg = null;
+      }
+
+      function subscribeMirror(id) {
+        closeMirror();
+        if (!id || incognito) return;
+        var es = new EventSource("/api/sessions/" + encodeURIComponent(id) + "/events");
+        mirrorSource = es;
+        es.addEventListener("mirror_user", function (e) {
+          if (id !== sessionId || activeTurn) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.text) { addUserTurn(d.text, null); mirrorMsg = addAssistant(); }
+        });
+        es.addEventListener("delta", function (e) {
+          if (id !== sessionId || activeTurn || !mirrorMsg) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.text) mirrorMsg.append(d.text);
+        });
+        es.addEventListener("reasoning", function (e) {
+          if (id !== sessionId || activeTurn || !mirrorMsg) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.text) mirrorMsg.setReasoning(d.text);
+        });
+        es.addEventListener("tool", function (e) {
+          if (id !== sessionId || activeTurn || !mirrorMsg) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          mirrorMsg.setActivity(d.phase === "started" ? "using " + (d.name || "tool") + "…" : "thinking…");
+        });
+        es.addEventListener("completed", function () {
+          if (id !== sessionId || activeTurn || !mirrorMsg) return;
+          mirrorMsg.finish(); mirrorMsg = null;
+          loadSessionTrace();
         });
       }
 
@@ -2282,6 +2331,7 @@
             loadSessions();
             loadTagCloud();
             loadSessionTrace();
+            subscribeMirror(sessionId);
             input.focus();
           })
           .catch(function () { addText("system", "Could not open that chat."); });
@@ -2307,6 +2357,7 @@
         if (send.disabled) return;
         dropIncognitoSession();
         applyIncognito(false);
+        closeMirror();
         sessionId = null;
         pendingTopic = "";
         clearLog();
@@ -2320,6 +2371,7 @@
       function newIncognito() {
         if (send.disabled) return;
         dropIncognitoSession();
+        closeMirror();
         sessionId = null;
         pendingTopic = "";
         clearLog();

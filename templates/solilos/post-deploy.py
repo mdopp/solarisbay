@@ -189,6 +189,41 @@ def write_engine_soul(data_dir: str) -> bool:
     return True
 
 
+def ship_alarm_sound(data_dir: str) -> bool:
+    """Copy the shipped default alarm tone into HA's media folder so
+    `media-source://media_source/local/solilos-alarm.ogg` resolves and the
+    Voice PE can ring it (#348). Host-side file IO; idempotent (skips when the
+    target already matches). An operator's own tone in the media folder is
+    never touched — only `solilos-alarm.ogg` is managed. Returns True when
+    the file was written."""
+    source = os.path.join(
+        data_dir, "solilos", "skills", "household", "media", "solilos-alarm.ogg"
+    )
+    media_dir = os.path.join(data_dir, "home-assistant", "homeassistant", "media")
+    target = os.path.join(media_dir, "solilos-alarm.ogg")
+    try:
+        with open(source, "rb") as f:
+            tone = f.read()
+    except OSError:
+        jlog("warn", "alarm", "shipped alarm tone not readable", source=source)
+        return False
+    try:
+        with open(target, "rb") as f:
+            if f.read() == tone:
+                return False
+    except OSError:
+        pass
+    try:
+        os.makedirs(media_dir, exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(tone)
+    except OSError as e:
+        jlog("error", "alarm", "could not install alarm tone", error=str(e))
+        return False
+    jlog("info", "alarm", "installed default alarm tone", path=target)
+    return True
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # 2. HOME ASSISTANT — token adoption, jellyfin, the voice pipeline.
 # ════════════════════════════════════════════════════════════════════════════
@@ -1017,6 +1052,7 @@ def main() -> int:
     write_engine_soul(data_dir)
 
     # ── 2. Home Assistant ────────────────────────────────────────────────────
+    ship_alarm_sound(data_dir)
     ha_token = adopt_ha_long_lived_token(data_dir)
     if ha_token:
         ensure_ha_jellyfin_integration(

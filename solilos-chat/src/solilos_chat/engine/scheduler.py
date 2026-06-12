@@ -11,6 +11,7 @@ kills the loop.
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -79,10 +80,19 @@ def cancel_timer(db_path: str, uid: str, timer_id: str) -> bool:
 
 
 class TimerScheduler:
-    def __init__(self, db_path: str, hass_url: str, hass_token: str):
+    def __init__(
+        self,
+        db_path: str,
+        hass_url: str,
+        hass_token: str,
+        alarm_sound_media_id: str = "",
+        alarm_sound_path: str = "",
+    ):
         self._db_path = db_path
         self._hass_url = hass_url.rstrip("/")
         self._hass_token = hass_token
+        self._alarm_sound_media_id = alarm_sound_media_id
+        self._alarm_sound_path = alarm_sound_path
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -135,6 +145,14 @@ class TimerScheduler:
             "alarm": f"Wecker: {label}" if label else "Es ist Zeit aufzustehen.",
             "reminder": f"Erinnerung: {label}" if label else "Erinnerung.",
         }.get(kind, f"{kind}: {label}")
+        # An alarm rings the configured sound; timers and reminders speak. The
+        # sound only wins when its file is present — HA can't tell us up front
+        # whether a media_id will play, so we fall back to the TTS text rather
+        # than risk a silent alarm.
+        if kind == "alarm" and self._alarm_sound_can_play():
+            payload: dict[str, Any] = {"media_id": self._alarm_sound_media_id}
+        else:
+            payload = {"message": text}
         try:
             timeout = aiohttp.ClientTimeout(total=15)
             headers = {"Authorization": f"Bearer {self._hass_token}"}
@@ -156,10 +174,17 @@ class TimerScheduler:
                     return False
                 async with client.post(
                     f"{self._hass_url}/api/services/assist_satellite/announce",
-                    json={"entity_id": satellites, "message": text},
+                    json={"entity_id": satellites, **payload},
                     headers=headers,
                 ) as resp:
                     return resp.status < 400
         except (aiohttp.ClientError, TimeoutError, OSError) as e:
             log.error("engine.timer.announce_failed", error=str(e))
             return False
+
+    def _alarm_sound_can_play(self) -> bool:
+        return bool(
+            self._alarm_sound_media_id
+            and self._alarm_sound_path
+            and os.path.isfile(self._alarm_sound_path)
+        )

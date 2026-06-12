@@ -81,6 +81,7 @@ class TraceRecorder:
         record = {
             "ts": time.time(),
             "wall_s": round(wall_s, 3),
+            "step_kind": "llm",
             "path": "/api/chat",
             "session_id": session_id,
             "model": model,
@@ -116,6 +117,30 @@ class TraceRecorder:
         self._details[rec_id] = detail
         while len(self._details) > self._detail_ring:
             del self._details[next(iter(self._details))]
+        return record
+
+    def record_tool(
+        self,
+        *,
+        session_id: str,
+        profile: str,
+        tool_name: str,
+        wall_s: float,
+    ) -> dict[str, Any]:
+        """Append one tool-execution step, interleaved by append order with the
+        LLM steps so a turn's `for_session` reads back the exact run sequence."""
+        record = {
+            "ts": time.time(),
+            "wall_s": round(wall_s, 3),
+            "step_kind": "tool",
+            "session_id": session_id,
+            "profile": profile,
+            "tool_name": tool_name,
+        }
+        rec_id = self._next_id
+        self._next_id += 1
+        record["id"] = rec_id
+        self._traces.append(record)
         return record
 
     def for_session(self, session_id: str, since_ts: float) -> list[dict[str, Any]]:

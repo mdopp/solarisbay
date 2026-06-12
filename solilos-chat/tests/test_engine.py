@@ -221,11 +221,99 @@ async def test_tool_chain_turn(db, soul):
     # the second pass got the tool result fed back
     roles = [m["role"] for m in fake.calls[1]["messages"]]
     assert "tool" in roles
-    # two trace records, tagged with the session
+    # the turn's trace is the full interleaved step list: LLM call (tool_calls)
+    # -> tool execution (with its own wall_s) -> final LLM call (#346).
     steps = client.recorder.for_session(sid, 0.0)
-    assert len(steps) == 2
+    assert [s["step_kind"] for s in steps] == ["llm", "tool", "llm"]
     assert steps[0]["finish_reason"] == "tool_calls"
-    assert steps[1]["finish_reason"] == "stop"
+    assert steps[1]["tool_name"] == "ha_call_service"
+    assert "wall_s" in steps[1]
+    assert steps[2]["finish_reason"] == "stop"
+
+
+async def test_fabricated_device_claim_forces_tool_call(db, soul):
+    """#356: clarify -> 'Ja.' -> model claims 'ist an' with empty tool_calls.
+
+    The loop must reject the fabricated success and re-prompt so the tool
+    actually fires, instead of persisting/returning a claim with no dispatch.
+    """
+    dispatched = []
+
+    async def handler(args):
+        dispatched.append(args)
+        return '{"success": true}'
+
+    tool = Tool(
+        name="ha_call_service",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    results = [
+        # Pass 1: the fabricated claim — no tool_calls.
+        ChatResult(
+            content="Das Sofa-Licht ist an.", prompt_tokens=60, completion_tokens=6
+        ),
+        # Pass 2 (after the correction nudge): the model now calls the tool.
+        ChatResult(
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "ha_call_service",
+                        "arguments": {
+                            "domain": "light",
+                            "service": "turn_on",
+                            "entity_id": "light.dimmer_2_5",
+                        },
+                    }
+                }
+            ],
+            prompt_tokens=70,
+            completion_tokens=8,
+        ),
+        # Pass 3: the truthful final answer, after the tool result.
+        ChatResult(
+            content="Das Sofa-Licht ist an.", prompt_tokens=80, completion_tokens=6
+        ),
+    ]
+    client, fake = _client(db, soul, results, tools=[tool])
+    sid = await client.create_session("household")
+    events = [e async for e in client.chat_stream(sid, "Ja.")]
+    kinds = [e["type"] for e in events]
+    assert "tool.started" in kinds and "tool.completed" in kinds
+    # the tool actually fired with the registry entity
+    assert dispatched and dispatched[0]["entity_id"] == "light.dimmer_2_5"
+    # the final answer returned to the caller is backed by a real tool call
+    final = events[-1]["data"]["messages"][-1]["content"]
+    assert final == "Das Sofa-Licht ist an."
+    # the corrective nudge rode the in-memory messages, not the store: the
+    # fabricated intermediate claim must NOT be persisted as a standalone
+    # assistant message (it would poison future history — the bug's root). The
+    # raw store holds only the tool-call assistant (empty content), the tool
+    # result, and the final answer — never a content-bearing assistant turn
+    # before the tool ran.
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute(
+            "SELECT role, content, tool_calls FROM engine_messages"
+            " WHERE session_id = ? ORDER BY seq",
+            (sid,),
+        ).fetchall()
+    assert [r[0] for r in rows] == ["user", "assistant", "tool", "assistant"]
+    tool_call_row, final_row = rows[1], rows[3]
+    assert tool_call_row[1] == "" and tool_call_row[2]  # empty content, has tool_calls
+    assert final_row[1] == "Das Sofa-Licht ist an." and final_row[2] is None
+
+
+async def test_claim_passes_through_without_tools(db, soul):
+    """The guard is gated on the profile having tools: a tool-less Q&A profile
+    that states 'das Licht ist an' has nothing to dispatch and must accept its
+    answer on the first pass (no re-prompt, single Ollama call)."""
+    client, fake = _client(
+        db, soul, [ChatResult(content="Ja, das Licht ist an.", completion_tokens=4)]
+    )
+    sid = await client.create_session("anna")
+    assert await client.chat(sid, "Ist das Licht an?") == "Ja, das Licht ist an."
+    assert len(fake.calls) == 1  # accepted on pass 1, no correction
 
 
 async def test_chat_returns_final_answer(db, soul):
@@ -308,6 +396,96 @@ async def test_timer_fires_and_announces(db, monkeypatch):
     with sqlite3.connect(db) as conn:
         status = conn.execute("SELECT status FROM engine_timers").fetchone()[0]
     assert status == "fired"
+
+
+def _capture_announce(monkeypatch):
+    """Stub aiohttp so _announce hits one fake satellite and records the POST
+    body. Returns the list the announce payload lands in."""
+    posted: list[dict] = []
+
+    class _Resp:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return [{"entity_id": "assist_satellite.kitchen"}]
+
+        def raise_for_status(self):
+            return None
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, _url, **k):
+            return _Resp()
+
+        def post(self, _url, *, json, **k):
+            posted.append(json)
+            return _Resp()
+
+    monkeypatch.setattr(scheduler.aiohttp, "ClientSession", _Session)
+    return posted
+
+
+async def test_alarm_rings_media_when_sound_present(monkeypatch, tmp_path):
+    sound = tmp_path / "alarm.ogg"
+    sound.write_bytes(b"OggS")
+    sched = scheduler.TimerScheduler(
+        ":memory:", "http://ha", "token", "media-source://x/alarm.ogg", str(sound)
+    )
+    posted = _capture_announce(monkeypatch)
+    assert await sched._announce({"kind": "alarm", "label": "Aufstehen"}) is True
+    assert posted == [
+        {
+            "entity_id": ["assist_satellite.kitchen"],
+            "media_id": "media-source://x/alarm.ogg",
+        }
+    ]
+
+
+async def test_alarm_falls_back_to_tts_when_sound_missing(monkeypatch, tmp_path):
+    sched = scheduler.TimerScheduler(
+        ":memory:",
+        "http://ha",
+        "token",
+        "media-source://x/alarm.ogg",
+        str(tmp_path / "absent.ogg"),
+    )
+    posted = _capture_announce(monkeypatch)
+    assert await sched._announce({"kind": "alarm", "label": ""}) is True
+    assert posted[0]["message"] == "Es ist Zeit aufzustehen."
+    assert "media_id" not in posted[0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("timer", "Der Timer Tee ist abgelaufen."),
+        ("reminder", "Erinnerung: Tee"),
+    ],
+)
+async def test_timer_and_reminder_keep_tts(monkeypatch, tmp_path, kind, message):
+    sound = tmp_path / "alarm.ogg"
+    sound.write_bytes(b"OggS")
+    sched = scheduler.TimerScheduler(
+        ":memory:", "http://ha", "token", "media-source://x/alarm.ogg", str(sound)
+    )
+    posted = _capture_announce(monkeypatch)
+    assert await sched._announce({"kind": kind, "label": "Tee"}) is True
+    assert posted[0]["message"] == message
+    assert "media_id" not in posted[0]
 
 
 # -- trace shape ---------------------------------------------------------

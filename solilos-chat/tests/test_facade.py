@@ -8,10 +8,13 @@ statelessly — caller-owned history, nothing persisted to the store.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 
 import pytest
+from solilos_chat.engine import store
+from solilos_chat.engine.bus import SessionBus
 from solilos_chat.engine.client import EngineClient, EngineProfile
 from solilos_chat.engine.ollama import ChatResult
 from solilos_chat.engine.tools import Tool, Toolbox
@@ -38,7 +41,7 @@ def soul(tmp_path) -> str:
     return str(path)
 
 
-def _engine(db, soul, results, tools=None, name="household"):
+def _engine(db, soul, results, tools=None, name="household", bus=None):
     fake = FakeOllama(results)
     client = EngineClient(
         EngineProfile(
@@ -51,6 +54,7 @@ def _engine(db, soul, results, tools=None, name="household"):
         ollama=fake,
         recorder=TraceRecorder(),
         context_window=32768,
+        bus=bus,
     )
     return client, fake
 
@@ -176,9 +180,9 @@ async def test_respond_runs_tool_loop(db, soul):
 # -- facade routes -----------------------------------------------------------
 
 
-def _app(db, soul, results, api_key=""):
-    household, fake = _engine(db, soul, results)
-    deep, _ = _engine(db, soul, [], name="sol-deep")
+def _app(db, soul, results, api_key="", bus=None):
+    household, fake = _engine(db, soul, results, bus=bus)
+    deep, _ = _engine(db, soul, [], name="sol-deep", bus=bus)
     app = build_app(
         hermes=household,
         hermes_deep=deep,
@@ -186,6 +190,7 @@ def _app(db, soul, results, api_key=""):
         default_uid="household",
         solilos_db_path=db,
         api_key=api_key,
+        bus=bus,
     )
     return app, fake
 
@@ -334,6 +339,205 @@ async def test_stream_abort_does_not_raise_foreign_context(aiohttp_client, db, s
     assert resp.status == 200
     assert "event: done" in body
     assert "ValueError" not in body
+
+
+# -- #345: durable household session for voice ------------------------------
+
+
+async def test_respond_session_persists_into_durable_household_session(db, soul):
+    # A voice turn now lands in the resident's durable household session (the
+    # same row the browser opens) — not a stateless replay. Only the latest
+    # user utterance is run; the store owns the history.
+    client, _ = _engine(
+        db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
+    )
+    events = [e async for e in client.respond_session("Licht an", uid="michael")]
+    assert events[-1]["type"] == "run.completed"
+    sid = store.household_session_id("michael")
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT role, content FROM engine_messages WHERE session_id = ? ORDER BY seq",
+        (sid,),
+    ).fetchall()
+    conn.close()
+    # The session exists, owned by the resident, with the user + assistant turn.
+    assert store.session_owner(db, sid) == "michael"
+    assert [r[0] for r in rows] == ["user", "assistant"]
+    assert rows[0][1].endswith("Licht an")
+    assert rows[1][1] == "Klar."
+
+
+async def test_voice_session_lists_and_is_idempotent(aiohttp_client, db, soul):
+    # Two voice turns reuse ONE durable session (deterministic id), and it
+    # surfaces in the resident's GET /api/sessions list.
+    app, _ = _app(
+        db,
+        soul,
+        [
+            ChatResult(content="Eins.", prompt_tokens=5, completion_tokens=1),
+            ChatResult(content="Zwei.", prompt_tokens=5, completion_tokens=1),
+        ],
+    )
+    http = await aiohttp_client(app)
+    for text in ("Hallo", "Und nochmal"):
+        resp = await http.post(
+            "/ollama/api/chat",
+            json={
+                "model": "sol",
+                "stream": False,
+                "messages": [{"role": "user", "content": text}],
+                "user": "michael",
+            },
+        )
+        assert resp.status == 200
+    conn = sqlite3.connect(db)
+    n = conn.execute("SELECT COUNT(*) FROM engine_sessions").fetchone()[0]
+    conn.close()
+    assert n == 1  # idempotent — one durable session for both turns
+    listed = await (
+        await http.get("/api/sessions", headers={"Remote-User": "michael"})
+    ).json()
+    assert store.household_session_id("michael") in [
+        s["id"] for s in listed["sessions"]
+    ]
+
+
+# -- #344: live mirror into open browser sessions ----------------------------
+
+
+async def test_voice_turn_mirrors_to_an_open_browser(aiohttp_client, db, soul):
+    # An open browser SSE on the household session receives the voice turn
+    # near-live: the transcript (mirror_user) then the streamed answer (delta).
+    bus = SessionBus()
+    app, _ = _app(
+        db,
+        soul,
+        [ChatResult(content="Mache ich.", prompt_tokens=5, completion_tokens=2)],
+        bus=bus,
+    )
+    http = await aiohttp_client(app)
+    sid = store.ensure_household_session(db, "michael")
+
+    async def run_voice_turn() -> None:
+        await asyncio.sleep(0.05)  # let the subscriber attach first
+        await http.post(
+            "/ollama/api/chat",
+            json={
+                "model": "sol",
+                "stream": False,
+                "messages": [{"role": "user", "content": "Licht an"}],
+                "user": "michael",
+            },
+        )
+
+    sub = await http.get(
+        f"/api/sessions/{sid}/events", headers={"Remote-User": "michael"}
+    )
+    task = asyncio.create_task(run_voice_turn())
+    body = b""
+    while b"event: completed" not in body:
+        chunk = await asyncio.wait_for(sub.content.read(256), timeout=5)
+        if not chunk:
+            break
+        body += chunk
+    await task
+    text = body.decode()
+    assert "event: mirror_user" in text
+    assert "Licht an" in text  # the transcript reached the browser
+    assert "event: delta" in text
+    # The answer mirrored too (deltas arrive token-wise).
+    answer = "".join(
+        json.loads(line[len("data: ") :])["text"]
+        for block in text.split("\n\n")
+        if "event: delta" in block
+        for line in block.splitlines()
+        if line.startswith("data: ")
+    )
+    assert "Mache" in answer and "ich." in answer
+
+
+async def test_mirror_is_per_resident_scoped(aiohttp_client, db, soul):
+    # A different resident may not subscribe to someone else's session (#344
+    # privacy posture): the wrong-owner subscribe is forbidden.
+    bus = SessionBus()
+    app, _ = _app(db, soul, [], bus=bus)
+    http = await aiohttp_client(app)
+    sid = store.ensure_household_session(db, "michael")
+    resp = await http.get(
+        f"/api/sessions/{sid}/events", headers={"Remote-User": "anna"}
+    )
+    assert resp.status == 403
+
+
+# -- #353: guest profile — restricted toolbox + ephemeral session ------------
+
+
+async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
+    # The guest toolbox = HA control/state + web Q&A; it must NOT carry any
+    # durable-write tool (notes/fact_store, timers) or admin/MCP tool.
+    from solilos_chat.engine.profiles import build_engine_clients
+
+    _, _, _, guest, _, _ = build_engine_clients(
+        db_path=":memory:",
+        ollama_url="http://x",
+        fast_model="gemma4:e2b",
+        thorough_model="gemma4:12b",
+        soul_path="/nonexistent/SOUL.md",
+        hass_url="http://ha",
+        hass_token="t",
+        tavily_api_key="",
+        notes_dir="/tmp/notes",  # household gets notes; guest must not
+    )
+    toolsets = await guest.list_toolsets()
+    names = set(toolsets[0]["tools"])
+    # Allowed: device control + state reads + web Q&A.
+    assert {"ha_call_service", "ha_get_state", "web_search"} <= names
+    # Denied: durable writes and admin.
+    assert not (
+        names & {"note_write", "fact_store", "timer_set", "timer_list", "timer_cancel"}
+    )
+    assert guest.ephemeral is True
+
+
+async def test_guest_facade_turn_persists_nothing(aiohttp_client, db, soul):
+    # A guest turn runs the stateless `respond` path: no session row, no
+    # message row — nothing about the guest survives the conversation.
+    household, _ = _engine(db, soul, [])
+    guest, _ = _engine(
+        db,
+        soul,
+        [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)],
+        name="sol-guest",
+    )
+    guest._profile.ephemeral = True
+    app = build_app(
+        hermes=household,
+        hermes_guest=guest,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solilos_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    names = [
+        m["model"]
+        for m in (await (await http.get("/ollama/api/tags")).json())["models"]
+    ]
+    assert "sol-guest" in names
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "sol-guest",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Wie spät ist es?"}],
+            "user": "guest",
+        },
+    )
+    assert resp.status == 200
+    assert (await resp.json())["message"]["content"] == "Klar."
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM engine_sessions").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM engine_messages").fetchone()[0] == 0
+    conn.close()
 
 
 async def test_chat_latest_suffix_resolves(aiohttp_client, db, soul):

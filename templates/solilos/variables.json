@@ -77,6 +77,11 @@
     "noAutoGenerate": true,
     "description": "Home Assistant long-lived access token. Auto-populated from home-assistant's onboarding flow (see post-deploy adoption logic) — leave blank in the wizard. Manually setting a value here pins it and disables the adoption."
   },
+  "ALARM_SOUND_MEDIA_ID": {
+    "type": "text",
+    "description": "The media_id Sol passes to assist_satellite.announce when an alarm (kind=alarm) fires — HA resolves it and the Voice PE plays it INSTEAD of speaking (timers and reminders keep their spoken announcements). Default `media-source://media_source/local/solilos-alarm.ogg` is the royalty-free tone the skill pack ships, which the post-deploy copies into HA's media folder. To use your own sound (e.g. the Doctor Who theme, which can't be bundled in this MIT repo), drop the file into HA's media folder (DATA_DIR/home-assistant/homeassistant/media/) and set this to `media-source://media_source/local/<your-file>`. If the file is missing, Sol falls back to speaking the alarm sentence.",
+    "default": "media-source://media_source/local/solilos-alarm.ogg"
+  },
   "JELLYFIN_URL": {
     "type": "text",
     "description": "Optional: URL of your Jellyfin media server. When set together with JELLYFIN_USERNAME, the post-deploy auto-installs Home Assistant's `jellyfin` integration via HA's config-flow API, so Sol can control playback through `media_player.jellyfin_*` entities. Leave blank to skip the integration.",

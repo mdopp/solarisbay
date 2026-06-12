@@ -182,6 +182,20 @@ spec:
       value: "{{HASS_URL}}"
     - name: HASS_TOKEN
       value: "{{HASS_TOKEN}}"
+    # An alarm (kind=alarm) rings a sound instead of speaking. ALARM_SOUND_MEDIA_ID
+    # is the media_id passed to assist_satellite.announce — HA resolves the
+    # media-source URI and the Voice PE plays it; the default
+    # `solilos-alarm.ogg` is the royalty-free tone the skill pack ships, which
+    # the post-deploy copies into HA's media folder. ALARM_SOUND_PATH is the
+    # chat-visible copy of that file (via the skills mount): the scheduler
+    # checks it exists before ringing and otherwise falls back to the TTS
+    # sentence. To use your own tone, drop the file into HA's media folder
+    # ({{DATA_DIR}}/home-assistant/homeassistant/media/) and point
+    # ALARM_SOUND_MEDIA_ID at it (e.g. media-source://media_source/local/my-alarm.mp3).
+    - name: ALARM_SOUND_MEDIA_ID
+      value: "{{ALARM_SOUND_MEDIA_ID}}"
+    - name: ALARM_SOUND_PATH
+      value: "/data/skills/media/solilos-alarm.ogg"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint

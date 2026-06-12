@@ -32,6 +32,8 @@ CREATE TABLE session_traces (
   finish_reason     TEXT,
   n_tools           INTEGER,
   detail_id         INTEGER,
+  step_kind         TEXT,
+  tool_name         TEXT,
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (session_id, trace_id, step_order)
 );
@@ -98,6 +100,24 @@ def test_re_persist_same_trace_id_replaces(tmp_path):
     )
     got = trace_store.list_session_trace(db, "sess-1", "mdopp")
     assert [s["detail_id"] for s in got] == [0, 1]
+
+
+def test_interleaved_llm_and_tool_steps_round_trip(tmp_path):
+    # A turn's trace is the full step list: an LLM call (tool_calls), a tool
+    # execution, then the final LLM call — each persisted with its kind and, for
+    # the tool step, the dispatched name + its own wall_s (#346).
+    db = _db(tmp_path)
+    steps = [
+        _step(detail_id=0, finish_reason="tool_calls", step_kind="llm"),
+        {"step_kind": "tool", "tool_name": "ha_call_service", "wall_s": 0.42},
+        _step(detail_id=2, step_kind="llm"),
+    ]
+    trace_store.persist_trace(db, "sess-1", "tr-a", "mdopp", steps)
+    got = trace_store.list_session_trace(db, "sess-1", "mdopp")
+    assert [s["step_kind"] for s in got] == ["llm", "tool", "llm"]
+    assert got[1]["tool_name"] == "ha_call_service"
+    assert got[1]["wall_s"] == 0.42
+    assert got[0]["tool_name"] is None
 
 
 def test_scopes_to_resident(tmp_path):

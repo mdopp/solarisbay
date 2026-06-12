@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import contextvars
 import json
+import re
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +27,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from solilos_chat.engine import store
+from solilos_chat.engine.bus import SessionBus
 from solilos_chat.engine.ollama import OllamaChat, OllamaError
 from solilos_chat.engine.registry import EntityRegistry
 from solilos_chat.engine.tools import Toolbox
@@ -63,6 +66,33 @@ _TOOL_DISCIPLINE = (
     " Antworten im Verlauf eine Aktion nur angekündigt haben."
 )
 
+# A present-tense German device-state assertion ("… ist an", "… ist aus",
+# "… ist eingeschaltet", "… läuft", "… ist gesperrt"). When the model emits one
+# of these as its final answer WITHOUT having called a tool this turn, it is
+# fabricating a result — the clarify→"Ja."→empty-tool_calls path (#356) that
+# survives low-temp + the discipline rule. Detection is German on purpose: the
+# hot path runs German, and the false-positive surface (a turn that merely
+# quotes a state read back from a tool) is excluded by the "no tool ran this
+# turn" gate, not by the text.
+_DEVICE_CLAIM = re.compile(
+    r"\bist\s+(an|aus|ein(geschaltet)?|aus(geschaltet)?|"
+    r"gesperrt|entsperrt|gestartet|gestoppt|geschlossen|geöffnet|offen|zu)\b"
+    r"|\bist\s+jetzt\b|\bläuft\b|\bhabe\s+(ich\s+)?(an|aus|ein)geschaltet\b",
+    re.IGNORECASE,
+)
+
+# The corrective nudge injected once per turn when a fabricated claim is caught:
+# the model asserted an action it never dispatched — force the tool pass.
+_CLAIM_CORRECTION = (
+    "STOPP: Du hast eine Geräteaktion als erledigt behauptet, aber kein Tool"
+    " aufgerufen. Rufe JETZT das passende Tool (ha_call_service) für diese"
+    " Aktion auf. Behaupte nichts ohne Tool-Ergebnis."
+)
+
+
+def _is_fabricated_device_claim(content: str) -> bool:
+    return bool(_DEVICE_CLAIM.search(content or ""))
+
 
 class EngineError(Exception):
     """Raised when a turn cannot run (DB/model failures). Name-compatible
@@ -85,6 +115,9 @@ class EngineProfile:
     # one such reply in HA's history self-reinforces (box A/B 2026-06-12).
     temperature: float | None = None
     toolbox: Toolbox = field(default_factory=lambda: Toolbox([]))
+    # Guest profile (#353): a turn runs statelessly — nothing is written to the
+    # store, so no guest session, history or fact survives the conversation.
+    ephemeral: bool = False
 
 
 class EngineClient:
@@ -96,12 +129,14 @@ class EngineClient:
         ollama: OllamaChat,
         recorder: TraceRecorder,
         context_window: int | None = None,
+        bus: SessionBus | None = None,
     ):
         self._profile = profile
         self._db_path = db_path
         self._ollama = ollama
         self._recorder = recorder
         self._context_window = context_window
+        self._bus = bus
         self._soul_cache: tuple[float, str] = (0.0, "")
 
     @property
@@ -111,6 +146,10 @@ class EngineClient:
     @property
     def profile_name(self) -> str:
         return self._profile.name
+
+    @property
+    def ephemeral(self) -> bool:
+        return self._profile.ephemeral
 
     # -- session surface (HermesClient-compatible) --------------------------
 
@@ -222,9 +261,14 @@ class EngineClient:
         messages += store.history(self._db_path, session_id)
         think = self._profile.think_default or reasoning_effort not in ("", "none")
         owner = store.session_owner(self._db_path, session_id) or ""
+        # Mirror the inbound transcript to this session's OTHER open tabs (#344)
+        # before any token streams — a tab that didn't originate the turn (voice,
+        # or another browser) renders the user bubble as soon as it lands.
+        self._mirror(session_id, owner, "mirror_user", {"text": text})
         async for event in self._loop(
             messages, think=think, session_id=session_id, persist=True, uid=owner
         ):
+            self._mirror(session_id, owner, "mirror_event", event)
             yield event
 
     async def respond(
@@ -283,6 +327,28 @@ class EngineClient:
             except ValueError:
                 pass
 
+    async def respond_session(
+        self,
+        text: str,
+        *,
+        uid: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """A voice turn into the resident's durable household session (#345).
+
+        Where `respond` is stateless (HA owns the history), this persists into
+        the shared household session — the same row the browser opens — so
+        spoken and typed history are one conversation. HA still resends its
+        full message list, but the store is now the source of truth, so only
+        the latest user `text` is run; the soul/registry block is the session's
+        own (the caller's per-call system prompt is dropped — the durable
+        session already carries the engine's identity)."""
+        session_id = store.ensure_household_session(self._db_path, uid)
+        # The wall-clock hint rides the user turn (the session path has no
+        # topic-hint wrapper) — same lever the browser turns get server-side.
+        turn = f"{_now_hint()}\n\n{text}" if text else text
+        async for event in self.chat_stream(session_id, turn):
+            yield event
+
     async def _loop(
         self,
         messages: list[dict[str, Any]],
@@ -306,6 +372,9 @@ class EngineClient:
             else None
         )
 
+        has_tools = bool(self._profile.toolbox.names())
+        tool_dispatched = False
+        corrected = False
         final_content = ""
         final_thinking = ""
         for _ in range(_MAX_PASSES):
@@ -342,6 +411,19 @@ class EngineClient:
             final_thinking = result.thinking or final_thinking
 
             if not result.tool_calls:
+                # Fabrication guard (#356): the model claims a device action is
+                # done but dispatched no tool this turn. Re-prompt once to force
+                # the tool pass instead of accepting the fabricated success.
+                if (
+                    has_tools
+                    and not tool_dispatched
+                    and not corrected
+                    and _is_fabricated_device_claim(result.content)
+                ):
+                    corrected = True
+                    messages.append({"role": "assistant", "content": result.content})
+                    messages.append({"role": "system", "content": _CLAIM_CORRECTION})
+                    continue
                 final_content = result.content
                 break
 
@@ -370,6 +452,7 @@ class EngineClient:
                         args = json.loads(args)
                     except ValueError:
                         args = {}
+                tool_dispatched = True
                 yield {"type": "tool.started", "data": {"tool": name}}
                 # Re-pin the turn's resident here, IN the dispatching task:
                 # the SSE heartbeat runs each generator step in its own task,
@@ -378,7 +461,14 @@ class EngineClient:
                 # pass 2 on (timers/facts written ownerless).
                 if uid:
                     current_uid.set(uid)
+                t0 = time.monotonic()
                 output = await self._profile.toolbox.dispatch(name, args)
+                self._recorder.record_tool(
+                    session_id=session_id,
+                    profile=self._profile.name,
+                    tool_name=name,
+                    wall_s=time.monotonic() - t0,
+                )
                 yield {"type": "tool.completed", "data": {"tool": name}}
                 if persist:
                     store.append_message(self._db_path, session_id, "tool", output)
@@ -440,6 +530,17 @@ class EngineClient:
             if block:
                 parts.append(block)
         return "\n\n".join(p for p in parts if p.strip())
+
+    def _mirror(
+        self, session_id: str, uid: str, kind: str, event: dict[str, Any]
+    ) -> None:
+        """Publish one turn event to this session's other open tabs (#344).
+
+        No-op without a bus (offline tests) or an owner. The originating request
+        keeps its own direct stream; subscribers are every OTHER open client of
+        the same (session, uid)."""
+        if self._bus is not None and uid:
+            self._bus.publish(session_id, uid, {"kind": kind, "event": event})
 
     def _soul(self) -> str:
         """SOUL.md, mtime-cached — an edit lands on the next turn, no restart."""

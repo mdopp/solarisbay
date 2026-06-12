@@ -17,7 +17,7 @@ async def _run() -> None:
     context_window = await build_context_window(
         settings.ollama_url, settings.context_window_override
     )
-    household, deep, admin, recorder = build_engine_clients(
+    household, deep, admin, guest, recorder, bus = build_engine_clients(
         db_path=settings.solilos_db_path,
         ollama_url=settings.ollama_url,
         fast_model=settings.fast_model,
@@ -34,7 +34,11 @@ async def _run() -> None:
         context_window=context_window.value,
     )
     scheduler = TimerScheduler(
-        settings.solilos_db_path, settings.hass_url, settings.hass_token
+        settings.solilos_db_path,
+        settings.hass_url,
+        settings.hass_token,
+        settings.alarm_sound_media_id,
+        settings.alarm_sound_path,
     )
     scheduler.start()
     crons = CronRunner(
@@ -50,6 +54,7 @@ async def _run() -> None:
         hermes=household,
         hermes_admin=admin,
         hermes_deep=deep,
+        hermes_guest=guest,
         remote_user_header=settings.remote_user_header,
         default_uid=settings.default_uid,
         remote_groups_header=settings.remote_groups_header,
@@ -67,6 +72,7 @@ async def _run() -> None:
         notes_dir=settings.notes_dir,
         trace_recorder=recorder,
         api_key=settings.api_key,
+        bus=bus,
     )
 
 

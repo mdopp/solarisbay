@@ -17,6 +17,10 @@ import uuid
 from typing import Any
 
 
+# Namespace for the deterministic per-resident household session id (#345).
+_HOUSEHOLD_NS = uuid.UUID("a3f0c0de-0501-0345-0000-000000000345")
+
+
 def _conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -40,6 +44,37 @@ def create_session(
             " (id, owner_uid, title, profile, ephemeral, maintenance)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (session_id, uid, title, profile, int(ephemeral), int(maintenance)),
+        )
+    return session_id
+
+
+def household_session_id(uid: str) -> str:
+    """The stable session id for a resident's durable household chat (#345).
+
+    Deterministic from the uid so the voice facade always lands in the SAME
+    session and it survives restarts (a fresh uuid each boot would orphan the
+    spoken history). A namespaced uuid5 keeps it a normal 32-hex id, so it
+    behaves like any other session id everywhere else.
+    """
+    return uuid.uuid5(_HOUSEHOLD_NS, uid).hex
+
+
+def ensure_household_session(
+    db_path: str, uid: str, *, profile: str = "household"
+) -> str:
+    """Return the resident's durable household session, creating it once (#345).
+
+    The session voice turns persist into and the browser opens — so spoken and
+    typed history are the same row. Created with the fixed `household_session_id`
+    and the household primary topic so routing + the pinned "Zuhause" row pick
+    it up; idempotent (INSERT OR IGNORE) so concurrent first turns can't dup it.
+    """
+    session_id = household_session_id(uid)
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO engine_sessions"
+            " (id, owner_uid, title, profile) VALUES (?, ?, ?, ?)",
+            (session_id, uid, "Zuhause", profile),
         )
     return session_id
 
