@@ -5,7 +5,23 @@ click. Its core is the **Sol Engine** — a native agent loop inside
 `solilos-chat` that talks directly to a local Ollama, controls the home via
 Home Assistant, and fronts the Voice PE speaker through HA's Assist
 pipeline. (The earlier Hermes-gateway architecture was fully replaced in
-v0.10 — see `solilos-architecture.md`.)
+v0.10 — see `solilos-architecture.md` for the full picture and flows.)
+
+```mermaid
+flowchart LR
+    PE["🔊 Voice PE"] -- ESPHome --> HA["HA Assist pipeline<br/>whisper GPU · piper"]
+    Browser["💻 Browser"] -- SSO --> Chat
+    HA -- "conversation.sol" --> Chat["Sol Engine<br/>(solilos-chat)"]
+    Chat -- "per-turn model+think" --> Ollama["ollama (GPU)<br/>e2b · 12b"]
+    Chat -- "tools · registry · announce" --> HA
+    Chat --- DB[("solilos.db")]
+    Chat --- Notes[("notes vault")]
+    Chat -- "admin only" --> SB["ServiceBay MCP"]
+```
+
+A spoken command answers in ≈1.3 s after speech end (whisper GPU 0.38 s +
+engine ≤1 s); the household prompt is ~2.1k tokens with the HA entity
+registry injected.
 
 ## What's in this repo
 

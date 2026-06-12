@@ -92,6 +92,52 @@ The engine is a module inside `solilos-chat`
   durable last-run stamps (`engine_cron_runs`) — idempotent by
   construction; first boot baselines instead of back-running.
 
+### System picture
+
+```mermaid
+flowchart LR
+    subgraph LAN
+        PE["🔊 Voice PE<br/>(ESPHome, wake on-device)"]
+        Browser["💻 Browser"]
+        Sat["🎙 wyoming-satellite<br/>(future hardware)"]
+    end
+
+    subgraph Box["ServiceBay box (one host, hostNetwork)"]
+        subgraph HA["home-assistant"]
+            Pipeline["Assist pipeline 'Sol'<br/>wake → STT → conv → TTS"]
+            Devices["devices / entities"]
+        end
+        subgraph Voice["voice"]
+            Whisper["voice-whisper :10300<br/>faster-whisper GPU medium-int8"]
+            Piper["piper :10200<br/>de_DE-thorsten-high"]
+        end
+        subgraph Solilos["solilos pod"]
+            Chat["chat :8787 — Sol Engine<br/>agent loop · sessions · traces<br/>scheduler · night crons"]
+            GK["gatekeeper :10700<br/>Wyoming bridge"]
+        end
+        NPM["NPM + Authelia"]
+        Ollama["ollama :11434 (GPU)<br/>gemma4:e2b · gemma4:12b · nomic"]
+        DB[("solilos.db")]
+        Notes[("notes vault<br/>Syncthing")]
+        SBMCP["ServiceBay MCP :5888"]
+    end
+
+    PE -- "ESPHome API (only path)" --> Pipeline
+    Pipeline -- "audio" --> Whisper
+    Pipeline -- "text → conversation.sol" --> Chat
+    Pipeline -- "answer text" --> Piper
+    Browser -- "chat.<domain>" --> NPM --> Chat
+    Sat -. "Wyoming" .-> GK -- "/ollama facade" --> Chat
+    Chat -- "/api/chat per turn<br/>model+think per request" --> Ollama
+    Chat -- "tools + entity registry<br/>+ announce" --> HA
+    Chat --- DB
+    Chat --- Notes
+    Chat -- "admin profile only<br/>read+lifecycle+mutate" --> SBMCP
+```
+
+GPU budget (16.4 GB): e2b + 12b + nomic resident ≈ 12.6 GB, whisper
+medium-int8 ≈ 1.1 GB — everything stays loaded, no eviction churn.
+
 ### Voice (the PE speaker path)
 
 The Voice PE is an ESPHome device that speaks only to HA, so the path is
@@ -108,6 +154,93 @@ system block and runs its tool loop server-side (HA never sees
 tool_calls). The **voice-gatekeeper** speaks the same facade
 (`stream:false`, rolling per-conversation history) for wyoming-satellite
 hardware.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PE as Voice PE
+    participant HA as HA pipeline
+    participant W as whisper (GPU)
+    participant E as Sol Engine
+    participant O as ollama
+    participant P as piper
+
+    Note over PE: "Okay Nabu …" (wake on-device,<br/>no audio leaves before it)
+    PE->>HA: audio stream (ESPHome API)
+    HA->>W: Wyoming audio
+    W-->>HA: transcript (0.38 s after speech end)
+    HA->>E: POST /ollama/api/chat (conversation.sol, NDJSON)
+    E->>O: /api/chat — soul + entity registry + HA history
+    O-->>E: deltas (+ tool_calls)
+    E->>HA: tool calls (ha_call_service / ha_get_state …)
+    E-->>HA: answer deltas (HA never sees tool_calls)
+    HA->>P: Wyoming TTS (streams)
+    P-->>PE: audio
+```
+
+Measured end-to-end (real spoken turns + live bench, 2026-06-12):
+
+| Segment | Measured |
+|---|---|
+| speech end → transcript (GPU medium-int8) | **0.38 s** (CPU base was 0.76–2.86 s) |
+| transcript → Sol answer complete (e2b, warm) | 0.88–1.0 s |
+| facade TTFT plain / tool turn | 0.5–0.75 s / 1.3 s |
+| **speech end → answer ready** | **≈ 1.3–1.4 s** (gate ≤ 3 s) |
+
+Whisper runs as the `voice-whisper.container` Quadlet on the GPU
+(servicebay#1809: kube play drops CDI devices, so the STT container left
+the pod — same `.container` fixup as ollama). gemma4 advertises an
+`audio` capability but no Ollama API path accepts audio (solbay#337), so
+the dedicated STT stage stays — it is also what makes mishearings
+visible in traces. The one-pass audio design (audio + "return a
+transcript field") is parked on the gatekeeper path until Ollama wires
+audio input.
+
+### Other flows
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as Resident (chat)
+    participant N as NPM+Authelia
+    participant E as Sol Engine
+    participant O as ollama
+
+    U->>N: chat.<domain> (SSO)
+    N->>E: /api/chat/stream + Remote-User
+    E->>E: route: Zuhause→sol · Gründlich→sol-deep · maint→admin
+    E->>E: maybe_compact (#210), time hint, topic hint
+    E->>O: /api/chat (profile prompt + session history)
+    O-->>E: deltas / tool loop (≤6 passes)
+    E-->>U: SSE deltas + per-turn trace panel
+    E->>E: persist messages + trace (solilos.db)
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as Engine scheduler
+    participant DB as engine_timers
+    participant HA as HA
+    participant PE as Voice PE
+
+    Note over E: timer_set tool wrote the row<br/>(chat or voice turn)
+    loop poll 5 s
+        E->>DB: due pending timers?
+    end
+    E->>HA: assist_satellite.announce (target required)
+    HA->>PE: TTS via the satellite's pipeline (de_DE)
+    PE-->>E: delivered → status=fired
+```
+
+Night crons and admin ride the same engine: `CronRunner` polls
+`engine_cron_runs` slots (local time) and runs daily-chronicle /
+problem-summarizer as ephemeral 12b turns whose output is `note_write`
+into the vault; chat-compactor walks stale long sessions through
+`compaction.compact_session(force=True)`. The admin persona is the
+maintenance embed's profile — operator soul + admin skills as prompt,
+ServiceBay MCP tools fetched lazily per turn from :5888 with the minted
+token file.
 
 ### Routing
 
