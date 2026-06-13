@@ -73,6 +73,7 @@ def build_engine_clients(
     tavily_api_key: str = "",
     notes_dir: str = "",
     context_window: int | None = None,
+    default_uid: str = "household",
 ) -> tuple[
     EngineClient, EngineClient, EngineClient, EngineClient, TraceRecorder, SessionBus
 ]:
@@ -117,6 +118,7 @@ def build_engine_clients(
             think_default=False,
             temperature=0.2,
             toolbox=Toolbox(household_tools),
+            default_uid=default_uid,
         )
     )
     deep = make(
@@ -127,6 +129,7 @@ def build_engine_clients(
             registry=registry,
             think_default=True,
             toolbox=Toolbox(household_tools),
+            default_uid=default_uid,
         )
     )
     admin_toolbox: Toolbox = (
@@ -140,6 +143,7 @@ def build_engine_clients(
             extra_prompt=_skills_prompt(admin_skills_dir),
             think_default=True,
             toolbox=admin_toolbox,
+            default_uid=default_uid,
         )
     )
     guest = make(
@@ -152,6 +156,7 @@ def build_engine_clients(
             temperature=0.2,
             toolbox=Toolbox(guest_tools),
             ephemeral=True,
+            default_uid=default_uid,
         )
     )
     return household, deep, admin, guest, recorder, bus

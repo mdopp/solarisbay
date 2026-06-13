@@ -32,6 +32,7 @@ from solilos_chat.engine import store
 from solilos_chat.engine.bus import SessionBus
 from solilos_chat.engine.ollama import OllamaChat, OllamaError
 from solilos_chat.engine.registry import EntityRegistry
+from solilos_chat.engine.residents import identity_block
 from solilos_chat.engine.tools import Toolbox
 from solilos_chat.engine.trace import TraceRecorder
 from solilos_chat.logging import log
@@ -117,6 +118,9 @@ class EngineProfile:
     extra_prompt: str = ""
     registry: EntityRegistry | None = None
     think_default: bool = False
+    # The shared household uid (and HA's fallback `user`): a turn carrying this
+    # uid is NOT personal, so no resident identity block is injected (#352).
+    default_uid: str = "household"
     # Sampling override; None keeps the model's default. The household hot
     # path runs low temperature: at the modelfile default of 1.0 e2b
     # occasionally narrates a device action instead of calling the tool, and
@@ -523,6 +527,9 @@ class EngineClient:
         parts = [self._soul()]
         if self._profile.extra_prompt:
             parts.append(self._profile.extra_prompt)
+        resident = identity_block(current_uid.get(), self._profile.default_uid)
+        if resident:
+            parts.append(resident)
         overlay = store.get_overlay(self._db_path, session_id)
         if overlay:
             parts.append(overlay)
@@ -541,6 +548,9 @@ class EngineClient:
         parts = [self._soul()]
         if self._profile.extra_prompt:
             parts.append(self._profile.extra_prompt)
+        resident = identity_block(current_uid.get(), self._profile.default_uid)
+        if resident:
+            parts.append(resident)
         if self._profile.registry is not None:
             block = await self._profile.registry.prompt_block()
             if block:

@@ -397,6 +397,39 @@ async def test_overlay_rides_system_prompt(db, soul):
     assert "Fortsetzung einer früheren" in system
 
 
+async def test_resident_uid_personalizes_prompt(db, soul):
+    """A turn owned by an enrolled resident names them in the system prompt (#352)."""
+    client, fake = _client(db, soul, [ChatResult(content="ok")])
+    sid = await client.create_session("anna")
+    await client.chat(sid, "Hallo")
+    system = fake.calls[0]["messages"][0]["content"]
+    assert "anna" in system
+    assert "persönlich" in system
+
+
+async def test_household_uid_prompt_unchanged(db, soul):
+    """The shared household/default uid carries NO personalization block (#352)."""
+    client, fake = _client(db, soul, [ChatResult(content="ok")])
+    sid = await client.create_session("household")
+    await client.chat(sid, "Hallo")
+    system = fake.calls[0]["messages"][0]["content"]
+    assert "persönlich" not in system
+    assert system == "Du bist Sol."
+
+
+def test_identity_block_only_for_real_residents():
+    from solilos_chat.engine.residents import identity_block
+
+    assert identity_block("anna") != ""
+    assert "anna" in identity_block("anna")
+    # non-residents: empty/default/guest/anonymous and the configured default_uid
+    assert identity_block("") == ""
+    assert identity_block("household") == ""
+    assert identity_block("guest") == ""
+    assert identity_block("default") == ""
+    assert identity_block("papa", default_uid="papa") == ""
+
+
 # -- HA tools ------------------------------------------------------------
 
 
