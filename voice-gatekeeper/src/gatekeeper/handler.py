@@ -36,10 +36,17 @@ from wyoming.info import Describe, Info
 from wyoming.server import AsyncEventHandler
 
 from .config import settings
-from .embeddings_store import list_embeddings, touch_last_seen
+from .embeddings_store import list_embeddings, touch_last_seen, upsert_embedding
+from .enroll_stash import (
+    add_embedding,
+    claim_active_request,
+    finish_request,
+    increment_collected,
+    take_embeddings,
+)
 from .sol import SolClient
 from .rooms_store import get_room
-from .speaker import get_extractor, resolve_speaker
+from .speaker import average_embeddings, get_extractor, resolve_speaker
 from .tts import synthesize_to_writer
 from .uid_stash import stash_uid
 
@@ -210,8 +217,93 @@ class GatekeeperHandler(AsyncEventHandler):
                 stash_uid, settings.solilos_db_path, transcript, uid
             )
             log.info("gatekeeper.stt_provider.stash", trace_id=self.trace_id, uid=uid)
+            await self._capture_enrollment()
 
         await self.write_event(Transcript(text=transcript).event())
+
+    async def _capture_enrollment(self) -> None:
+        """Reverse enroll-stash (#376): when the engine has opened an enrol
+        request, capture THIS turn's PCM as one sample for the candidate uid and
+        embed it in-process. Once the target sample count is reached, average the
+        embeddings, upsert the resident's `voice_embeddings` row, and write the
+        result back. No-op when speaker-ID is off (no extractor → the engine side
+        times the request out honestly) or no request is active."""
+        extractor = get_extractor()
+        if extractor is None or self._audio_start is None or not self._audio_buffer:
+            return
+        request = await asyncio.to_thread(
+            claim_active_request, settings.solilos_db_path
+        )
+        if request is None:
+            return
+
+        pcm = b"".join(c.audio for c in self._audio_buffer)
+        try:
+            embedding = await asyncio.to_thread(
+                extractor.extract,
+                pcm,
+                rate=self._audio_start.rate,
+                width=self._audio_start.width,
+                channels=self._audio_start.channels,
+            )
+        except Exception as exc:  # noqa: BLE001 — extraction errors degrade gracefully
+            log.warn(
+                "gatekeeper.enroll.extract_error",
+                trace_id=self.trace_id,
+                error=str(exc),
+            )
+            return
+        if embedding is None:
+            # Too short / silence — don't burn a sample slot on it.
+            log.info("gatekeeper.enroll.sample_skipped", trace_id=self.trace_id)
+            return
+
+        held = add_embedding(request.uid, embedding)
+        await asyncio.to_thread(
+            increment_collected, settings.solilos_db_path, request.uid
+        )
+        log.info(
+            "gatekeeper.enroll.captured",
+            trace_id=self.trace_id,
+            collected=held,
+            target=request.target_samples,
+        )
+        if held < request.target_samples:
+            return
+
+        embeddings = take_embeddings(request.uid)
+        try:
+            averaged = await asyncio.to_thread(average_embeddings, embeddings)
+            await asyncio.to_thread(
+                upsert_embedding,
+                settings.solilos_db_path,
+                request.uid,
+                averaged,
+                sample_count=len(embeddings),
+                enrolled_via="voice",
+            )
+        except Exception as exc:  # noqa: BLE001 — enrol failure → honest result
+            await asyncio.to_thread(
+                finish_request,
+                settings.solilos_db_path,
+                request.uid,
+                ok=False,
+                result=str(exc),
+            )
+            log.error(
+                "gatekeeper.enroll.failed", trace_id=self.trace_id, error=str(exc)
+            )
+            return
+        await asyncio.to_thread(
+            finish_request,
+            settings.solilos_db_path,
+            request.uid,
+            ok=True,
+            result=str(len(embeddings)),
+        )
+        log.info(
+            "gatekeeper.enroll.ok", trace_id=self.trace_id, samples=len(embeddings)
+        )
 
     async def _resolve_uid(self) -> str:
         """Phase 2 speaker resolution. Falls back to default_uid on any

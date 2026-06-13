@@ -1,28 +1,23 @@
-"""Tests for the registration flow (#376): the pending_residents store and the
-`register_pending_resident` tool.
+"""Tests for the registration flow (#376): the pending_residents store, the
+reverse enroll-stash engine store, and the `start_voice_enrollment` /
+`register_pending_resident` tools.
 
-The gatekeeper /enrol call is mocked with a local aiohttp app (as in
-test_enrol), so we assert the tool enrols then files a pending row on success,
-and files nothing when enrolment fails — and that raw audio never reaches a log
-line.
+Live-voice enrolment no longer ships PCM through the engine; the engine opens an
+`enroll_requests` row and the gatekeeper writes the result back. The tools are
+exercised against a real sqlite db with both schemas replayed locally (no
+alembic, no gatekeeper process), and a row is hand-set to the status the
+gatekeeper would have written.
 """
 
 from __future__ import annotations
 
-import base64
 import json
-import logging
+import sqlite3
 
-import pytest
-from aiohttp import web
-
-from solilos_chat import pending_residents_store
+from solilos_chat import enroll_requests_store, pending_residents_store
 from solilos_chat.engine.tools.register import build_register_tools
 
-_SAMPLE = base64.b64encode(b"\x00\x01" * 16).decode()
-
-# The schema migration 0013 creates, replayed locally so the store test runs
-# against a real sqlite db without alembic.
+# Both schemas migrations 0013/0014 create, replayed locally.
 _SCHEMA = """
 CREATE TABLE pending_residents (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,18 +27,51 @@ CREATE TABLE pending_residents (
   enrolled     INTEGER NOT NULL DEFAULT 0,
   requested_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE enroll_requests (
+  uid            TEXT PRIMARY KEY,
+  status         TEXT NOT NULL DEFAULT 'pending',
+  target_samples INTEGER NOT NULL DEFAULT 3,
+  collected      INTEGER NOT NULL DEFAULT 0,
+  result         TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
 def _db(tmp_path) -> str:
-    import sqlite3
-
     path = str(tmp_path / "solilos.db")
     conn = sqlite3.connect(path)
     conn.executescript(_SCHEMA)
     conn.commit()
     conn.close()
     return path
+
+
+def _set_status(db: str, uid: str, status: str, *, collected: int = 3) -> None:
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE enroll_requests SET status = ?, collected = ? WHERE uid = ?",
+        (status, collected, uid),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _age_request(db: str, uid: str, seconds: int) -> None:
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE enroll_requests SET created_at = datetime('now', ?) WHERE uid = ?",
+        (f"-{seconds} seconds", uid),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _tools(db: str):
+    return {t.name: t for t in build_register_tools(db)}
+
+
+# --- pending_residents_store (unchanged contract) ---------------------------
 
 
 def test_store_writes_and_reads_a_pending_request(tmp_path):
@@ -54,11 +82,10 @@ def test_store_writes_and_reads_a_pending_request(tmp_path):
     assert rid > 0
     rows = pending_residents_store.list_pending_residents(db)
     assert len(rows) == 1
-    row = rows[0]
-    assert row["uid"] == "lena"
-    assert row["display_name"] == "Lena"
-    assert row["status"] == "pending"
-    assert row["enrolled"] == 1
+    assert rows[0]["uid"] == "lena"
+    assert rows[0]["display_name"] == "Lena"
+    assert rows[0]["status"] == "pending"
+    assert rows[0]["enrolled"] == 1
 
 
 def test_store_reads_empty_when_db_missing(tmp_path):
@@ -68,82 +95,159 @@ def test_store_reads_empty_when_db_missing(tmp_path):
     )
 
 
-@pytest.fixture
-async def gatekeeper(aiohttp_client):
-    """A stub gatekeeper whose /enrol reply the test can queue."""
-    reply = {"status": 200, "body": {"ok": True, "uid": "lena", "samples_used": 3}}
-
-    async def enrol(request: web.Request) -> web.Response:
-        await request.json()
-        return web.json_response(reply["body"], status=reply["status"])
-
-    app = web.Application()
-    app.router.add_post("/enrol", enrol)
-    client = await aiohttp_client(app)
-    return str(client.make_url("")).rstrip("/"), reply
+# --- enroll_requests_store --------------------------------------------------
 
 
-async def test_register_enrols_then_files_pending_on_success(tmp_path, gatekeeper):
-    base, _ = gatekeeper
+def test_open_request_writes_pending_row(tmp_path):
     db = _db(tmp_path)
-    (tool,) = build_register_tools(db, base, gatekeeper_token="s3cret")
+    enroll_requests_store.open_request(db, "lena", target_samples=3)
+    req = enroll_requests_store.read_request(db, "lena")
+    assert req["status"] == "pending"
+    assert req["target_samples"] == 3
+    assert req["collected"] == 0
+    assert req["timed_out"] is False
 
+
+def test_open_request_resets_existing_row(tmp_path):
+    db = _db(tmp_path)
+    enroll_requests_store.open_request(db, "lena")
+    _set_status(db, "lena", "done", collected=3)
+    enroll_requests_store.open_request(db, "lena")  # re-open
+    req = enroll_requests_store.read_request(db, "lena")
+    assert req["status"] == "pending"
+    assert req["collected"] == 0
+
+
+def test_read_request_reports_timeout_past_ttl(tmp_path):
+    db = _db(tmp_path)
+    enroll_requests_store.open_request(db, "lena")
+    _age_request(db, "lena", enroll_requests_store.ENROLL_TTL_SECONDS + 10)
+    req = enroll_requests_store.read_request(db, "lena")
+    assert req["timed_out"] is True
+
+
+def test_read_request_done_row_never_times_out(tmp_path):
+    db = _db(tmp_path)
+    enroll_requests_store.open_request(db, "lena")
+    _set_status(db, "lena", "done")
+    _age_request(db, "lena", enroll_requests_store.ENROLL_TTL_SECONDS + 10)
+    req = enroll_requests_store.read_request(db, "lena")
+    assert req["timed_out"] is False
+    assert req["status"] == "done"
+
+
+def test_read_request_missing_db_is_none(tmp_path):
+    assert enroll_requests_store.read_request(str(tmp_path / "absent.db"), "x") is None
+
+
+def test_clear_request_drops_row(tmp_path):
+    db = _db(tmp_path)
+    enroll_requests_store.open_request(db, "lena")
+    enroll_requests_store.clear_request(db, "lena")
+    assert enroll_requests_store.read_request(db, "lena") is None
+
+
+# --- start_voice_enrollment tool --------------------------------------------
+
+
+async def test_start_opens_request_and_returns_sample_count(tmp_path):
+    db = _db(tmp_path)
     out = json.loads(
-        await tool.handler(
-            {
-                "uid": "lena",
-                "display_name": "Lena",
-                "samples": [_SAMPLE, _SAMPLE, _SAMPLE],
-            }
+        await _tools(db)["start_voice_enrollment"].handler({"uid": "lena"})
+    )
+    assert out == {"ok": True, "uid": "lena", "samples_needed": 3}
+    assert enroll_requests_store.read_request(db, "lena")["status"] == "pending"
+
+
+async def test_start_rejects_invalid_uid(tmp_path):
+    db = _db(tmp_path)
+    out = json.loads(
+        await _tools(db)["start_voice_enrollment"].handler({"uid": "Bad UID!"})
+    )
+    assert out == {"ok": False, "reason": "invalid_uid"}
+
+
+# --- register_pending_resident tool -----------------------------------------
+
+
+async def test_register_files_pending_when_enroll_done(tmp_path):
+    db = _db(tmp_path)
+    enroll_requests_store.open_request(db, "lena")
+    _set_status(db, "lena", "done")  # gatekeeper finished the capture
+    out = json.loads(
+        await _tools(db)["register_pending_resident"].handler(
+            {"uid": "lena", "display_name": "Lena"}
         )
     )
     assert out["ok"] is True
-    assert out["uid"] == "lena"
     assert out["status"] == "pending"
-
     rows = pending_residents_store.list_pending_residents(db)
-    assert len(rows) == 1
-    assert rows[0]["uid"] == "lena"
-    assert rows[0]["enrolled"] == 1
+    assert len(rows) == 1 and rows[0]["uid"] == "lena" and rows[0]["enrolled"] == 1
+    # The request row is consumed once acted on.
+    assert enroll_requests_store.read_request(db, "lena") is None
 
 
-async def test_register_files_nothing_on_enrol_failure(tmp_path, gatekeeper):
-    base, reply = gatekeeper
-    reply["status"] = 422
-    reply["body"] = {"ok": False, "reason": "not_enough_usable_samples"}
+async def test_register_times_out_when_speaker_id_off(tmp_path):
     db = _db(tmp_path)
-    (tool,) = build_register_tools(db, base)
-
+    enroll_requests_store.open_request(db, "lena")
+    # No gatekeeper picks it up (speaker-ID off); the row ages past the TTL.
+    _age_request(db, "lena", enroll_requests_store.ENROLL_TTL_SECONDS + 10)
     out = json.loads(
-        await tool.handler(
-            {"uid": "lena", "display_name": "Lena", "samples": [_SAMPLE]}
+        await _tools(db)["register_pending_resident"].handler(
+            {"uid": "lena", "display_name": "Lena"}
         )
     )
-    assert out == {"ok": False, "reason": "not_enough_usable_samples"}
+    assert out == {"ok": False, "reason": "speaker_id_disabled"}
+    assert pending_residents_store.list_pending_residents(db) == []
+    assert enroll_requests_store.read_request(db, "lena") is None
+
+
+async def test_register_incomplete_while_still_capturing(tmp_path):
+    db = _db(tmp_path)
+    enroll_requests_store.open_request(db, "lena")
+    _set_status(db, "lena", "capturing", collected=1)
+    out = json.loads(
+        await _tools(db)["register_pending_resident"].handler(
+            {"uid": "lena", "display_name": "Lena"}
+        )
+    )
+    assert out["ok"] is False
+    assert out["reason"] == "enroll_incomplete"
+    assert out["collected"] == 1
     assert pending_residents_store.list_pending_residents(db) == []
 
 
-async def test_register_rejects_missing_display_name(tmp_path, gatekeeper):
-    base, _ = gatekeeper
+async def test_register_failed_result_files_nothing(tmp_path):
     db = _db(tmp_path)
-    (tool,) = build_register_tools(db, base)
+    enroll_requests_store.open_request(db, "lena")
+    _set_status(db, "lena", "failed")
     out = json.loads(
-        await tool.handler({"uid": "lena", "display_name": "  ", "samples": [_SAMPLE]})
+        await _tools(db)["register_pending_resident"].handler(
+            {"uid": "lena", "display_name": "Lena"}
+        )
+    )
+    assert out["ok"] is False
+    assert pending_residents_store.list_pending_residents(db) == []
+
+
+async def test_register_rejects_missing_display_name(tmp_path):
+    db = _db(tmp_path)
+    enroll_requests_store.open_request(db, "lena")
+    _set_status(db, "lena", "done")
+    out = json.loads(
+        await _tools(db)["register_pending_resident"].handler(
+            {"uid": "lena", "display_name": "  "}
+        )
     )
     assert out == {"ok": False, "reason": "missing_display_name"}
     assert pending_residents_store.list_pending_residents(db) == []
 
 
-async def test_register_does_not_log_audio(tmp_path, gatekeeper, caplog):
-    base, _ = gatekeeper
+async def test_register_no_request_is_honest_failure(tmp_path):
     db = _db(tmp_path)
-    (tool,) = build_register_tools(db, base)
-    with caplog.at_level(logging.DEBUG):
-        await tool.handler(
-            {
-                "uid": "lena",
-                "display_name": "Lena",
-                "samples": [_SAMPLE, _SAMPLE, _SAMPLE],
-            }
+    out = json.loads(
+        await _tools(db)["register_pending_resident"].handler(
+            {"uid": "lena", "display_name": "Lena"}
         )
-    assert _SAMPLE not in caplog.text
+    )
+    assert out == {"ok": False, "reason": "no_enroll_request"}

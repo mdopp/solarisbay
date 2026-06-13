@@ -1,7 +1,7 @@
 ---
 name: sol-guest-onboarding
 description: Use at the start of a conversation with an unknown/guest speaker — the turn's uid is `guest` (the gatekeeper heard a voice but matched no enrolled resident, #351/#353), e.g. they open with "Hallo", "Hey Sol", "wer bist du?", "kannst du mir helfen?". Greet them, explain Sol doesn't recognise them yet, and offer the two paths: (a) register as a resident (gated on admin approval) or (b) carry on as a guest (Q&A + simple light/media control, nothing is remembered). If they choose to register, set up the next step — collecting a name and a few spoken samples to enrol their voice — and hand off to the registration flow. The conversational entry point for the onboarding epic (#343).
-version: 1.1.0
+version: 1.2.0
 author: Solilos
 license: MIT
 ---
@@ -93,18 +93,38 @@ itself. Explain what's coming and set up the seam:
 > Freigabe an die Verwaltung — bis die zustimmt, bist du noch Gast und ich lege
 > noch kein Konto an."*
 
-Then run the **registration flow** (#376): collect the name and a chosen uid,
-capture the spoken enrolment samples, and call **`register_pending_resident`**
-with the uid, display name and the base64 PCM samples. That tool enrols the voice
-through the gatekeeper (averaged ECAPA embedding → `voice_embeddings`) and, only
-on a successful enrolment, files a **pending resident request** for the admin
-(#355). None of that lands an account until an admin approves — be clear that
-registration is a *request*, not an instant account, and that a failed enrolment
-(too few usable samples) files **nothing** and should be retried.
+Then run the **registration flow** (#376). The engine never handles the audio
+itself — the gatekeeper captures the speaker's voice across the next few turns
+(the *reverse enroll-stash*). The dialog steps:
 
-(`register_pending_resident` is an onboarding-only tool, not in the household or
-general guest toolset. The raw samples are biometric — never read them, the uid
-list, or embeddings aloud.)
+1. Collect the name and a chosen uid, then call **`start_voice_enrollment`** with
+   the uid. It returns how many samples are needed (3).
+2. Guide the speaker through **three short utterances**, one per turn — each is a
+   captured sample:
+
+   > *"Sag bitte deinen Namen."* → *"Danke. Noch einmal."* → *"Und ein letztes
+   > Mal."*
+
+3. After the third utterance, call **`register_pending_resident`** with the uid
+   and display name. It checks the gatekeeper's enrolment result and, only on a
+   successful enrol, files a **pending resident request** for the admin (#355).
+
+None of that lands an account until an admin approves — be clear that
+registration is a *request*, not an instant account.
+
+Handle the honest-failure paths the tool returns:
+
+- `reason: "speaker_id_disabled"` (a **timeout** — the gatekeeper never picked up
+  the request because speaker recognition is off): tell the guest plainly that
+  *"Sprach-Enrollment braucht aktivierte Sprechererkennung"* — it can't enrol them
+  by voice right now. Don't retry in a loop; offer to carry on as a guest.
+- `reason: "enroll_incomplete"`: fewer than the needed utterances were captured —
+  prompt for another one before confirming.
+- any other failure: report it, file **nothing**, and offer to retry.
+
+(`start_voice_enrollment` / `register_pending_resident` are onboarding-only tools,
+not in the household or general guest toolset. The voice is biometric — never read
+the uid list or embeddings aloud; the engine never sees the raw audio at all.)
 
 ## Guards
 

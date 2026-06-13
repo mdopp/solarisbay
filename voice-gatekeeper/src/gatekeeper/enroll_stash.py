@@ -1,0 +1,154 @@
+"""Reverse enroll-stash — the gatekeeper side of live-voice enrolment (#376).
+
+The mirror of `uid_stash.py`. There, the gatekeeper writes `{transcript -> uid}`
+for the engine to read; here, the engine writes an `enroll_requests` row for a
+candidate uid and the gatekeeper reads it, captures the speaker's PCM across the
+onboarding turns, and writes the enrolment result back.
+
+When the gatekeeper is HA's Wyoming STT provider it already holds each turn's PCM
+(16 kHz mono int16) — the same format `/enrol` wants — and the enrol store is
+in-process (`embeddings_store.upsert_embedding`), so no HTTP round-trip is
+needed. Per onboarding turn the handler claims the pending row, embeds this
+turn's audio as one sample, and once the target count is reached enrols the
+averaged embedding and flips the row to `done` (or `failed` with a reason).
+
+Consume-once + a short TTL bound the misattribution risk (same as the uid
+stash): the request only captures the speaker for a brief window after the engine
+opens it, so a later unrelated turn can't enrol into someone else's profile, and
+a request no gatekeeper picks up (speaker-ID off) ages out so the engine side can
+time out honestly rather than hang.
+
+Sync sqlite3 over the same `solilos.db`; the table is provisioned by alembic
+migration `0014_enroll_requests`. A missing table/DB makes every op a no-op so
+the STT path keeps working when the init container hasn't migrated yet.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+
+# A capture window: an onboarding request that no gatekeeper has finished within
+# this many seconds is stale (e.g. speaker-ID was off, or the speaker walked
+# away mid-flow). The handler ignores stale rows so it never enrols a later,
+# unrelated speaker into the candidate's profile.
+ENROLL_TTL_SECONDS = 120
+
+STATUS_PENDING = "pending"
+STATUS_CAPTURING = "capturing"
+STATUS_DONE = "done"
+STATUS_FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class EnrollRequest:
+    uid: str
+    status: str
+    target_samples: int
+    collected: int
+
+
+# Per-uid in-process accumulation of the captured per-turn embeddings. The raw
+# biometric PCM is embedded the moment it's captured and only the 256-d vectors
+# are held here (never the audio, never the DB) until N are collected and
+# averaged into the durable `voice_embeddings` row. Keyed by candidate uid; one
+# onboarding runs at a time in a household, but a dict keeps concurrent requests
+# isolated rather than cross-contaminating one buffer.
+_pending_embeddings: dict[str, list[bytes]] = {}
+
+
+def add_embedding(uid: str, embedding: bytes) -> int:
+    """Append one captured-turn embedding for this uid; return the count held."""
+    bucket = _pending_embeddings.setdefault(uid, [])
+    bucket.append(embedding)
+    return len(bucket)
+
+
+def take_embeddings(uid: str) -> list[bytes]:
+    """Pop and return the accumulated embeddings for this uid, clearing the
+    in-process buffer so the biometric vectors don't linger after enrolment."""
+    return _pending_embeddings.pop(uid, [])
+
+
+def _connect(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def claim_active_request(db_path: str) -> EnrollRequest | None:
+    """Return the one fresh request still collecting samples, marking it
+    `capturing` so the handler can attribute this turn's PCM to it. None when
+    there is no such row, the row is stale (past TTL), or the table/DB is
+    missing. Best-effort — a gap must not break the STT response."""
+    if not Path(db_path).exists():
+        return None
+    try:
+        with _connect(db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT uid, status, target_samples, collected
+                  FROM enroll_requests
+                 WHERE status IN (?, ?)
+                   AND created_at >= datetime('now', ?)
+                 ORDER BY created_at DESC
+                 LIMIT 1
+                """,
+                (STATUS_PENDING, STATUS_CAPTURING, f"-{ENROLL_TTL_SECONDS} seconds"),
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return None
+            conn.execute(
+                "UPDATE enroll_requests SET status = ? WHERE uid = ?",
+                (STATUS_CAPTURING, row["uid"]),
+            )
+            conn.commit()
+    except sqlite3.OperationalError:
+        return None
+    return EnrollRequest(
+        uid=str(row["uid"]),
+        status=str(row["status"]),
+        target_samples=int(row["target_samples"]),
+        collected=int(row["collected"]),
+    )
+
+
+def increment_collected(db_path: str, uid: str) -> int:
+    """Record that one more usable sample was captured for this request; return
+    the new collected count (0 on any failure)."""
+    if not Path(db_path).exists():
+        return 0
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                """
+                UPDATE enroll_requests
+                   SET collected = collected + 1
+                 WHERE uid = ?
+                RETURNING collected
+                """,
+                (uid,),
+            ).fetchone()
+            conn.commit()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row["collected"]) if row else 0
+
+
+def finish_request(db_path: str, uid: str, *, ok: bool, result: str) -> None:
+    """Write the terminal status for a request: `done` on a successful enrol,
+    `failed` (with a short reason in `result`) otherwise. Best-effort."""
+    if not Path(db_path).exists():
+        return
+    try:
+        with _connect(db_path) as conn:
+            conn.execute(
+                "UPDATE enroll_requests SET status = ?, result = ? WHERE uid = ?",
+                (STATUS_DONE if ok else STATUS_FAILED, result, uid),
+            )
+            conn.commit()
+    except sqlite3.OperationalError:
+        return

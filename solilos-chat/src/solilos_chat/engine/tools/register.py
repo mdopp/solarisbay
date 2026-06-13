@@ -1,51 +1,87 @@
-"""Resident-registration tool — the onboarding flow's enrol-then-file step.
+"""Resident-registration tools — the onboarding flow's voice-enrol + file step.
 
-The guest-onboarding dialog (#375) hands off here when an unknown speaker
-chooses to register: this tool takes the candidate's chosen uid + display name
-and the captured voice samples, enrols the voice through the gatekeeper's
-`voice_enrol` accessor (#364), and — only on a successful enrolment — files a
-`pending_residents` row (#376) for the admin-approval step (#355) to act on.
+Live-voice enrolment uses the reverse enroll-stash (#376): the engine can't pass
+PCM (it only ever sees text), so instead of shipping base64 samples it opens an
+`enroll_requests` row for the candidate uid and the gatekeeper — while it is HA's
+Wyoming STT provider — captures the speaker's audio across the next few onboarding
+turns, enrols the voice in-process, and writes the result back.
 
-Biometric care, same as `enrol.py`: the raw `samples` are a biometric
-identifier, so they never appear in the result or any log line — only the uid,
-display name and the gatekeeper's ok/reason surface. Enrolment failure is passed
-through verbatim and **no** pending row is written, so the dialog never claims a
-registration that didn't enrol. This is an onboarding-only tool, not part of the
-household or general guest toolset — see profiles.py for where it joins.
+Two tools drive the dialog:
+
+  * `start_voice_enrollment(uid)` opens the request, then the dialog prompts the
+    speaker to say their name N times (one utterance = one captured turn).
+  * `register_pending_resident(uid, display_name)` reads the result and, only on
+    a successful enrol, files a `pending_residents` row (#376) for the admin
+    step (#355). A timeout (speaker-ID off, so no gatekeeper picked the request
+    up) or a `failed` result is surfaced honestly — no pending row, no false
+    success — and the dialog reports it instead of hanging.
+
+Biometric care: the raw audio never reaches the engine or any log line — only the
+uid, display name and the gatekeeper's status surface. These are onboarding-only
+tools, not part of the household or general guest toolset (see profiles.py).
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from solilos_chat import pending_residents_store
+from solilos_chat import enroll_requests_store, pending_residents_store
 from solilos_chat.engine.tools import Tool
-from solilos_chat.engine.tools.enrol import build_enrol_tools
+
+# Same uid shape the gatekeeper's /enrol enforces — validate before opening the
+# request so a malformed uid is a clear local error.
+_UID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_TARGET_SAMPLES = 3
 
 
 def build_register_tools(
-    db_path: str, gatekeeper_url: str, gatekeeper_token: str = ""
+    db_path: str, gatekeeper_url: str = "", gatekeeper_token: str = ""
 ) -> list[Tool]:
-    (enrol_tool,) = build_enrol_tools(gatekeeper_url, gatekeeper_token)
+    async def start(args: dict[str, Any]) -> str:
+        uid = str(args.get("uid") or "").strip()
+        if not _UID_RE.match(uid):
+            return json.dumps({"ok": False, "reason": "invalid_uid"})
+        try:
+            enroll_requests_store.open_request(db_path, uid, _TARGET_SAMPLES)
+        except Exception:  # noqa: BLE001 — table/DB missing surfaces as not-ok
+            return json.dumps({"ok": False, "reason": "enroll_store_unavailable"})
+        return json.dumps(
+            {"ok": True, "uid": uid, "samples_needed": _TARGET_SAMPLES},
+            ensure_ascii=False,
+        )
 
     async def register(args: dict[str, Any]) -> str:
         uid = str(args.get("uid") or "").strip()
         display_name = str(args.get("display_name") or "").strip()
+        if not _UID_RE.match(uid):
+            return json.dumps({"ok": False, "reason": "invalid_uid"})
         if not display_name:
             return json.dumps({"ok": False, "reason": "missing_display_name"})
 
-        # Enrol first; the enrol tool validates uid/samples and passes the
-        # gatekeeper's verdict through. Only a true success files a request.
-        enrol_result = json.loads(
-            await enrol_tool.handler({"uid": uid, "samples": args.get("samples")})
-        )
-        if not enrol_result.get("ok"):
+        req = enroll_requests_store.read_request(db_path, uid)
+        if req is None:
+            return json.dumps({"ok": False, "reason": "no_enroll_request"})
+        if req["timed_out"]:
+            # No gatekeeper ever picked the request up — speaker-ID is off, so
+            # voice onboarding can't enrol. Honest failure, not a hang.
+            enroll_requests_store.clear_request(db_path, uid)
+            return json.dumps({"ok": False, "reason": "speaker_id_disabled"})
+        if req["status"] != enroll_requests_store.STATUS_DONE:
+            # Still capturing (fewer than N samples in) — the dialog should
+            # collect another utterance before confirming.
             return json.dumps(
-                {"ok": False, "reason": enrol_result.get("reason", "enrol_failed")},
+                {
+                    "ok": False,
+                    "reason": "enroll_incomplete",
+                    "collected": req["collected"],
+                    "needed": req["target_samples"],
+                },
                 ensure_ascii=False,
             )
 
+        enroll_requests_store.clear_request(db_path, uid)
         request_id = pending_residents_store.add_pending_resident(
             db_path, uid=uid, display_name=display_name, enrolled=True
         )
@@ -56,24 +92,35 @@ def build_register_tools(
 
     return [
         Tool(
+            name="start_voice_enrollment",
+            description=(
+                "Startet das Sprach-Enrollment für eine Bewohner-uid (Onboarding):"
+                " öffnet die Aufnahme-Anfrage. Danach den Gast bitten, seinen Namen"
+                " mehrmals zu sagen — jede Äußerung ist eine Aufnahme. Braucht"
+                " aktivierte Sprechererkennung."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"uid": {"type": "string"}},
+                "required": ["uid"],
+            },
+            handler=start,
+        ),
+        Tool(
             name="register_pending_resident",
             description=(
-                "Schließt die Bewohner-Registrierung ab: enrollt die Stimme beim"
-                " Gatekeeper und legt eine Freigabe-Anfrage an (Onboarding). uid +"
-                " display_name + base64-PCM-samples. Kein Konto bis zur Freigabe."
+                "Schließt die Bewohner-Registrierung ab, nachdem der Gast seinen"
+                " Namen mehrmals gesagt hat: prüft das Enrollment-Ergebnis und legt"
+                " bei Erfolg eine Freigabe-Anfrage an. Kein Konto bis zur Freigabe."
+                " Meldet Timeout/Fehler ehrlich (kein Konto, keine Freigabe)."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "uid": {"type": "string"},
                     "display_name": {"type": "string"},
-                    "samples": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "base64 16kHz mono int16 PCM samples",
-                    },
                 },
-                "required": ["uid", "display_name", "samples"],
+                "required": ["uid", "display_name"],
             },
             handler=register,
         ),
