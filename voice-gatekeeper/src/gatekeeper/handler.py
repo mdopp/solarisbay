@@ -43,6 +43,10 @@ from .speaker import get_extractor, resolve_speaker
 from .tts import synthesize_to_writer
 from .uid_stash import stash_uid
 
+# The uid an unknown (attempted-but-unmatched) speaker is attributed to; the
+# engine facade routes this to the ephemeral guest profile (#351, #353).
+GUEST_UID = "guest"
+
 
 def client_id_from_peername(peer: object) -> str | None:
     """Stable per-connection client id from a socket peername.
@@ -214,7 +218,14 @@ class GatekeeperHandler(AsyncEventHandler):
         gap (feature disabled, no enrolments, model not loaded, empty
         buffer, embedding extraction failure). The resolver itself is
         in `speaker.py`; this method orchestrates the pieces and keeps
-        the conversation pipeline working when the ML path is absent."""
+        the conversation pipeline working when the ML path is absent.
+
+        An attempted-but-unmatched speaker is distinct from those gaps:
+        speaker-ID ran, embedded the audio, compared against enrolments,
+        and no one cleared the threshold (a real non-match). That returns
+        the `guest` sentinel so the facade routes the turn to the guest
+        profile (#351); every other gap stays `default_uid` so the
+        household hot path is unchanged."""
         if not settings.speaker_id_enabled:
             return settings.default_uid
         extractor = get_extractor()
@@ -251,6 +262,16 @@ class GatekeeperHandler(AsyncEventHandler):
                 score=round(match.score, 4),
                 above_threshold=match.above_threshold,
             )
+        # A real attempt that matched no enrolled resident (a candidate existed
+        # but fell below threshold) is an unknown speaker, not the household —
+        # route it to the guest profile. No-candidate / no-embedding gaps keep
+        # `uid == default_uid` and stay household.
+        if (
+            uid == settings.default_uid
+            and match is not None
+            and not match.above_threshold
+        ):
+            return GUEST_UID
         if uid != settings.default_uid:
             await asyncio.to_thread(touch_last_seen, settings.solilos_db_path, uid)
         return uid

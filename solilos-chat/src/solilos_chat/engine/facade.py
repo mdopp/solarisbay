@@ -30,6 +30,11 @@ from solilos_chat.engine.client import EngineClient, EngineError
 from solilos_chat.logging import log
 from solilos_chat.voice_uid_stash import consume_uid
 
+# The gatekeeper stashes this uid for a speaker that speaker-ID heard but
+# matched to no enrolled resident (an attempted-but-unknown speaker, #351).
+# It is not a real resident: the turn runs the ephemeral guest profile (#353).
+GUEST_UID = "guest"
+
 
 def _model_entry(name: str) -> dict[str, Any]:
     # Enough fields for the ollama python client's pydantic ListResponse.
@@ -105,6 +110,15 @@ def add_facade_routes(
         uid = consume_uid(solilos_db_path, transcript) or str(
             body.get("user") or default_uid
         )
+        # An unknown speaker (speaker-ID ran but matched no resident, #351) is
+        # routed to the ephemeral guest profile, not the resident's household
+        # session — only when speaker-ID actively resolved UNKNOWN, never on a
+        # plain stash miss (speaker-ID off / not attempted), which stays
+        # household. Falls through to the requested model if no guest profile
+        # is wired (it ships as its own model first; #353).
+        guest = clients.get("sol-guest")
+        if uid == GUEST_UID and guest is not None:
+            model, client = "sol-guest", guest
         log.info("engine.facade.turn", model=model, uid=uid, n_messages=len(messages))
 
         # A voice turn lands in the resident's durable household session (#345):

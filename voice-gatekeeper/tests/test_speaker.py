@@ -226,3 +226,92 @@ async def test_resolve_uid_matches_and_touches_last_seen(tmp_path, monkeypatch):
             "SELECT last_seen_at FROM voice_embeddings WHERE uid = ?", ("alice",)
         ).fetchone()
     assert row is not None and row[0] is not None
+
+
+async def test_resolve_uid_unknown_speaker_routes_to_guest(tmp_path, monkeypatch):
+    """Speaker-ID ran, embedded the audio, compared against an enrolled
+    resident, and nobody cleared the threshold (a real non-match) -> the
+    `guest` sentinel, NOT default_uid (#351)."""
+    import gatekeeper.handler as handler
+    from wyoming.audio import AudioChunk, AudioStart
+
+    db = _seed_db(tmp_path)
+    upsert_embedding(db, "alice", _emb(7), sample_count=1, enrolled_via="test")
+
+    monkeypatch.setattr(
+        handler,
+        "settings",
+        dataclasses.replace(
+            handler.settings,
+            speaker_id_enabled=True,
+            default_uid="household",
+            speaker_id_threshold=0.99,  # nothing random can clear this
+            solilos_db_path=db,
+        ),
+    )
+
+    class _StubExtractor:
+        def extract(self, pcm, *, rate, width, channels):
+            return _emb(99)  # far from the enrolled embedding -> below threshold
+
+    monkeypatch.setattr(handler, "get_extractor", lambda: _StubExtractor())
+
+    h = handler.GatekeeperHandler(None, None, object())
+    h._audio_start = AudioStart(rate=16000, width=2, channels=1)
+    h._audio_buffer = [
+        AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
+    ]
+
+    assert await h._resolve_uid() == handler.GUEST_UID
+
+
+async def test_resolve_uid_disabled_stays_household_not_guest(tmp_path, monkeypatch):
+    """Speaker-ID OFF -> default_uid (household), never the guest sentinel:
+    the default hot path must not become a guest turn (#351)."""
+    import gatekeeper.handler as handler
+
+    monkeypatch.setattr(
+        handler,
+        "settings",
+        dataclasses.replace(
+            handler.settings, speaker_id_enabled=False, default_uid="household"
+        ),
+    )
+    h = handler.GatekeeperHandler(None, None, object())
+    assert await h._resolve_uid() == "household"
+
+
+async def test_resolve_uid_no_enrolments_stays_household_not_guest(
+    tmp_path, monkeypatch
+):
+    """Speaker-ID on but no one is enrolled (no candidate to compare against)
+    -> household, not guest: that's a not-attempted gap, not an unknown
+    speaker (#351)."""
+    import gatekeeper.handler as handler
+    from wyoming.audio import AudioChunk, AudioStart
+
+    db = _seed_db(tmp_path)  # no enrolments
+    monkeypatch.setattr(
+        handler,
+        "settings",
+        dataclasses.replace(
+            handler.settings,
+            speaker_id_enabled=True,
+            default_uid="household",
+            speaker_id_threshold=0.5,
+            solilos_db_path=db,
+        ),
+    )
+
+    class _StubExtractor:
+        def extract(self, pcm, *, rate, width, channels):
+            return _emb(7)
+
+    monkeypatch.setattr(handler, "get_extractor", lambda: _StubExtractor())
+
+    h = handler.GatekeeperHandler(None, None, object())
+    h._audio_start = AudioStart(rate=16000, width=2, channels=1)
+    h._audio_buffer = [
+        AudioChunk(rate=16000, width=2, channels=1, audio=b"\x00\x00" * 16000)
+    ]
+    assert await h._resolve_uid() == "household"

@@ -694,6 +694,118 @@ def test_consume_uid_ignores_but_reaps_expired_row(db):
     conn.close()
 
 
+# -- #351: unknown speaker routes to the guest profile ----------------------
+
+
+def _app_with_guest(db, soul, results):
+    # An app whose facade has the guest profile wired, so unknown-speaker
+    # routing has a target (the guest model is ephemeral).
+    household, _ = _engine(db, soul, [])
+    guest, fake = _engine(db, soul, results, name="sol-guest")
+    guest._profile.ephemeral = True
+    app = build_app(
+        hermes=household,
+        hermes_guest=guest,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solilos_db_path=db,
+    )
+    return app, fake
+
+
+async def test_unknown_speaker_routes_to_guest_profile(aiohttp_client, db, soul):
+    # Speaker-ID ran and matched no resident: the gatekeeper stashed the `guest`
+    # sentinel. The turn must run the ephemeral guest profile (HA still asks for
+    # model=sol) — nothing persists, no household session is created for it.
+    from solilos_chat.engine import store
+
+    app, guest_fake = _app_with_guest(
+        db, soul, [ChatResult(content="Gast.", prompt_tokens=5, completion_tokens=1)]
+    )
+    _stash(db, "Wer bist du", "guest")
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "sol",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Wer bist du"}],
+            "user": "household",
+        },
+    )
+    assert resp.status == 200
+    assert (await resp.json())["message"]["content"] == "Gast."
+    # The guest (ephemeral) client served the turn.
+    assert len(guest_fake.calls) == 1
+    # Nothing persisted — neither a guest nor a household session.
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM engine_sessions").fetchone()[0] == 0
+    conn.close()
+    assert store.session_owner(db, store.household_session_id("household")) is None
+
+
+async def test_speaker_id_off_stays_household_not_guest(aiohttp_client, db, soul):
+    # No stash row (speaker-ID off / not attempted): the turn falls back to
+    # household — it must NOT be routed to the guest profile.
+    from solilos_chat.engine import store
+
+    app, _ = _app(
+        db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "sol",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Licht an"}],
+            "user": "household",
+        },
+    )
+    assert resp.status == 200
+    # Ran on household: the durable household session exists, owned by household.
+    sid = store.household_session_id("household")
+    assert store.session_owner(db, sid) == "household"
+
+
+async def test_identified_resident_runs_as_their_uid_not_guest(
+    aiohttp_client, db, soul
+):
+    # Speaker-ID identified an enrolled resident: the turn runs as their uid in
+    # their durable session, not the guest profile (the guest profile is wired
+    # but the resident uid must bypass it).
+    from solilos_chat.engine import store
+
+    household, _ = _engine(
+        db, soul, [ChatResult(content="x", prompt_tokens=1, completion_tokens=1)]
+    )
+    guest, guest_fake = _engine(db, soul, [], name="sol-guest")
+    guest._profile.ephemeral = True
+    app = build_app(
+        hermes=household,
+        hermes_guest=guest,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solilos_db_path=db,
+    )
+    _stash(db, "Licht an", "anna")
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "sol",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Licht an"}],
+            "user": "household",
+        },
+    )
+    assert resp.status == 200
+    sid = store.household_session_id("anna")
+    assert store.session_owner(db, sid) == "anna"
+    # The guest profile was not used for an identified resident.
+    assert guest_fake.calls == []
+
+
 async def test_chat_latest_suffix_resolves(aiohttp_client, db, soul):
     app, _ = _app(
         db, soul, [ChatResult(content="ok", prompt_tokens=1, completion_tokens=1)]
