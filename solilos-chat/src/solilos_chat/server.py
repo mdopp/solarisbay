@@ -794,6 +794,19 @@ def build_app(
         )
         return web.json_response({"ok": True})
 
+    # The household model the picker offers (#366): the configured FAST_MODEL
+    # default plus the thorough model, so an admin can put the bigger model on
+    # the household hot path. The persisted override ("" = use the default) is
+    # read here so GET reflects the live selection.
+    def household_model_options() -> list[dict[str, str]]:
+        opts = [{"value": fast_model, "model": fast_model}]
+        if thorough_model and thorough_model != fast_model:
+            opts.append({"value": thorough_model, "model": thorough_model})
+        return opts
+
+    def current_household_model() -> str:
+        return settings_store.get_household_model(solilos_db_path) or fast_model
+
     async def get_model(request: web.Request) -> web.Response:
         # Admin-only: the everyday-chat model toggle is an admin control.
         if not is_admin(request, remote_groups_header, admin_group):
@@ -810,6 +823,9 @@ def build_app(
                         "model": thorough_model,
                     },
                 ],
+                "household_current": current_household_model(),
+                "household_default": fast_model,
+                "household_options": household_model_options(),
             }
         )
 
@@ -823,6 +839,25 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "invalid_json"}, status=400
             )
+        # The household-profile model override (#366): a separate field so this
+        # one endpoint sets either the everyday-chat routing toggle or the
+        # household model. The selection must be one of the offered tags (the
+        # picker only shows those). Persists; the household profile reads it on
+        # the next turn — no restart.
+        household_value = body.get("household_model")
+        if household_value is not None:
+            valid = {o["value"] for o in household_model_options()}
+            if household_value not in valid:
+                return web.json_response(
+                    {"ok": False, "reason": "invalid_value"}, status=400
+                )
+            settings_store.set_household_model(solilos_db_path, household_value)
+            log.info(
+                "chat.model.household.set",
+                uid=resolve_uid(request, remote_user_header, default_uid),
+                model=household_value,
+            )
+            return web.json_response({"ok": True, "household_current": household_value})
         value = body.get("value")
         if value not in ("fast", "thorough"):
             return web.json_response(

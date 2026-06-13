@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from solilos_chat import settings_store
 from solilos_chat.engine import client as engine_client
 from solilos_chat.engine.bus import SessionBus
 from solilos_chat.engine.client import EngineClient, EngineProfile
@@ -73,6 +74,7 @@ def build_engine_clients(
     tavily_api_key: str = "",
     notes_dir: str = "",
     context_window: int | None = None,
+    default_uid: str = "household",
 ) -> tuple[
     EngineClient, EngineClient, EngineClient, EngineClient, TraceRecorder, SessionBus
 ]:
@@ -96,7 +98,11 @@ def build_engine_clients(
     # A guest may ask questions (web) and control devices/read state (HA), but
     # may NOT write anything durable — no notes/fact_store, no timers, no admin
     # MCP. The denial is the absence of those tool modules here (#353).
-    guest_tools: list[Tool] = list(ha_tools) + list(web_tools)
+    # ha_run_scene_script fires whole routines/automations; that's beyond a
+    # guest's "simple home control" remit, so it's withheld here (#370).
+    guest_tools: list[Tool] = [
+        t for t in ha_tools if t.name != "ha_run_scene_script"
+    ] + list(web_tools)
 
     def make(profile: EngineProfile) -> EngineClient:
         return EngineClient(
@@ -112,11 +118,16 @@ def build_engine_clients(
         EngineProfile(
             name="household",
             model=fast_model or "gemma4:e2b",
+            # Admin-selectable from the panel (#366): the persisted override wins
+            # per turn, falling back to the FAST_MODEL default when unset — so the
+            # fast-only default holds for installs that never touch the picker.
+            model_resolver=lambda: settings_store.get_household_model(db_path),
             soul_path=soul_path,
             registry=registry,
             think_default=False,
             temperature=0.2,
             toolbox=Toolbox(household_tools),
+            default_uid=default_uid,
         )
     )
     deep = make(
@@ -127,6 +138,7 @@ def build_engine_clients(
             registry=registry,
             think_default=True,
             toolbox=Toolbox(household_tools),
+            default_uid=default_uid,
         )
     )
     admin_toolbox: Toolbox = (
@@ -140,6 +152,7 @@ def build_engine_clients(
             extra_prompt=_skills_prompt(admin_skills_dir),
             think_default=True,
             toolbox=admin_toolbox,
+            default_uid=default_uid,
         )
     )
     guest = make(
@@ -152,6 +165,7 @@ def build_engine_clients(
             temperature=0.2,
             toolbox=Toolbox(guest_tools),
             ephemeral=True,
+            default_uid=default_uid,
         )
     )
     return household, deep, admin, guest, recorder, bus

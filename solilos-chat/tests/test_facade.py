@@ -499,6 +499,28 @@ async def test_guest_toolbox_allows_control_and_qa_but_no_writes():
     assert guest.ephemeral is True
 
 
+# -- #366: household profile reads the admin-set model override --------------
+
+
+async def test_household_profile_reads_persisted_model(tmp_path):
+    from solilos_chat import settings_store
+    from solilos_chat.engine.profiles import build_engine_clients
+
+    db = str(tmp_path / "solilos.db")
+    household, _, _, _, _, _ = build_engine_clients(
+        db_path=db,
+        ollama_url="http://x",
+        fast_model="gemma4:e2b",
+        thorough_model="gemma4:12b",
+        soul_path="/nonexistent/SOUL.md",
+    )
+    # Unset -> the configured fast default.
+    assert household._model() == "gemma4:e2b"
+    # An admin selection persists and the profile picks it up on the next turn.
+    settings_store.set_household_model(db, "gemma4:12b")
+    assert household._model() == "gemma4:12b"
+
+
 async def test_guest_facade_turn_persists_nothing(aiohttp_client, db, soul):
     # A guest turn runs the stateless `respond` path: no session row, no
     # message row — nothing about the guest survives the conversation.

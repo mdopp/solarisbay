@@ -36,3 +36,25 @@ def test_invalid_persisted_value_falls_back_to_default(tmp_path):
 def test_set_rejects_invalid_value(tmp_path):
     with pytest.raises(ValueError):
         settings_store.set_other_model_pref(_db(tmp_path), "12b")
+
+
+# --- Household-profile model override (#366) ------------------------------
+
+
+def test_household_model_empty_when_unset(tmp_path):
+    assert settings_store.get_household_model(_db(tmp_path)) == ""
+
+
+def test_household_model_roundtrip(tmp_path):
+    db = _db(tmp_path)
+    settings_store.set_household_model(db, "gemma4:12b")
+    assert settings_store.get_household_model(db) == "gemma4:12b"
+
+
+def test_household_model_coexists_with_other_pref(tmp_path):
+    db = _db(tmp_path)
+    settings_store.set_other_model_pref(db, "fast")
+    settings_store.set_household_model(db, "gemma4:12b")
+    # Both keys live in the one sidecar; neither write clobbers the other.
+    assert settings_store.get_other_model_pref(db) == "fast"
+    assert settings_store.get_household_model(db) == "gemma4:12b"

@@ -1931,6 +1931,64 @@ async def test_put_model_rejects_unknown_value(aiohttp_client, tmp_path):
     assert resp.status == 400
 
 
+# --- Household-profile model picker (#366) --------------------------------
+
+
+async def test_get_model_surfaces_household(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_model_app(tmp_path))
+    resp = await client.get("/api/model", headers={"Remote-Groups": "admins"})
+    body = await resp.json()
+    assert resp.status == 200
+    # Default (unset) household model is the configured fast model.
+    assert body["household_current"] == "gemma4:e2b"
+    assert body["household_default"] == "gemma4:e2b"
+    assert body["household_options"] == [
+        {"value": "gemma4:e2b", "model": "gemma4:e2b"},
+        {"value": "gemma4:12b", "model": "gemma4:12b"},
+    ]
+
+
+async def test_put_household_model_admin_persists(aiohttp_client, tmp_path):
+    from solilos_chat import settings_store
+
+    client = await aiohttp_client(_model_app(tmp_path))
+    resp = await client.put(
+        "/api/model",
+        json={"household_model": "gemma4:12b"},
+        headers={"Remote-Groups": "admins"},
+    )
+    body = await resp.json()
+    assert resp.status == 200
+    assert body == {"ok": True, "household_current": "gemma4:12b"}
+    assert (
+        settings_store.get_household_model(str(tmp_path / "solilos.db")) == "gemma4:12b"
+    )
+    # The everyday-chat pref is untouched by a household-model write.
+    assert (
+        settings_store.get_other_model_pref(str(tmp_path / "solilos.db")) == "thorough"
+    )
+
+
+async def test_put_household_model_non_admin_forbidden(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_model_app(tmp_path))
+    resp = await client.put(
+        "/api/model",
+        json={"household_model": "gemma4:12b"},
+        headers={"Remote-Groups": "family"},
+    )
+    assert resp.status == 403
+
+
+async def test_put_household_model_rejects_unoffered_tag(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_model_app(tmp_path))
+    resp = await client.put(
+        "/api/model",
+        json={"household_model": "llama3:70b"},
+        headers={"Remote-Groups": "admins"},
+    )
+    assert resp.status == 400
+
+
 # --- Skill edit (admin) ---------------------------------------------------
 
 

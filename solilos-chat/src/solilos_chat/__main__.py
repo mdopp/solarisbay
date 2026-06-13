@@ -32,6 +32,7 @@ async def _run() -> None:
         tavily_api_key=settings.tavily_api_key,
         notes_dir=settings.notes_dir,
         context_window=context_window.value,
+        default_uid=settings.default_uid,
     )
     scheduler = TimerScheduler(
         settings.solilos_db_path,

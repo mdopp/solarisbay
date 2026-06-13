@@ -21,7 +21,7 @@ import contextvars
 import json
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +32,7 @@ from solilos_chat.engine import store
 from solilos_chat.engine.bus import SessionBus
 from solilos_chat.engine.ollama import OllamaChat, OllamaError
 from solilos_chat.engine.registry import EntityRegistry
+from solilos_chat.engine.residents import identity_block
 from solilos_chat.engine.tools import Toolbox
 from solilos_chat.engine.trace import TraceRecorder
 from solilos_chat.logging import log
@@ -114,9 +115,17 @@ class EngineProfile:
     name: str
     model: str
     soul_path: str
+    # An optional per-turn model override (#366): when set, its return value
+    # (if non-empty) is the model for the next turn, so an admin can re-point
+    # the household profile from the panel without a restart. `model` is the
+    # static fallback (the configured default).
+    model_resolver: Callable[[], str] | None = None
     extra_prompt: str = ""
     registry: EntityRegistry | None = None
     think_default: bool = False
+    # The shared household uid (and HA's fallback `user`): a turn carrying this
+    # uid is NOT personal, so no resident identity block is injected (#352).
+    default_uid: str = "household"
     # Sampling override; None keeps the model's default. The household hot
     # path runs low temperature: at the modelfile default of 1.0 e2b
     # occasionally narrates a device action instead of calling the tool, and
@@ -154,6 +163,12 @@ class EngineClient:
     @property
     def profile_name(self) -> str:
         return self._profile.name
+
+    def _model(self) -> str:
+        """The model for this turn: the profile's resolver override (#366) if it
+        yields a non-empty tag, else the static `profile.model` default."""
+        resolver = self._profile.model_resolver
+        return (resolver() if resolver else "") or self._profile.model
 
     @property
     def ephemeral(self) -> bool:
@@ -201,7 +216,7 @@ class EngineClient:
             {
                 "name": self._profile.name,
                 "label": f"Sol Engine · {self._profile.name}",
-                "description": f"model={self._profile.model}",
+                "description": f"model={self._model()}",
                 "enabled": True,
                 "configured": True,
                 "tools": self._profile.toolbox.names(),
@@ -385,10 +400,11 @@ class EngineClient:
         corrected = False
         final_content = ""
         final_thinking = ""
+        model = self._model()
         for _ in range(_MAX_PASSES):
             result = None
             async for kind, payload in self._ollama.stream(
-                self._profile.model, messages, tools=tools, think=think, options=options
+                model, messages, tools=tools, think=think, options=options
             ):
                 if kind == "delta":
                     yield {"type": "assistant.delta", "data": {"delta": payload}}
@@ -398,7 +414,7 @@ class EngineClient:
             self._recorder.record(
                 session_id=session_id,
                 profile=self._profile.name,
-                model=self._profile.model,
+                model=model,
                 messages=messages,
                 tools=tools,
                 content=result.content,
@@ -419,7 +435,7 @@ class EngineClient:
             final_thinking = result.thinking or final_thinking
             yield {
                 "type": "llm.step",
-                "data": {"model": self._profile.model, "wall_s": result.wall_s},
+                "data": {"model": model, "wall_s": result.wall_s},
             }
 
             if not result.tool_calls:
@@ -523,6 +539,9 @@ class EngineClient:
         parts = [self._soul()]
         if self._profile.extra_prompt:
             parts.append(self._profile.extra_prompt)
+        resident = identity_block(current_uid.get(), self._profile.default_uid)
+        if resident:
+            parts.append(resident)
         overlay = store.get_overlay(self._db_path, session_id)
         if overlay:
             parts.append(overlay)
@@ -541,6 +560,9 @@ class EngineClient:
         parts = [self._soul()]
         if self._profile.extra_prompt:
             parts.append(self._profile.extra_prompt)
+        resident = identity_block(current_uid.get(), self._profile.default_uid)
+        if resident:
+            parts.append(resident)
         if self._profile.registry is not None:
             block = await self._profile.registry.prompt_block()
             if block:

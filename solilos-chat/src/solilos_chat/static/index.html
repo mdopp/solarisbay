@@ -936,7 +936,7 @@
       <div class="pane">
         <div class="doc">
           <h2>Model</h2>
-          <p class="lead">Which model everyday chats run on (admin only). <strong>Schnell</strong> is the fast e2b model; <strong>Gründlich</strong> is the larger 12b model for harder questions. The household ("Zuhause") chat always uses Schnell. Applies to the next turn — no restart.</p>
+          <p class="lead">Which model everyday chats run on (admin only). <strong>Schnell</strong> is the fast e2b model; <strong>Gründlich</strong> is the larger 12b model for harder questions. The household ("Zuhause") chat runs its own model — fast by default — set below. Applies to the next turn — no restart.</p>
           <div class="model-row">
             <label for="model-select">Everyday chats</label>
             <select id="model-select"></select>
@@ -944,6 +944,14 @@
           </div>
           <p class="model-current" id="model-current"></p>
           <span class="editor-status" id="model-status"></span>
+          <div class="model-row">
+            <label for="household-model-select">Household ("Zuhause")</label>
+            <select id="household-model-select"></select>
+            <button id="household-model-apply" class="btn-primary" type="button">Apply</button>
+          </div>
+          <p class="model-current" id="household-model-current"></p>
+          <p class="lead model-warn" id="household-model-warn" hidden>⚠️ A larger model on the household ("Zuhause") chat means slower voice/quick answers — the hot path is latency-sensitive. Keep it on the fast model unless you accept the latency.</p>
+          <span class="editor-status" id="household-model-status"></span>
         </div>
       </div>
     </section>
@@ -1248,23 +1256,38 @@
         return det;
       }
 
-      // Per-turn LLM-step trace panel (#307). `steps` is the ordered list of
-      // Ollama calls for one turn (one trace_id), each `{model, wall_s,
-      // prompt_tokens, n_tools, detail_id, ...}`. Each row shows
-      // `model · wall_s · tokens` and, clicked, opens the exact request/response
-      // for that call (detail_id → /__traces__/<id>). Returns null when empty.
+      // Per-turn step trace panel (#307/#371). `steps` is the ordered list of a
+      // turn's steps (one trace_id), interleaved LLM calls and tool runs. A tool
+      // step (`step_kind === "tool"`) renders as `tool_name · wall_s` — it has no
+      // model/tokens, so rendering it as an LLM row produced the broken
+      // `(model?) · — tok` (#371). An LLM step renders `model · wall_s · tokens`
+      // and, clicked, opens the exact request/response (detail_id → /__traces__).
+      // Shown expanded by default, matching the live #347 activity bubble.
       function renderStepTrace(steps) {
         if (!steps || !steps.length) return null;
         var det = document.createElement("details");
         det.className = "steptrace";
+        det.open = true;
         var sum = document.createElement("summary");
-        sum.title = "LLM calls for this turn — click a step for its exact content";
+        sum.title = "Steps for this turn — click an LLM step for its exact content";
         det.appendChild(sum);
         var rows = document.createElement("div");
         rows.className = "step-rows";
         steps.forEach(function (s) {
           var row = document.createElement("div");
           row.className = "step-row";
+          var secs = s.wall_s != null ? Number(s.wall_s).toFixed(2) + "s" : "—";
+          if (s.step_kind === "tool") {
+            var tool = document.createElement("span");
+            tool.className = "st-model";
+            tool.textContent = s.tool_name || "(tool?)";
+            var tnum = document.createElement("span");
+            tnum.className = "st-num";
+            tnum.textContent = secs;
+            row.appendChild(tool); row.appendChild(tnum);
+            rows.appendChild(row);
+            return;
+          }
           if (s.detail_id != null) row.setAttribute("data-detail-id", String(s.detail_id));
           if (s.profile) {
             var prof = document.createElement("span");
@@ -1278,7 +1301,6 @@
           model.textContent = s.model || "(model?)";
           var num = document.createElement("span");
           num.className = "st-num";
-          var secs = s.wall_s != null ? Number(s.wall_s).toFixed(2) + "s" : "—";
           var toks = s.prompt_tokens != null ? s.prompt_tokens + " tok" : "— tok";
           var tools = s.n_tools ? " · " + s.n_tools + " tools" : "";
           num.textContent = secs + " · " + toks + tools;
@@ -2942,11 +2964,20 @@
       var modelApply = document.getElementById("model-apply");
       var modelCurrent = document.getElementById("model-current");
       var modelStatus = document.getElementById("model-status");
+      var hhSelect = document.getElementById("household-model-select");
+      var hhApply = document.getElementById("household-model-apply");
+      var hhCurrent = document.getElementById("household-model-current");
+      var hhWarn = document.getElementById("household-model-warn");
+      var hhStatus = document.getElementById("household-model-status");
+      var hhDefault = "";
 
       function labelFor(opt) {
         // "Gründlich (gemma4:12b)" — the tag in parens when the server knows it.
         return opt.model ? opt.label + " (" + opt.model + ")" : opt.label;
       }
+      // The household chat is fast by default; anything other than the default
+      // (fast) tag is a slow model on the latency-sensitive hot path (#366).
+      function hhWarnFor(value) { hhWarn.hidden = !value || value === hhDefault; }
       function loadModel() {
         modelStatus.className = "editor-status"; modelStatus.textContent = "";
         return fetch("/api/model")
@@ -2965,9 +2996,46 @@
               modelSelect.appendChild(opt);
             });
             modelApply.disabled = opts.length < 2;
+            // The household-profile model picker (#366): the offered tags, the
+            // persisted selection, and the slow-on-hot-path warning.
+            hhDefault = j.household_default || "";
+            var hhOpts = j.household_options || [];
+            var hhCur = j.household_current || hhDefault;
+            hhSelect.textContent = "";
+            hhOpts.forEach(function (o) {
+              var opt = document.createElement("option");
+              opt.value = o.value;
+              opt.textContent = o.value === hhDefault ? o.model + " (fast)" : o.model;
+              if (o.value === hhCur) opt.selected = true;
+              hhSelect.appendChild(opt);
+            });
+            hhCurrent.textContent = hhCur ? "Current: " + hhCur : "";
+            hhWarnFor(hhCur);
+            hhApply.disabled = hhOpts.length < 2;
           })
           .catch(function () { modelCurrent.textContent = "Could not load the model setting."; });
       }
+
+      hhSelect.addEventListener("change", function () { hhWarnFor(hhSelect.value); });
+      hhApply.addEventListener("click", function () {
+        var value = hhSelect.value;
+        if (!value) return;
+        hhApply.disabled = true;
+        hhStatus.className = "editor-status"; hhStatus.textContent = "Applying…";
+        fetch("/api/model", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ household_model: value }) })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("failed"); return r.json(); })
+          .then(function () {
+            hhStatus.className = "editor-status";
+            hhStatus.textContent = "The household chat now uses " + value + ".";
+            hhCurrent.textContent = "Current: " + value;
+            hhWarnFor(value);
+          })
+          .catch(function (e) {
+            hhStatus.className = "editor-status err";
+            hhStatus.textContent = e.message === "forbidden" ? "Only admins can change the model." : "Could not change the model. Please try again.";
+          })
+          .finally(function () { hhApply.disabled = false; });
+      });
 
       modelApply.addEventListener("click", function () {
         var value = modelSelect.value;

@@ -158,8 +158,10 @@ spec:
     - name: FRAME_ANCESTORS
       value: "{{FRAME_ANCESTORS}}"
     # The engine model map (box-benched 2026-06-12): the household/voice hot
-    # path runs FAST_MODEL; "Gründlich" chats, the admin persona and the
-    # night crons run THOROUGH_MODEL.
+    # path runs FAST_MODEL by default; "Gründlich" chats, the admin persona and
+    # the night crons run THOROUGH_MODEL. An admin may re-point the household
+    # chat at another tag from the panel's Model picker (#366) — that selection
+    # persists beside solilos.db, so FAST_MODEL stays the default, not a lock.
     - name: FAST_MODEL
       value: "{{FAST_MODEL}}"
     - name: THOROUGH_MODEL

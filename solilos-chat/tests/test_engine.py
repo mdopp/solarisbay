@@ -187,6 +187,35 @@ async def test_plain_turn_streams_and_persists(db, soul):
     assert session["input_tokens"] == 50
 
 
+async def test_model_resolver_overrides_static_model(db, soul):
+    # #366: a profile resolver re-points the model per turn; empty falls back.
+    override = {"value": ""}
+    fake = FakeOllama(
+        [
+            ChatResult(content="a"),
+            ChatResult(content="b"),
+        ]
+    )
+    client = EngineClient(
+        EngineProfile(
+            name="household",
+            model="gemma4:e2b",
+            soul_path=soul,
+            model_resolver=lambda: override["value"],
+        ),
+        db_path=db,
+        ollama=fake,
+        recorder=TraceRecorder(),
+        context_window=32768,
+    )
+    sid = await client.create_session("anna")
+    [e async for e in client.chat_stream(sid, "x")]
+    assert fake.calls[-1]["model"] == "gemma4:e2b"  # resolver empty -> default
+    override["value"] = "gemma4:12b"
+    [e async for e in client.chat_stream(sid, "y")]
+    assert fake.calls[-1]["model"] == "gemma4:12b"  # resolver wins
+
+
 async def test_tool_chain_turn(db, soul):
     seen = {}
 
@@ -395,6 +424,39 @@ async def test_overlay_rides_system_prompt(db, soul):
     await client.chat(sid, "weiter")
     system = fake.calls[0]["messages"][0]["content"]
     assert "Fortsetzung einer früheren" in system
+
+
+async def test_resident_uid_personalizes_prompt(db, soul):
+    """A turn owned by an enrolled resident names them in the system prompt (#352)."""
+    client, fake = _client(db, soul, [ChatResult(content="ok")])
+    sid = await client.create_session("anna")
+    await client.chat(sid, "Hallo")
+    system = fake.calls[0]["messages"][0]["content"]
+    assert "anna" in system
+    assert "persönlich" in system
+
+
+async def test_household_uid_prompt_unchanged(db, soul):
+    """The shared household/default uid carries NO personalization block (#352)."""
+    client, fake = _client(db, soul, [ChatResult(content="ok")])
+    sid = await client.create_session("household")
+    await client.chat(sid, "Hallo")
+    system = fake.calls[0]["messages"][0]["content"]
+    assert "persönlich" not in system
+    assert system == "Du bist Sol."
+
+
+def test_identity_block_only_for_real_residents():
+    from solilos_chat.engine.residents import identity_block
+
+    assert identity_block("anna") != ""
+    assert "anna" in identity_block("anna")
+    # non-residents: empty/default/guest/anonymous and the configured default_uid
+    assert identity_block("") == ""
+    assert identity_block("household") == ""
+    assert identity_block("guest") == ""
+    assert identity_block("default") == ""
+    assert identity_block("papa", default_uid="papa") == ""
 
 
 # -- HA tools ------------------------------------------------------------

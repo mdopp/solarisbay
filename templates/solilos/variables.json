@@ -39,7 +39,7 @@
   },
   "FAST_MODEL": {
     "type": "text",
-    "description": "The engine's fast model — the household/voice hot path (device control, quick answers). `gemma4:e2b`: 0.72s p50 warm HA tool turn with the injected entity registry, 18/18 tool accuracy in the 2026-06-12 box bench. The tag must be pulled in Ollama (the ollama template ships it).",
+    "description": "The engine's fast model — the household/voice hot path (device control, quick answers) DEFAULT. `gemma4:e2b`: 0.72s p50 warm HA tool turn with the injected entity registry, 18/18 tool accuracy in the 2026-06-12 box bench. The tag must be pulled in Ollama (the ollama template ships it). An admin can re-point the household chat at THOROUGH_MODEL from the panel's Model picker (#366); the selection persists and the household profile picks it up on the next turn — but a larger model on the latency-sensitive hot path is slower, so this stays the fast default.",
     "default": "gemma4:e2b"
   },
   "THOROUGH_MODEL": {

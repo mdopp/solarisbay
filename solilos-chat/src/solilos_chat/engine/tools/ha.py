@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -21,10 +22,21 @@ import aiohttp
 from solilos_chat.engine.tools import Tool
 
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+_ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 _BLOCKED_DOMAINS = frozenset(
     {"shell_command", "python_script", "pyscript", "hassio", "homeassistant"}
 )
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
+# Domains that "list/run scripts, automations, scenes" operates on (#370).
+_RUNNABLE_DOMAINS = ("scene", "script", "automation")
+# Run service per runnable domain: scenes/scripts turn_on, automations trigger.
+_RUN_SERVICE = {"scene": "turn_on", "script": "turn_on", "automation": "trigger"}
+_HISTORY_DEFAULT_DAYS = 7
+_HISTORY_MAX_TRANSITIONS = 20
+
+
+def _parse(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
 def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
@@ -107,6 +119,104 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 break
         return json.dumps(out, ensure_ascii=False)
 
+    async def _resolve_entity_id(ref: str) -> str:
+        """A literal entity_id passes through; otherwise match a friendly_name
+        (case-insensitive, exact then substring) against /api/states. "" on
+        no match — the caller turns that into a model-readable error."""
+        ref = ref.strip()
+        if _ENTITY_RE.match(ref):
+            return ref
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                resp.raise_for_status()
+                states = await resp.json()
+        wanted = ref.lower()
+        substr = ""
+        for s in states:
+            eid = str(s.get("entity_id") or "")
+            name = str((s.get("attributes") or {}).get("friendly_name") or "")
+            if name.lower() == wanted:
+                return eid
+            if not substr and wanted and wanted in name.lower():
+                substr = eid
+        return substr
+
+    async def get_state_history(args: dict[str, Any]) -> str:
+        ref = str(args.get("entity") or args.get("entity_id") or "")
+        entity_id = await _resolve_entity_id(ref)
+        if not entity_id:
+            return json.dumps({"error": f"no entity matched: {ref}"})
+        try:
+            days = int(args.get("days") or _HISTORY_DEFAULT_DAYS)
+        except (TypeError, ValueError):
+            days = _HISTORY_DEFAULT_DAYS
+        days = max(1, min(days, 30))
+        end = datetime.now(UTC)
+        start = end - timedelta(days=days)
+        params = {
+            "filter_entity_id": entity_id,
+            "end_time": end.isoformat(),
+            "minimal_response": "true",
+        }
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(
+                f"{url}/api/history/period/{start.isoformat()}",
+                params=params,
+                headers=headers,
+            ) as resp:
+                if resp.status == 404:
+                    return json.dumps({"error": f"unknown entity: {entity_id}"})
+                resp.raise_for_status()
+                body = await resp.json()
+        # HA returns [[ {state, last_changed}, ... ]] — one list per entity.
+        series = body[0] if body and isinstance(body[0], list) else []
+        transitions = []
+        prev = None
+        for point in series:
+            state = point.get("state")
+            when = point.get("last_changed") or point.get("last_updated")
+            if state == prev or not when:
+                continue
+            transitions.append({"state": state, "since": when})
+            prev = state
+        # Durations: each transition lasts until the next (the last is "now").
+        bounds = [t["since"] for t in transitions] + [end.isoformat()]
+        for i, t in enumerate(transitions):
+            t["duration_s"] = round(
+                (_parse(bounds[i + 1]) - _parse(bounds[i])).total_seconds()
+            )
+        recent = transitions[-_HISTORY_MAX_TRANSITIONS:]
+        return json.dumps(
+            {"entity_id": entity_id, "days": days, "transitions": recent},
+            ensure_ascii=False,
+        )
+
+    async def list_runnable(args: dict[str, Any]) -> str:
+        domain = str(args.get("domain") or "")
+        domains = (domain,) if domain in _RUNNABLE_DOMAINS else _RUNNABLE_DOMAINS
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                resp.raise_for_status()
+                states = await resp.json()
+        out = []
+        for s in states:
+            eid = str(s.get("entity_id") or "")
+            if eid.split(".", 1)[0] not in domains:
+                continue
+            name = (s.get("attributes") or {}).get("friendly_name") or eid
+            out.append({"entity_id": eid, "name": name})
+        return json.dumps(out, ensure_ascii=False)
+
+    async def run_runnable(args: dict[str, Any]) -> str:
+        ref = str(args.get("entity") or args.get("entity_id") or "")
+        entity_id = await _resolve_entity_id(ref)
+        domain = entity_id.split(".", 1)[0] if entity_id else ""
+        if domain not in _RUNNABLE_DOMAINS:
+            return json.dumps({"error": f"not a script/automation/scene: {ref}"})
+        return await call_service(
+            {"domain": domain, "service": _RUN_SERVICE[domain], "entity_id": entity_id}
+        )
+
     return [
         Tool(
             name="ha_call_service",
@@ -153,5 +263,55 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 "properties": {"domain": {"type": "string"}},
             },
             handler=list_entities,
+        ),
+        Tool(
+            name="ha_state_history",
+            description=(
+                "Wann war eine Entity zuletzt an/aus? Liefert die letzten"
+                " Zustandswechsel mit Zeit und Dauer. Akzeptiert entity_id oder"
+                " Gerätenamen; Fenster standardmäßig 7 Tage."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "entity": {
+                        "type": "string",
+                        "description": "entity_id oder Gerätename",
+                    },
+                    "days": {"type": "integer", "description": "Fenster, 1-30"},
+                },
+                "required": ["entity"],
+            },
+            handler=get_state_history,
+        ),
+        Tool(
+            name="ha_list_scenes_scripts",
+            description=(
+                "Listet verfügbare Szenen, Skripte und Automationen, optional"
+                " nach Domain (scene/script/automation) gefiltert."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"domain": {"type": "string"}},
+            },
+            handler=list_runnable,
+        ),
+        Tool(
+            name="ha_run_scene_script",
+            description=(
+                "Startet eine Szene, ein Skript oder eine Automation."
+                " Akzeptiert entity_id oder Namen (z.B. 'Schlafenszeit-Routine')."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "entity": {
+                        "type": "string",
+                        "description": "entity_id oder Name",
+                    },
+                },
+                "required": ["entity"],
+            },
+            handler=run_runnable,
         ),
     ]

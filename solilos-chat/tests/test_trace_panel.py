@@ -80,3 +80,27 @@ def test_panel_not_double_appended_on_refetch():
     # Re-loading the trace (after each turn) must not stack a second panel on a
     # bubble that already has one.
     assert 'meta.querySelector("details.steptrace")' in _HTML
+
+
+def test_tool_step_renders_as_tool_name_not_model_row(_HTML=_HTML):
+    # #371: a persisted step_kind=tool step must render as the tool name + its
+    # own wall_s — NOT as an LLM row, which produced the broken
+    # `(model?) · — tok` (a tool step has no model/tokens). The renderer branches
+    # on step_kind: tool → tool_name + wall_s; llm → model + tokens.
+    assert 'if (s.step_kind === "tool")' in _HTML
+    assert "s.tool_name" in _HTML
+    # The branch returns before the model/tokens code, so a tool step never
+    # reaches the `(model?)`/`— tok` LLM rendering.
+    tool_branch = _HTML.split('if (s.step_kind === "tool")', 1)[1]
+    tool_branch = tool_branch.split("return;", 1)[0]
+    assert "(model?)" not in tool_branch
+    assert '" tok"' not in tool_branch
+
+
+def test_steps_panel_shown_expanded_by_default(_HTML=_HTML):
+    # #371: the per-step trace is folded into the steps and shown expanded when
+    # the trace opens, matching the live #347 activity bubble.
+    panel = _HTML.split("function renderStepTrace(steps)", 1)[1].split(
+        "return det;", 1
+    )[0]
+    assert "det.open = true;" in panel
