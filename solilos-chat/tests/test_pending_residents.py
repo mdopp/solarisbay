@@ -217,7 +217,7 @@ async def test_register_incomplete_while_still_capturing(tmp_path):
     assert pending_residents_store.list_pending_residents(db) == []
 
 
-async def test_register_failed_result_files_nothing(tmp_path):
+async def test_register_failed_result_is_honest_failure_not_incomplete(tmp_path):
     db = _db(tmp_path)
     enroll_requests_store.open_request(db, "lena")
     _set_status(db, "lena", "failed")
@@ -226,8 +226,12 @@ async def test_register_failed_result_files_nothing(tmp_path):
             {"uid": "lena", "display_name": "Lena"}
         )
     )
-    assert out["ok"] is False
+    # A real gatekeeper failure must not look like "still capturing", or the
+    # dialog loops asking for more samples until the TTL.
+    assert out == {"ok": False, "reason": "enroll_failed"}
     assert pending_residents_store.list_pending_residents(db) == []
+    # Stale failed row cleared so the uid can be re-enrolled (not blocked).
+    assert enroll_requests_store.read_request(db, "lena") is None
 
 
 async def test_register_rejects_missing_display_name(tmp_path):

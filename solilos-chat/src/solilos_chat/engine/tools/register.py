@@ -68,6 +68,12 @@ def build_register_tools(
             # voice onboarding can't enrol. Honest failure, not a hang.
             enroll_requests_store.clear_request(db_path, uid)
             return json.dumps({"ok": False, "reason": "speaker_id_disabled"})
+        if req["status"] == enroll_requests_store.STATUS_FAILED:
+            # The gatekeeper could not extract an embedding (silent/short audio,
+            # ECAPA error) — a real failure, not "collect more". Surface it and
+            # drop the stale row so the uid can be re-enrolled, not blocked.
+            enroll_requests_store.clear_request(db_path, uid)
+            return json.dumps({"ok": False, "reason": "enroll_failed"})
         if req["status"] != enroll_requests_store.STATUS_DONE:
             # Still capturing (fewer than N samples in) — the dialog should
             # collect another utterance before confirming.

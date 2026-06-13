@@ -630,9 +630,18 @@ def build_app(
         return web.json_response({"ok": True, "toolsets": toolsets})
 
     def _admin_mcp() -> McpToolbox | None:
-        """The admin profile's ServiceBay MCP toolbox, when one is wired."""
+        """The admin profile's ServiceBay MCP toolbox, when one is wired.
+
+        Since #386 the admin toolbox may be a `CombinedToolbox` wrapping the
+        McpToolbox alongside local onboarding tools — find the McpToolbox in
+        either shape."""
         toolbox = getattr(getattr(admin_gw, "_profile", None), "toolbox", None)
-        return toolbox if isinstance(toolbox, McpToolbox) else None
+        if isinstance(toolbox, McpToolbox):
+            return toolbox
+        for box in getattr(toolbox, "_boxes", []):
+            if isinstance(box, McpToolbox):
+                return box
+        return None
 
     async def list_mcp(_request: web.Request) -> web.Response:
         # The engine's MCP surface is the admin profile's servicebay_admin
