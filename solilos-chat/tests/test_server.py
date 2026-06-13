@@ -5,7 +5,8 @@ from __future__ import annotations
 from importlib.metadata import version
 
 from solilos_chat import compaction, marker, personalities, skills, topics_store
-from solilos_chat.engine.tools.mcp_tools import McpToolbox
+from solilos_chat.engine.tools import Toolbox
+from solilos_chat.engine.tools.mcp_tools import CombinedToolbox, McpToolbox
 import solilos_chat.server as server_mod
 from solilos_chat.server import (
     _IMAGE_PROMPT,
@@ -2312,6 +2313,20 @@ async def test_mcp_endpoint_reports_admin_toolbox(aiohttp_client):
     assert "restart_service" in body["servers"][0]["tools"]
     assert "token" not in body["servers"][0]
     assert toolbox.prepared == 1
+
+
+async def test_mcp_endpoint_finds_toolbox_inside_combined(aiohttp_client):
+    # Since #386 the admin profile carries a CombinedToolbox wrapping the
+    # McpToolbox plus the local onboarding tools — _admin_mcp() must unwrap it.
+    mcp = _FakeMcpToolbox()
+    combined = CombinedToolbox(mcp, Toolbox([]))
+    client = await aiohttp_client(_mcp_app(combined))
+    body = await (await client.get("/api/mcp")).json()
+    assert body["ok"] is True
+    assert body["servers"][0]["name"] == "servicebay_admin"
+    assert body["servers"][0]["reachable"] is True
+    assert "restart_service" in body["servers"][0]["tools"]
+    assert mcp.prepared == 1
 
 
 async def test_mcp_endpoint_empty_without_toolbox(aiohttp_client):
