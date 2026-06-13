@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.11.0](https://github.com/mdopp/solbay/compare/v0.10.0...v0.11.0) (2026-06-12)
+
+
+### Features
+
+* **chat:** alarms ring a sound instead of speaking ([040d203](https://github.com/mdopp/solbay/commit/040d2035dc1321f892abeac093617fe05a170018)), closes [#348](https://github.com/mdopp/solbay/issues/348)
+* **chat:** durable household voice session + live browser mirror ([7a46fad](https://github.com/mdopp/solbay/commit/7a46fad19f95402ffe987f3a9ca810482e655fae)), closes [#345](https://github.com/mdopp/solbay/issues/345) [#344](https://github.com/mdopp/solbay/issues/344)
+* **chat:** guest profile — ephemeral Q&A plus basic home control ([e2a1005](https://github.com/mdopp/solbay/commit/e2a10059eb96a7d6ccf0ba56759551540cf51815)), closes [#353](https://github.com/mdopp/solbay/issues/353)
+* **chat:** live collapsed activity bubble for a turn's llm and tool steps ([8790976](https://github.com/mdopp/solbay/commit/879097669c8df9d7d23debdc6facb0a38a0f8570))
+* **chat:** live collapsed activity bubble for a turn's llm and tool steps ([63d6f5e](https://github.com/mdopp/solbay/commit/63d6f5e3cc1b4bd610b2da674ea591eae31efc93)), closes [#347](https://github.com/mdopp/solbay/issues/347)
+* **chat:** record tool executions as interleaved trace steps with timings ([c0b782e](https://github.com/mdopp/solbay/commit/c0b782e7ff06ddb25881fa58319dbe7a4d8f9259)), closes [#346](https://github.com/mdopp/solbay/issues/346)
+* **template:** prefer the Martin TTS bridge in the Sol pipeline ([94031f3](https://github.com/mdopp/solbay/commit/94031f3f5b6ca2b9db1ccf103357cd8ba36a199d))
+* **tts:** add the solilos-tts image — Kokoro-Martin German voice on GPU ([f6c8af0](https://github.com/mdopp/solbay/commit/f6c8af0a002409eb4af99ff3f84a9bec860bd320))
+
+
+### Bug Fixes
+
+* **chat:** catch perfect-tense and passive German device-action fabrications ([41c2da3](https://github.com/mdopp/solbay/commit/41c2da32128896d64bf740ce12dac2ba491b13bd))
+* **chat:** catch perfect-tense device-action fabrications in the guard ([3ce1eb2](https://github.com/mdopp/solbay/commit/3ce1eb2d01f81abab74ebecc7bb816acd411514f)), closes [#360](https://github.com/mdopp/solbay/issues/360)
+* **chat:** discipline last, stream-safe contextvar, uid into tool tasks ([235a4b2](https://github.com/mdopp/solbay/commit/235a4b29b150941c22b71358d9033998a7ad54e4))
+* **chat:** force the tool pass when a turn fabricates a device-action claim ([afc156d](https://github.com/mdopp/solbay/commit/afc156d7f00ab334a48d9a72934e5abdc3ed076e)), closes [#356](https://github.com/mdopp/solbay/issues/356)
+* **chat:** pin the tool-discipline rule at the end of the system block ([93aa7a0](https://github.com/mdopp/solbay/commit/93aa7a00fc0e7127df6ca089e49588354384ea82))
+* **chat:** run the household profile at low temperature ([a293326](https://github.com/mdopp/solbay/commit/a293326e6977b94a872995bd472a05fc8c2182c4))
+* **skill:** never narrate a device action — call the tool in this turn ([c6fb7a2](https://github.com/mdopp/solbay/commit/c6fb7a2070d8cba50c5beaf45164bdbaeea4482d))
+* **template:** converge the pipeline on tts_voice drift too ([47581d1](https://github.com/mdopp/solbay/commit/47581d1f65e9c8702208f0f9e3570cb425c59b80))
+* **template:** the Martin bridge voice is martin, not kokoro ([7438ad5](https://github.com/mdopp/solbay/commit/7438ad570ce27e72f8bf96ea2667c91793909e25))
+* **template:** warm-load from the locally installed tags ([dcc8d25](https://github.com/mdopp/solbay/commit/dcc8d25988eaab02311518c9a5e48e8dad709b08)), closes [#339](https://github.com/mdopp/solbay/issues/339)
+* **template:** warm-load small models first — order decides co-residency ([432e0f3](https://github.com/mdopp/solbay/commit/432e0f312f5f0dd31ff78e607d9ef975fde4053e)), closes [#340](https://github.com/mdopp/solbay/issues/340)
+* **template:** warm-load the chat models after every ollama deploy ([d25a287](https://github.com/mdopp/solbay/commit/d25a287199f74e202d4ec5d768e07ebab4fe231e))
+
 ## [0.10.0](https://github.com/mdopp/solbay/compare/v0.9.0...v0.10.0) (2026-06-12)
 
 
