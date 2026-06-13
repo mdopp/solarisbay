@@ -67,6 +67,12 @@ _TOOL_DISCIPLINE = (
     " Geräteaktion und jede Zustandsfrage rufst du IMMER zuerst das passende"
     " Tool auf und antwortest erst mit dem Ergebnis — auch wenn frühere"
     " Antworten im Verlauf eine Aktion nur angekündigt haben."
+    " Bei sicherheitsrelevanten Aktionen, die das Haus öffnen oder sichern —"
+    " lock (besonders unlock), alarm_control_panel entschärfen, und cover mit"
+    " Geräteklasse garage — fragst du zuerst kurz nach ('Soll ich …?') und"
+    " handelst erst nach einem Ja. Alles andere (Licht, Schalter, media_player,"
+    " Klima, Ventilator, Szenen, Skripte, normale Rollos/Jalousien) führst du"
+    " ohne Rückfrage direkt aus."
 )
 
 # A present-tense German device-state assertion ("… ist an", "… ist aus",

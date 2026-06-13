@@ -15,6 +15,7 @@ import pytest
 
 from solilos_chat.engine import scheduler, store
 from solilos_chat.engine.client import (
+    _TOOL_DISCIPLINE,
     EngineClient,
     EngineProfile,
     _is_fabricated_device_claim,
@@ -493,6 +494,104 @@ async def test_registry_prompt_block(monkeypatch):
     block = await reg.prompt_block()
     assert "light.buero | Bürolicht | Büro" in block
     assert "sensor.temp" not in block  # not a controllable domain
+
+
+async def test_registry_actions_legend(monkeypatch):
+    """#381: each present domain gets its real HA services so the model emits
+    cover.open_cover (not the guessed cover.open that 400'd, #379). The legend
+    only lists domains actually present, and set_cover_position rides only when
+    a cover advertises SUPPORT_SET_POSITION (supported_features bit 2)."""
+    reg = EntityRegistry("http://ha", "token")
+
+    async def fake_states():
+        return [
+            {
+                "entity_id": "cover.garage",
+                "attributes": {"friendly_name": "Garage", "supported_features": 15},
+            },
+            {"entity_id": "light.buero", "attributes": {"friendly_name": "Büro"}},
+            {"entity_id": "lock.tuer", "attributes": {"friendly_name": "Tür"}},
+        ]
+
+    monkeypatch.setattr(reg, "_fetch_states", fake_states)
+    block = await reg.prompt_block()
+    assert "cover: open_cover/close_cover/stop_cover/set_cover_position" in block
+    assert "light: turn_on/turn_off" in block
+    assert "lock: lock/unlock" in block
+    # absent domains are not listed (keeps the legend tight)
+    assert "switch:" not in block and "vacuum:" not in block
+    # stable: the legend follows CONTROLLABLE_DOMAINS order, refetch is identical
+    reg._fetched_at = 0.0
+    assert await reg.prompt_block() == block
+    assert block.index("light:") < block.index("cover:") < block.index("lock:")
+
+
+async def test_registry_set_position_omitted_without_feature(monkeypatch):
+    """A cover lacking SUPPORT_SET_POSITION (bit 2) gets no set_cover_position."""
+    reg = EntityRegistry("http://ha", "token")
+
+    async def fake_states():
+        return [
+            {
+                "entity_id": "cover.tor",
+                "attributes": {"friendly_name": "Tor", "supported_features": 3},
+            }
+        ]
+
+    monkeypatch.setattr(reg, "_fetch_states", fake_states)
+    block = await reg.prompt_block()
+    assert "cover: open_cover/close_cover/stop_cover\n" in block + "\n"
+    assert "set_cover_position" not in block
+
+
+async def test_registry_surfaces_cover_device_class(monkeypatch):
+    """#382: a garage cover and a blind are both domain=cover; the confirm-first
+    safety rule can only tell them apart if device_class rides the cover line."""
+    reg = EntityRegistry("http://ha", "token")
+
+    async def fake_states():
+        return [
+            {
+                "entity_id": "cover.garage",
+                "attributes": {"friendly_name": "Garage", "device_class": "garage"},
+            },
+            {
+                "entity_id": "cover.rollo",
+                "attributes": {"friendly_name": "Rollo", "device_class": "shade"},
+            },
+        ]
+
+    monkeypatch.setattr(reg, "_fetch_states", fake_states)
+    block = await reg.prompt_block()
+    assert "cover.garage | Garage | garage" in block
+    # the blind keeps its non-safety device_class, distinguishable from garage
+    assert "cover.rollo | Rollo | shade" in block
+
+
+async def test_registry_no_device_class_no_trailing_column(monkeypatch):
+    """A cover without a device_class keeps the 3-column shape (cache-stable)."""
+    reg = EntityRegistry("http://ha", "token")
+
+    async def fake_states():
+        return [
+            {"entity_id": "cover.tor", "attributes": {"friendly_name": "Tor"}},
+        ]
+
+    monkeypatch.setattr(reg, "_fetch_states", fake_states)
+    block = await reg.prompt_block()
+    assert "cover.tor | Tor\n" in block
+
+
+def test_tool_discipline_confirms_safety_actions():
+    """#382: one crisp confirm-first rule for home-securing actions (locks,
+    alarm disarm, garage covers) and act-decisively for everything else."""
+    rule = _TOOL_DISCIPLINE
+    assert "Soll ich" in rule
+    assert "unlock" in rule and "garage" in rule and "alarm_control_panel" in rule
+    # act decisively on the ordinary domains — no confirmation nag
+    assert "ohne Rückfrage" in rule
+    for direct in ("Licht", "media_player", "Rollos"):
+        assert direct in rule
 
 
 # -- scheduler -----------------------------------------------------------
