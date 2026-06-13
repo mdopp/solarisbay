@@ -1989,6 +1989,69 @@ async def test_put_household_model_rejects_unoffered_tag(aiohttp_client, tmp_pat
     assert resp.status == 400
 
 
+# --- Global TTS voice picker (#368; admin) --------------------------------
+
+
+def _voice_app(tmp_path, tts_voices="martin,anna"):
+    return build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        tts_voices=tts_voices,
+        solilos_db_path=str(tmp_path / "solilos.db"),
+        attachments_dir=str(tmp_path / "att"),
+    )
+
+
+async def test_get_voice_admin_default_martin(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_voice_app(tmp_path))
+    resp = await client.get("/api/voice", headers={"Remote-Groups": "admins"})
+    body = await resp.json()
+    assert resp.status == 200
+    # Unset selection => the first offered voice (the baked-in Martin default).
+    assert body["current"] == "martin"
+    assert body["default"] == "martin"
+    assert body["options"] == ["martin", "anna"]
+
+
+async def test_get_voice_non_admin_forbidden(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_voice_app(tmp_path))
+    resp = await client.get("/api/voice", headers={"Remote-Groups": "family"})
+    assert resp.status == 403
+
+
+async def test_put_voice_admin_persists(aiohttp_client, tmp_path):
+    from solilos_chat import settings_store
+
+    client = await aiohttp_client(_voice_app(tmp_path))
+    resp = await client.put(
+        "/api/voice", json={"value": "anna"}, headers={"Remote-Groups": "admins"}
+    )
+    body = await resp.json()
+    assert resp.status == 200
+    assert body == {"ok": True, "current": "anna"}
+    assert settings_store.get_tts_voice(str(tmp_path / "solilos.db")) == "anna"
+    # The round-trip now reports the persisted selection, not the default.
+    resp = await client.get("/api/voice", headers={"Remote-Groups": "admins"})
+    assert (await resp.json())["current"] == "anna"
+
+
+async def test_put_voice_non_admin_forbidden(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_voice_app(tmp_path))
+    resp = await client.put(
+        "/api/voice", json={"value": "anna"}, headers={"Remote-Groups": "family"}
+    )
+    assert resp.status == 403
+
+
+async def test_put_voice_rejects_unoffered(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_voice_app(tmp_path))
+    resp = await client.put(
+        "/api/voice", json={"value": "ryan"}, headers={"Remote-Groups": "admins"}
+    )
+    assert resp.status == 400
+
+
 # --- Model pull + VRAM headroom estimate (#367; admin) --------------------
 
 

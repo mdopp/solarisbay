@@ -166,6 +166,12 @@ spec:
       value: "{{FAST_MODEL}}"
     - name: THOROUGH_MODEL
       value: "{{THOROUGH_MODEL}}"
+    # The Kokoro voices the panel's voice picker offers (#368), comma-separated;
+    # the first is the default. The solilos-tts image bakes "martin", so that
+    # stays the single default. The admin's selection persists beside solilos.db
+    # and the post-deploy converges it into the Assist pipeline's tts_voice.
+    - name: TTS_VOICES
+      value: "{{TTS_VOICES}}"
     - name: TZ
       value: "{{TZ}}"
     # solilos.db holds the engine sessions/messages/timers/cron stamps plus

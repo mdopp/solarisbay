@@ -58,3 +58,25 @@ def test_household_model_coexists_with_other_pref(tmp_path):
     # Both keys live in the one sidecar; neither write clobbers the other.
     assert settings_store.get_other_model_pref(db) == "fast"
     assert settings_store.get_household_model(db) == "gemma4:12b"
+
+
+# --- Global TTS voice (#368) ----------------------------------------------
+
+
+def test_tts_voice_empty_when_unset(tmp_path):
+    assert settings_store.get_tts_voice(_db(tmp_path)) == ""
+
+
+def test_tts_voice_roundtrip(tmp_path):
+    db = _db(tmp_path)
+    settings_store.set_tts_voice(db, "anna")
+    assert settings_store.get_tts_voice(db) == "anna"
+
+
+def test_tts_voice_coexists_with_models(tmp_path):
+    db = _db(tmp_path)
+    settings_store.set_household_model(db, "gemma4:12b")
+    settings_store.set_tts_voice(db, "anna")
+    # All keys share the one sidecar; neither write clobbers the other.
+    assert settings_store.get_household_model(db) == "gemma4:12b"
+    assert settings_store.get_tts_voice(db) == "anna"

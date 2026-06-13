@@ -33,6 +33,7 @@ class Settings:
     frame_ancestors: str
     fast_model: str
     thorough_model: str
+    tts_voices: str
     solilos_db_path: str
     notes_dir: str
     hass_url: str
@@ -103,6 +104,10 @@ class Settings:
             # run the thorough one. Box-benched 2026-06-12 (e2b vs e4b vs 12b).
             fast_model=os.environ.get("FAST_MODEL", "gemma4:e2b").strip(),
             thorough_model=os.environ.get("THOROUGH_MODEL", "gemma4:12b").strip(),
+            # The Kokoro voices the global voice picker offers (#368),
+            # comma-separated. The first is the default; the box's solilos-tts
+            # image bakes "martin", so that stays the single default voice.
+            tts_voices=os.environ.get("TTS_VOICES", "martin").strip(),
             # solilos.db (bind-mounted into the pod) holds the engine sessions,
             # timers, cron stamps, topics and traces. Same path the gatekeeper
             # and schema-init sidecar use.

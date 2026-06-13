@@ -47,6 +47,11 @@
     "description": "The engine's thorough model — \"Sol Gründlich\" chats, the admin persona and the night crons (thinks by default). `gemma4:12b` is the larger, more capable model for explanations and multi-step reasoning.",
     "default": "gemma4:12b"
   },
+  "TTS_VOICES": {
+    "type": "text",
+    "description": "The Kokoro TTS voices the panel's voice picker offers (#368), comma-separated; the first is the default voice. The bundled `solilos-tts` image bakes only the German speaker `martin`, so the default is `martin` and a single-entry list pins it. List more voices here only if your TTS bridge/image actually serves them — the admin's pick persists beside solilos.db and the post-deploy converges it into the Assist pipeline's TTS voice on the next deploy.",
+    "default": "martin"
+  },
   "LOGOUT_URL": {
     "type": "text",
     "description": "Optional logout URL shown in the chat sidebar footer (e.g. your Authelia logout endpoint like https://auth.<domain>/logout). Leave empty to hide the logout link.",

@@ -953,6 +953,16 @@
           <p class="lead model-warn" id="household-model-warn" hidden>⚠️ A larger model on the household ("Zuhause") chat means slower voice/quick answers — the hot path is latency-sensitive. Keep it on the fast model unless you accept the latency.</p>
           <span class="editor-status" id="household-model-status"></span>
 
+          <h3>Voice</h3>
+          <p class="lead">Which Kokoro voice Sol speaks with — one voice for all spoken output (admin only). Takes effect on the next deploy.</p>
+          <div class="model-row">
+            <label for="voice-select">Spoken voice</label>
+            <select id="voice-select"></select>
+            <button id="voice-apply" class="btn-primary" type="button">Apply</button>
+          </div>
+          <p class="model-current" id="voice-current"></p>
+          <span class="editor-status" id="voice-status"></span>
+
           <h3>Add a model</h3>
           <p class="lead">Pull a model into the local Ollama by tag or URL — a registry tag (<code>gemma4:12b</code>) or a Hugging Face GGUF repo (<code>hf.co/&lt;repo&gt;:&lt;quant&gt;</code>). Once pulled it appears in the pickers above. Admin only.</p>
           <div class="model-row">
@@ -2628,7 +2638,7 @@
         if (name === "soul" && !soulLoaded) { soulLoaded = true; loadSoul(); }
         if (name === "tools") { loadTools(); loadMcp(); }
         if (name === "prefs") { syncThinkingSeg(); }
-        if (name === "model") { loadModel(); loadVram(); }
+        if (name === "model") { loadModel(); loadVram(); loadVoice(); }
         closeRail();
       }
 
@@ -3069,6 +3079,53 @@
             modelStatus.textContent = e.message === "forbidden" ? "Only admins can change the model." : "Could not change the model. Please try again.";
           })
           .finally(function () { modelApply.disabled = false; });
+      });
+
+      // ---- Voice (admin; one Kokoro voice for all output, #368) ----
+      var voiceSelect = document.getElementById("voice-select");
+      var voiceApply = document.getElementById("voice-apply");
+      var voiceCurrent = document.getElementById("voice-current");
+      var voiceStatus = document.getElementById("voice-status");
+
+      function loadVoice() {
+        voiceStatus.className = "editor-status"; voiceStatus.textContent = "";
+        return fetch("/api/voice")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.options) { voiceCurrent.textContent = "Could not load the voice setting."; return; }
+            var def = j.default || "";
+            var cur = j.current || def;
+            voiceSelect.textContent = "";
+            (j.options || []).forEach(function (v) {
+              var opt = document.createElement("option");
+              opt.value = v;
+              opt.textContent = v === def ? v + " (default)" : v;
+              if (v === cur) opt.selected = true;
+              voiceSelect.appendChild(opt);
+            });
+            voiceCurrent.textContent = cur ? "Current: " + cur : "";
+            voiceApply.disabled = (j.options || []).length < 2;
+          })
+          .catch(function () { voiceCurrent.textContent = "Could not load the voice setting."; });
+      }
+
+      voiceApply.addEventListener("click", function () {
+        var value = voiceSelect.value;
+        if (!value) return;
+        voiceApply.disabled = true;
+        voiceStatus.className = "editor-status"; voiceStatus.textContent = "Applying…";
+        fetch("/api/voice", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value: value }) })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("failed"); return r.json(); })
+          .then(function () {
+            voiceStatus.className = "editor-status";
+            voiceStatus.textContent = "Sol will speak with " + value + " after the next deploy.";
+            voiceCurrent.textContent = "Current: " + value;
+          })
+          .catch(function (e) {
+            voiceStatus.className = "editor-status err";
+            voiceStatus.textContent = e.message === "forbidden" ? "Only admins can change the voice." : "Could not change the voice. Please try again.";
+          })
+          .finally(function () { voiceApply.disabled = false; });
       });
 
       // ---- Pull a model (admin; Ollama /api/model/pull, ndjson progress) ----

@@ -147,6 +147,31 @@ def gatekeeper_container_env(name: str) -> str:
     return _container_env(GATEKEEPER_CONTAINER, name)
 
 
+def selected_tts_voice(default: str = "martin") -> str:
+    """The admin-selected global Kokoro voice (#368), persisted in the chat
+    container's app_settings.json beside solilos.db. Read it from inside the
+    container (the rendered DB path + the chat-owned volume). Empty/unset ⇒ the
+    Martin default, so an install that never touched the picker is unchanged."""
+    db_path = chat_container_env("SOLILOS_DB_PATH") or "/var/lib/solilos/solilos.db"
+    settings_path = f"{os.path.dirname(db_path)}/app_settings.json"
+    try:
+        proc = subprocess.run(
+            ["podman", "exec", CHAT_CONTAINER, "cat", settings_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return default
+    if proc.returncode != 0:
+        return default
+    try:
+        voice = json.loads(proc.stdout).get("tts_voice")
+    except (ValueError, AttributeError):
+        return default
+    return voice.strip() if isinstance(voice, str) and voice.strip() else default
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # 1. ENGINE SOUL — seed/sync SOUL.md on the chat-owned volume.
 # ════════════════════════════════════════════════════════════════════════════
@@ -817,10 +842,11 @@ def ensure_assist_pipeline(
             # every announce/TTS call 500 with "Language 'de' not supported"
             # (box-verified 2026-06-12).
             "tts_language": "de" if martin else "de_DE",
-            # The bridge announces the VOICE "martin" (the model name on the
+            # The bridge announces a Kokoro VOICE name (the model name on the
             # OpenAI side is "kokoro" — wrong here: a kokoro tts_voice makes
-            # every pipeline TTS fail silently, box bridge log 2026-06-12).
-            "tts_voice": "martin" if martin else None,
+            # every pipeline TTS fail silently, box bridge log 2026-06-12). The
+            # admin-selected voice (#368) converges here; default Martin.
+            "tts_voice": selected_tts_voice() if martin else None,
         }
         if existing is None:
             created = ws.cmd(

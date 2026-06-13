@@ -20,6 +20,7 @@ _VALID = ("fast", "thorough")
 DEFAULT_PREF = "thorough"
 _KEY = "other_model_pref"
 _HOUSEHOLD_KEY = "household_model"
+_TTS_VOICE_KEY = "tts_voice"
 
 
 def _path(db_path: str) -> Path:
@@ -68,3 +69,17 @@ def set_household_model(db_path: str, value: str) -> None:
     """Persist the household-profile model override (#366). The server validates
     the tag against the offered options before calling this."""
     _write(db_path, _HOUSEHOLD_KEY, value.strip())
+
+
+def get_tts_voice(db_path: str) -> str:
+    """The admin-selected global Kokoro TTS voice (#368); `""` when unset — the
+    caller (the post-deploy pipeline wiring) then keeps the Martin default, so
+    the existing voice is preserved for installs that never touch the picker."""
+    value = _read(db_path).get(_TTS_VOICE_KEY)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def set_tts_voice(db_path: str, value: str) -> None:
+    """Persist the global TTS voice (#368). The server validates the voice
+    against the offered options before calling this."""
+    _write(db_path, _TTS_VOICE_KEY, value.strip())

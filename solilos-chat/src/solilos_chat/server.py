@@ -239,6 +239,7 @@ def build_app(
     frame_ancestors: str = "'self'",
     fast_model: str = "",
     thorough_model: str = "",
+    tts_voices: str = "martin",
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
     notes_dir: str = "/opt/data/notes",
     ollama_url: str = "http://127.0.0.1:11434",
@@ -879,6 +880,56 @@ def build_app(
         )
         return web.json_response({"ok": True, "current": value})
 
+    # The global TTS voice picker (#368): one Kokoro voice for all spoken
+    # output, mirroring the household-model picker. The offered voices come from
+    # TTS_VOICES (the box's solilos-tts image declares which it ships); the
+    # first is the default. The persisted "" means "use the default", so an
+    # untouched install keeps the baked-in Martin voice. The post-deploy reads
+    # the persisted value and converges the Assist pipeline's tts_voice.
+    def voice_options() -> list[str]:
+        return [v.strip() for v in tts_voices.split(",") if v.strip()]
+
+    def default_voice() -> str:
+        opts = voice_options()
+        return opts[0] if opts else ""
+
+    def current_voice() -> str:
+        return settings_store.get_tts_voice(solilos_db_path) or default_voice()
+
+    async def get_voice(request: web.Request) -> web.Response:
+        if not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        return web.json_response(
+            {
+                "ok": True,
+                "current": current_voice(),
+                "default": default_voice(),
+                "options": voice_options(),
+            }
+        )
+
+    async def put_voice(request: web.Request) -> web.Response:
+        if not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        value = body.get("value")
+        if value not in voice_options():
+            return web.json_response(
+                {"ok": False, "reason": "invalid_value"}, status=400
+            )
+        settings_store.set_tts_voice(solilos_db_path, value)
+        log.info(
+            "chat.voice.set",
+            uid=resolve_uid(request, remote_user_header, default_uid),
+            voice=value,
+        )
+        return web.json_response({"ok": True, "current": value})
+
     # The model tags whose combined VRAM footprint the headroom estimate sums:
     # the household model (selected or fast default), the thorough model the
     # deep/"Gründlich" path runs, and the embedding model — i.e. what's
@@ -1408,6 +1459,8 @@ def build_app(
     app.router.add_put("/api/soul", put_soul)
     app.router.add_get("/api/model", get_model)
     app.router.add_put("/api/model", put_model)
+    app.router.add_get("/api/voice", get_voice)
+    app.router.add_put("/api/voice", put_voice)
     app.router.add_get("/api/vram", get_vram)
     app.router.add_post("/api/model/pull", pull_model)
     app.router.add_get("/api/sessions", list_sessions)
@@ -1681,6 +1734,7 @@ async def serve(
     frame_ancestors: str = "'self'",
     fast_model: str = "",
     thorough_model: str = "",
+    tts_voices: str = "martin",
     solilos_db_path: str = "/var/lib/solilos/solilos.db",
     notes_dir: str = "/opt/data/notes",
     ollama_url: str = "http://127.0.0.1:11434",
@@ -1708,6 +1762,7 @@ async def serve(
         frame_ancestors=frame_ancestors,
         fast_model=fast_model,
         thorough_model=thorough_model,
+        tts_voices=tts_voices,
         solilos_db_path=solilos_db_path,
         notes_dir=notes_dir,
         ollama_url=ollama_url,
