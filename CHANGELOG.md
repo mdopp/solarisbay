@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.12.0](https://github.com/mdopp/solbay/compare/v0.11.0...v0.12.0) (2026-06-13)
+
+
+### Features
+
+* add a global Kokoro voice picker like the model picker ([453ecd1](https://github.com/mdopp/solbay/commit/453ecd1038755eb593a68735f3aa07827589ef7b)), closes [#368](https://github.com/mdopp/solbay/issues/368)
+* answer "wer bin ich?" from the resident voice-ID belief ([2ab8ec5](https://github.com/mdopp/solbay/commit/2ab8ec527200571066b4b6b1854078c8490a917f))
+* answer "wer bin ich" from the voice-ID belief ([372090d](https://github.com/mdopp/solbay/commit/372090dafeb0150cb8aaf4980fe1cff5b9acd984)), closes [#384](https://github.com/mdopp/solbay/issues/384)
+* **chat:** confirm home-securing actions, act decisively otherwise ([971585d](https://github.com/mdopp/solbay/commit/971585d3364b5c6ccd0f41ab0904d75dbb1668fa)), closes [#382](https://github.com/mdopp/solbay/issues/382)
+* **chat:** HA service legend in registry + home-securing confirmation policy ([a96996b](https://github.com/mdopp/solbay/commit/a96996b5df4065e7f8c49680804f5c358286669d))
+* **chat:** HA state-history search and list/run scenes scripts automations ([0230b5d](https://github.com/mdopp/solbay/commit/0230b5d262440fc98100692870c03de6dda120b9)), closes [#369](https://github.com/mdopp/solbay/issues/369) [#370](https://github.com/mdopp/solbay/issues/370)
+* **chat:** handle denied access requests — drop biometric, provision nothing ([6f12e7f](https://github.com/mdopp/solbay/commit/6f12e7f9d69b2e01cf94c195736e68f01dde1324))
+* **chat:** inject per-domain HA service legend into the entity registry ([20d120c](https://github.com/mdopp/solbay/commit/20d120c8012fec50e0d999bee1217a360f0e7cfe)), closes [#381](https://github.com/mdopp/solbay/issues/381)
+* **chat:** make the household profile model admin-selectable in the picker ([a7003f5](https://github.com/mdopp/solbay/commit/a7003f5d01d52e940ac8b2e1e40ecda2f44d0dbd)), closes [#366](https://github.com/mdopp/solbay/issues/366)
+* **chat:** onboarding approval + provisioning on SB access-request MCP ([9ca171f](https://github.com/mdopp/solbay/commit/9ca171f62d41a889a3c5b11141bcf74ebb8925ea))
+* **chat:** onboarding approval + provisioning on SB access-request MCP ([10d605b](https://github.com/mdopp/solbay/commit/10d605b6d48e07994156b5be45429c7eb84d5b1c)), closes [#355](https://github.com/mdopp/solbay/issues/355)
+* **chat:** panel model management + Kokoro voice picker ([846f119](https://github.com/mdopp/solbay/commit/846f119c42d04d5818ee5bfef62da2fddf6288bb))
+* **chat:** registration flow — enrol voice + file pending resident request ([b4c3d80](https://github.com/mdopp/solbay/commit/b4c3d80bbf4f758cc8735d7fb73e502bc2b67a88))
+* **chat:** registration flow — enrol voice + file pending resident request ([38f2de2](https://github.com/mdopp/solbay/commit/38f2de2f76b8a9c4ed97019d3b3a7941ac0dcd67)), closes [#376](https://github.com/mdopp/solbay/issues/376)
+* **chat:** voice-enrolment tool wrapping gatekeeper POST /enrol ([0cd9cc9](https://github.com/mdopp/solbay/commit/0cd9cc92452c947b6e3944a1329f5d7994e2d6e3))
+* **chat:** voice-enrolment tool wrapping gatekeeper POST /enrol ([0cbcab9](https://github.com/mdopp/solbay/commit/0cbcab9ceefa927f919066dece29f9f9ae4168bc)), closes [#364](https://github.com/mdopp/solbay/issues/364)
+* **engine:** personalize turn prompt with the resident identity ([f2876dc](https://github.com/mdopp/solbay/commit/f2876dcdfac9f40c76e927cb585bc8e5490957db)), closes [#352](https://github.com/mdopp/solbay/issues/352)
+* **gatekeeper:** reverse enroll-stash — live-voice onboarding capture ([7c508ca](https://github.com/mdopp/solbay/commit/7c508caeb46bbfafc459b7bcfacfc0de426dd1b7))
+* **gatekeeper:** reverse enroll-stash for live-voice onboarding capture ([cfb446a](https://github.com/mdopp/solbay/commit/cfb446a54029bdc379c7847712620fd5952aed24))
+* pull Ollama models from the panel + VRAM headroom estimate ([40410f5](https://github.com/mdopp/solbay/commit/40410f5ee2a34e0b1b9001ef49567e11c0aacb05)), closes [#367](https://github.com/mdopp/solbay/issues/367)
+* resident-personalized turns, trace tool-step fix, HA history+run tools, admin-selectable household model ([ac709c1](https://github.com/mdopp/solbay/commit/ac709c1346e58d0512a3e4587b87bbf3ec133da4))
+* route an unknown speaker to the guest profile ([5f14ae9](https://github.com/mdopp/solbay/commit/5f14ae9db6b151d74f3883bda1a1be9a125dca02))
+* route an unknown speaker to the guest profile ([ea85395](https://github.com/mdopp/solbay/commit/ea853951c4e728fa602a6789e9025369194e0bb5)), closes [#351](https://github.com/mdopp/solbay/issues/351)
+* **skill:** add the resident-registration onboarding dialog ([e9a4b1d](https://github.com/mdopp/solbay/commit/e9a4b1d07b0fe1606c3cfd16bf9ecf8927ad613e)), closes [#354](https://github.com/mdopp/solbay/issues/354)
+* **skill:** guest-greeting onboarding dialog for unknown speakers ([f1ca148](https://github.com/mdopp/solbay/commit/f1ca14810dcaf9d82ccc3ca5e504bceae98d023a))
+* **skill:** guest-greeting onboarding dialog for unknown speakers ([3d50acf](https://github.com/mdopp/solbay/commit/3d50acf143f91eb5c20fa4be72fa020b779d366d)), closes [#375](https://github.com/mdopp/solbay/issues/375)
+* **skill:** resident-registration onboarding dialog ([ca96960](https://github.com/mdopp/solbay/commit/ca969604e251458752fd788c2614a6051b336c7e))
+* **voice:** wire gatekeeper speaker-ID into the live Assist path ([#350](https://github.com/mdopp/solbay/issues/350), approach b) ([#362](https://github.com/mdopp/solbay/issues/362)) ([d556247](https://github.com/mdopp/solbay/commit/d5562474be2dd96464aace3d3df8c53a5966e560))
+
+
+### Bug Fixes
+
+* **chat:** drop alembic import from the pending-residents test ([efcb9d8](https://github.com/mdopp/solbay/commit/efcb9d843ef16d813c78a2c514a1fb08a4f0526e))
+* **chat:** map natural cover service names to HA open_cover/close_cover/stop_cover ([90211d5](https://github.com/mdopp/solbay/commit/90211d550b44086b6d8efcc5a3bff5f47ef44020))
+* **chat:** normalize natural cover service names to HA's open_cover/close_cover/stop_cover ([88045a6](https://github.com/mdopp/solbay/commit/88045a62356a0a472fe7607313e7b2cd6ef38358)), closes [#379](https://github.com/mdopp/solbay/issues/379)
+* **chat:** render persisted tool trace steps as the tool, expand by default ([1167276](https://github.com/mdopp/solbay/commit/116727676ae51b4b7a002a9464dbe8cdf6a4a993)), closes [#371](https://github.com/mdopp/solbay/issues/371)
+* **db:** chain the pending-resident-request migration after enroll_requests (0015) ([7c32b8f](https://github.com/mdopp/solbay/commit/7c32b8f12bceb0bdc03523a620c1156c34872de4))
+
 ## [0.11.0](https://github.com/mdopp/solbay/compare/v0.10.0...v0.11.0) (2026-06-12)
 
 
