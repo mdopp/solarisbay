@@ -1,7 +1,7 @@
 ---
 name: sol-guest-onboarding
 description: Use at the start of a conversation with an unknown/guest speaker — the turn's uid is `guest` (the gatekeeper heard a voice but matched no enrolled resident, #351/#353), e.g. they open with "Hallo", "Hey Sol", "wer bist du?", "kannst du mir helfen?". Greet them, explain Sol doesn't recognise them yet, and offer the two paths: (a) register as a resident (gated on admin approval) or (b) carry on as a guest (Q&A + simple light/media control, nothing is remembered). If they choose to register, set up the next step — collecting a name and a few spoken samples to enrol their voice — and hand off to the registration flow. The conversational entry point for the onboarding epic (#343).
-version: 1.0.0
+version: 1.1.0
 author: Solilos
 license: MIT
 ---
@@ -93,16 +93,18 @@ itself. Explain what's coming and set up the seam:
 > Freigabe an die Verwaltung — bis die zustimmt, bist du noch Gast und ich lege
 > noch kein Konto an."*
 
-Then defer to the **registration flow** (#354): it collects the name/uid, captures
-the spoken enrolment samples, and registers the voice profile through the
-gatekeeper's `voice_enrol` tool (base64 PCM samples → averaged ECAPA embedding →
-`voice_embeddings`), then files a **pending resident request** for the admin
+Then run the **registration flow** (#376): collect the name and a chosen uid,
+capture the spoken enrolment samples, and call **`register_pending_resident`**
+with the uid, display name and the base64 PCM samples. That tool enrols the voice
+through the gatekeeper (averaged ECAPA embedding → `voice_embeddings`) and, only
+on a successful enrolment, files a **pending resident request** for the admin
 (#355). None of that lands an account until an admin approves — be clear that
-registration is a *request*, not an instant account.
+registration is a *request*, not an instant account, and that a failed enrolment
+(too few usable samples) files **nothing** and should be retried.
 
-(The guest profile does **not** carry the `voice_enrol` tool or the request tool —
-that toolset belongs to the registration flow. From here, the dialog continues
-under that flow; this skill's job ends at the handoff.)
+(`register_pending_resident` is an onboarding-only tool, not in the household or
+general guest toolset. The raw samples are biometric — never read them, the uid
+list, or embeddings aloud.)
 
 ## Guards
 

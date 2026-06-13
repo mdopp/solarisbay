@@ -29,6 +29,7 @@ from solilos_chat.engine.tools import Tool, Toolbox
 from solilos_chat.engine.tools.ha import build_ha_tools
 from solilos_chat.engine.tools.mcp_tools import McpToolbox
 from solilos_chat.engine.tools.notes import build_notes_tools
+from solilos_chat.engine.tools.register import build_register_tools
 from solilos_chat.engine.tools.timers import build_timer_tools
 from solilos_chat.engine.tools.web import build_web_tools
 from solilos_chat.engine.trace import TraceRecorder
@@ -73,6 +74,8 @@ def build_engine_clients(
     hass_token: str = "",
     tavily_api_key: str = "",
     notes_dir: str = "",
+    gatekeeper_url: str = "",
+    gatekeeper_token: str = "",
     context_window: int | None = None,
     default_uid: str = "household",
 ) -> tuple[
@@ -103,6 +106,12 @@ def build_engine_clients(
     guest_tools: list[Tool] = [
         t for t in ha_tools if t.name != "ha_run_scene_script"
     ] + list(web_tools)
+    # The registration flow runs under the guest profile (an unknown speaker is
+    # a guest turn, #353) but only the onboarding skill ever invokes it: enrol
+    # the voice + file a pending request (#376). It's the one durable write a
+    # guest turn can make, and only into the approval queue — never the store.
+    if gatekeeper_url:
+        guest_tools += build_register_tools(db_path, gatekeeper_url, gatekeeper_token)
 
     def make(profile: EngineProfile) -> EngineClient:
         return EngineClient(

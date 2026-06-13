@@ -31,6 +31,8 @@ async def _run() -> None:
         hass_token=settings.hass_token,
         tavily_api_key=settings.tavily_api_key,
         notes_dir=settings.notes_dir,
+        gatekeeper_url=settings.gatekeeper_url,
+        gatekeeper_token=settings.gatekeeper_token,
         context_window=context_window.value,
         default_uid=settings.default_uid,
     )
