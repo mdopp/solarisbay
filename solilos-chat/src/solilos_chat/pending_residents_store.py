@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 STATUS_PENDING = "pending"
+STATUS_APPROVED = "approved"
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -46,6 +47,51 @@ def add_pending_resident(
         )
         conn.commit()
         return int(cur.lastrowid)
+
+
+def get_pending_by_uid(db_path: str, uid: str) -> dict[str, Any] | None:
+    """The newest still-pending request for a uid, or None. The #355 approval
+    flow keys off the uid (the candidate's chosen login), not the row id."""
+    if not Path(db_path).exists():
+        return None
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, uid, display_name, status, enrolled, request_id,
+                       email, requested_at
+                  FROM pending_residents
+                 WHERE uid = ? AND status = ?
+                 ORDER BY requested_at DESC, id DESC
+                 LIMIT 1
+                """,
+                (uid, STATUS_PENDING),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return dict(row) if row else None
+
+
+def set_request_id(db_path: str, row_id: int, request_id: str) -> None:
+    """Record the ServiceBay access-request id returned by file_access_request,
+    so a later approval poll can find it."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE pending_residents SET request_id = ? WHERE id = ?",
+            (request_id, row_id),
+        )
+        conn.commit()
+
+
+def mark_approved(db_path: str, row_id: int) -> None:
+    """Flip a request to approved once the admin has resolved it in SB's list.
+    Solilos never sets this on its own — only after an SB-side approval."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE pending_residents SET status = ? WHERE id = ?",
+            (STATUS_APPROVED, row_id),
+        )
+        conn.commit()
 
 
 def list_pending_residents(db_path: str) -> list[dict[str, Any]]:

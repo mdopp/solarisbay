@@ -27,8 +27,11 @@ from solilos_chat.engine.ollama import OllamaChat
 from solilos_chat.engine.registry import EntityRegistry
 from solilos_chat.engine.tools import Tool, Toolbox
 from solilos_chat.engine.tools.ha import build_ha_tools
-from solilos_chat.engine.tools.mcp_tools import McpToolbox
+from solilos_chat.engine.tools.mcp_tools import CombinedToolbox, McpToolbox
 from solilos_chat.engine.tools.notes import build_notes_tools
+from solilos_chat.engine.tools.onboarding_approval import (
+    build_onboarding_approval_tools,
+)
 from solilos_chat.engine.tools.register import build_register_tools
 from solilos_chat.engine.tools.timers import build_timer_tools
 from solilos_chat.engine.tools.web import build_web_tools
@@ -150,9 +153,20 @@ def build_engine_clients(
             default_uid=default_uid,
         )
     )
-    admin_toolbox: Toolbox = (
-        McpToolbox(sb_mcp_url, sb_mcp_token_path) if sb_mcp_url else Toolbox([])
-    )
+    # Admin gets the remote SB-MCP operator tools plus the local onboarding-
+    # approval tools (#355): filing/polling a resident request rides SB's MCP,
+    # but flipping the pending row + confirming the voice binding is a local
+    # side-effect, so it lives in code, not in whatever the model remembers.
+    admin_toolbox: Toolbox
+    if sb_mcp_url:
+        admin_toolbox = CombinedToolbox(
+            McpToolbox(sb_mcp_url, sb_mcp_token_path),
+            Toolbox(
+                build_onboarding_approval_tools(db_path, sb_mcp_url, sb_mcp_token_path)
+            ),
+        )
+    else:
+        admin_toolbox = Toolbox([])
     admin = make(
         EngineProfile(
             name="admin",
