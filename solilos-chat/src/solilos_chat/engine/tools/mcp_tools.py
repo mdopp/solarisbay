@@ -113,21 +113,61 @@ class McpToolbox(Toolbox):
         ]
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> str:
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
+        return await call_sb_tool(self._url, self._token_path, name, arguments)
 
-        async with streamablehttp_client(self._url, headers=self._headers()) as (
-            read,
-            write,
-            _,
-        ):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(name, arguments)
-        parts: list[str] = []
-        for item in result.content:
-            text = getattr(item, "text", None)
-            if text:
-                parts.append(str(text))
-        out = "\n".join(parts) or json.dumps({"ok": not result.isError})
-        return out[:16000]
+
+class CombinedToolbox(Toolbox):
+    """Two toolboxes presented as one — the admin profile needs the remote
+    SB-MCP tools *and* a few local onboarding tools (#355) in one toolset.
+    A name in the first wins on dispatch (none currently collide)."""
+
+    def __init__(self, *boxes: Toolbox):
+        super().__init__([])
+        self._boxes = list(boxes)
+
+    async def prepare(self) -> None:
+        for box in self._boxes:
+            await box.prepare()
+
+    def definitions(self) -> list[dict[str, Any]]:
+        defs: list[dict[str, Any]] = []
+        for box in self._boxes:
+            defs += box.definitions()
+        return defs
+
+    def names(self) -> list[str]:
+        names: list[str] = []
+        for box in self._boxes:
+            names += box.names()
+        return names
+
+    async def dispatch(self, name: str, arguments: dict[str, Any]) -> str:
+        for box in self._boxes:
+            if name in box.names():
+                return await box.dispatch(name, arguments)
+        return f'{{"error": "unknown tool: {name}"}}'
+
+
+async def call_sb_tool(
+    url: str, token_path: str, name: str, arguments: dict[str, Any]
+) -> str:
+    """Invoke one SB-MCP tool over the same connect→initialize→act→close path
+    the admin toolbox uses, but callable from Python (the #355 onboarding flow
+    needs to file/poll an access request as a code side-effect, not only expose
+    the tool to the model)."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    token = read_token(token_path)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    async with streamablehttp_client(url, headers=headers) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(name, arguments)
+    parts: list[str] = []
+    for item in result.content:
+        text = getattr(item, "text", None)
+        if text:
+            parts.append(str(text))
+    out = "\n".join(parts) or json.dumps({"ok": not result.isError})
+    return out[:16000]
