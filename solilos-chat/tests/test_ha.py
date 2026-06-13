@@ -155,6 +155,70 @@ async def test_run_runnable_rejects_non_runnable(monkeypatch):
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "service,expected",
+    [("open", "open_cover"), ("close", "close_cover"), ("stop", "stop_cover")],
+)
+async def test_call_service_normalizes_cover_aliases(monkeypatch, service, expected):
+    calls: list[tuple[str, dict]] = []
+    _stub(monkeypatch, calls=calls)
+    out = json.loads(
+        await _tool("ha_call_service").handler(
+            {"domain": "cover", "service": service, "entity_id": "cover.garage"}
+        )
+    )
+    assert out["success"] is True
+    assert out["service"] == f"cover.{expected}"
+    posturl, _ = calls[0]
+    assert posturl == f"http://ha/api/services/cover/{expected}"
+
+
+@pytest.mark.parametrize(
+    "domain,service",
+    [("cover", "open_cover"), ("light", "turn_on"), ("climate", "set_temperature")],
+)
+async def test_call_service_passes_unmapped_through(monkeypatch, domain, service):
+    calls: list[tuple[str, dict]] = []
+    _stub(monkeypatch, calls=calls)
+    out = json.loads(
+        await _tool("ha_call_service").handler(
+            {"domain": domain, "service": service, "entity_id": f"{domain}.x"}
+        )
+    )
+    assert out["service"] == f"{domain}.{service}"
+    posturl, _ = calls[0]
+    assert posturl == f"http://ha/api/services/{domain}/{service}"
+
+
+async def test_call_service_unknown_service_still_errors(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, posturl, *, json, **k):
+            calls.append((posturl, json))
+            return _Resp({"message": "service not found"}, status=400)
+
+    monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
+    out = json.loads(
+        await _tool("ha_call_service").handler(
+            {"domain": "cover", "service": "levitate", "entity_id": "cover.garage"}
+        )
+    )
+    assert "error" in out
+    assert "400" in out["error"]
+    # an unmapped service is forwarded as-is, not rewritten or dropped
+    assert calls[0][0] == "http://ha/api/services/cover/levitate"
+
+
 async def test_guest_toolset_excludes_run_tool():
     from solilos_chat.engine.profiles import build_engine_clients
 

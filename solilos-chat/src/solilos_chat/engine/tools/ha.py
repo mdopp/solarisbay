@@ -31,6 +31,12 @@ _TIMEOUT = aiohttp.ClientTimeout(total=15)
 _RUNNABLE_DOMAINS = ("scene", "script", "automation")
 # Run service per runnable domain: scenes/scripts turn_on, automations trigger.
 _RUN_SERVICE = {"scene": "turn_on", "script": "turn_on", "automation": "trigger"}
+# Some domains name their actions verb_<domain> rather than the bare verb the
+# model tends to guess (cover has no `open`, only `open_cover`) — map the
+# known-safe aliases so a natural "open" reaches the right HA service (#379).
+_SERVICE_ALIASES = {
+    "cover": {"open": "open_cover", "close": "close_cover", "stop": "stop_cover"},
+}
 _HISTORY_DEFAULT_DAYS = 7
 _HISTORY_MAX_TRANSITIONS = 20
 
@@ -54,6 +60,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
             return '{"error": "invalid domain or service name"}'
         if domain in _BLOCKED_DOMAINS:
             return f'{{"error": "domain {domain} is not allowed"}}'
+        service = _SERVICE_ALIASES.get(domain, {}).get(service, service)
         payload: dict[str, Any] = {"entity_id": entity_id} if entity_id else {}
         data = args.get("data")
         if isinstance(data, dict):
@@ -222,7 +229,10 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
             name="ha_call_service",
             description=(
                 "Steuert ein Home-Assistant-Gerät. Nutze die entity_id aus der"
-                " Geräteliste im Systemprompt."
+                " Geräteliste im Systemprompt. Service-Namen sind HA-spezifisch:"
+                " light/switch/climate -> turn_on/turn_off (climate auch"
+                " set_temperature); cover (Garage/Rollladen/Tor) ->"
+                " open_cover/close_cover/stop_cover; lock -> lock/unlock."
             ),
             parameters={
                 "type": "object",
@@ -230,7 +240,10 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                     "domain": {"type": "string", "description": "z.B. light, climate"},
                     "service": {
                         "type": "string",
-                        "description": "z.B. turn_on, turn_off, set_temperature",
+                        "description": (
+                            "HA-Service, z.B. turn_on, turn_off, set_temperature;"
+                            " cover: open_cover/close_cover/stop_cover"
+                        ),
                     },
                     "entity_id": {"type": "string"},
                     "data": {
