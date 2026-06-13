@@ -43,4 +43,13 @@ def identity_block(uid: str, default_uid: str = "household") -> str:
         return ""
     lines = [f"Du sprichst gerade mit {uid}. Sprich diese Person persönlich an."]
     lines += [f"- {p}" for p in _prefs(uid)]
+    # The name only ever reaches the model inside this block, which exists only
+    # for a resolved resident — so "wer bin ich?" can name the person here and
+    # nowhere else (privacy: an unidentified speaker has no block, so the soul's
+    # honest "ich erkenne dich nicht" answer is all that's available; #384).
+    lines.append(
+        f'Fragt diese Person, wer sie ist oder als wen du sie erkennst ("Wer bin'
+        f' ich?"), antworte als Stimm-Erkennung mit "Für mich klingst du wie'
+        f' {uid}."'
+    )
     return "\n".join(lines)

@@ -460,6 +460,20 @@ def test_identity_block_only_for_real_residents():
     assert identity_block("papa", default_uid="papa") == ""
 
 
+def test_wer_bin_ich_names_resident_only_when_identified():
+    """#384: the "für mich klingst du wie {name}" framing lives inside the
+    resident block, so it can name the person only when there IS one. An
+    unidentified speaker (no block) leaks no resident name."""
+    from solilos_chat.engine.residents import identity_block
+
+    block = identity_block("anna")
+    assert "klingst du wie anna" in block
+    # Privacy: no block at all for guest/household/off -> no name to reveal.
+    for non_resident in ("", "household", "guest", "default"):
+        assert identity_block(non_resident) == ""
+        assert "anna" not in identity_block(non_resident)
+
+
 # -- HA tools ------------------------------------------------------------
 
 
