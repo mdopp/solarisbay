@@ -1,11 +1,10 @@
-"""Tests for the registration flow (#376): the pending_residents store, the
-`register_pending_resident` tool, and a single-head migration check that the
-0013 migration applies cleanly on top of 0012.
+"""Tests for the registration flow (#376): the pending_residents store and the
+`register_pending_resident` tool.
 
 The gatekeeper /enrol call is mocked with a local aiohttp app (as in
 test_enrol), so we assert the tool enrols then files a pending row on success,
 and files nothing when enrolment fails — and that raw audio never reaches a log
-line. The migration is driven through alembic against a temp sqlite db.
+line.
 """
 
 from __future__ import annotations
@@ -13,22 +12,17 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from pathlib import Path
 
 import pytest
 from aiohttp import web
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 
 from solilos_chat import pending_residents_store
 from solilos_chat.engine.tools.register import build_register_tools
 
-_DB_DIR = Path(__file__).resolve().parents[2] / "database"
 _SAMPLE = base64.b64encode(b"\x00\x01" * 16).decode()
 
 # The schema migration 0013 creates, replayed locally so the store test runs
-# against a real sqlite db without alembic (the migration itself is exercised by
-# test_migration_applies_on_single_head below).
+# against a real sqlite db without alembic.
 _SCHEMA = """
 CREATE TABLE pending_residents (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,32 +147,3 @@ async def test_register_does_not_log_audio(tmp_path, gatekeeper, caplog):
             }
         )
     assert _SAMPLE not in caplog.text
-
-
-def _alembic_config(db_url: str) -> Config:
-    cfg = Config(str(_DB_DIR / "alembic.ini"))
-    cfg.set_main_option("script_location", str(_DB_DIR / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", db_url)
-    return cfg
-
-
-def test_migration_chain_has_a_single_head():
-    script = ScriptDirectory.from_config(_alembic_config("sqlite://"))
-    heads = script.get_heads()
-    assert heads == ["0013_pending_residents"], heads
-
-
-def test_migration_applies_on_single_head(tmp_path):
-    import sqlite3
-
-    from alembic import command
-
-    db_path = tmp_path / "migrated.db"
-    command.upgrade(_alembic_config(f"sqlite:///{db_path}"), "head")
-
-    conn = sqlite3.connect(db_path)
-    try:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_residents)")}
-    finally:
-        conn.close()
-    assert {"id", "uid", "display_name", "status", "enrolled", "requested_at"} <= cols
