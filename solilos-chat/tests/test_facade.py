@@ -119,7 +119,7 @@ async def test_tool_discipline_pinned_last_before_caller_prompt(db, soul):
     # discipline and the model narrated device actions again.
     assert system.index("Du bist Sol.") < system.index("Antworte kurz.")
     assert system.index("Antworte kurz.") < system.index("Sage NIEMALS nur")
-    assert system.rstrip().endswith("angekündigt haben.")
+    assert system.rstrip().endswith("ohne Rückfrage direkt aus.")
 
 
 async def test_no_tool_discipline_without_tools(db, soul):

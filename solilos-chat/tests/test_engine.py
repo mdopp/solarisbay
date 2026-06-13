@@ -15,6 +15,7 @@ import pytest
 
 from solilos_chat.engine import scheduler, store
 from solilos_chat.engine.client import (
+    _TOOL_DISCIPLINE,
     EngineClient,
     EngineProfile,
     _is_fabricated_device_claim,
@@ -541,6 +542,56 @@ async def test_registry_set_position_omitted_without_feature(monkeypatch):
     block = await reg.prompt_block()
     assert "cover: open_cover/close_cover/stop_cover\n" in block + "\n"
     assert "set_cover_position" not in block
+
+
+async def test_registry_surfaces_cover_device_class(monkeypatch):
+    """#382: a garage cover and a blind are both domain=cover; the confirm-first
+    safety rule can only tell them apart if device_class rides the cover line."""
+    reg = EntityRegistry("http://ha", "token")
+
+    async def fake_states():
+        return [
+            {
+                "entity_id": "cover.garage",
+                "attributes": {"friendly_name": "Garage", "device_class": "garage"},
+            },
+            {
+                "entity_id": "cover.rollo",
+                "attributes": {"friendly_name": "Rollo", "device_class": "shade"},
+            },
+        ]
+
+    monkeypatch.setattr(reg, "_fetch_states", fake_states)
+    block = await reg.prompt_block()
+    assert "cover.garage | Garage | garage" in block
+    # the blind keeps its non-safety device_class, distinguishable from garage
+    assert "cover.rollo | Rollo | shade" in block
+
+
+async def test_registry_no_device_class_no_trailing_column(monkeypatch):
+    """A cover without a device_class keeps the 3-column shape (cache-stable)."""
+    reg = EntityRegistry("http://ha", "token")
+
+    async def fake_states():
+        return [
+            {"entity_id": "cover.tor", "attributes": {"friendly_name": "Tor"}},
+        ]
+
+    monkeypatch.setattr(reg, "_fetch_states", fake_states)
+    block = await reg.prompt_block()
+    assert "cover.tor | Tor\n" in block
+
+
+def test_tool_discipline_confirms_safety_actions():
+    """#382: one crisp confirm-first rule for home-securing actions (locks,
+    alarm disarm, garage covers) and act-decisively for everything else."""
+    rule = _TOOL_DISCIPLINE
+    assert "Soll ich" in rule
+    assert "unlock" in rule and "garage" in rule and "alarm_control_panel" in rule
+    # act decisively on the ordinary domains — no confirmation nag
+    assert "ohne Rückfrage" in rule
+    for direct in ("Licht", "media_player", "Rollos"):
+        assert direct in rule
 
 
 # -- scheduler -----------------------------------------------------------

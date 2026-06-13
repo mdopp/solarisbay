@@ -89,15 +89,22 @@ class EntityRegistry:
             attrs = s.get("attributes") or {}
             name = str(attrs.get("friendly_name") or entity_id)
             area = str(attrs.get("area") or "")
-            lines.append(f"{entity_id} | {name} | {area}".rstrip(" |"))
+            line = f"{entity_id} | {name} | {area}".rstrip(" |")
             domains.add(domain)
             if domain == "cover":
+                # device_class distinguishes a garage cover (confirm-first) from
+                # an ordinary blind/shade (act) — both are domain=cover, so the
+                # safety rule can only key on it if it's surfaced per entity.
+                device_class = str(attrs.get("device_class") or "")
+                if device_class:
+                    line += f" | {device_class}"
                 features = attrs.get("supported_features") or 0
                 if isinstance(features, int) and features & _COVER_SET_POSITION:
                     cover_set_position = True
+            lines.append(line)
         lines.sort()
         self._block = (
-            "Geräte (entity_id | Name | Raum):\n"
+            "Geräte (entity_id | Name | Raum[ | Geräteklasse bei cover]):\n"
             + "\n".join(lines)
             + "\n"
             + self._actions_legend(domains, cover_set_position)
