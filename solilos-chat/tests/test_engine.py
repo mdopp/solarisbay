@@ -61,6 +61,11 @@ CREATE TABLE engine_timers (
   status     TEXT NOT NULL DEFAULT 'pending',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE voice_uid_stash (
+  transcript TEXT PRIMARY KEY,
+  uid        TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

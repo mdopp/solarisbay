@@ -540,6 +540,104 @@ async def test_guest_facade_turn_persists_nothing(aiohttp_client, db, soul):
     conn.close()
 
 
+# -- #350: transcript-keyed uid side-channel (approach b) -------------------
+
+
+def _stash(db: str, transcript: str, uid: str) -> None:
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO voice_uid_stash (transcript, uid) VALUES (?, ?)",
+        (transcript, uid),
+    )
+    conn.commit()
+    conn.close()
+
+
+async def test_facade_resolves_uid_from_stash(aiohttp_client, db, soul):
+    # The gatekeeper stashed {transcript -> anna}; the facade must attribute
+    # the turn to anna even though HA sends user=household.
+    from solilos_chat.engine import store
+
+    app, _ = _app(
+        db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
+    )
+    _stash(db, "Licht an", "anna")
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "sol",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Licht an"}],
+            "user": "household",
+        },
+    )
+    assert resp.status == 200
+    # The durable session was created under the resolved resident, not household.
+    sid = store.household_session_id("anna")
+    assert store.session_owner(db, sid) == "anna"
+
+
+async def test_facade_falls_back_to_household_on_stash_miss(aiohttp_client, db, soul):
+    from solilos_chat.engine import store
+
+    app, _ = _app(
+        db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
+    )
+    # No stash row for this transcript.
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "sol",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Wer bin ich"}],
+            "user": "household",
+        },
+    )
+    assert resp.status == 200
+    sid = store.household_session_id("household")
+    assert store.session_owner(db, sid) == "household"
+
+
+async def test_facade_stash_is_consume_once(aiohttp_client, db, soul):
+    # The first turn consumes the stashed uid; an identical second utterance
+    # falls back to household (the row is gone).
+    from solilos_chat.engine import store
+
+    app, _ = _app(
+        db,
+        soul,
+        [
+            ChatResult(content="Eins.", prompt_tokens=5, completion_tokens=1),
+            ChatResult(content="Zwei.", prompt_tokens=5, completion_tokens=1),
+        ],
+    )
+    _stash(db, "Licht an", "anna")
+    http = await aiohttp_client(app)
+    for _ in range(2):
+        resp = await http.post(
+            "/ollama/api/chat",
+            json={
+                "model": "sol",
+                "stream": False,
+                "messages": [{"role": "user", "content": "Licht an"}],
+                "user": "household",
+            },
+        )
+        assert resp.status == 200
+    # The stash row was deleted on first read.
+    conn = sqlite3.connect(db)
+    n = conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0]
+    conn.close()
+    assert n == 0
+    # First turn went to anna; the second (consumed) fell back to household.
+    assert store.session_owner(db, store.household_session_id("anna")) == "anna"
+    assert (
+        store.session_owner(db, store.household_session_id("household")) == "household"
+    )
+
+
 async def test_chat_latest_suffix_resolves(aiohttp_client, db, soul):
     app, _ = _app(
         db, soul, [ChatResult(content="ok", prompt_tokens=1, completion_tokens=1)]

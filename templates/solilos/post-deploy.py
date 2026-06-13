@@ -52,6 +52,7 @@ SB_MCP_TOKEN_RE = re.compile(r"^sb_[0-9a-f]{8}_[A-Z2-9]+$")
 
 SOLILOS_SERVICE = "solilos"
 CHAT_CONTAINER = os.environ.get("CHAT_CONTAINER", "solilos-chat")
+GATEKEEPER_CONTAINER = os.environ.get("GATEKEEPER_CONTAINER", "solilos-gatekeeper")
 
 ADMIN_TOKEN_NAME = "admin-soul"
 ADMIN_MCP_SCOPES = ["read", "lifecycle", "mutate"]
@@ -69,6 +70,10 @@ HA_URL = "http://127.0.0.1:8123"
 def env(key: str, default: str = "") -> str:
     val = os.environ.get(key, default)
     return val if val else default
+
+
+def _truthy(val: str) -> bool:
+    return val.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def jlog(level: str, tag: str, message: str, **args: object) -> None:
@@ -117,14 +122,14 @@ def post_json(
         return 0, None
 
 
-def chat_container_env(name: str) -> str:
-    """Read an env var from inside the running chat container — the rendered
+def _container_env(container: str, name: str) -> str:
+    """Read an env var from inside a running pod container — the rendered
     template value. The post-deploy runs in ServiceBay's context, which does
     NOT export the template variables to it, so the container is the source
     of truth. Returns '' if the container or var is unavailable."""
     try:
         proc = subprocess.run(
-            ["podman", "exec", CHAT_CONTAINER, "printenv", name],
+            ["podman", "exec", container, "printenv", name],
             capture_output=True,
             text=True,
             timeout=10,
@@ -132,6 +137,14 @@ def chat_container_env(name: str) -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
     return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def chat_container_env(name: str) -> str:
+    return _container_env(CHAT_CONTAINER, name)
+
+
+def gatekeeper_container_env(name: str) -> str:
+    return _container_env(GATEKEEPER_CONTAINER, name)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -728,10 +741,18 @@ class HAWebSocket:
                 return json.loads(message.decode("utf-8"))
 
 
-def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
+def ensure_assist_pipeline(
+    token: str, conversation_entity: str, prefer_gatekeeper_stt: bool = False
+) -> bool:
     """Create the "Sol" Assist pipeline (wake on-device, stt=whisper,
     conversation=Sol, tts=piper) and make it the preferred pipeline. Then
-    point the Voice PE's pipeline select at it. Idempotent on the name."""
+    point the Voice PE's pipeline select at it. Idempotent on the name.
+
+    With `prefer_gatekeeper_stt` (speaker-ID on, #350) the STT engine is the
+    gatekeeper's Wyoming STT entity instead of bare whisper, so the pipeline's
+    audio flows through the gatekeeper's speaker-ID resolver. It transcribes
+    via whisper internally, so STT output is identical — only the resident is
+    additionally resolved and stashed for the engine facade."""
     # Needle-match the wyoming engines: the box already carries other tts
     # entities (e.g. a google cloud one) and the pipeline must ride the
     # local whisper/piper pair. Fresh wyoming entries register their
@@ -740,9 +761,17 @@ def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
     for attempt in range(10):
         if attempt:
             time.sleep(3)
-        stt_entity = _find_entity(token, "stt.", "whisper") or _find_entity(
-            token, "stt.", "wyoming"
-        )
+        if prefer_gatekeeper_stt:
+            # The gatekeeper registers a Wyoming STT entity from its ASR
+            # program (name solilos-gatekeeper-asr); needle "gatekeeper".
+            # Fall back to whisper if it hasn't materialised yet.
+            stt_entity = _find_entity(token, "stt.", "gatekeeper") or _find_entity(
+                token, "stt.", "whisper"
+            )
+        else:
+            stt_entity = _find_entity(token, "stt.", "whisper") or _find_entity(
+                token, "stt.", "wyoming"
+            )
         # Sol's Martin voice when its bridge entity exists (GPU boxes,
         # servicebay#1815); piper otherwise. The two differ in language/
         # voice fields: the bridge announces plain `de` + voice `kokoro`,
@@ -813,10 +842,13 @@ def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
         else:
             pipeline_id = existing.get("id")
             # Converge an existing pipeline onto the preferred TTS (a GPU box
-            # may have been wired with piper before the Martin units landed).
+            # may have been wired with piper before the Martin units landed)
+            # and onto the preferred STT (speaker-ID toggled on a redeploy
+            # moves it from whisper to the gatekeeper, #350).
             if (
                 existing.get("tts_engine") != tts_entity
                 or existing.get("tts_voice") != tts_fields["tts_voice"]
+                or existing.get("stt_engine") != stt_entity
             ):
                 upd = {
                     k: existing.get(k)
@@ -835,6 +867,7 @@ def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
                     )
                 }
                 upd.update(tts_fields)
+                upd["stt_engine"] = stt_entity
                 ws.cmd(
                     {
                         "type": "assist_pipeline/pipeline/update",
@@ -842,7 +875,13 @@ def ensure_assist_pipeline(token: str, conversation_entity: str) -> bool:
                         **upd,
                     }
                 )
-                jlog("info", "voice", "Sol pipeline TTS converged", tts=tts_entity)
+                jlog(
+                    "info",
+                    "voice",
+                    "Sol pipeline converged",
+                    tts=tts_entity,
+                    stt=stt_entity,
+                )
             else:
                 jlog("info", "voice", "Sol assist pipeline already present")
         if pipeline_id:
@@ -907,12 +946,35 @@ def wire_voice_pipeline(token: str, chat_port: str, api_key: str) -> None:
     # runs on GPU boxes — register it when it listens, skip silently when not.
     if _port_open("127.0.0.1", 10203):
         ensure_wyoming_entry(token, "openai", "127.0.0.1", 10203)
+    # Speaker-ID on the live path (#350, approach b): register the gatekeeper
+    # as a Wyoming STT engine so the Assist pipeline's audio flows through it
+    # — it transcribes, resolves the speaking resident, and stashes the uid
+    # for the engine facade. The gatekeeper listens on its Wyoming port (the
+    # same listener satellites use), reachable over host loopback. TTS stays
+    # piper/Martin and the conversation agent stays Sol.
+    #
+    # The flag + port live on the gatekeeper container: SB does NOT export the
+    # template vars to this script (see _container_env), so read them from the
+    # container, falling back to a process env / default for local runs.
+    speaker_id = _truthy(
+        env("SOLILOS_SPEAKER_ID_ENABLED")
+        or gatekeeper_container_env("SOLILOS_SPEAKER_ID_ENABLED")
+    )
+    if speaker_id:
+        gk_port = int(
+            env("GATEKEEPER_PORT")
+            or gatekeeper_container_env("GATEKEEPER_PORT")
+            or "10700"
+        )
+        ensure_wyoming_entry(token, "gatekeeper", "127.0.0.1", gk_port)
     if not wait_for_chat(chat_port):
         jlog("warn", "voice", "engine facade not up — conversation agent skipped")
         return
     conversation_entity = ensure_conversation_agent(token, chat_port, api_key)
     if conversation_entity:
-        ensure_assist_pipeline(token, conversation_entity)
+        ensure_assist_pipeline(
+            token, conversation_entity, prefer_gatekeeper_stt=speaker_id
+        )
 
 
 # ════════════════════════════════════════════════════════════════════════════

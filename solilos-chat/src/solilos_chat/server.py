@@ -1339,6 +1339,7 @@ def build_app(
             clients=facade_clients,
             api_key=api_key,
             default_uid=default_uid,
+            solilos_db_path=solilos_db_path,
         )
     return app
 

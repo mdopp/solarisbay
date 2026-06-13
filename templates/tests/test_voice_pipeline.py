@@ -283,6 +283,132 @@ def test_pipeline_idempotent_on_name(pd, monkeypatch):
     assert _FakeWS.preferred == ["p-existing"]
 
 
+# -- #350: gatekeeper-as-STT wiring when speaker-ID is on --------------------
+
+
+def test_pipeline_prefers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
+    _FakeWS.created, _FakeWS.preferred, _FakeWS.pipelines = [], [], []
+
+    def find(token, prefix, needle=""):
+        if prefix == "stt." and needle == "gatekeeper":
+            return "stt.solilos_gatekeeper_asr"
+        if prefix == "stt.":
+            return "stt.faster_whisper"
+        if prefix == "tts.":
+            return "tts.piper"
+        return ""
+
+    monkeypatch.setattr(pd, "_find_entity", find)
+    monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    ok = pd.ensure_assist_pipeline(
+        "tok", "conversation.sol", prefer_gatekeeper_stt=True
+    )
+    assert ok is True
+    assert _FakeWS.created[0]["stt_engine"] == "stt.solilos_gatekeeper_asr"
+
+
+def test_pipeline_stt_unchanged_when_speaker_id_off(pd, monkeypatch):
+    _FakeWS.created, _FakeWS.preferred, _FakeWS.pipelines = [], [], []
+    entity_map = {"stt.": "stt.faster_whisper", "tts.": "tts.piper"}
+    monkeypatch.setattr(
+        pd, "_find_entity", lambda token, prefix, needle="": entity_map.get(prefix, "")
+    )
+    monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    pd.ensure_assist_pipeline("tok", "conversation.sol")  # default: off
+    assert _FakeWS.created[0]["stt_engine"] == "stt.faster_whisper"
+
+
+def test_existing_pipeline_converges_stt_to_gatekeeper(pd, monkeypatch):
+    # Toggling speaker-ID on a redeploy moves an existing pipeline's STT from
+    # whisper to the gatekeeper.
+    _FakeWS.created, _FakeWS.preferred, _FakeWS.updated = [], [], []
+    _FakeWS.pipelines = [
+        {
+            "name": "Sol",
+            "id": "p-old",
+            "tts_engine": "tts.piper",
+            "tts_language": "de_DE",
+            "tts_voice": None,
+            "conversation_engine": "conversation.sol",
+            "conversation_language": "de",
+            "language": "de",
+            "stt_engine": "stt.faster_whisper",
+            "stt_language": "de",
+            "wake_word_entity": None,
+            "wake_word_id": None,
+        }
+    ]
+
+    def find(token, prefix, needle=""):
+        if prefix == "stt." and needle == "gatekeeper":
+            return "stt.solilos_gatekeeper_asr"
+        if prefix == "stt.":
+            return "stt.faster_whisper"
+        if prefix == "tts." and needle == "openai":
+            return ""
+        if prefix == "tts.":
+            return "tts.piper"
+        return ""
+
+    monkeypatch.setattr(pd, "_find_entity", find)
+    monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    ok = pd.ensure_assist_pipeline(
+        "tok", "conversation.sol", prefer_gatekeeper_stt=True
+    )
+    assert ok is True
+    assert _FakeWS.created == []
+    assert _FakeWS.updated[0]["stt_engine"] == "stt.solilos_gatekeeper_asr"
+
+
+def test_wire_registers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
+    wired = []
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
+    monkeypatch.setattr(pd, "ensure_conversation_agent", lambda *a: "conversation.sol")
+    seen = {}
+    monkeypatch.setattr(
+        pd,
+        "ensure_assist_pipeline",
+        lambda token, entity, prefer_gatekeeper_stt=False: seen.update(
+            prefer=prefer_gatekeeper_stt
+        ),
+    )
+    # The flag is read off the gatekeeper container (SB doesn't export the var).
+    monkeypatch.setattr(
+        pd,
+        "gatekeeper_container_env",
+        lambda name: "true" if name == "SOLILOS_SPEAKER_ID_ENABLED" else "10700",
+    )
+    pd.wire_voice_pipeline("tok", "8787", "key")
+    assert "gatekeeper" in wired
+    assert seen["prefer"] is True
+
+
+def test_wire_no_gatekeeper_stt_when_speaker_id_off(pd, monkeypatch):
+    wired = []
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
+    monkeypatch.setattr(pd, "ensure_conversation_agent", lambda *a: "conversation.sol")
+    seen = {}
+    monkeypatch.setattr(
+        pd,
+        "ensure_assist_pipeline",
+        lambda token, entity, prefer_gatekeeper_stt=False: seen.update(
+            prefer=prefer_gatekeeper_stt
+        ),
+    )
+    monkeypatch.setattr(pd, "gatekeeper_container_env", lambda name: "")
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    pd.wire_voice_pipeline("tok", "8787", "key")
+    assert "gatekeeper" not in wired
+    assert seen["prefer"] is False
+
+
 def test_wire_skips_without_token(pd, monkeypatch):
     monkeypatch.setattr(
         pd,

@@ -142,7 +142,7 @@
   },
   "SOLILOS_SPEAKER_ID_ENABLED": {
     "type": "select",
-    "description": "Speaker-ID (#84): resolve which resident is speaking per voice turn from enrolled voice embeddings. BIOMETRIC — stores per-resident voice fingerprints in solilos.db. Requires the solilos-gatekeeper-ml image (see GATEKEEPER_IMAGE); with the base image this stays inert (falls back to DEFAULT_UID). Off by default.",
+    "description": "Speaker-ID (#84, #350): resolve which resident is speaking per voice turn from enrolled voice embeddings. BIOMETRIC — stores per-resident voice fingerprints in solilos.db. When on, the post-deploy registers the gatekeeper as the Assist pipeline's Wyoming STT engine so the live Voice PE path runs through speaker-ID; the resolved resident is attributed to the turn via a transcript-keyed side-channel. Requires the solilos-gatekeeper-ml image (see GATEKEEPER_IMAGE); with the base image this stays inert (falls back to DEFAULT_UID). Off by default.",
     "options": ["false", "true"],
     "default": "false"
   },

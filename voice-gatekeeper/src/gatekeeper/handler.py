@@ -11,6 +11,15 @@ One handler instance per inbound connection. The Phase-0 contract:
 
 The connection closes after one pipeline turn (Phase 0 is half-duplex per
 turn, like HA's voice pipeline). Multi-turn / streaming is a Phase 4 topic.
+
+STT-provider mode (#350): when HA's Assist pipeline uses the gatekeeper as
+its Wyoming *STT* engine, the client opens with a `Transcribe` event before
+the audio and expects a `Transcript` back — HA, not the gatekeeper, runs the
+conversation step. In that mode the gatekeeper transcribes + resolves the
+speaking resident, returns the `Transcript` to HA, and stashes
+`{transcript -> uid}` for the engine facade to read on the following
+`conversation.sol` turn — it does NOT POST to the facade or synthesize TTS.
+The wyoming-satellite turn above (no `Transcribe`) is unchanged.
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ from .sol import SolClient
 from .rooms_store import get_room
 from .speaker import get_extractor, resolve_speaker
 from .tts import synthesize_to_writer
+from .uid_stash import stash_uid
 
 
 def client_id_from_peername(peer: object) -> str | None:
@@ -66,6 +76,9 @@ class GatekeeperHandler(AsyncEventHandler):
         self.client_id = self._resolve_client_id()
         self._audio_start: AudioStart | None = None
         self._audio_buffer: list[AudioChunk] = []
+        # Set when the client opens with a Transcribe event — HA's STT client
+        # does, a wyoming-satellite doesn't. Selects STT-provider mode (#350).
+        self._stt_mode = False
         self._sol = sol or SolClient(settings.engine_url, settings.engine_token)
         log.info(
             "gatekeeper.session.open",
@@ -86,6 +99,14 @@ class GatekeeperHandler(AsyncEventHandler):
             # advertised at startup; answer with the Info passed at construction.
             if self._info is not None:
                 await self.write_event(self._info.event())
+            return True
+
+        if Transcribe.is_type(event.type):
+            # HA's Assist pipeline opens an STT request with Transcribe; a
+            # wyoming-satellite never sends it. This is the discriminator that
+            # puts us in STT-provider mode (#350) for the rest of the turn.
+            self._stt_mode = True
+            log.info("gatekeeper.stt_provider.transcribe", trace_id=self.trace_id)
             return True
 
         if AudioStart.is_type(event.type):
@@ -109,8 +130,12 @@ class GatekeeperHandler(AsyncEventHandler):
                 "gatekeeper.audio.stop",
                 trace_id=self.trace_id,
                 chunks=len(self._audio_buffer),
+                stt_mode=self._stt_mode,
             )
-            await self._process_pipeline()
+            if self._stt_mode:
+                await self._process_stt_provider()
+            else:
+                await self._process_pipeline()
             return False
 
         # Unknown event types are dropped silently; debug-mode shows them.
@@ -155,6 +180,34 @@ class GatekeeperHandler(AsyncEventHandler):
             return
 
         log.info("gatekeeper.session.close", trace_id=self.trace_id)
+
+    async def _process_stt_provider(self) -> None:
+        """STT-provider mode (#350): transcribe + resolve the speaking
+        resident, return a Transcript to HA so its Assist pipeline continues
+        to conversation.sol as normal, and stash {transcript -> uid} for the
+        engine facade to read on that following turn. No facade POST, no TTS —
+        HA owns the conversation + the spoken response."""
+        if not self._audio_buffer or self._audio_start is None:
+            log.warn("gatekeeper.audio.empty", trace_id=self.trace_id)
+            await self.write_event(Transcript(text="").event())
+            return
+
+        try:
+            transcript = await self._transcribe()
+        except Exception as exc:  # noqa: BLE001 — error logged below
+            log.error("gatekeeper.stt.error", trace_id=self.trace_id, error=str(exc))
+            await self.write_event(Transcript(text="").event())
+            return
+
+        log.info("gatekeeper.transcript", trace_id=self.trace_id, text=transcript)
+        if transcript:
+            uid = await self._resolve_uid()
+            await asyncio.to_thread(
+                stash_uid, settings.solilos_db_path, transcript, uid
+            )
+            log.info("gatekeeper.stt_provider.stash", trace_id=self.trace_id, uid=uid)
+
+        await self.write_event(Transcript(text=transcript).event())
 
     async def _resolve_uid(self) -> str:
         """Phase 2 speaker resolution. Falls back to default_uid on any

@@ -28,6 +28,7 @@ from aiohttp import web
 
 from solilos_chat.engine.client import EngineClient, EngineError
 from solilos_chat.logging import log
+from solilos_chat.voice_uid_stash import consume_uid
 
 
 def _model_entry(name: str) -> dict[str, Any]:
@@ -66,6 +67,7 @@ def add_facade_routes(
     clients: dict[str, EngineClient],
     api_key: str,
     default_uid: str,
+    solilos_db_path: str,
 ) -> None:
     async def tags(request: web.Request) -> web.Response:
         if not _authorized(request, api_key):
@@ -94,7 +96,15 @@ def add_facade_routes(
         if not isinstance(messages, list) or not messages:
             return web.json_response({"error": "messages required"}, status=400)
         stream = body.get("stream", True)
-        uid = str(body.get("user") or default_uid)
+        # The latest user utterance doubles as the lookup key for the live
+        # voice path: when the gatekeeper served as HA's STT provider it
+        # stashed {transcript -> resolved resident uid} (#350, approach b).
+        # Resolve the speaking resident by that transcript; fall back to the
+        # body's `user` (HA sends `household`) on a miss. Consume-once.
+        transcript = _last_user(messages)
+        uid = consume_uid(solilos_db_path, transcript) or str(
+            body.get("user") or default_uid
+        )
         log.info("engine.facade.turn", model=model, uid=uid, n_messages=len(messages))
 
         # A voice turn lands in the resident's durable household session (#345):
@@ -104,7 +114,7 @@ def add_facade_routes(
         # the turn mirrors live into open tabs (#344) via the persisted path.
         # A guest profile (#353) is ephemeral: it runs the stateless `respond`
         # path on HA's replayed history, so nothing about the guest persists.
-        text = _last_user(messages)
+        text = transcript
 
         def turns() -> AsyncIterator[dict[str, Any]]:
             if client.ephemeral:
