@@ -39,20 +39,25 @@ def consume_uid(db_path: str, transcript: str) -> str | None:
         return None
     try:
         with _connect(db_path) as conn:
-            row = conn.execute(
+            # BEGIN IMMEDIATE takes the write lock before the read so two
+            # concurrent turns with the same transcript can't both consume the
+            # row; the DELETE ... RETURNING reads and reaps in one statement.
+            # The TTL guard keeps a stale row (past TTL) from being consumed
+            # while still reaping it so the table can't grow unbounded.
+            conn.execute("BEGIN IMMEDIATE")
+            fresh = conn.execute(
                 """
-                SELECT uid FROM voice_uid_stash
+                DELETE FROM voice_uid_stash
                 WHERE transcript = ?
                   AND created_at >= datetime('now', ?)
+                RETURNING uid
                 """,
                 (transcript, f"-{STASH_TTL_SECONDS} seconds"),
             ).fetchone()
-            # Delete unconditionally on a keyed lookup: a hit is consumed, and
-            # an expired row is reaped so the table can't grow unbounded.
             conn.execute(
                 "DELETE FROM voice_uid_stash WHERE transcript = ?", (transcript,)
             )
             conn.commit()
     except sqlite3.OperationalError:
         return None
-    return str(row["uid"]) if row else None
+    return str(fresh["uid"]) if fresh else None

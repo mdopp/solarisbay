@@ -156,7 +156,7 @@ class GatekeeperHandler(AsyncEventHandler):
         if not transcript:
             log.warn("gatekeeper.transcript.empty", trace_id=self.trace_id)
             return
-        log.info("gatekeeper.transcript", trace_id=self.trace_id, text=transcript)
+        log.info("gatekeeper.transcript", trace_id=self.trace_id)
 
         uid = await self._resolve_uid()
         endpoint = f"voice-pe:{self.client_id or 'unknown'}"
@@ -199,7 +199,7 @@ class GatekeeperHandler(AsyncEventHandler):
             await self.write_event(Transcript(text="").event())
             return
 
-        log.info("gatekeeper.transcript", trace_id=self.trace_id, text=transcript)
+        log.info("gatekeeper.transcript", trace_id=self.trace_id)
         if transcript:
             uid = await self._resolve_uid()
             await asyncio.to_thread(

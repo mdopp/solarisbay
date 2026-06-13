@@ -638,6 +638,40 @@ async def test_facade_stash_is_consume_once(aiohttp_client, db, soul):
     )
 
 
+def test_consume_uid_is_atomic_consume_once(db):
+    # A single consume returns the stashed uid; a second returns None because
+    # the read+delete happen in one statement under the write lock, so a
+    # concurrent duplicate turn can't re-read the same identity.
+    from solilos_chat import voice_uid_stash
+
+    _stash(db, "Licht an", "anna")
+    assert voice_uid_stash.consume_uid(db, "Licht an") == "anna"
+    assert voice_uid_stash.consume_uid(db, "Licht an") is None
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0] == 0
+    conn.close()
+
+
+def test_consume_uid_ignores_but_reaps_expired_row(db):
+    # A row past the TTL must not be consumed (no stale identity leaks into a
+    # much-later identical utterance) but is still reaped from the table.
+    from solilos_chat import voice_uid_stash
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO voice_uid_stash (transcript, uid, created_at) "
+        "VALUES (?, ?, datetime('now', ?))",
+        ("Licht an", "anna", f"-{voice_uid_stash.STASH_TTL_SECONDS + 60} seconds"),
+    )
+    conn.commit()
+    conn.close()
+
+    assert voice_uid_stash.consume_uid(db, "Licht an") is None
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM voice_uid_stash").fetchone()[0] == 0
+    conn.close()
+
+
 async def test_chat_latest_suffix_resolves(aiohttp_client, db, soul):
     app, _ = _app(
         db, soul, [ChatResult(content="ok", prompt_tokens=1, completion_tokens=1)]
