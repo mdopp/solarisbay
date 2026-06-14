@@ -485,6 +485,22 @@ def _port_open(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+def _wait_for_port(host: str, port: int, timeout_secs: int = 60) -> bool:
+    """Poll a TCP port until it accepts a connection or the deadline passes.
+
+    The gatekeeper's Wyoming STT listener (:10700) boots a few seconds after
+    the post-deploy starts wiring (box-observed ~7s, #395), so its entity must
+    not be registered before the port answers — otherwise the STT converge
+    silently no-ops and speaker-ID never enters the live path."""
+    deadline = time.time() + timeout_secs
+    while True:
+        if _port_open(host, port):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(3)
+
+
 def _flow_create(
     token: str, handler: str, steps: list[dict[str, object]]
 ) -> tuple[str, dict | None]:
@@ -992,7 +1008,19 @@ def wire_voice_pipeline(token: str, chat_port: str, api_key: str) -> None:
             or gatekeeper_container_env("GATEKEEPER_PORT")
             or "10700"
         )
-        ensure_wyoming_entry(token, "gatekeeper", "127.0.0.1", gk_port)
+        # The gatekeeper's Wyoming STT listener boots ~7s after this wiring runs
+        # (#395); register it only once :gk_port answers, else the STT converge
+        # silently no-ops and speaker-ID stays out of the live STT path.
+        if _wait_for_port("127.0.0.1", gk_port):
+            ensure_wyoming_entry(token, "gatekeeper", "127.0.0.1", gk_port)
+        else:
+            jlog(
+                "warn",
+                "voice",
+                "gatekeeper Wyoming STT not reachable — skipping STT rewire",
+                port=gk_port,
+            )
+            speaker_id = False
     if not wait_for_chat(chat_port):
         jlog("warn", "voice", "engine facade not up — conversation agent skipped")
         return
