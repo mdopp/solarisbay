@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.1](https://github.com/mdopp/solbay/compare/v0.12.0...v0.12.1) (2026-06-13)
+
+
+### Bug Fixes
+
+* **chat:** surface enroll STATUS_FAILED honestly and clear the stale row ([f36fe38](https://github.com/mdopp/solbay/commit/f36fe3841429d7956f6a01935dcfcd786d223d48)), closes [#389](https://github.com/mdopp/solbay/issues/389)
+* **chat:** two eval-found bugfixes — admin MCP panel + honest enroll failure ([ba9553a](https://github.com/mdopp/solbay/commit/ba9553a4ab17dbe49e6d0ebbf31557b4bd452d5e))
+* **chat:** unwrap CombinedToolbox in admin MCP panel introspection ([3694067](https://github.com/mdopp/solbay/commit/36940676ec11d6df50c57aa908b1bcc590ee3658)), closes [#390](https://github.com/mdopp/solbay/issues/390)
+
 ## [0.12.0](https://github.com/mdopp/solbay/compare/v0.11.0...v0.12.0) (2026-06-13)
 
 
