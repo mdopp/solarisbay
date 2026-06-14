@@ -100,10 +100,16 @@ def build_register_tools(
         Tool(
             name="start_voice_enrollment",
             description=(
-                "Startet das Sprach-Enrollment für eine Bewohner-uid (Onboarding):"
-                " öffnet die Aufnahme-Anfrage. Danach den Gast bitten, seinen Namen"
-                " mehrmals zu sagen — jede Äußerung ist eine Aufnahme. Braucht"
-                " aktivierte Sprechererkennung."
+                "Startet das Sprach-Enrollment, wenn sich jemand einrichten/anmelden"
+                " möchte, damit Sol ihn an der Stimme erkennt (z.B. 'richte mich"
+                " ein', 'Setup starten', 'merk dir meine Stimme'). Bevor du es rufst:"
+                " (1) hol kurz das Einverständnis für die Stimmaufnahme ein — sie ist"
+                " biometrisch; (2) frag nach dem NAMEN, niemals nach einer technischen"
+                " ID; (3) leite die uid selbst aus dem Namen ab (kleinbuchstaben,"
+                " ASCII, z.B. 'Michael' -> 'michael') und übergib sie als uid. Öffnet"
+                " die Aufnahme-Anfrage; danach bitte die Person, ihren Namen 3× zu"
+                " sagen (jede Äußerung = eine Probe) und ruf anschließend"
+                " register_pending_resident. Braucht aktivierte Sprechererkennung."
             ),
             parameters={
                 "type": "object",
@@ -115,10 +121,14 @@ def build_register_tools(
         Tool(
             name="register_pending_resident",
             description=(
-                "Schließt die Bewohner-Registrierung ab, nachdem der Gast seinen"
-                " Namen mehrmals gesagt hat: prüft das Enrollment-Ergebnis und legt"
-                " bei Erfolg eine Freigabe-Anfrage an. Kein Konto bis zur Freigabe."
-                " Meldet Timeout/Fehler ehrlich (kein Konto, keine Freigabe)."
+                "Schließt die Registrierung ab, NACHDEM die Person ihren Namen 3×"
+                " gesagt hat (nach start_voice_enrollment). Übergib dieselbe uid und"
+                " den Anzeigenamen. Prüft das Enrollment-Ergebnis und legt nur bei"
+                " Erfolg eine Freigabe-Anfrage an — es entsteht KEIN Konto und kein"
+                " Bewohner-Zugang, bis ein Admin freigibt (auch beim ersten Bewohner)."
+                " Bei 'enroll_incomplete' noch eine Äußerung sammeln und erneut rufen;"
+                " bei 'speaker_id_disabled' oder Fehler nichts vortäuschen, keine"
+                " Anfrage."
             ),
             parameters={
                 "type": "object",
