@@ -973,7 +973,19 @@
           <span class="editor-status" id="pull-model-status"></span>
 
           <h3>VRAM headroom</h3>
-          <p class="lead">A rough <strong>estimate</strong> of available GPU VRAM vs the combined footprint of the currently-selected models — to gauge whether adding/selecting a model would blow the hardware. Not exact (KV cache + context overhead are approximated).</p>
+          <p class="lead">Live GPU VRAM of the box (reported by ServiceBay) vs the estimated footprint of the currently-selected models. Approximate — KV cache + context overhead are estimated.</p>
+          <div id="vram-bar" hidden style="margin:10px 0 6px;">
+            <div style="position:relative;height:22px;border-radius:8px;background:var(--panel);border:1px solid var(--line);overflow:hidden;">
+              <div id="vram-used" style="height:100%;width:0;background:var(--ok);transition:width .35s var(--ease),background .35s;"></div>
+              <div id="vram-marker" hidden title="Selected models (estimated)" style="position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--accent);box-shadow:0 0 0 1px var(--bg);"></div>
+            </div>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:13px;color:var(--muted);">
+              <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--ok);vertical-align:middle;margin-right:5px;"></i>used <b id="vram-used-label" style="color:var(--ink);">–</b></span>
+              <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--panel);border:1px solid var(--line);vertical-align:middle;margin-right:5px;"></i>free <b id="vram-free-label" style="color:var(--ink);">–</b></span>
+              <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--accent);vertical-align:middle;margin-right:5px;"></i>selected ≈ <b id="vram-sel-label" style="color:var(--ink);">–</b></span>
+              <span>total <b id="vram-total-label" style="color:var(--ink);">–</b></span>
+            </div>
+          </div>
           <p class="model-current" id="vram-readout">Loading…</p>
           <p class="lead model-warn" id="vram-warn" hidden>⚠️ The selected models' estimated VRAM exceeds the available VRAM — they likely won't all stay GPU-resident, which means CPU fallback and much slower turns.</p>
         </div>
@@ -3193,21 +3205,40 @@
       // ---- VRAM headroom estimate (admin; /api/vram) ----
       var vramReadout = document.getElementById("vram-readout");
       var vramWarn = document.getElementById("vram-warn");
+      var vramBar = document.getElementById("vram-bar");
+      var vramUsedEl = document.getElementById("vram-used");
+      var vramMarker = document.getElementById("vram-marker");
       function gib(bytes) { return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GiB"; }
       function loadVram() {
         return fetch("/api/vram")
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) {
-            if (!j || !j.ok) { vramReadout.textContent = "Could not load the VRAM estimate."; vramWarn.hidden = true; return; }
-            var combined = "Selected models need ≈ " + gib(j.combined_bytes);
-            if (j.available_bytes == null) {
-              vramReadout.textContent = combined + "; available VRAM unknown (set GPU_TOTAL_VRAM or install nvidia-smi for a fit estimate).";
+            if (!j || !j.ok) { vramReadout.textContent = "Could not load the VRAM estimate."; vramWarn.hidden = true; vramBar.hidden = true; return; }
+            var combined = j.combined_bytes || 0;
+            if (j.gpu_total_bytes) {
+              var total = j.gpu_total_bytes, used = j.gpu_used_bytes || 0;
+              var free = Math.max(total - used, 0);
+              var pct = Math.min(used / total * 100, 100);
+              vramUsedEl.style.width = pct.toFixed(1) + "%";
+              vramUsedEl.style.background = pct > 95 ? "var(--danger)" : (pct > 85 ? "var(--accent)" : "var(--ok)");
+              if (combined > 0) { vramMarker.hidden = false; vramMarker.style.left = Math.min(combined / total * 100, 100).toFixed(1) + "%"; }
+              else { vramMarker.hidden = true; }
+              document.getElementById("vram-used-label").textContent = gib(used);
+              document.getElementById("vram-free-label").textContent = gib(free);
+              document.getElementById("vram-sel-label").textContent = gib(combined);
+              document.getElementById("vram-total-label").textContent = gib(total);
+              vramBar.hidden = false;
+              vramReadout.textContent = "Selected models ≈ " + gib(combined) + " · " + gib(used) + " of " + gib(total) + " in use (" + gib(free) + " free).";
             } else {
-              vramReadout.textContent = combined + " of ≈ " + gib(j.available_bytes) + " available (estimate).";
+              vramBar.hidden = true;
+              var txt = "Selected models need ≈ " + gib(combined);
+              vramReadout.textContent = (j.available_bytes == null)
+                ? txt + "; available VRAM unknown (ServiceBay reported no GPU)."
+                : txt + " of ≈ " + gib(j.available_bytes) + " available (estimate).";
             }
             vramWarn.hidden = !j.over_budget;
           })
-          .catch(function () { vramReadout.textContent = "Could not load the VRAM estimate."; vramWarn.hidden = true; });
+          .catch(function () { vramReadout.textContent = "Could not load the VRAM estimate."; vramWarn.hidden = true; vramBar.hidden = true; });
       }
 
       // The Admin option (#293) is admin-gated: it appears only once both the

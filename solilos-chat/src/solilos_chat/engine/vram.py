@@ -6,16 +6,21 @@ GPU. This is a heuristic, not an accounting: a model's loaded VRAM footprint
 exceeds its on-disk size (KV cache, context, runner overhead), so we apply a
 flat headroom factor to the disk size when a model isn't already loaded.
 
-Available VRAM is sourced, in order:
-  1. `GPU_TOTAL_VRAM` env (operator override, bytes) minus what `/api/ps`
-     reports as already resident — exact when the operator pins the total.
-  2. `nvidia-smi` queried total/used (when present on the box).
-  3. unknown -> we still report the combined need so the admin sees the size,
+Total/used VRAM is sourced, in order:
+  1. ServiceBay's node resources (`get_system_info` → `resources.gpus[0]`,
+     queried over the admin MCP) — the real total *and* used reported by the
+     node agent's `nvidia-smi`, so it includes KV-cache/runner overhead the
+     chat container can't see (it has no GPU/nvidia-smi of its own).
+  2. `GPU_TOTAL_VRAM` env (operator override, bytes) minus what `/api/ps`
+     reports as already resident.
+  3. `nvidia-smi` queried total/used (only if it somehow runs in-container).
+  4. unknown -> we still report the combined need so the admin sees the size,
      just without a fit verdict.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -54,6 +59,39 @@ def combined_selected_bytes(
         elif tag in disk:
             total += int(disk[tag] * _OVERHEAD)
     return total
+
+
+async def servicebay_gpu(url: str, token_path: str) -> tuple[int, int] | None:
+    """`(total, used)` GPU VRAM in bytes from ServiceBay's node resources.
+
+    The node agent already runs `nvidia-smi` and surfaces it under
+    `resources.gpus[]` (name/memoryTotal/memoryUsed/…). We sum across GPUs.
+    Fail-open: any error (MCP unreachable, no token, no GPU) returns None and
+    the caller falls back to the env/nvidia-smi sources.
+    """
+    if not url:
+        return None
+    try:
+        from solilos_chat.engine.tools.mcp_tools import call_sb_tool
+
+        raw = await call_sb_tool(url, token_path, "get_system_info", {})
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001 — fail-open: no SB GPU => other sources
+        return None
+    res = data.get("resources", data) if isinstance(data, dict) else {}
+    gpus = res.get("gpus") if isinstance(res, dict) else None
+    if not isinstance(gpus, list) or not gpus:
+        return None
+    total = used = 0
+    for g in gpus:
+        if not isinstance(g, dict):
+            continue
+        t, u = g.get("memoryTotal"), g.get("memoryUsed")
+        if isinstance(t, int) and t > 0:
+            total += t
+        if isinstance(u, int) and u >= 0:
+            used += u
+    return (total, used) if total else None
 
 
 def _nvidia_smi_total_used() -> tuple[int, int] | None:

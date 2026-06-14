@@ -39,12 +39,13 @@ def ollama_pd():
 # ── variables.json defaults ───────────────────────────────────────────────
 
 
-def test_max_loaded_models_default_keeps_all_three_resident(variables):
-    # Box-measured 2026-06-10: the cap is GLOBAL — the embed model IS counted.
-    # Box-observed 2026-06-11 at 2: the night crons on 12b plus an embedding
-    # evicted e2b → ~6.75s reload on the morning's first fast turn. 3 keeps
-    # e2b + 12b + nomic resident (≈12 GB at the 32k window).
-    assert variables["OLLAMA_MAX_LOADED_MODELS"]["default"] == "3"
+def test_max_loaded_models_default_is_two_for_e4b(variables):
+    # The household fast model is now gemma4:e4b (box-measured 3.3 GB @ 32k, vs
+    # e2b's 2.0 GB). e4b + 12b + nomic ≈ 16.2 GB resident — past the 16 GB GPU's
+    # safe edge — so the cap drops to 2: e4b + embed stay hot, 12b loads on
+    # demand for the Gründlich mode and crons (#396). The cap is GLOBAL — the
+    # embed model IS counted (box-measured 2026-06-10).
+    assert variables["OLLAMA_MAX_LOADED_MODELS"]["default"] == "2"
 
 
 def test_context_length_default_is_32k(variables):
@@ -77,7 +78,7 @@ def test_gpu_unit_carries_max_loaded_models_and_24h(ollama_pd, monkeypatch):
     monkeypatch.delenv("OLLAMA_KEEP_ALIVE", raising=False)
     monkeypatch.delenv("OLLAMA_CONTEXT_LENGTH", raising=False)
     unit = ollama_pd.render_gpu_container_unit("11434", "/mnt/data/stacks")
-    assert "Environment=OLLAMA_MAX_LOADED_MODELS=3" in unit
+    assert "Environment=OLLAMA_MAX_LOADED_MODELS=2" in unit
     assert "Environment=OLLAMA_KEEP_ALIVE=24h" in unit
     assert "Environment=OLLAMA_CONTEXT_LENGTH=32768" in unit
 

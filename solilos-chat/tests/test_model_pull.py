@@ -109,3 +109,28 @@ def test_available_unknown_without_env_or_smi(monkeypatch):
     monkeypatch.delenv("GPU_TOTAL_VRAM", raising=False)
     monkeypatch.setattr(vram.shutil, "which", lambda _: None)
     assert vram.available_bytes([]) is None
+
+
+async def test_servicebay_gpu_sums_resources(monkeypatch):
+    import solilos_chat.engine.tools.mcp_tools as mcp
+
+    async def fake_call(url, token_path, name, arguments):
+        assert name == "get_system_info"
+        return json.dumps(
+            {"resources": {"gpus": [{"memoryTotal": 16 * GIB, "memoryUsed": 10 * GIB}]}}
+        )
+
+    monkeypatch.setattr(mcp, "call_sb_tool", fake_call)
+    assert await vram.servicebay_gpu("http://sb", "/tok") == (16 * GIB, 10 * GIB)
+
+
+async def test_servicebay_gpu_none_when_no_url_or_no_gpu(monkeypatch):
+    assert await vram.servicebay_gpu("", "/tok") is None
+
+    import solilos_chat.engine.tools.mcp_tools as mcp
+
+    async def no_gpu(url, token_path, name, arguments):
+        return json.dumps({"resources": {"gpus": []}})
+
+    monkeypatch.setattr(mcp, "call_sb_tool", no_gpu)
+    assert await vram.servicebay_gpu("http://sb", "/tok") is None

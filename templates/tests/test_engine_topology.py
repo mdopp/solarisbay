@@ -152,7 +152,7 @@ def test_variables_renamed_to_engine_era(variables):
 
 
 def test_model_map_defaults(variables):
-    assert variables["FAST_MODEL"]["default"] == "gemma4:e2b"
+    assert variables["FAST_MODEL"]["default"] == "gemma4:e4b"
     assert variables["THOROUGH_MODEL"]["default"] == "gemma4:12b"
 
 
