@@ -132,3 +132,11 @@ def test_live_bubble_removed_on_finish_so_one_step_list(_HTML=_HTML):
     # terse live bubble AND a separate step panel on the same turn.
     finish = _HTML.split("finish: function ()", 1)[1].split("},", 1)[0]
     assert "el.removeChild(bubble)" in finish
+
+
+def test_live_bubble_removed_on_stopped_so_no_ghost(_HTML=_HTML):
+    # #414: a stopped turn must also drop the live activity bubble (mirrors the
+    # finish() guard from #406), or a turn cancelled with tool-step rows leaves a
+    # ghost bubble in the DOM alongside the standalone stopped message.
+    stopped = _HTML.split("stopped: function ()", 1)[1].split("fail: function", 1)[0]
+    assert "el.removeChild(bubble)" in stopped

@@ -1665,6 +1665,9 @@
             if (done) return; done = true;
             // Keep whatever streamed before the stop, with a "stopped" note (#192).
             if (activity.parentNode) el.removeChild(activity);
+            // Mirror finish() (#406): drop the live bubble so the persisted step
+            // list stays the single trace surface, with no ghost on a stopped turn.
+            if (bubble && bubble.parentNode) el.removeChild(bubble);
             if (buffer) { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); renderMermaidIn(body); }
             else { body.textContent = "(stopped)"; }
             var note = document.createElement("span");
