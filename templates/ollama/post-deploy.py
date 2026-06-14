@@ -407,7 +407,7 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
     context_length = env("OLLAMA_CONTEXT_LENGTH", "32768")
     keep_alive = env("OLLAMA_KEEP_ALIVE", "24h")
     flash_attention = env("OLLAMA_FLASH_ATTENTION", "1")
-    max_loaded_models = env("OLLAMA_MAX_LOADED_MODELS", "3")
+    max_loaded_models = env("OLLAMA_MAX_LOADED_MODELS", "2")
     return (
         "[Unit]\n"
         "Description=Ollama (Local LLM Server, GPU passthrough #1026 fixup)\n"

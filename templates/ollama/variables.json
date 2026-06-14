@@ -11,8 +11,8 @@
   },
   "OLLAMA_EXTRA_MODELS": {
     "type": "text",
-    "description": "Additional models to pre-pull on first install (comma-separated tags), on top of OLLAMA_DEFAULT_MODEL. The point is to give the operator one-click switchable alternatives in Hermes' Models tab without a fresh download. Default is empty to skip extras (meaning only one model needs to be loaded). Set to `gemma4:e2b`, `VladimirGav/gemma4-26b-16GB-VRAM:latest`, or any other tag to pre-pull a second model. CAVEAT: the aggressive quantization of the 26B-VRAM variant strips vision and audio from its `Capabilities` block. Switching the active model to that tag gives up multimodal — keep `gemma4:12b` or `gemma4:e2b` for OCR / voice-note flows. Set to empty string to skip extras.",
-    "default": ""
+    "description": "Additional models to pre-pull on first install (comma-separated tags), on top of OLLAMA_DEFAULT_MODEL. The point is to give the operator one-click switchable alternatives in the Models tab without a fresh download. Default `gemma4:e4b`: the Solilos household FAST_MODEL (the voice/chat hot path) — pulling it here makes the bundled stack work out of the box, since OLLAMA_DEFAULT_MODEL only ships the thorough gemma4:12b. Add `VladimirGav/gemma4-26b-16GB-VRAM:latest` or any other tag to pre-pull more. CAVEAT: the aggressive quantization of the 26B-VRAM variant strips vision and audio from its `Capabilities` block. Switching the active model to that tag gives up multimodal — keep `gemma4:12b` or `gemma4:e4b` for OCR / voice-note flows. Set to empty string to skip extras.",
+    "default": "gemma4:e4b"
   },
   "OLLAMA_VISION_MODEL": {
     "type": "text",
@@ -36,8 +36,8 @@
   },
   "OLLAMA_MAX_LOADED_MODELS": {
     "type": "text",
-    "description": "Maximum number of models Ollama keeps loaded at once (per Ollama's `OLLAMA_MAX_LOADED_MODELS`; `0` = unlimited; GLOBAL cap counting EVERY model — the embed model is NOT exempt, box-measured 2026-06-10). Default `3`: the household stack runs THREE models — fast chat (gemma4:e2b), thorough chat (gemma4:12b), and embeddings (nomic-embed-text, ~0.3 GB) — and all must stay resident, otherwise the night crons on 12b plus any embedding evict e2b and the first fast turn of the morning pays a ~6.75s model RELOAD + cold prefill (box-observed 2026-06-11: only 12b loaded after a cron night at the old `2`). At OLLAMA_CONTEXT_LENGTH=32768 the trio is ≈12 GB on the 16 GB GPU. Lower to `2` only if you raise the context window past what co-residency allows.",
-    "default": "3"
+    "description": "Maximum number of models Ollama keeps loaded at once (per Ollama's `OLLAMA_MAX_LOADED_MODELS`; `0` = unlimited; GLOBAL cap counting EVERY model — the embed model is NOT exempt, box-measured 2026-06-10). Default `2`: the household fast chat is now gemma4:e4b (box-measured 3.3 GB @ ctx 32768, vs gemma4:e2b's 2.0 GB) — strong enough to drive the multi-step voice flows e2b fabricated (#396). With e4b, the would-be trio e4b + gemma4:12b (8.4 GB) + nomic-embed-text (0.3 GB) ≈ 12 GB of weights climbs to ≈16.2 GB resident with KV/runner overhead at ctx 32768 — past the 16 GB GPU's safe edge (risks an OOM drop to CPU). So cap at `2`: e4b + embed stay hot on the voice path; 12b loads on demand for the Gründlich mode and the night crons, evicting e4b — the first fast turn after a cron night then pays a ~6.75s reload (the accepted trade for staying within VRAM). Raise to `3` only if you also trim OLLAMA_CONTEXT_LENGTH so the trio fits.",
+    "default": "2"
   },
   "OLLAMA_FLASH_ATTENTION": {
     "type": "text",
