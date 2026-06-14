@@ -100,6 +100,17 @@ def build_engine_clients(
     household_tools += web_tools
     if notes_dir:
         household_tools += build_notes_tools(notes_dir, _current_uid)
+    # First-run/owner self-enrolment (#396): with zero enrolments an unknown
+    # speaker resolves to `household`, not `guest`, so the guest-onboarding path
+    # can never bootstrap the first voice profile. Give the household profile the
+    # same enrol tools so a spoken "Setup starten" can file a (still
+    # admin-approved, #355) registration. It only ever files a pending request —
+    # no account, no resident access — so it's the same one durable, gated write
+    # the guest path makes.
+    if gatekeeper_url:
+        household_tools += build_register_tools(
+            db_path, gatekeeper_url, gatekeeper_token
+        )
 
     # A guest may ask questions (web) and control devices/read state (HA), but
     # may NOT write anything durable — no notes/fact_store, no timers, no admin

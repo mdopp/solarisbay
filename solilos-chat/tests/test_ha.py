@@ -238,3 +238,31 @@ async def test_guest_toolset_excludes_run_tool():
     assert "ha_run_scene_script" in household_names
     # read-only history is allowed for guests
     assert "ha_state_history" in guest_names
+
+
+async def test_household_has_self_enrollment_tools():
+    # First-run/owner self-enrolment (#396): an unknown speaker with zero
+    # enrolments resolves to `household`, not `guest`, so the enrol tools must be
+    # in the household toolbox too — not only the guest set — or "Setup starten"
+    # can never bootstrap the first voice profile.
+    from solilos_chat.engine.profiles import build_engine_clients
+
+    household, deep, _, guest, _, _ = build_engine_clients(
+        db_path=":memory:",
+        ollama_url="http://o",
+        fast_model="m",
+        thorough_model="m",
+        soul_path="/nonexistent/SOUL.md",
+        hass_url="http://ha",
+        hass_token="tok",
+        gatekeeper_url="http://gk",
+        gatekeeper_token="t",
+    )
+    household_names = set((await household.list_toolsets())[0]["tools"])
+    deep_names = set((await deep.list_toolsets())[0]["tools"])
+    guest_names = set((await guest.list_toolsets())[0]["tools"])
+    for name in ("start_voice_enrollment", "register_pending_resident"):
+        assert name in household_names
+        assert name in deep_names
+        # the guest path keeps them too (the heard-but-below-threshold flow)
+        assert name in guest_names
