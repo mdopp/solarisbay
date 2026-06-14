@@ -107,9 +107,12 @@ def build_register_tools(
                 " biometrisch; (2) frag nach dem NAMEN, niemals nach einer technischen"
                 " ID; (3) leite die uid selbst aus dem Namen ab (kleinbuchstaben,"
                 " ASCII, z.B. 'Michael' -> 'michael') und übergib sie als uid. Öffnet"
-                " die Aufnahme-Anfrage; danach bitte die Person, ihren Namen 3× zu"
-                " sagen (jede Äußerung = eine Probe) und ruf anschließend"
-                " register_pending_resident. Braucht aktivierte Sprechererkennung."
+                " die Aufnahme-Anfrage; danach bitte die Person, drei ganz normale"
+                " Sätze oder Befehle zu sagen, wie sie sonst auch mit dir spricht"
+                " (z.B. 'Schalte das Licht im Wohnzimmer an') — je natürlicher,"
+                " desto besser die Erkennung; der Inhalt ist egal. Jede Äußerung ="
+                " eine Probe; danach ruf register_pending_resident. Braucht"
+                " aktivierte Sprechererkennung."
             ),
             parameters={
                 "type": "object",
@@ -121,7 +124,7 @@ def build_register_tools(
         Tool(
             name="register_pending_resident",
             description=(
-                "Schließt die Registrierung ab, NACHDEM die Person ihren Namen 3×"
+                "Schließt die Registrierung ab, NACHDEM die Person drei Sätze"
                 " gesagt hat (nach start_voice_enrollment). Übergib dieselbe uid und"
                 " den Anzeigenamen. Prüft das Enrollment-Ergebnis und legt nur bei"
                 " Erfolg eine Freigabe-Anfrage an — es entsteht KEIN Konto und kein"
