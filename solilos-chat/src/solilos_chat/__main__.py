@@ -78,6 +78,8 @@ async def _run() -> None:
         trace_recorder=recorder,
         api_key=settings.api_key,
         bus=bus,
+        sb_mcp_url=settings.sb_mcp_url,
+        sb_mcp_token_path=settings.sb_mcp_token_path,
     )
 
 

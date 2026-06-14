@@ -2118,6 +2118,26 @@ async def test_vram_unknown_available_does_not_flag(
     assert body["over_budget"] is False  # can't judge fit => never flag
 
 
+async def test_vram_uses_servicebay_gpu_total_and_used(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(server_mod, "OllamaChat", _FakeOllama)
+    _FakeOllama.tags_models = [{"name": "gemma4:e2b", "size": 3 * _GIB}]
+    _FakeOllama.ps_models = []
+
+    async def fake_gpu(url, token_path):
+        return (16 * _GIB, 10 * _GIB)
+
+    monkeypatch.setattr(server_mod.vram, "servicebay_gpu", fake_gpu)
+    client = await aiohttp_client(_model_app(tmp_path))
+    resp = await client.get("/api/vram", headers={"Remote-Groups": "admins"})
+    body = await resp.json()
+    assert body["gpu_total_bytes"] == 16 * _GIB
+    assert body["gpu_used_bytes"] == 10 * _GIB
+    # available = real total - real used, straight from ServiceBay.
+    assert body["available_bytes"] == 6 * _GIB
+
+
 async def test_vram_non_admin_forbidden(aiohttp_client, tmp_path):
     client = await aiohttp_client(_model_app(tmp_path))
     resp = await client.get("/api/vram", headers={"Remote-Groups": "family"})

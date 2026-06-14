@@ -247,6 +247,8 @@ def build_app(
     residents: list[str] | None = None,
     api_key: str = "",
     bus: Any = None,
+    sb_mcp_url: str = "",
+    sb_mcp_token_path: str = "",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -960,7 +962,15 @@ def build_app(
             tags, ps = [], []
         selected = selected_models()
         combined = vram.combined_selected_bytes(selected, tags, ps)
-        available = vram.available_bytes(ps)
+        # Real total/used from ServiceBay's node agent (its nvidia-smi sees the
+        # whole GPU, overhead included) — falls back to env/in-container smi.
+        gpu = await vram.servicebay_gpu(sb_mcp_url, sb_mcp_token_path)
+        if gpu is not None:
+            gpu_total, gpu_used = gpu
+            available: int | None = max(gpu_total - gpu_used, 0)
+        else:
+            gpu_total = gpu_used = None
+            available = vram.available_bytes(ps)
         return web.json_response(
             {
                 "ok": True,
@@ -968,6 +978,8 @@ def build_app(
                 "selected": selected,
                 "combined_bytes": combined,
                 "available_bytes": available,
+                "gpu_total_bytes": gpu_total,
+                "gpu_used_bytes": gpu_used,
                 # available unknown => we can't judge fit, so don't flag.
                 "over_budget": available is not None and combined > available,
             }
@@ -1750,6 +1762,8 @@ async def serve(
     trace_recorder: Any = None,
     api_key: str = "",
     bus: Any = None,
+    sb_mcp_url: str = "",
+    sb_mcp_token_path: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -1778,6 +1792,8 @@ async def serve(
         trace_recorder=trace_recorder,
         api_key=api_key,
         bus=bus,
+        sb_mcp_url=sb_mcp_url,
+        sb_mcp_token_path=sb_mcp_token_path,
     )
     runner = web.AppRunner(app)
     await runner.setup()
