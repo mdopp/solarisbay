@@ -67,8 +67,8 @@
       }
     }
     * { box-sizing: border-box; }
-    /* Honor the hidden attribute even when a class sets display (settings-bar,
-       Model tab, panes) — Skills/Soul/Tools live in Settings, not the chat top. */
+    /* Honor the hidden attribute even when a class sets display (e.g. panes,
+       the pinned household row, hidden badges). */
     [hidden] { display: none !important; }
     html, body { height: 100%; margin: 0; overflow: hidden; }
     body {
@@ -115,7 +115,6 @@
       font-weight: 800; font-size: 16px; letter-spacing: -0.5px;
     }
     .logo img { width: 22px; height: 22px; display: block; }
-    .topbar-logo { width: 22px; height: 22px; display: block; }
     .brand-name { font-weight: 700; font-size: 16px; letter-spacing: 0.2px; }
     .brand-ver { font-size: 11px; color: var(--muted); }
 
@@ -209,22 +208,20 @@
       overflow: hidden;
     }
 
-    /* Mobile top bar — hidden on desktop. */
-    .topbar { display: none; }
+    /* The mobile burger + Solaris wordmark live in the chat-header now (#411);
+       they are hidden on desktop where the rail provides the same chrome. */
+    .header-burger { display: none; }
+    .brand-wordmark { display: none; }
 
     /* Embed mode (#227): focused frame for the ServiceBay maintenance
-       iframe — drop the rail + topbar chrome, let .main fill the frame.
-       The in-header gear (hidden otherwise) is the only way into Settings. */
+       iframe — drop the rail chrome, let .main fill the frame. The in-header
+       gear (hidden otherwise) is the only way into Settings; the merged-header
+       burger/wordmark stay rail-only. */
     .embed .rail { display: none; }
-    .embed .topbar { display: none; }
     .embed .main { border-radius: 0; border-width: 0; box-shadow: none; }
+    .embed .header-burger, .embed .brand-wordmark { display: none; }
     .chat-header .embed-settings { display: none; }
     .embed .chat-header .embed-settings { display: inline-flex; }
-    /* Embed Settings shows only the Chat display-prefs tab. */
-    .embed #settings-nav [data-view="skills"],
-    .embed #settings-nav [data-view="soul"],
-    .embed #settings-nav [data-view="tools"],
-    .embed #settings-nav [data-view="model"] { display: none; }
     /* ServiceBay-admin embed (#274): persona is server-locked to Technical, so
        the Persona selector offers no choice. */
     .embed #persona-control { display: none; }
@@ -562,13 +559,6 @@
     }
     .rail-foot .settings-btn:hover { background: var(--bubble-sol); color: var(--ink); }
     .rail-foot .settings-btn.active { background: var(--accent-soft); color: var(--accent); border-color: rgba(249, 115, 22, 0.22); }
-    .settings-bar {
-      display: flex; align-items: center; gap: 12px;
-      padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
-      backdrop-filter: var(--glass); -webkit-backdrop-filter: var(--glass);
-    }
-    .settings-bar .back { color: var(--accent); font-weight: 500; padding: 4px 8px; border-radius: 8px; font-size: 13px; }
-    .settings-bar .back:hover { background: var(--accent-soft); }
     .seg { display: flex; gap: 4px; }
     .seg button { color: var(--muted); font-weight: 500; padding: 5px 12px; border-radius: 9px; font-size: 13px; border: 1px solid transparent; }
     .seg button:hover { background: var(--bubble-sol); color: var(--ink); }
@@ -646,13 +636,10 @@
 
     /* ---------- Mobile ---------- */
     @media (max-width: 760px) {
-      .topbar {
-        display: flex; align-items: center; gap: 10px;
-        padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--rail);
-      }
-      .topbar .brand-name { font-size: 15px; }
-      .topbar .grow { flex: 1 1 auto; }
-      .topbar .icon-btn { width: 34px; height: 32px; font-size: 18px; }
+      /* One merged header (#411): burger · chat caption · Solaris wordmark.
+         The standalone .topbar is gone — these were two stacked bars. */
+      .header-burger { display: inline-flex; }
+      .brand-wordmark { display: inline-flex; align-items: baseline; }
       .rail {
         position: fixed; top: 0; left: 0; bottom: 0; z-index: 30;
         width: 80%; max-width: 310px; flex-basis: auto;
@@ -683,11 +670,13 @@
       .main { border-radius: 0; border-width: 0; box-shadow: none; }
     }
 
-    /* Chat header: name (left) · in-chat search + persona (right). */
+    /* Chat header: name (left) · persona (right). On mobile it also carries the
+       merged burger + Solaris wordmark (#411); search moved to a /search card. */
     .chat-header {
       display: flex; align-items: center; gap: 12px; flex: 0 0 auto;
       padding: 12px 18px; border-bottom: 1px solid var(--line);
     }
+    .chat-header .header-burger { width: 34px; height: 32px; font-size: 18px; flex: 0 0 auto; }
     .chat-title {
       font-weight: 600; font-size: 15px; color: var(--ink);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 38%;
@@ -700,9 +689,14 @@
       color: #6b21a8; background: #f3e8ff; border: 1px solid #d8b4fe;
     }
     .incognito-badge .ic { width: 14px; height: 14px; }
-    .chat-search-wrap { position: relative; display: flex; align-items: center; }
+    /* "Solaris" wordmark — the "i" replaced by the brand glyph, sized to sit
+       inline like a letter (#411). Shown in the merged mobile header. */
+    .brand-wordmark { font-weight: 700; font-size: 15px; letter-spacing: 0.2px; flex: 0 0 auto; }
+    .brand-i { width: 0.72em; height: 0.72em; vertical-align: -0.04em; margin: 0 0.02em; }
+    /* In-chat search input — lives in the /search command card (#411). */
+    .chat-search-wrap { position: relative; display: flex; align-items: center; width: 100%; }
     .chat-search {
-      width: 210px; max-width: 34vw; font: inherit; font-size: 13px;
+      width: 100%; font: inherit; font-size: 13px;
       padding: 7px 12px; border: 1px solid var(--line); border-radius: 10px;
       background: var(--panel); color: var(--ink);
     }
@@ -721,9 +715,39 @@
     @media (max-width: 760px) {
       .chat-header { gap: 8px; padding: 10px 14px; }
       .chat-title { max-width: 30%; }
-      .chat-search { width: 120px; }
       .chat-header .persona label { display: none; }
     }
+
+    /* Settings + search inline cards (#410/#411): a setting pane or the search
+       box rendered as a card in the conversation instead of a side panel. */
+    .settings-card { width: 100%; max-width: 100%; padding: 0; overflow: hidden; }
+    .settings-card-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; border-bottom: 1px solid var(--line);
+    }
+    .settings-card-title { font-weight: 600; font-size: 13px; flex: 1 1 auto; }
+    .settings-card-close { width: 26px; height: 24px; border-radius: 7px; color: var(--muted); }
+    .settings-card-close:hover { background: var(--bubble-sol); color: var(--ink); }
+    .settings-card-close .ic { width: 16px; height: 16px; }
+    /* A setting pane moved into a card sizes to its content (it was a full-height
+       flex view); cap the height so a long editor/skill list stays scrollable. */
+    .settings-card .view { display: block; }
+    .settings-card .view .pane { max-height: 60vh; padding: 16px; }
+    .settings-card .view .pane > * { max-width: 100%; }
+    .search-card { max-width: 420px; }
+    .search-card .chat-search-wrap { padding: 10px 12px; }
+    .settings-index { max-width: 360px; }
+    .settings-index-row {
+      display: flex; align-items: baseline; gap: 10px; width: 100%;
+      padding: 9px 14px; text-align: left; border-bottom: 1px solid var(--line);
+    }
+    .settings-index-row:last-child { border-bottom: none; }
+    .settings-index-row:hover { background: var(--bubble-sol); }
+    .settings-index-row .cmd {
+      font-family: "Geist Mono", ui-monospace, Menlo, Consolas, monospace;
+      font-size: 13px; color: var(--accent); font-weight: 500; flex: 0 0 auto;
+    }
+    .settings-index-row .cmd-desc { font-size: 12px; color: var(--muted); }
     /* Search highlight + the currently-focused jump target. */
     .msg.search-hit { box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.3), var(--shadow-card); }
     .msg.search-current { box-shadow: 0 0 0 2px var(--accent), var(--shadow-lift); }
@@ -812,38 +836,22 @@
   <div id="backdrop"></div>
 
   <div class="main">
-    <div class="topbar">
-      <button class="icon-btn" id="rail-toggle" type="button" aria-label="Menu"><svg class="ic"><use href="#i-menu"></use></svg></button>
-      <img class="topbar-logo" src="/static/sol-figure.svg" alt="" />
-      <span class="brand-name">Solaris</span>
-      <span class="grow"></span>
-      <button class="icon-btn" id="topbar-settings" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"></use></svg></button>
-    </div>
-
-    <div class="settings-bar" id="settings-bar" hidden>
-      <button class="back" id="settings-back" type="button"><svg class="ic"><use href="#i-back"></use></svg> Chat</button>
-      <nav class="seg" id="settings-nav">
-        <button type="button" data-view="skills" class="active">Skills</button>
-        <button type="button" data-view="soul">Soul</button>
-        <button type="button" data-view="tools">Tools</button>
-        <button type="button" data-view="prefs">Chat</button>
-        <button type="button" data-view="model" id="nav-model" hidden>Model</button>
-      </nav>
-    </div>
+    <!-- Mobile-only burger lives in the chat-header now (#411: one merged bar),
+         so the standalone .topbar is retired. -->
 
     <section id="view-chat" class="view active">
       <header class="chat-header">
+        <button class="icon-btn header-burger" id="rail-toggle" type="button" aria-label="Menu"><svg class="ic"><use href="#i-menu"></use></svg></button>
         <span class="chat-title" id="chat-title">Neuer Chat</span>
         <span class="incognito-badge" id="incognito-badge" hidden title="Temporärer Chat: nichts wird gespeichert, wird beim Schließen gelöscht"><svg class="ic"><use href="#i-ghost"></use></svg> Temporär</span>
-        <span class="chat-search-wrap">
-          <input class="chat-search" id="chat-search" type="search" placeholder="In Chat suchen…" aria-label="In Chat suchen" autocomplete="off" />
-          <span class="chat-search-count" id="chat-search-count" hidden></span>
-        </span>
         <span class="chat-head-grow"></span>
         <span class="persona" id="persona-control">
           <label for="personality">Persona</label>
           <select id="personality" aria-label="Persona for new sessions" title="Persona — gilt für den nächsten neuen Chat. Household antwortet immer schnell."></select>
         </span>
+        <!-- "Solaris" wordmark with the "i" as our brand glyph (#411), shown on
+             mobile in the merged header in place of the retired .topbar. -->
+        <span class="brand-wordmark" aria-label="Solaris">Solar<img class="brand-i" src="/static/sol-mark.svg" alt="i" />s</span>
         <button class="icon-btn embed-settings" id="embed-settings" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"></use></svg></button>
       </header>
       <div id="log" aria-live="polite"></div>
@@ -1792,11 +1800,13 @@
         ["/new", "Start a new chat"],
         ["/delete", "Delete the current chat"],
         ["/context", "Show this chat's token usage"],
-        ["/skills", "Open Skills (Settings)"],
-        ["/soul", "Open Soul (Settings)"],
-        ["/tools", "Open Tools — what Sol can do (Settings)"],
-        ["/thinking", "Show, collapse, or hide thinking blocks (Settings)"],
-        ["/model", "Open Model (Settings, admins)"]
+        ["/search", "Search this chat — /search <text>"],
+        ["/skills", "Skills Sol draws on"],
+        ["/soul", "Sol's durable identity"],
+        ["/tools", "What Sol can do — toolsets & MCP servers"],
+        ["/thinking", "Show, collapse, or hide thinking blocks"],
+        ["/voice", "Sol's spoken voice (admins)"],
+        ["/model", "Model, voice & VRAM (admins)"]
       ];
       function helpMarkdown() {
         var lines = ["**Commands** — type these in the message box:", ""];
@@ -1806,6 +1816,7 @@
         return lines.join("\n");
       }
       function handleCommand(raw) {
+        var rest = raw.slice(1).replace(/^\S+\s*/, ""); // text after the command word
         var cmd = raw.slice(1).split(/\s+/)[0].toLowerCase();
         if (cmd === "help" || cmd === "") { addInfo(helpMarkdown()); return; }
         if (cmd === "new") { newSession(); addText("system", "Started a new chat."); return; }
@@ -1813,10 +1824,11 @@
           if (!sessionId) { addText("system", "No chat to delete yet."); return; }
           deleteSession(sessionId); return;
         }
-        if (cmd === "skills" || cmd === "soul" || cmd === "tools") { showView(cmd); return; }
-        if (cmd === "thinking") { showView("prefs"); return; }
-        if (cmd === "model") {
-          if (isAdmin) { showView("model"); } else { addText("system", "The model switch is for admins."); }
+        if (cmd === "search") { openSearchCard(rest.trim()); return; }
+        if (cmd === "skills" || cmd === "soul" || cmd === "tools") { openSettingCard(cmd); return; }
+        if (cmd === "thinking") { openSettingCard("prefs"); return; }
+        if (cmd === "model" || cmd === "voice") {
+          if (isAdmin) { openSettingCard("model"); } else { addText("system", "These settings are for admins."); }
           return;
         }
         if (cmd === "context") { showContext(); return; }
@@ -2385,7 +2397,17 @@
           .catch(function () { addText("system", "Could not delete that chat."); });
       }
 
-      function clearLog() { log.textContent = ""; mentionRefSeq = 0; }
+      function clearLog() {
+        // Setting panes are the single live copies moved into the log as cards;
+        // park them back in .main (hidden) before wiping so reopening a /command
+        // still finds them. Also drop any lingering search highlights.
+        var main = document.querySelector(".main");
+        Object.keys(settingViews).forEach(function (k) {
+          var sec = settingViews[k];
+          if (sec && log.contains(sec)) { sec.classList.remove("active"); main.appendChild(sec); }
+        });
+        log.textContent = ""; mentionRefSeq = 0;
+      }
 
       function openSession(id) {
         if (send.disabled) return;
@@ -2577,41 +2599,74 @@
             }
             isAdmin = !!(j && j.is_admin);
             document.getElementById("whoami-sub").textContent = isAdmin ? "Admin" : "Resident";
-            if (isAdmin) {
-              adminBadge.hidden = false;
-              var navModel = document.getElementById("nav-model");
-              if (navModel) navModel.hidden = false;
-            }
+            if (isAdmin) { adminBadge.hidden = false; }
           })
           .catch(function () {});
       }
 
-      // ---- View switching (chat is primary; skills/soul/tools/model live
-      //      behind Settings) ----
-      var views = {
-        chat: document.getElementById("view-chat"),
+      // ---- Settings as inline command cards (#410) ----
+      // Each former Settings tab is a /command that posts its pane as a card
+      // into the conversation instead of a standalone panel. The pane DOM (with
+      // its wired IDs/listeners) lives once in the document; openSettingCard
+      // MOVES the live section into a card in the log and (re)runs its loader,
+      // so the model picker / VRAM bar / skill editor keep working unchanged.
+      var settingViews = {
         skills: document.getElementById("view-skills"),
         soul: document.getElementById("view-soul"),
         tools: document.getElementById("view-tools"),
         prefs: document.getElementById("view-prefs"),
         model: document.getElementById("view-model")
       };
-      var settingsBar = document.getElementById("settings-bar");
-      var openSettingsBtn = document.getElementById("open-settings");
-      var navBtns = document.querySelectorAll("#settings-nav button");
+      var settingTitles = {
+        skills: "Skills", soul: "Soul", tools: "Tools",
+        prefs: "Chat", model: "Model"
+      };
       var skillsLoaded = false, soulLoaded = false;
 
+      function loadSettingPane(name) {
+        if (name === "skills") { if (!skillsLoaded) { skillsLoaded = true; loadSkills(); } }
+        else if (name === "soul") { if (!soulLoaded) { soulLoaded = true; loadSoul(); } }
+        else if (name === "tools") { loadTools(); loadMcp(); }
+        else if (name === "prefs") { syncThinkingSeg(); }
+        else if (name === "model") { loadModel(); loadVram(); loadVoice(); }
+      }
+
+      // Post a setting pane as a card in the log. There's a single live copy of
+      // each pane, so opening one again moves it down to the newest card.
+      function openSettingCard(name) {
+        var section = settingViews[name];
+        if (!section) return;
+        // If this pane is already open in an earlier card, drop that husk — the
+        // single live pane is about to move into the newest card.
+        var prev = section.closest(".settings-card");
+        if (prev) prev.remove();
+        var card = document.createElement("div");
+        card.className = "msg info settings-card";
+        var head = document.createElement("div");
+        head.className = "settings-card-head";
+        var title = document.createElement("span");
+        title.className = "settings-card-title";
+        title.textContent = settingTitles[name] || name;
+        var close = document.createElement("button");
+        close.type = "button"; close.className = "settings-card-close";
+        close.setAttribute("aria-label", "Schließen");
+        close.innerHTML = '<svg class="ic"><use href="#i-x"></use></svg>';
+        close.addEventListener("click", function () { card.remove(); });
+        head.appendChild(title); head.appendChild(close);
+        card.appendChild(head);
+        section.classList.add("active");
+        card.appendChild(section);
+        log.appendChild(card);
+        loadSettingPane(name);
+        scrollDown(true);
+        closeRail();
+      }
+
+      // The chat is the only persistent view now; openSession/newSession call
+      // this to make sure we're looking at the transcript (it has no panel to
+      // leave). Setting cards are messages in the log, cleared with it.
       function showView(name) {
-        Object.keys(views).forEach(function (k) { views[k].classList.toggle("active", k === name); });
-        var inSettings = name !== "chat";
-        settingsBar.hidden = !inSettings;
-        openSettingsBtn.classList.toggle("active", inSettings);
-        navBtns.forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-view") === name); });
-        if (name === "skills" && !skillsLoaded) { skillsLoaded = true; loadSkills(); }
-        if (name === "soul" && !soulLoaded) { soulLoaded = true; loadSoul(); }
-        if (name === "tools") { loadTools(); loadMcp(); }
-        if (name === "prefs") { syncThinkingSeg(); }
-        if (name === "model") { loadModel(); loadVram(); loadVoice(); }
+        if (name !== "chat") { openSettingCard(name); return; }
         closeRail();
       }
 
@@ -2643,32 +2698,81 @@
         });
       });
       syncThinkingSeg();
-      navBtns.forEach(function (b) {
-        b.addEventListener("click", function () { showView(b.getAttribute("data-view")); });
-      });
-      // In embed mode only the Chat display-prefs tab is shown, so open
-      // straight to it (the other nav buttons are CSS-hidden, #227).
+
+      // The Settings buttons (rail / mobile / embed) no longer open a panel —
+      // they post a small index card whose rows are the setting /commands, so
+      // every setting is reachable both by typing the command and by clicking.
+      var SETTINGS_ENTRIES = [
+        ["model", "/model", "Model, voice & VRAM (admins)"],
+        ["skills", "/skills", "Skills Sol draws on"],
+        ["soul", "/soul", "Sol's durable identity"],
+        ["tools", "/tools", "What Sol can do"],
+        ["prefs", "/thinking", "How replies are shown"]
+      ];
+      function openSettingsIndex() {
+        var card = document.createElement("div");
+        card.className = "msg info settings-card settings-index";
+        var head = document.createElement("div");
+        head.className = "settings-card-head";
+        var title = document.createElement("span");
+        title.className = "settings-card-title"; title.textContent = "Settings";
+        head.appendChild(title); card.appendChild(head);
+        var entries = isEmbed ? SETTINGS_ENTRIES.filter(function (e) { return e[0] === "prefs"; }) : SETTINGS_ENTRIES;
+        entries.forEach(function (e) {
+          var row = document.createElement("button");
+          row.type = "button"; row.className = "settings-index-row";
+          var cmd = document.createElement("span"); cmd.className = "cmd"; cmd.textContent = e[1];
+          var desc = document.createElement("span"); desc.className = "cmd-desc"; desc.textContent = e[2];
+          row.appendChild(cmd); row.appendChild(desc);
+          row.addEventListener("click", function () { openSettingCard(e[0]); });
+          card.appendChild(row);
+        });
+        log.appendChild(card);
+        scrollDown(true);
+        closeRail();
+      }
+      // In embed mode only the Chat display-prefs card is offered (#227).
       var isEmbed = document.body.classList.contains("embed");
-      function openSettings() { showView(isEmbed ? "prefs" : "skills"); }
-      openSettingsBtn.addEventListener("click", openSettings);
-      document.getElementById("topbar-settings").addEventListener("click", openSettings);
+      function openSettings() { if (isEmbed) { openSettingCard("prefs"); } else { openSettingsIndex(); } }
+      document.getElementById("open-settings").addEventListener("click", openSettings);
       document.getElementById("embed-settings").addEventListener("click", openSettings);
-      document.getElementById("settings-back").addEventListener("click", function () { showView("chat"); });
       document.getElementById("brand-home").addEventListener("click", function () { showView("chat"); });
 
-      // ---- In-chat word search (header): highlight matches, Enter jumps to the
-      //      next one, Esc clears. Operates on the rendered .msg nodes in #log. ----
-      (function () {
-        var searchEl = document.getElementById("chat-search");
-        var countEl = document.getElementById("chat-search-count");
-        if (!searchEl) return;
+      // ---- In-chat word search as a /search {text} command card (#411) ----
+      // The header search box moved onto a command: /search posts a card with
+      // its own input that searches-as-you-type over the rendered .msg nodes in
+      // #log (incremental highlight, Enter jumps to the next hit, Esc clears).
+      // Same hit/jump behaviour as the old header box, only re-homed in the log.
+      function clearSearchMarks() {
+        var hits = log.querySelectorAll(".msg.search-hit, .msg.search-current");
+        for (var i = 0; i < hits.length; i++) { hits[i].classList.remove("search-hit", "search-current"); }
+      }
+      function openSearchCard(prefill) {
+        var card = document.createElement("div");
+        card.className = "msg info settings-card search-card";
+        var head = document.createElement("div");
+        head.className = "settings-card-head";
+        var title = document.createElement("span");
+        title.className = "settings-card-title"; title.textContent = "In Chat suchen";
+        var close = document.createElement("button");
+        close.type = "button"; close.className = "settings-card-close";
+        close.setAttribute("aria-label", "Schließen");
+        close.innerHTML = '<svg class="ic"><use href="#i-x"></use></svg>';
+        head.appendChild(title); head.appendChild(close);
+        card.appendChild(head);
+        var wrap = document.createElement("span");
+        wrap.className = "chat-search-wrap";
+        var searchEl = document.createElement("input");
+        searchEl.className = "chat-search"; searchEl.type = "search";
+        searchEl.placeholder = "In Chat suchen…"; searchEl.setAttribute("aria-label", "In Chat suchen");
+        searchEl.autocomplete = "off";
+        var countEl = document.createElement("span");
+        countEl.className = "chat-search-count"; countEl.hidden = true;
+        wrap.appendChild(searchEl); wrap.appendChild(countEl);
+        card.appendChild(wrap);
+
         var matches = [], idx = -1;
-        function clearMarks() {
-          var hits = log.querySelectorAll(".msg.search-hit, .msg.search-current");
-          for (var i = 0; i < hits.length; i++) { hits[i].classList.remove("search-hit", "search-current"); }
-        }
         function showCount() {
-          if (!countEl) return;
           if (!matches.length) { countEl.hidden = true; countEl.textContent = ""; return; }
           countEl.hidden = false;
           countEl.textContent = (idx >= 0 ? (idx + 1) + "/" : "") + matches.length;
@@ -2684,10 +2788,11 @@
         }
         function run(jump) {
           var q = (searchEl.value || "").trim().toLowerCase();
-          clearMarks(); matches = []; idx = -1;
+          clearSearchMarks(); matches = []; idx = -1;
           if (!q) { showCount(); return; }
           var msgs = log.querySelectorAll(".msg");
           for (var i = 0; i < msgs.length; i++) {
+            if (msgs[i] === card) continue; // never match the search card itself
             if ((msgs[i].textContent || "").toLowerCase().indexOf(q) !== -1) {
               msgs[i].classList.add("search-hit"); matches.push(msgs[i]);
             }
@@ -2701,10 +2806,16 @@
             if (!matches.length) { run(true); }
             else { idx = (idx + 1) % matches.length; focusMatch(); }
           } else if (e.key === "Escape") {
-            searchEl.value = ""; clearMarks(); matches = []; idx = -1; showCount(); searchEl.blur();
+            searchEl.value = ""; clearSearchMarks(); matches = []; idx = -1; showCount(); searchEl.blur();
           }
         });
-      })();
+        close.addEventListener("click", function () { clearSearchMarks(); card.remove(); });
+
+        log.appendChild(card);
+        scrollDown(true);
+        if (prefill) { searchEl.value = prefill; run(true); }
+        searchEl.focus();
+      }
 
       // ---- Tools: built-in toolsets + MCP servers, with search ----
       var toolsCards = document.getElementById("tools-cards");

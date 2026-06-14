@@ -105,12 +105,13 @@ def test_household_pin_binding_intact():
     assert "householdBtn.hidden = !topicsBySlug[HOUSEHOLD_TOPIC];" in _HTML
 
 
-def test_chat_search_is_left_aligned():
-    # The flex grow spacer now sits AFTER the search wrap, so the in-chat search
-    # sits left (next to the title) instead of being pushed right (#280).
-    search = _HTML.index('class="chat-search-wrap"')
-    grow = _HTML.index('class="chat-head-grow"')
-    assert search < grow
+def test_chat_search_moved_out_of_the_header():
+    # The in-chat search box is no longer in the chat-header (#411): it moved
+    # onto the /search command card, so the header carries no search input.
+    header = re.search(r"<header class=\"chat-header\">(.*?)</header>", _HTML, re.S)
+    assert header, "chat-header not found"
+    assert 'class="chat-search-wrap"' not in header.group(1)
+    assert 'id="chat-search"' not in _HTML  # the fixed header input is gone
 
 
 def test_household_chat_title_reads_zuhause():
