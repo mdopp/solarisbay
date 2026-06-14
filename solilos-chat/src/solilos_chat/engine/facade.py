@@ -20,12 +20,16 @@ hardware.
 from __future__ import annotations
 
 import json
+import time
+import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
 from aiohttp import web
 
+from solilos_chat import trace_store
+from solilos_chat.engine import store
 from solilos_chat.engine.client import EngineClient, EngineError
 from solilos_chat.logging import log
 from solilos_chat.voice_uid_stash import consume_uid
@@ -130,16 +134,28 @@ def add_facade_routes(
         # path on HA's replayed history, so nothing about the guest persists.
         text = transcript
 
+        # A durable voice turn persists its trace into the same household
+        # session (#405) so the "Zuhause" chat carries the same per-turn trace
+        # rows the browser path writes — not just message history. Ephemeral
+        # guest turns persist nothing.
+        t0 = time.time()
+
         def turns() -> AsyncIterator[dict[str, Any]]:
             if client.ephemeral:
                 return client.respond(messages, uid=uid, source=model)
             return client.respond_session(text, uid=uid)
+
+        def persist_trace() -> None:
+            if client.ephemeral:
+                return
+            _persist_voice_trace(solilos_db_path, client, uid, t0)
 
         if not stream:
             try:
                 answer = await _drain(turns())
             except EngineError:
                 return web.json_response({"error": "engine unavailable"}, status=502)
+            persist_trace()
             return web.Response(
                 body=_chunk(model, answer, done=True),
                 content_type="application/json",
@@ -165,12 +181,46 @@ def add_facade_routes(
             log.error("engine.facade.failed", model=model, error=str(e))
             await resp.write(_chunk(model, "", done=True, done_reason="error"))
             return resp
+        persist_trace()
         await resp.write(_chunk(model, "", done=True))
         return resp
 
     app.router.add_get("/ollama/api/tags", tags)
     app.router.add_get("/ollama/api/version", version)
     app.router.add_post("/ollama/api/chat", chat)
+
+
+def _persist_voice_trace(
+    db_path: str, client: EngineClient, uid: str, t0: float
+) -> None:
+    """Persist a durable voice turn's trace into its household session (#405).
+
+    Mirrors the browser path's `persist_turn_trace`: the recorder's steps for
+    this session since `t0` become `session_traces` rows, so the "Zuhause" chat
+    reopens with the same per-turn trace the typed path shows. Best-effort — a
+    trace-write hiccup never breaks a voice turn that already replied."""
+    session_id = store.household_session_id(uid)
+    try:
+        steps = [
+            {
+                "model": rec.get("model"),
+                "profile": rec.get("profile"),
+                "wall_s": rec.get("wall_s"),
+                "prompt_tokens": rec.get("prompt_tokens"),
+                "completion_tokens": rec.get("completion_tokens"),
+                "context_free": rec.get("context_free"),
+                "finish_reason": rec.get("finish_reason"),
+                "n_tools": rec.get("n_tools"),
+                "detail_id": rec.get("id"),
+                "step_kind": rec.get("step_kind"),
+                "tool_name": rec.get("tool_name"),
+            }
+            for rec in client.recorder.for_session(session_id, t0)
+        ]
+        if steps:
+            trace_store.persist_trace(db_path, session_id, uuid.uuid4().hex, uid, steps)
+    except Exception as e:  # noqa: BLE001 — trace persistence is best-effort
+        log.warn("engine.facade.trace_persist_error", uid=uid, error=str(e))
 
 
 def _last_user(messages: list[Any]) -> str:

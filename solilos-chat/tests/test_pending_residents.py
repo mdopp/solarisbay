@@ -155,8 +155,24 @@ async def test_start_opens_request_and_returns_sample_count(tmp_path):
     out = json.loads(
         await _tools(db)["start_voice_enrollment"].handler({"uid": "lena"})
     )
-    assert out == {"ok": True, "uid": "lena", "samples_needed": 3}
+    assert out["ok"] is True
+    assert out["uid"] == "lena"
+    assert out["collecting"] is True
+    assert out["samples_needed"] == 3
     assert enroll_requests_store.read_request(db, "lena")["status"] == "pending"
+
+
+async def test_start_returns_ready_made_three_sentence_prompt_not_the_name(tmp_path):
+    # #404: on the small household model, prompt-only steering fails, so the tool
+    # hands the model the exact line to echo — three natural sentences, never the
+    # "say your name N times" the weak model otherwise defaults to.
+    db = _db(tmp_path)
+    out = json.loads(
+        await _tools(db)["start_voice_enrollment"].handler({"uid": "lena"})
+    )
+    say = out["say"]
+    assert "drei" in say.lower() and ("Sätze" in say or "Satz" in say)
+    assert "Name" not in say.replace("NICHT einfach deinen Namen", "")
 
 
 async def test_start_rejects_invalid_uid(tmp_path):

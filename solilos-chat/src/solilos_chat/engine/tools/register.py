@@ -35,6 +35,19 @@ from solilos_chat.engine.tools import Tool
 _UID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _TARGET_SAMPLES = 3
 
+# Prompt-only SOUL steering is too high-variance on the small household model
+# (gemma4:e4b ignores "drei Sätze" and falls back to its "sage deinen Namen"
+# prior — #404). So the tool hands the model the exact line to echo: it speaks
+# this verbatim instead of inventing the next prompt from a weak instruction.
+_COLLECT_PROMPT = (
+    "Alles klar! Sag mir jetzt bitte drei ganz normale Sätze oder Befehle,"
+    " wie du sonst auch mit mir sprichst — zum Beispiel „Schalte das Licht"
+    " im Wohnzimmer an“, „Stell einen Timer auf zehn Minuten“ oder"
+    " „Wie wird das Wetter morgen?“. Sag NICHT einfach deinen Namen —"
+    " der Inhalt ist egal, es zählt nur der Klang deiner Stimme. Leg einfach"
+    " mit dem ersten Satz los."
+)
+
 
 def build_register_tools(
     db_path: str, gatekeeper_url: str = "", gatekeeper_token: str = ""
@@ -48,7 +61,13 @@ def build_register_tools(
         except Exception:  # noqa: BLE001 — table/DB missing surfaces as not-ok
             return json.dumps({"ok": False, "reason": "enroll_store_unavailable"})
         return json.dumps(
-            {"ok": True, "uid": uid, "samples_needed": _TARGET_SAMPLES},
+            {
+                "ok": True,
+                "uid": uid,
+                "collecting": True,
+                "samples_needed": _TARGET_SAMPLES,
+                "say": _COLLECT_PROMPT,
+            },
             ensure_ascii=False,
         )
 
@@ -107,12 +126,12 @@ def build_register_tools(
                 " biometrisch; (2) frag nach dem NAMEN, niemals nach einer technischen"
                 " ID; (3) leite die uid selbst aus dem Namen ab (kleinbuchstaben,"
                 " ASCII, z.B. 'Michael' -> 'michael') und übergib sie als uid. Öffnet"
-                " die Aufnahme-Anfrage; danach bitte die Person, drei ganz normale"
-                " Sätze oder Befehle zu sagen, wie sie sonst auch mit dir spricht"
-                " (z.B. 'Schalte das Licht im Wohnzimmer an') — je natürlicher,"
-                " desto besser die Erkennung; der Inhalt ist egal. Jede Äußerung ="
-                " eine Probe; danach ruf register_pending_resident. Braucht"
-                " aktivierte Sprechererkennung."
+                " die Aufnahme-Anfrage und gibt im Feld 'say' den exakten Satz"
+                " zurück, den du der Person daraufhin WÖRTLICH sagst — bitte sie"
+                " NICHT, ihren Namen zu wiederholen, sondern gib genau diese"
+                " 'say'-Zeile aus. Jede folgende Äußerung der Person ist eine"
+                " Probe; erst nach drei Äußerungen ruf register_pending_resident."
+                " Braucht aktivierte Sprechererkennung."
             ),
             parameters={
                 "type": "object",
@@ -124,8 +143,9 @@ def build_register_tools(
         Tool(
             name="register_pending_resident",
             description=(
-                "Schließt die Registrierung ab, NACHDEM die Person drei Sätze"
-                " gesagt hat (nach start_voice_enrollment). Übergib dieselbe uid und"
+                "Schließt die Registrierung ab, NACHDEM start_voice_enrollment mit"
+                " collecting=true geantwortet hat UND die Person drei Sätze gesagt"
+                " hat. Ruf es NIE vorher. Übergib dieselbe uid und"
                 " den Anzeigenamen. Prüft das Enrollment-Ergebnis und legt nur bei"
                 " Erfolg eine Freigabe-Anfrage an — es entsteht KEIN Konto und kein"
                 " Bewohner-Zugang, bis ein Admin freigibt (auch beim ersten Bewohner)."

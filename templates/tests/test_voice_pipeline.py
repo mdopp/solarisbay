@@ -367,6 +367,7 @@ def test_wire_registers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
     wired = []
     monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
     monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
+    monkeypatch.setattr(pd, "_wait_for_port", lambda host, port, timeout_secs=60: True)
     monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
     monkeypatch.setattr(pd, "ensure_conversation_agent", lambda *a: "conversation.sol")
     seen = {}
@@ -386,6 +387,68 @@ def test_wire_registers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
     pd.wire_voice_pipeline("tok", "8787", "key")
     assert "gatekeeper" in wired
     assert seen["prefer"] is True
+
+
+def test_wire_waits_for_gatekeeper_port_before_registering(pd, monkeypatch):
+    # #395: the gatekeeper Wyoming STT listener boots after wiring starts, so
+    # its entity must not be registered until :10700 answers.
+    wired = []
+    waited = []
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
+
+    def fake_wait(host, port, timeout_secs=60):
+        waited.append(port)
+        return True
+
+    monkeypatch.setattr(pd, "_wait_for_port", fake_wait)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
+    monkeypatch.setattr(pd, "ensure_conversation_agent", lambda *a: "conversation.sol")
+    seen = {}
+    monkeypatch.setattr(
+        pd,
+        "ensure_assist_pipeline",
+        lambda token, entity, prefer_gatekeeper_stt=False: seen.update(
+            prefer=prefer_gatekeeper_stt
+        ),
+    )
+    monkeypatch.setattr(
+        pd,
+        "gatekeeper_container_env",
+        lambda name: "true" if name == "SOLILOS_SPEAKER_ID_ENABLED" else "10700",
+    )
+    pd.wire_voice_pipeline("tok", "8787", "key")
+    assert waited == [10700]
+    assert "gatekeeper" in wired
+    assert seen["prefer"] is True
+
+
+def test_wire_skips_gatekeeper_stt_when_port_never_up(pd, monkeypatch):
+    # #395: if :10700 never answers within the deadline, the gatekeeper STT is
+    # not registered and the pipeline stays on whisper (prefer_gatekeeper_stt
+    # False) rather than pointing at a non-existent STT entity.
+    wired = []
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
+    monkeypatch.setattr(pd, "_wait_for_port", lambda host, port, timeout_secs=60: False)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
+    monkeypatch.setattr(pd, "ensure_conversation_agent", lambda *a: "conversation.sol")
+    seen = {}
+    monkeypatch.setattr(
+        pd,
+        "ensure_assist_pipeline",
+        lambda token, entity, prefer_gatekeeper_stt=False: seen.update(
+            prefer=prefer_gatekeeper_stt
+        ),
+    )
+    monkeypatch.setattr(
+        pd,
+        "gatekeeper_container_env",
+        lambda name: "true" if name == "SOLILOS_SPEAKER_ID_ENABLED" else "10700",
+    )
+    pd.wire_voice_pipeline("tok", "8787", "key")
+    assert "gatekeeper" not in wired
+    assert seen["prefer"] is False
 
 
 def test_wire_no_gatekeeper_stt_when_speaker_id_off(pd, monkeypatch):
