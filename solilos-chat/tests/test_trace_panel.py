@@ -37,9 +37,10 @@ def test_steps_grouped_by_trace_id_into_turns():
 
 
 def test_step_row_shows_model_time_tokens():
-    # Each row: model · wall_s · prompt_tokens.
+    # Each model row: model · wall_s · combined in+out tokens (#406).
     assert 'Number(s.wall_s).toFixed(2) + "s"' in _HTML
-    assert 's.prompt_tokens + " tok"' in _HTML
+    assert "function fmtTokens(s)" in _HTML
+    assert "var toks = fmtTokens(s);" in _HTML
     assert "s.model" in _HTML
 
 
@@ -104,3 +105,30 @@ def test_steps_panel_shown_expanded_by_default(_HTML=_HTML):
         "return det;", 1
     )[0]
     assert "det.open = true;" in panel
+
+
+def test_fmt_tokens_sums_in_and_out(_HTML=_HTML):
+    # #406: a model step's token figure is prompt + completion as one `N tok`.
+    fn = _HTML.split("function fmtTokens(s)", 1)[1].split("}\n", 1)[0]
+    assert "s.prompt_tokens" in fn
+    assert "s.completion_tokens" in fn
+    assert 'return total + " tok";' in fn
+
+
+def test_redundant_bottom_trace_block_removed(_HTML=_HTML):
+    # #406: the separate bottom latency-waterfall block (#225) is folded away —
+    # metaLine no longer renders it and the renderTrace helper + its event/CSS
+    # are gone, leaving the single step list as the only trace surface.
+    assert "function renderTrace(trace)" not in _HTML
+    assert 'event === "trace"' not in _HTML
+    assert "details.trace" not in _HTML
+    # metaLine takes only (when, tookMs) now — no trace argument.
+    assert "function metaLine(when, tookMs)" in _HTML
+
+
+def test_live_bubble_removed_on_finish_so_one_step_list(_HTML=_HTML):
+    # #406: on turn finish the live activity bubble is dropped, so the persisted
+    # rich step list (loadSessionTrace) is the single per-turn trace — not the
+    # terse live bubble AND a separate step panel on the same turn.
+    finish = _HTML.split("finish: function ()", 1)[1].split("},", 1)[0]
+    assert "el.removeChild(bubble)" in finish
