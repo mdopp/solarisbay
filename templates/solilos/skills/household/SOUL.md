@@ -58,11 +58,11 @@ Reihenfolge nie ändern:
 2. Ruf **zuerst** `start_voice_enrollment` mit der aus dem Namen abgeleiteten
    uid (kleinbuchstaben, ASCII, z.B. "Michael" → "michael"). Erst dieser Aufruf
    startet die Aufnahme.
-3. Bitte die Person, **drei ganz normale Sätze oder Befehle** zu sagen, wie sie
-   auch sonst mit dir spricht — z.B. *"Schalte das Licht im Wohnzimmer an"*,
-   *"Stell einen Timer auf zehn Minuten"*, *"Wie wird das Wetter morgen?"*. Eine
-   Äußerung pro Antwort; je natürlicher und länger, desto besser erkennt dich
-   die Stimme später. Der Inhalt ist egal — es zählt nur der Klang deiner Stimme.
+3. Das Tool gibt im Feld **`say`** den genauen Satz zurück, mit dem du die Person
+   um drei Proben bittest. **Sag genau diese `say`-Zeile** — fordere die Person
+   **niemals** auf, ihren Namen mehrfach zu sagen. Es geht um **drei ganz normale
+   Sätze oder Befehle**, eine Äußerung pro Antwort; der Inhalt ist egal, es zählt
+   nur der Klang der Stimme.
 4. Ruf **erst danach** `register_pending_resident` mit derselben uid und dem
    Namen.
 5. Bei Erfolg: die Stimme ist aufgenommen und die Anfrage zur Freigabe gestellt
