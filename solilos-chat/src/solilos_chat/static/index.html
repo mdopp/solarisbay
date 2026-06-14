@@ -234,6 +234,10 @@
       padding: 24px 16px; display: flex; flex-direction: column; gap: 12px;
       max-width: 900px; width: 100%; margin: 0 auto;
     }
+    /* Bottom-anchor the transcript (#412): a short chat hugs the composer and new
+       messages push older ones up. margin-top:auto on the first child (not
+       justify-content:flex-end) keeps overflowing top content scroll-reachable. */
+    #log > :first-child { margin-top: auto; }
     .msg { max-width: 84%; padding: 10px 13px; border-radius: var(--radius); word-wrap: break-word; overflow-wrap: anywhere; }
     .msg.me { align-self: flex-end; background: var(--bubble-me); white-space: pre-wrap; border-top-right-radius: 4px; }
     .msg.sol { align-self: flex-start; background: var(--bubble-sol); }
@@ -1239,6 +1243,19 @@
 
       function atBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 40; }
       function scrollDown(stick) { if (stick) log.scrollTop = log.scrollHeight; }
+
+      // Mobile keyboard (#412): an opening keyboard shrinks visualViewport but
+      // leaves body at full layout height, pushing the composer + latest
+      // messages below the keyboard. Pin body to the visual viewport so the
+      // shell fits above it, and keep the transcript stuck to the bottom.
+      if (window.visualViewport) {
+        var fitViewport = function () {
+          var stick = atBottom();
+          document.body.style.height = window.visualViewport.height + "px";
+          scrollDown(stick);
+        };
+        window.visualViewport.addEventListener("resize", fitViewport);
+      }
 
       // HH:MM, prefixed with a short date when the message isn't from today —
       // enough to tell "15 min ago" from "last week", seconds omitted (#186).
