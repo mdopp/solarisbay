@@ -1,6 +1,6 @@
 """Tests for the servicebay_admin token file (Phase 3): minted via the SB
 API (scopes read+lifecycle+mutate, never destroy/exec) and dropped at
-<DATA_DIR>/solbay/sb-admin-token for the engine's admin MCP toolbox."""
+<DATA_DIR>/solarisbay/sb-admin-token for the engine's admin MCP toolbox."""
 
 from __future__ import annotations
 
@@ -26,17 +26,17 @@ def _load(name: str, path: pathlib.Path):
 
 @pytest.fixture(scope="module")
 def pd():
-    return _load("solilos_pd_admin", TEMPLATES / "solilos" / "post-deploy.py")
+    return _load("solaris_pd_admin", TEMPLATES / "solaris" / "post-deploy.py")
 
 
 @pytest.fixture
 def data_dir(tmp_path):
-    (tmp_path / "solbay").mkdir()
+    (tmp_path / "solarisbay").mkdir()
     return tmp_path
 
 
 def _token_path(data_dir):
-    return data_dir / "solbay" / "sb-admin-token"
+    return data_dir / "solarisbay" / "sb-admin-token"
 
 
 def test_admin_scopes_no_destroy_no_exec(pd):

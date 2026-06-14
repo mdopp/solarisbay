@@ -1,0 +1,347 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: solaris
+  labels:
+    app: solaris
+  annotations:
+    servicebay.label: "AI Assistant (Solaris)"
+    servicebay.schema-version: "1"
+    # Host ports on one tile: the chat server (the Solaris Engine + chat surface +
+    # the Ollama-compatible facade HA's conversation agent calls) and the
+    # gatekeeper's Wyoming listener. ServiceBay can't substitute {{VAR}} inside
+    # an annotation block scalar (#136) but DOES substitute in this inline
+    # annotation, so the ports stay variable-driven.
+    servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp"
+    # External dependencies only (#271): ollama (the engine's LLM backend),
+    # home-assistant (device control + the Assist pipeline that fronts the
+    # Voice PE speaker), voice (Whisper/Piper that HA's pipeline and the
+    # gatekeeper reach over loopback), nginx (NPM proxies the chat), auth
+    # (Authelia forward-auth gates it).
+    servicebay.dependencies: "ollama,home-assistant,voice,nginx,auth"
+    # One health probe for the service: the chat server serves /health (200,
+    # no auth) once up. ServiceBay can't substitute {{VAR}} inside an
+    # annotation block scalar (#136), so the port is the literal default; an
+    # operator changing CHAT_PORT must update this literal by hand too.
+    servicebay.healthcheck: |
+      url: http://127.0.0.1:8787/health
+      interval: 30s
+      timeout: 5s
+      startup_timeout: 5m
+spec:
+  # hostNetwork so the Pod's containers reach the external services over the
+  # host loopback (every cooperating ServiceBay pod shares the host netns):
+  #   - chat ↔ ollama at 127.0.0.1:11434, HA at 127.0.0.1:8123
+  #   - HA's Assist pipeline ↔ the chat facade at 127.0.0.1:{{CHAT_PORT}}/ollama
+  #   - gatekeeper ↔ voice (Whisper/Piper) at 127.0.0.1:10300 / 10200
+  #   - NPM (also hostNetwork) proxies the chat from the host loopback
+  #   - HA Voice PE satellites on the LAN reach HA; wyoming-satellite hardware
+  #     reaches the gatekeeper at <host-ip>:<GATEKEEPER_PORT>
+  hostNetwork: true
+  restartPolicy: Always
+  initContainers:
+  # The notes vault is the file-share Syncthing share (host uid 1000),
+  # bind-mounted at /opt/data/notes. The engine's notes tools (note_write,
+  # fact_store) must be able to create/append notes regardless of which
+  # subuid the share's files carry, so open the perms to a+rwX once per pod
+  # start. Runs as userns-root (maps to the share owner) — same pattern the
+  # Hermes-era init used.
+  - name: notes-perms
+    image: "{{CHAT_IMAGE}}"
+    command: ["chmod", "-R", "a+rwX", "/opt/data/notes"]
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+    volumeMounts:
+    - mountPath: /opt/data/notes
+      name: syncthing-notes
+  # schema-init runs as a Kubernetes-style init container — podman supports
+  # `initContainers:` on pod specs and treats it as run-to-completion before
+  # regular containers start. With the unit `restartPolicy: Always` it would
+  # thrash if declared under `containers:` (Alembic exits 0 → podman restarts
+  # it → runs again → … forever); as an init container it runs exactly once
+  # per pod start and stays Completed after the migrations land.
+  - name: schema-init
+    image: ghcr.io/mdopp/solaris-schema-init:latest
+    env:
+    - name: SOLARIS_DB_URL
+      value: "sqlite:////var/lib/solaris/solaris.db"
+    - name: SOLARIS_DEBUG_MODE_DEFAULT
+      value: "{{SOLARIS_DEBUG_MODE}}"
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /var/lib/solaris
+      name: solaris-data
+
+  containers:
+  # chat — the Solaris Engine: one process owns the agent loop (direct Ollama
+  # /api/chat with per-turn model + reasoning), the session store
+  # (solaris.db), native LLM tracing, the timer scheduler with speaker
+  # delivery via HA assist_satellite.announce, the night crons, the chat
+  # surface, and the Ollama-compatible facade (/ollama) that HA's `ollama`
+  # integration uses so Solaris is the Assist conversation agent. Behind Authelia
+  # forward-auth; the server reads the Remote-User header → resident uid so
+  # there's no second login (#134). The container is named `chat` so the
+  # podman pod-container name is `solaris-chat`.
+  - name: chat
+    image: "{{CHAT_IMAGE}}"
+    env:
+    - name: SOLARIS_COMPONENT
+      value: "chat"
+    # Bind loopback only — a 0.0.0.0 bind under hostNetwork would put the
+    # chat surface on the LAN, bypassing Authelia. NPM, HA and the gatekeeper
+    # reach it over the host loopback.
+    - name: CHAT_HOST
+      value: "127.0.0.1"
+    - name: CHAT_PORT
+      value: "{{CHAT_PORT}}"
+    # Server-side bearer: HA's conversation agent and the gatekeeper present
+    # it on the Ollama facade. Never in browser JS.
+    - name: SOLARIS_API_KEY
+      value: "{{SOLARIS_API_KEY}}"
+    # Authelia forwards the authenticated identity on Remote-User via NPM;
+    # the server folds it into the resident uid (#134). Absent header (direct
+    # loopback offline test) falls back to DEFAULT_UID.
+    - name: REMOTE_USER_HEADER
+      value: "Remote-User"
+    # Authelia also forwards the user's groups (comma-separated). The panel
+    # surfaces admin-only controls (skill/soul/model edits) when this header
+    # lists ADMIN_GROUP.
+    - name: REMOTE_GROUPS_HEADER
+      value: "Remote-Groups"
+    - name: ADMIN_GROUP
+      value: "admins"
+    - name: DEFAULT_UID
+      value: "{{DEFAULT_UID}}"
+    # Read-write mount of the household skill pack: the panel edits it, the
+    # engine reads cron-job skill bodies from it.
+    - name: SKILLS_DIR
+      value: "/data/skills"
+    # The household soul on the chat-owned solaris-data volume (post-deploy
+    # seeds it; the panel writes it directly). Read fresh per turn,
+    # mtime-cached — an edit lands on the next turn, no restart.
+    - name: SOUL_PATH
+      value: "/var/lib/solaris/SOUL.md"
+    # The operator persona: soul + skill pack folded into the admin profile's
+    # prompt (read-only mount below).
+    - name: ADMIN_SOUL_PATH
+      value: "/data/admin-soul/SOUL.md"
+    - name: ADMIN_SKILLS_DIR
+      value: "/data/admin-soul"
+    # The servicebay_admin MCP endpoint + the token file the post-deploy
+    # mints (scopes read+lifecycle+mutate — no destroy/exec). Only the admin
+    # profile's toolbox uses it; household turns never see these tools.
+    - name: SB_MCP_URL
+      value: "{{SERVICEBAY_MCP_URL}}"
+    - name: SB_MCP_TOKEN_PATH
+      value: "/var/lib/solaris/sb-admin-token"
+    # Context window (tokens) = the chat-compaction cap (#210) + /context.
+    # Empty/auto => AUTO-DERIVE from the live Ollama active model at runtime
+    # (#235). A positive integer OVERRIDES the derivation (ops control).
+    - name: CONTEXT_WINDOW
+      value: "{{CONTEXT_WINDOW}}"
+    # Where Ollama's API lives (host loopback; hostNetwork pod) — the
+    # engine's LLM backend.
+    - name: OLLAMA_URL
+      value: "{{OLLAMA_URL}}"
+    # Optional Authelia logout URL for the sidebar footer; empty hides the
+    # link (no dead link when unset).
+    - name: LOGOUT_URL
+      value: "{{LOGOUT_URL}}"
+    # Where the server persists image attachments (#202).
+    - name: ATTACHMENTS_DIR
+      value: "/data/attachments"
+    # CSP `frame-ancestors` source list (#228): who may iframe the chat.
+    # Default `'self'`; the ServiceBay maintenance embed sets
+    # `'self' https://admin.dopp.cloud` so admin.dopp.cloud can frame it.
+    - name: FRAME_ANCESTORS
+      value: "{{FRAME_ANCESTORS}}"
+    # The engine model map (box-benched 2026-06-12): the household/voice hot
+    # path runs FAST_MODEL by default; "Gründlich" chats, the admin persona and
+    # the night crons run THOROUGH_MODEL. An admin may re-point the household
+    # chat at another tag from the panel's Model picker (#366) — that selection
+    # persists beside solaris.db, so FAST_MODEL stays the default, not a lock.
+    - name: FAST_MODEL
+      value: "{{FAST_MODEL}}"
+    - name: THOROUGH_MODEL
+      value: "{{THOROUGH_MODEL}}"
+    # The Kokoro voices the panel's voice picker offers (#368), comma-separated;
+    # the first is the default. The solaris-tts image bakes "martin", so that
+    # stays the single default. The admin's selection persists beside solaris.db
+    # and the post-deploy converges it into the Assist pipeline's tts_voice.
+    - name: TTS_VOICES
+      value: "{{TTS_VOICES}}"
+    - name: TZ
+      value: "{{TZ}}"
+    # solaris.db holds the engine sessions/messages/timers/cron stamps plus
+    # topics, mentions and traces. Same file the schema-init initContainer
+    # migrates and the gatekeeper reads for voice speaker-ID.
+    - name: SOLARIS_DB_PATH
+      value: "/var/lib/solaris/solaris.db"
+    # The Obsidian notes vault (Syncthing-synced) — the engine's notes tools
+    # write here, the topic dashboard reads (#244).
+    - name: NOTES_DIR
+      value: "/opt/data/notes"
+    # The engine's direct Home Assistant access: device-control tools, the
+    # prompt-injected entity registry, and timer announcements on the PE
+    # speaker (assist_satellite.announce).
+    - name: HASS_URL
+      value: "{{HASS_URL}}"
+    - name: HASS_TOKEN
+      value: "{{HASS_TOKEN}}"
+    # An alarm (kind=alarm) rings a sound instead of speaking. ALARM_SOUND_MEDIA_ID
+    # is the media_id passed to assist_satellite.announce — HA resolves the
+    # media-source URI and the Voice PE plays it; the default
+    # `solaris-alarm.ogg` is the royalty-free tone the skill pack ships, which
+    # the post-deploy copies into HA's media folder. ALARM_SOUND_PATH is the
+    # chat-visible copy of that file (via the skills mount): the scheduler
+    # checks it exists before ringing and otherwise falls back to the TTS
+    # sentence. To use your own tone, drop the file into HA's media folder
+    # ({{DATA_DIR}}/home-assistant/homeassistant/media/) and point
+    # ALARM_SOUND_MEDIA_ID at it (e.g. media-source://media_source/local/my-alarm.mp3).
+    - name: ALARM_SOUND_MEDIA_ID
+      value: "{{ALARM_SOUND_MEDIA_ID}}"
+    - name: ALARM_SOUND_PATH
+      value: "/data/skills/media/solaris-alarm.ogg"
+    # No `ports:` block — hostNetwork pod, the listener binds the host
+    # directly (loopback:{{CHAT_PORT}}); a ports mapping alongside
+    # hostNetwork makes `podman kube play` reject the spec (same constraint
+    # as the gatekeeper).
+    volumeMounts:
+    - mountPath: /data/skills
+      name: solaris-skills
+    - mountPath: /data/admin-soul
+      name: admin-soul-skills
+      readOnly: true
+    - mountPath: /data/attachments
+      name: solaris-chat-attachments
+    - mountPath: /var/lib/solaris
+      name: solaris-data
+    - mountPath: /opt/data/notes
+      name: syncthing-notes
+
+  # gatekeeper — Solaris-published Wyoming bridge for wyoming-satellite
+  # hardware (the Voice PE speaker rides HA's Assist pipeline instead, which
+  # fronts the same engine via the chat facade). Resolves the speaking
+  # resident (speaker-ID, #84) and the satellite's room, then runs the turn
+  # against the engine's Ollama facade.
+  - name: gatekeeper
+    image: "{{GATEKEEPER_IMAGE}}"
+    env:
+    - name: SOLARIS_COMPONENT
+      value: "gatekeeper"
+    - name: GATEKEEPER_URI
+      value: "tcp://0.0.0.0:{{GATEKEEPER_PORT}}"
+    - name: WHISPER_URI
+      value: "{{WHISPER_URI}}"
+    - name: PIPER_URI
+      value: "{{PIPER_URI}}"
+    - name: OPENWAKEWORD_URI
+      value: "{{OPENWAKEWORD_URI}}"
+    # Voice always talks to the engine's household profile via the Ollama
+    # facade on the chat server (host loopback). There is deliberately no
+    # admin URL here — a voice turn can never reach the admin persona.
+    - name: SOLARIS_ENGINE_URL
+      value: "http://127.0.0.1:{{CHAT_PORT}}/ollama"
+    - name: SOLARIS_API_KEY
+      value: "{{SOLARIS_API_KEY}}"
+    - name: DEFAULT_UID
+      value: "{{DEFAULT_UID}}"
+    # Push endpoint — proactive deliveries land here. Bound to loopback: a
+    # 0.0.0.0 bind under hostNetwork would put this on the LAN, where a
+    # blank PUSH_TOKEN is unauthenticated (#116). Not exposed via hostPort.
+    - name: PUSH_HOST
+      value: "127.0.0.1"
+    - name: PUSH_PORT
+      value: "10750"
+    - name: PUSH_TOKEN
+      value: "{{PUSH_TOKEN}}"
+    # Room MCP server (set_room/list_rooms). Bound to loopback for the same
+    # reason as PUSH_HOST (#116). MCP_PORT is hard-coded like PUSH_PORT.
+    - name: MCP_HOST
+      value: "127.0.0.1"
+    - name: MCP_PORT
+      value: "10760"
+    - name: GATEKEEPER_MCP_TOKEN
+      value: "{{GATEKEEPER_MCP_TOKEN}}"
+    # JSON map of `<device-name> -> <wyoming-uri>` for push-to-device.
+    # Empty by default; populated per household once devices are paired.
+    - name: VOICE_PE_DEVICES
+      value: '{{VOICE_PE_DEVICES}}'
+    # Path to solaris.db so speaker-ID can read voice_embeddings.
+    - name: SOLARIS_DB_PATH
+      value: "/var/lib/solaris/solaris.db"
+    # Speaker-ID (#84). Off by default. Turning it on requires the ML image
+    # (set GATEKEEPER_IMAGE to ghcr.io/mdopp/solaris-gatekeeper-ml, which
+    # bakes in SpeechBrain/torch) — with the default image the extractor
+    # isn't importable and the gatekeeper safely falls back to DEFAULT_UID.
+    # The ECAPA model is cached under /var/lib/solaris (the solaris-data
+    # volume), so it downloads once. Biometric: stores per-resident voice
+    # embeddings in solaris.db.voice_embeddings.
+    - name: SOLARIS_SPEAKER_ID_ENABLED
+      value: "{{SOLARIS_SPEAKER_ID_ENABLED}}"
+    - name: SOLARIS_SPEAKER_ID_THRESHOLD
+      value: "{{SOLARIS_SPEAKER_ID_THRESHOLD}}"
+    - name: SOLARIS_DEBUG_MODE
+      value: "{{SOLARIS_DEBUG_MODE}}"
+    - name: TZ
+      value: "{{TZ}}"
+    volumeMounts:
+    - mountPath: /var/lib/solaris
+      name: solaris-data
+    # No `ports:` block — `hostNetwork: true` (set on the pod) puts the
+    # gatekeeper directly on the host netns, so its listener at
+    # tcp://0.0.0.0:10700 already binds host port 10700. Adding port
+    # mappings alongside hostNetwork makes `podman kube play` reject the
+    # spec with "PortMappings can only be used with Bridge, slirp4netns,
+    # or pasta networking" — observed during a household-stack install
+    # 2026-05-25.
+
+  volumes:
+  # Household skill pack: shipped by ServiceBay's asset transport from this
+  # template's skills/household/ to {{DATA_DIR}}/solaris/skills/household/.
+  # Mounted read-write into the chat container (panel edits; the engine
+  # reads cron-job skill bodies).
+  - name: solaris-skills
+    hostPath:
+      path: {{DATA_DIR}}/solaris/skills/household
+      type: DirectoryOrCreate
+  # Operator skill pack + soul (#176): shipped by the asset transport from
+  # this template's skills/admin-soul/. Read-only — the admin profile's
+  # prompt assembly reads it.
+  - name: admin-soul-skills
+    hostPath:
+      path: {{DATA_DIR}}/solaris/skills/admin-soul
+      type: DirectoryOrCreate
+  # Notes vault (Syncthing share): the engine's notes tools write, the topic
+  # dashboard reads.
+  - name: syncthing-notes
+    hostPath:
+      path: {{DATA_DIR}}/file-share/data/notes
+      type: DirectoryOrCreate
+  # Image-attachment store (#202): re-rendered in chat history after refresh.
+  - name: solaris-chat-attachments
+    hostPath:
+      path: {{DATA_DIR}}/solarisbay/chat-attachments
+      type: DirectoryOrCreate
+  # The Solaris data volume holds solaris.db (SQLite, populated by the
+  # schema-init initContainer), the engine SOUL.md and the sb-admin-token
+  # file. Reused as-is ({{DATA_DIR}}/solarisbay) — NO data migration.
+  - name: solaris-data
+    hostPath:
+      path: {{DATA_DIR}}/solarisbay
+      type: DirectoryOrCreate
+
+# Post-deploy: ./post-deploy.py
+#
+# The slim engine-era sequence:
+#   1. engine soul   — seed/sync SOUL.md on the solaris-data volume (#283 guard).
+#   2. HA            — adopt the long-lived token; auto-install the jellyfin
+#                      integration; wire the VOICE PIPELINE (wyoming whisper +
+#                      piper entries, the ollama-integration conversation agent
+#                      pointing at the chat facade, the "Solaris" Assist pipeline,
+#                      preferred + assigned to the Voice PE).
+#   3. admin MCP     — mint the servicebay_admin token (read+lifecycle+mutate)
+#                      and drop it at {{DATA_DIR}}/solarisbay/sb-admin-token.
+#   4. ONE restart   — POST /api/services/solaris/action {restart} (last step).

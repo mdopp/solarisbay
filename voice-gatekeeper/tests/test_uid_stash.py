@@ -17,7 +17,7 @@ CREATE TABLE voice_uid_stash (
 
 
 def _db(tmp_path) -> str:
-    path = str(tmp_path / "solilos.db")
+    path = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(path)
     conn.executescript(_SCHEMA)
     conn.commit()
@@ -61,6 +61,6 @@ def test_stash_missing_db_is_noop(tmp_path):
 
 
 def test_stash_missing_table_is_noop(tmp_path):
-    path = str(tmp_path / "solilos.db")
+    path = str(tmp_path / "solaris.db")
     sqlite3.connect(path).close()  # DB exists, table doesn't
     stash_uid(path, "licht an", "anna")  # OperationalError swallowed

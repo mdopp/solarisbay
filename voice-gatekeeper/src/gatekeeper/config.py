@@ -1,7 +1,7 @@
 """Env-driven configuration for the gatekeeper.
 
 Phase 0 (initial release) kept this tiny. Phase 2 (#937) adds the
-SpeechBrain ECAPA model toggle + threshold and the solilos.db path for
+SpeechBrain ECAPA model toggle + threshold and the solaris.db path for
 the voice_embeddings table.
 """
 
@@ -27,7 +27,7 @@ class Settings:
     mcp_host: str
     mcp_port: int
     mcp_token: str
-    solilos_db_path: str
+    solaris_db_path: str
     speaker_id_enabled: bool
     speaker_id_threshold: float
     voice_pe_devices: dict[str, str] = field(default_factory=dict)
@@ -43,9 +43,9 @@ class Settings:
                     devices = {str(k): str(v) for k, v in parsed.items()}
             except json.JSONDecodeError:
                 devices = {}
-        flag = os.environ.get("SOLILOS_SPEAKER_ID_ENABLED", "").strip().lower()
+        flag = os.environ.get("SOLARIS_SPEAKER_ID_ENABLED", "").strip().lower()
         try:
-            threshold = float(os.environ.get("SOLILOS_SPEAKER_ID_THRESHOLD", "0.55"))
+            threshold = float(os.environ.get("SOLARIS_SPEAKER_ID_THRESHOLD", "0.55"))
         except ValueError:
             threshold = 0.55
         return cls(
@@ -55,11 +55,13 @@ class Settings:
             openwakeword_uri=os.environ.get(
                 "OPENWAKEWORD_URI", "tcp://127.0.0.1:10400"
             ),
-            # The Sol Engine's Ollama-compatible facade (the chat server's
+            # The Solaris Engine's Ollama-compatible facade (the chat server's
             # loopback port, /ollama prefix). Voice always speaks to the
             # household profile — there is deliberately no admin URL here.
-            engine_url=os.environ.get("SOL_ENGINE_URL", "http://127.0.0.1:8787/ollama"),
-            engine_token=os.environ.get("SOL_API_KEY", ""),
+            engine_url=os.environ.get(
+                "SOLARIS_ENGINE_URL", "http://127.0.0.1:8787/ollama"
+            ),
+            engine_token=os.environ.get("SOLARIS_API_KEY", ""),
             default_uid=os.environ.get("DEFAULT_UID", "michael"),
             # Loopback by default: the push + MCP listeners only ever serve
             # in-pod callers, which share the host netns (hostNetwork) and
@@ -73,8 +75,8 @@ class Settings:
             mcp_host=os.environ.get("MCP_HOST", "127.0.0.1"),
             mcp_port=int(os.environ.get("MCP_PORT", "10760")),
             mcp_token=os.environ.get("GATEKEEPER_MCP_TOKEN", ""),
-            solilos_db_path=os.environ.get(
-                "SOLILOS_DB_PATH", "/var/lib/solilos/solilos.db"
+            solaris_db_path=os.environ.get(
+                "SOLARIS_DB_PATH", "/var/lib/solaris/solaris.db"
             ),
             speaker_id_enabled=flag in {"1", "true", "yes", "on"},
             speaker_id_threshold=threshold,

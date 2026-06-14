@@ -1,0 +1,259 @@
+"""Tests for the persisted per-message trace store + endpoint (#306).
+
+Covers the `session_traces` store (persist/list, ordering, per-resident scope,
+idempotent re-persist, missing-db degradation) and the turn-time correlation:
+the server pulls the proxy's `/__traces__` calls in the turn window, assigns a
+per-message trace_id, persists them, and serves them at
+`GET /api/sessions/<id>/trace` reopen-consistently.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+
+from solaris_chat import trace_store
+from solaris_chat.engine.trace import TraceRecorder
+from solaris_chat.server import build_app
+
+# The schema the 0007 migration creates, replayed locally so the store + endpoint
+# tests run against a real sqlite db without alembic.
+_SCHEMA = """
+CREATE TABLE session_traces (
+  session_id        TEXT NOT NULL,
+  trace_id          TEXT NOT NULL,
+  step_order        INTEGER NOT NULL,
+  owner_uid         TEXT NOT NULL,
+  model             TEXT,
+  profile           TEXT,
+  wall_s            REAL,
+  prompt_tokens     INTEGER,
+  completion_tokens INTEGER,
+  context_free      INTEGER,
+  finish_reason     TEXT,
+  n_tools           INTEGER,
+  detail_id         INTEGER,
+  step_kind         TEXT,
+  tool_name         TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (session_id, trace_id, step_order)
+);
+CREATE INDEX session_traces_session_idx
+  ON session_traces (session_id, owner_uid);
+"""
+
+
+def _db(tmp_path) -> str:
+    path = str(tmp_path / "solaris.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _step(model="gemma4:e2b", detail_id=0, **over):
+    base = {
+        "model": model,
+        "profile": "household",
+        "wall_s": 1.2,
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "context_free": 30000,
+        "finish_reason": "stop",
+        "n_tools": 5,
+        "detail_id": detail_id,
+    }
+    base.update(over)
+    return base
+
+
+def test_persist_then_list_keeps_step_order(tmp_path):
+    db = _db(tmp_path)
+    steps = [_step(detail_id=0, finish_reason="tool_calls"), _step(detail_id=1)]
+    trace_store.persist_trace(db, "sess-1", "tr-a", "mdopp", steps)
+    got = trace_store.list_session_trace(db, "sess-1", "mdopp")
+    assert [s["step_order"] for s in got] == [0, 1]
+    assert [s["detail_id"] for s in got] == [0, 1]
+    assert got[0]["finish_reason"] == "tool_calls"
+    assert got[1]["model"] == "gemma4:e2b"
+    assert got[0]["profile"] == "household"
+
+
+def test_multiple_turns_list_in_chronological_order(tmp_path):
+    # Two turns (distinct trace_ids) persisted in order — the reopen reads them
+    # back turn-then-step, matching the live order (#306 acceptance).
+    db = _db(tmp_path)
+    trace_store.persist_trace(db, "sess-1", "tr-1", "mdopp", [_step(detail_id=0)])
+    trace_store.persist_trace(
+        db, "sess-1", "tr-2", "mdopp", [_step(detail_id=1), _step(detail_id=2)]
+    )
+    got = trace_store.list_session_trace(db, "sess-1", "mdopp")
+    assert [s["trace_id"] for s in got] == ["tr-1", "tr-2", "tr-2"]
+    assert [s["detail_id"] for s in got] == [0, 1, 2]
+
+
+def test_re_persist_same_trace_id_replaces(tmp_path):
+    db = _db(tmp_path)
+    trace_store.persist_trace(db, "sess-1", "tr-a", "mdopp", [_step(detail_id=9)])
+    trace_store.persist_trace(
+        db, "sess-1", "tr-a", "mdopp", [_step(detail_id=0), _step(detail_id=1)]
+    )
+    got = trace_store.list_session_trace(db, "sess-1", "mdopp")
+    assert [s["detail_id"] for s in got] == [0, 1]
+
+
+def test_interleaved_llm_and_tool_steps_round_trip(tmp_path):
+    # A turn's trace is the full step list: an LLM call (tool_calls), a tool
+    # execution, then the final LLM call — each persisted with its kind and, for
+    # the tool step, the dispatched name + its own wall_s (#346).
+    db = _db(tmp_path)
+    steps = [
+        _step(detail_id=0, finish_reason="tool_calls", step_kind="llm"),
+        {"step_kind": "tool", "tool_name": "ha_call_service", "wall_s": 0.42},
+        _step(detail_id=2, step_kind="llm"),
+    ]
+    trace_store.persist_trace(db, "sess-1", "tr-a", "mdopp", steps)
+    got = trace_store.list_session_trace(db, "sess-1", "mdopp")
+    assert [s["step_kind"] for s in got] == ["llm", "tool", "llm"]
+    assert got[1]["tool_name"] == "ha_call_service"
+    assert got[1]["wall_s"] == 0.42
+    assert got[0]["tool_name"] is None
+
+
+def test_scopes_to_resident(tmp_path):
+    db = _db(tmp_path)
+    trace_store.persist_trace(db, "sess-1", "tr-a", "mdopp", [_step(detail_id=0)])
+    assert trace_store.list_session_trace(db, "sess-1", "lena") == []
+    assert len(trace_store.list_session_trace(db, "sess-1", "mdopp")) == 1
+
+
+def test_missing_db_degrades(tmp_path):
+    missing = str(tmp_path / "absent.db")
+    # No-op write, empty read — never raises.
+    trace_store.persist_trace(missing, "sess-1", "tr-a", "mdopp", [_step()])
+    assert trace_store.list_session_trace(missing, "sess-1", "mdopp") == []
+
+
+def test_empty_steps_is_noop(tmp_path):
+    db = _db(tmp_path)
+    trace_store.persist_trace(db, "sess-1", "tr-a", "mdopp", [])
+    assert trace_store.list_session_trace(db, "sess-1", "mdopp") == []
+
+
+class _FakeHermes:
+    async def create_session(self, uid, system_prompt=None, **kw):
+        return "sess-1"
+
+    async def set_title(self, *a, **k):
+        pass
+
+    async def chat(self, session_id, text, images=None, reasoning_effort="none"):
+        return f"echo: {text}"
+
+
+def _recorder_with(session_id: str, recorder: TraceRecorder, n: int = 2) -> None:
+    """Record `n` engine calls for `session_id` (mimics the engine loop)."""
+    for i in range(n):
+        recorder.record(
+            session_id=session_id,
+            profile="household",
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": f"t{i}"}}],
+            content="ok",
+            thinking="",
+            tool_calls=[] if i == n - 1 else [{"function": {"name": "t0"}}],
+            prompt_tokens=80 + i,
+            completion_tokens=4,
+            wall_s=0.5,
+            context_window=4096,
+        )
+
+
+class _RecordingHermes(_FakeHermes):
+    """Records trace entries during the turn, the way the engine loop does."""
+
+    def __init__(self, recorder):
+        self._recorder = recorder
+
+    async def chat(self, session_id, text, images=None, reasoning_effort="none"):
+        _recorder_with(session_id, self._recorder)
+        return f"echo: {text}"
+
+
+async def test_turn_persists_engine_steps_and_endpoint_serves_them(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    recorder = TraceRecorder()
+    # A pre-turn record for the same session must NOT land in the turn's trace
+    # (the t0 bound keeps the steps per-turn).
+    _recorder_with("sess-1", recorder, n=1)
+    recorder.list_traces()[0]["ts"] -= 3600.0
+
+    app = build_app(
+        hermes=_RecordingHermes(recorder),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path / "att"),
+        solaris_db_path=db,
+        trace_recorder=recorder,
+    )
+    client = await aiohttp_client(app)
+
+    r = await client.post(
+        "/api/chat",
+        json={"input": "Welche Lichter sind an?"},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert r.status == 200
+
+    r = await client.get("/api/sessions/sess-1/trace", headers={"Remote-User": "mdopp"})
+    body = await r.json()
+    assert body["ok"] is True
+    # Only the two in-turn calls (the pre-turn record is dropped), in step
+    # order, each carrying the recorder id as detail_id.
+    assert [s["detail_id"] for s in body["steps"]] == [1, 2]
+    assert body["steps"][0]["finish_reason"] == "tool_calls"
+    assert body["steps"][0]["profile"] == "household"
+
+
+async def test_trace_detail_served_in_process(aiohttp_client, tmp_path):
+    # /__traces__/<id> serves the engine recorder's detail ring directly; an
+    # evicted/unknown id is a 404 the panel degrades on.
+    recorder = TraceRecorder()
+    _recorder_with("sess-1", recorder, n=1)
+
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path / "att"),
+        solaris_db_path=_db(tmp_path),
+        trace_recorder=recorder,
+    )
+    client = await aiohttp_client(app)
+
+    r = await client.get("/__traces__/0", headers={"Remote-User": "mdopp"})
+    assert r.status == 200
+    body = await r.json()
+    assert body["response"]["final"] == "ok"
+    assert body["request"]["model"] == "m"
+
+    r = await client.get("/__traces__/999", headers={"Remote-User": "mdopp"})
+    assert r.status == 404
+
+
+async def test_endpoint_empty_when_no_trace(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path / "att"),
+        solaris_db_path=db,
+    )
+    client = await aiohttp_client(app)
+    r = await client.get("/api/sessions/none/trace", headers={"Remote-User": "mdopp"})
+    body = await r.json()
+    assert body == {"ok": True, "steps": []}

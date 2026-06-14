@@ -4,7 +4,7 @@ Revision ID: 0001_baseline
 Revises:
 Create Date: 2026-05-16
 
-Phase 0 baseline for Solilos's three SQLite tables. The voice_embeddings
+Phase 0 baseline for Solaris's three SQLite tables. The voice_embeddings
 table is created up front so Phase 2 enrolment can fill it without a
 migration step; it stays empty until then.
 
@@ -99,5 +99,5 @@ def downgrade() -> None:
     # history and voice enrolments. Drop the SQLite file and re-run
     # upgrade instead.
     raise NotImplementedError(
-        "Baseline migration is one-way. Delete solilos.db and re-run upgrade."
+        "Baseline migration is one-way. Delete solaris.db and re-run upgrade."
     )

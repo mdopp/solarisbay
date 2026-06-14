@@ -24,7 +24,7 @@ metadata:
       timeout: 5s
       startup_timeout: 5m
 spec:
-  # hostNetwork so other ServiceBay templates (hermes, solbay)
+  # hostNetwork so other ServiceBay templates (hermes, solarisbay)
   # can reach Ollama at 127.0.0.1:{{OLLAMA_PORT}} via the host netns.
   # Two hostNetwork pods share the host's network namespace, which is
   # what makes the localhost-cross-pod story work without DNS or

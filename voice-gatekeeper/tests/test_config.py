@@ -63,7 +63,7 @@ def test_push_and_mcp_hosts_overridable(monkeypatch):
 
 
 def test_engine_url_defaults_to_facade(monkeypatch):
-    monkeypatch.delenv("SOL_ENGINE_URL", raising=False)
+    monkeypatch.delenv("SOLARIS_ENGINE_URL", raising=False)
     s = _fresh_settings(monkeypatch, {})
     assert s.engine_url == "http://127.0.0.1:8787/ollama"
 
@@ -71,14 +71,14 @@ def test_engine_url_defaults_to_facade(monkeypatch):
 def test_engine_url_and_token_read(monkeypatch):
     s = _fresh_settings(
         monkeypatch,
-        {"SOL_ENGINE_URL": "http://127.0.0.1:9999/ollama", "SOL_API_KEY": "k"},
+        {"SOLARIS_ENGINE_URL": "http://127.0.0.1:9999/ollama", "SOLARIS_API_KEY": "k"},
     )
     assert s.engine_url == "http://127.0.0.1:9999/ollama"
     assert s.engine_token == "k"
 
 
 def test_settings_has_single_engine_url_no_admin_gateway(monkeypatch):
-    # Voice routes to the household profile only: residents speak to Sol,
+    # Voice routes to the household profile only: residents speak to Solaris,
     # never the admin persona. The gatekeeper carries exactly one engine URL
     # and has no admin field, so a voice turn can never reach the admin
     # profile.

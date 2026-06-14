@@ -1,4 +1,4 @@
-# Stage: Builder — mdopp/solbay
+# Stage: Builder — mdopp/solarisbay
 
 You are the **Builder** sub-agent. You run in fresh context, take **one unit** from the shared queue (or seal the batch), and return one line. You own implement → fast-gate → commit → (at the batch boundary) seal → push → CI → merge.
 
@@ -11,7 +11,7 @@ Read first: the orchestrator's shared rules in `.claude/skills/autoloop-issues/S
 | **Fast gate** | after **every** unit (per-issue) | `ruff check . && ruff format --check .`; **if the unit touched `voice-gatekeeper/**`** also `cd voice-gatekeeper && pytest -q`; **if it touched `templates/**` or `stacks/**`** also hand-validate (YAML/JSON parses; changed `SKILL.md` frontmatter `name`/`description`/`version` valid + no leftover `TODO (rewrite)` if the issue was to finish it; `template.yml` mount names match volumes and declared ports don't collide). |
 | **Full gate** | once, at the **batch seal** | `ruff check . && ruff format --check . && cd voice-gatekeeper && pip install -e '.[test]' && pytest -q --cov=gatekeeper --cov-report=xml && cd .. && python scripts/check-diff-coverage.py` → push → CI (image paths only). |
 
-Solilos has no arch-ratchet (flat repo) — the structural check the generic template runs per issue is, here, ruff + the template/skill hand-validation. The `voice-gatekeeper` pytest suite is small enough to serve as the changed-tests run when that package is touched; **don't** run it for template/skill/docs-only units (it isn't affected). The full suite + diff-coverage is the safety net at the seal — and since you accumulate on one branch in one session, a red full-run is a cheap in-context bisect.
+Solaris has no arch-ratchet (flat repo) — the structural check the generic template runs per issue is, here, ruff + the template/skill hand-validation. The `voice-gatekeeper` pytest suite is small enough to serve as the changed-tests run when that package is touched; **don't** run it for template/skill/docs-only units (it isn't affected). The full suite + diff-coverage is the safety net at the seal — and since you accumulate on one branch in one session, a red full-run is a cheap in-context bisect.
 
 `scripts/check-diff-coverage.py` fails the seal if changed lines under `voice-gatekeeper/src/gatekeeper/` fall below the floor; it's a no-op when no such lines changed. Don't loosen the floor to make it pass — add the test.
 
@@ -40,12 +40,12 @@ Smallest change that satisfies `acceptance`. **No** drive-by refactors / new abs
 Run the fast gate (table above) for the paths this unit touched. The pytest step reads the working tree, so run it **before** committing if you want it to see uncommitted code (it picks up installed sources — commit then run is fine for this package). A real failure → fix the root cause; never mock around or skip it. Lint must stay clean.
 
 ### 5. Commit to the batch branch (no push)
-- Conventional Commits; scope mirrors the path: `fix(gatekeeper):`, `feat(skill):`, `fix(template):`, `feat(solbay):`, `chore(db):`, `docs:`. **No parens beyond the conventional `(scope)`** (a stray paren can make release tooling run green but cut nothing).
+- Conventional Commits; scope mirrors the path: `fix(gatekeeper):`, `feat(skill):`, `fix(template):`, `feat(solarisbay):`, `chore(db):`, `docs:`. **No parens beyond the conventional `(scope)`** (a stray paren can make release tooling run green but cut nothing).
 - Body ends with `Closes #<N>` — **one line per member issue** for a cluster.
 - **No push, no PR, no CI.** Update the queue: unit `status:"built"`, append member issues to `batch.units`, bump `batch.count` by the issue count, clear `in_progress`. Return.
 
-### `security: true` unit — pre-merge draft gate (Solilos's deliberate choice)
-Solilos touches biometric speaker-ID, per-resident privacy, and gateway/HA credentials, so security/privacy changes get **human eyes before they ship** (the pre-merge opt-in, not post-deploy review). Build it on its **own** branch off `main` (not the shared batch branch — it must not ride a batch that auto-merges):
+### `security: true` unit — pre-merge draft gate (Solaris's deliberate choice)
+Solaris touches biometric speaker-ID, per-resident privacy, and gateway/HA credentials, so security/privacy changes get **human eyes before they ship** (the pre-merge opt-in, not post-deploy review). Build it on its **own** branch off `main` (not the shared batch branch — it must not ride a batch that auto-merges):
 ```bash
 git checkout main && git pull --ff-only && git checkout -b sec/issue-<N>-<slug>
 ```
@@ -87,7 +87,7 @@ database/**
 plugin.yaml
 __init__.py
 ```
-Rationale: these are verified by deploying the changed artifact through ServiceBay onto the box and checking the Solilos runtime — not by CI alone (CI only builds images). For `voice-gatekeeper`/`database` the live image only exists on the box **after** merge publishes it to GHCR, so a path-mandated image change is verified post-merge by the background Verify (`stages/verify.md`).
+Rationale: these are verified by deploying the changed artifact through ServiceBay onto the box and checking the Solaris runtime — not by CI alone (CI only builds images). For `voice-gatekeeper`/`database` the live image only exists on the box **after** merge publishes it to GHCR, so a path-mandated image change is verified post-merge by the background Verify (`stages/verify.md`).
 
 ## Return
 - build: `Builder: built gatekeeper (#92,#94) onto batch/2026-..a, fast gate green, count 2/8.`

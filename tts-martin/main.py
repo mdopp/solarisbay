@@ -84,7 +84,7 @@ def make_session_options() -> ort.SessionOptions:
     return options
 
 
-# Provider per env (#solbay): `cuda` puts the 82M model on the GPU via the
+# Provider per env (#solarisbay): `cuda` puts the 82M model on the GPU via the
 # CUDA execution provider (box-measured ~10x faster than 6-core CPU);
 # anything else stays CPU. CUDA falls back to CPU when unavailable.
 _PROVIDERS = (

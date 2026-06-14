@@ -20,7 +20,7 @@ _DDL = (
 
 @pytest.fixture
 def db_path(tmp_path):
-    p = str(tmp_path / "solilos.db")
+    p = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(p)
     conn.execute(_DDL)
     conn.commit()

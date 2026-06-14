@@ -1,4 +1,4 @@
-# Sol's voice — Kokoro-82M ONNX, German single speaker "Martin".
+# Solaris's voice — Kokoro-82M ONNX, German single speaker "Martin".
 #
 # Model + voice pack + the German text-normalization service are from
 # https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin
@@ -29,7 +29,7 @@ RUN pip3 install --no-cache-dir \
     && pip3 install --no-cache-dir --force-reinstall --no-deps onnxruntime-gpu
 
 # Bake the model + voice pack into the image: reproducible, no HF dependency
-# at boot (the upstream repo already went 401-private once — solbay#337-class
+# at boot (the upstream repo already went 401-private once — solarisbay#337-class
 # lesson; we never want the box's voice to depend on a third-party repo).
 ARG HF_BASE=https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin/resolve/main
 RUN curl -fsSL -o /app/kokoro-martin.onnx $HF_BASE/kokoro-martin.onnx \

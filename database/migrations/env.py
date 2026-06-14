@@ -6,7 +6,7 @@ require it — see schema/README.md.
 
 DSN resolution (in order):
   1. `-x dburl=...` on the alembic command line
-  2. `SOLILOS_DB_URL` environment variable
+  2. `SOLARIS_DB_URL` environment variable
   3. the sqlalchemy.url default in alembic.ini
 """
 
@@ -22,7 +22,7 @@ from sqlalchemy import engine_from_config, pool
 config = context.config
 
 x_args = context.get_x_argument(as_dictionary=True)
-override = x_args.get("dburl") or os.environ.get("SOLILOS_DB_URL")
+override = x_args.get("dburl") or os.environ.get("SOLARIS_DB_URL")
 if override:
     config.set_main_option("sqlalchemy.url", override)
 

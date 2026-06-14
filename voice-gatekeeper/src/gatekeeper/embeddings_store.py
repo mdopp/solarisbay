@@ -1,4 +1,4 @@
-"""SQLite-backed storage for Solilos voice embeddings (#937 Phase 2).
+"""SQLite-backed storage for Solaris voice embeddings (#937 Phase 2).
 
 The `voice_embeddings` table is provisioned by the baseline Alembic
 migration (`schema/migrations/versions/20260516_0001_baseline.py`):
@@ -18,7 +18,7 @@ Design notes:
     hundreds, which they never will in a household setting.
   * Embeddings on disk are little-endian float32. `numpy.tobytes()`
     produces that on every architecture we target.
-  * If solilos.db does not yet exist (gatekeeper booted before the
+  * If solaris.db does not yet exist (gatekeeper booted before the
     init container has run), `list_embeddings` returns `[]` and
     upsert raises. Callers downgrade to default_uid in that case.
 """

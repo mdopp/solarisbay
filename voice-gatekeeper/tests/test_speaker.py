@@ -41,7 +41,7 @@ def _emb(seed: int) -> bytes:
 
 
 def _seed_db(tmp_path: Path) -> str:
-    db = tmp_path / "solilos.db"
+    db = tmp_path / "solaris.db"
     with sqlite3.connect(db) as conn:
         conn.execute(
             """
@@ -174,17 +174,17 @@ def test_delete_embedding_roundtrip(tmp_path: Path):
 
 
 def test_get_extractor_disabled_via_renamed_env(monkeypatch):
-    """SOLILOS_SPEAKER_ID_ENABLED unset/false -> no extractor (speaker.py:214)."""
+    """SOLARIS_SPEAKER_ID_ENABLED unset/false -> no extractor (speaker.py:214)."""
     import gatekeeper.speaker as speaker
 
     monkeypatch.setattr(speaker, "_extractor_singleton", None)
-    monkeypatch.setenv("SOLILOS_SPEAKER_ID_ENABLED", "off")
+    monkeypatch.setenv("SOLARIS_SPEAKER_ID_ENABLED", "off")
     assert speaker.get_extractor() is None
 
 
 async def test_resolve_uid_matches_and_touches_last_seen(tmp_path, monkeypatch):
     """A populated buffer + enrolled speaker exercises the resolver's
-    list_embeddings / touch_last_seen calls against solilos_db_path
+    list_embeddings / touch_last_seen calls against solaris_db_path
     (handler.py:187 and :204)."""
     import gatekeeper.handler as handler
     from wyoming.audio import AudioChunk, AudioStart
@@ -201,7 +201,7 @@ async def test_resolve_uid_matches_and_touches_last_seen(tmp_path, monkeypatch):
             speaker_id_enabled=True,
             default_uid="guest",
             speaker_id_threshold=0.5,
-            solilos_db_path=db,
+            solaris_db_path=db,
         ),
     )
 
@@ -246,7 +246,7 @@ async def test_resolve_uid_unknown_speaker_routes_to_guest(tmp_path, monkeypatch
             speaker_id_enabled=True,
             default_uid="household",
             speaker_id_threshold=0.99,  # nothing random can clear this
-            solilos_db_path=db,
+            solaris_db_path=db,
         ),
     )
 
@@ -299,7 +299,7 @@ async def test_resolve_uid_no_enrolments_stays_household_not_guest(
             speaker_id_enabled=True,
             default_uid="household",
             speaker_id_threshold=0.5,
-            solilos_db_path=db,
+            solaris_db_path=db,
         ),
     )
 

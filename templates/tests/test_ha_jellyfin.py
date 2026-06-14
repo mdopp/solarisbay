@@ -3,7 +3,7 @@ post-deploy (#195).
 
 ensure_ha_jellyfin_integration drives Home Assistant's config-entries flow
 API to create the `jellyfin` config entry (so `media_player.jellyfin_*`
-entities appear for Sol to control via the existing homeassistant toolset).
+entities appear for Solaris to control via the existing homeassistant toolset).
 It is idempotent (skips if the entry already exists) and fail-soft (never
 crashes the deploy). The post-deploy has a hyphenated filename under
 templates/, so it's loaded via importlib (same pattern as the sibling tests).
@@ -32,7 +32,7 @@ def _load(name: str, path: pathlib.Path):
 
 @pytest.fixture(scope="module")
 def hermes():
-    return _load("hermes_post_deploy", TEMPLATES / "solilos" / "post-deploy.py")
+    return _load("hermes_post_deploy", TEMPLATES / "solaris" / "post-deploy.py")
 
 
 def _wire(hermes, monkeypatch, *, entries, flow_start, flow_submit):

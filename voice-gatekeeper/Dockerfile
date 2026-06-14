@@ -11,7 +11,7 @@ COPY pyproject.toml README.md /app/
 COPY src /app/src
 
 # EXTRAS selects optional dependency groups from pyproject. The default
-# image installs the base bridge only; the `solilos-gatekeeper-ml` image is
+# image installs the base bridge only; the `solaris-gatekeeper-ml` image is
 # built with EXTRAS="[speaker-id]" (SpeechBrain + torch) so Phase-2
 # speaker-ID can load the ECAPA model. Kept one Dockerfile so the two
 # images never drift.
@@ -19,7 +19,7 @@ ARG EXTRAS=""
 RUN pip install --no-cache-dir "/app${EXTRAS}"
 
 ENV PYTHONUNBUFFERED=1 \
-    SOLILOS_COMPONENT=gatekeeper
+    SOLARIS_COMPONENT=gatekeeper
 
 # Wyoming pipeline endpoint that satellites (HA Voice PE, wyoming-satellite
 # CLI, etc.) connect to. The Wyoming-internal whisper/piper services are

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Solaris">
+  <defs>
+    <radialGradient id="solGold" cx="50%" cy="42%" r="60%">
+      <stop offset="0%" stop-color="#fff3d6"/>
+      <stop offset="42%" stop-color="#fbbf24"/>
+      <stop offset="80%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#c2410c"/>
+    </radialGradient>
+    <radialGradient id="solGlow" cx="50%" cy="44%" r="55%">
+      <stop offset="0%" stop-color="#ffe9bf" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#ffe9bf" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- outer person — the "vessel", in the light text colour -->
+  <g fill="#cbd5e1">
+    <circle cx="32" cy="15" r="8.5"/>
+    <path d="M32 23.5 C 40.5 23.5 44.5 29.5 44.5 38
+      C 44.5 49 41 58 38 62 C 37 63.5 34.5 64 32 64
+      C 29.5 64 27 63.5 26 62 C 23 58 19.5 49 19.5 38
+      C 19.5 29.5 23.5 23.5 32 23.5 Z"/>
+  </g>
+  <!-- the soul within: a smaller, glowing person, concentric (thin outer rim) -->
+  <ellipse cx="32" cy="40" rx="9" ry="17" fill="url(#solGlow)"/>
+  <g fill="url(#solGold)">
+    <circle cx="32" cy="15.5" r="6"/>
+    <path d="M32 26.5 C 39 26.5 41.8 31.5 41.8 38.5
+      C 41.8 48 38.8 56 36 59.5 C 35.2 60.7 33.6 61 32 61
+      C 30.4 61 28.8 60.7 28 59.5 C 25.2 56 22.2 48 22.2 38.5
+      C 22.2 31.5 25 26.5 32 26.5 Z"/>
+  </g>
+</svg>

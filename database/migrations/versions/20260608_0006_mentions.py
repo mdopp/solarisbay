@@ -4,7 +4,7 @@ Revision ID: 0006_mentions
 Revises: 0005_session_topics
 Create Date: 2026-06-08
 
-Inline mentions (#279, solilos-architecture.md §3 "Mention-based tagging"): the
+Inline mentions (#279, solaris-architecture.md §3 "Mention-based tagging"): the
 `#tag` / `@person` tokens typed in a chat replace the retired Thema picker. Each
 mention is keyed by `session_id` + a per-session message reference
 (`message_ref`, the user-turn ordinal that carried it — drives jump-to-message)
@@ -54,5 +54,5 @@ def downgrade() -> None:
     # One-way, matching the other migrations: a downgrade would drop every
     # recorded mention.
     raise NotImplementedError(
-        "Downgrade is not supported. Delete solilos.db and re-run upgrade if needed."
+        "Downgrade is not supported. Delete solaris.db and re-run upgrade if needed."
     )

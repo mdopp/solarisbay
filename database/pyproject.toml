@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "solilos-schema"
+name = "solaris-schema"
 version = "0.1.0"
-description = "Alembic migrations for Solilos's SQLite schema (cloud_audit, system_settings, voice_embeddings)."
+description = "Alembic migrations for Solaris's SQLite schema (cloud_audit, system_settings, voice_embeddings)."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }

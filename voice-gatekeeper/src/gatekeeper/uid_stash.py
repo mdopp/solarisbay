@@ -3,7 +3,7 @@
 When the gatekeeper serves as HA's Wyoming STT provider it transcribes the
 turn AND resolves the speaking resident (ECAPA + k-NN), but HA — not the
 gatekeeper — runs the conversation step. HA forwards only the transcript
-text to the engine facade (`conversation.sol`), with no uid. So the
+text to the engine facade (`conversation.solaris`), with no uid. So the
 gatekeeper stashes `{transcript -> uid}` here; the facade reads it back by
 the incoming utterance text to attribute the spoken turn to the resident.
 
@@ -12,7 +12,7 @@ the facade receives the identical string a moment later. Consume-once + a
 short TTL bound the only failure mode — a stale or collided uid never leaks
 into a later turn.
 
-Sync sqlite3 over the same `solilos.db` the rest of the gatekeeper opens
+Sync sqlite3 over the same `solaris.db` the rest of the gatekeeper opens
 (`rooms_store`, `embeddings_store`). The table is provisioned by alembic
 migration `0012_voice_uid_stash`; if it's missing (init container hasn't
 migrated yet) the writer no-ops so the STT path keeps working.

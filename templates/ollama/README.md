@@ -15,7 +15,7 @@ networking.
   points at after install. Default `gemma4:12b` — 12B params,
   fits on a 16 GB GPU, AND ships native multimodal
   (`ollama show gemma4:12b` reports `completion, vision, audio, tools,
-  thinking`). That single default backs Solilos's multimodal-ingestion
+  thinking`). That single default backs Solaris's multimodal-ingestion
   path without a separate vision pull. Any Ollama library tag works,
   plus user-namespaced tags like `gemma4:12b`, `gemma4:e2b`, or `VladimirGav/gemma4-26b-16GB-VRAM:latest`.
 - `OLLAMA_EXTRA_MODELS` — comma-separated list of additional models
@@ -31,7 +31,7 @@ networking.
 - `OLLAMA_VISION_MODEL` — historical, mostly unused now that the
   default `gemma4:12b` ships vision + audio natively. Set this only if
   you've changed `OLLAMA_DEFAULT_MODEL` to a text-only tag and still
-  want a vision backend for Solilos's `media-ingestion-multimodal` skill.
+  want a vision backend for Solaris's `media-ingestion-multimodal` skill.
   Suggested non-default tags: `qwen2.5vl:7b`, `llava:13b`, `bakllava:7b`.
 - `OLLAMA_CONTEXT_LENGTH` — Ollama's default load context window, in
   tokens. Default `32768`. gemma4:12b's full native context is actually
@@ -113,7 +113,7 @@ cached and skips the pulls.
 
 The default `OLLAMA_DEFAULT_MODEL=gemma4:12b` is natively multimodal —
 `ollama show gemma4:12b` reports `completion, vision, audio, tools,
-thinking`. Solilos's `media-ingestion-multimodal` skill calls into it
+thinking`. Solaris's `media-ingestion-multimodal` skill calls into it
 without a separate vision pull.
 
 Where the tag matters: the `OLLAMA_EXTRA_MODELS` default is empty, but
@@ -138,7 +138,7 @@ its config is regenerated — see `templates/hermes/README.md`.
 `gemma4` and other reasoning-capable tags (`ollama show` reports a
 `thinking` capability) emit their reasoning in `<thinking>…</thinking>`
 blocks before the answer. This needs no Ollama-side parameter — it's a
-native model capability, on by default. Solilos doesn't strip the
+native model capability, on by default. Solaris doesn't strip the
 reasoning at the model layer (the chain-of-thought can improve answer
 quality, and the gatekeeper/voice path TTS-reads only the final answer
 anyway); instead the **chat panel's Settings → Chat → Thinking blocks**

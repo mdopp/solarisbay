@@ -49,7 +49,7 @@ _EMBEDDING = struct.pack("<256f", *([0.5] * 256))
 
 
 def _db(tmp_path) -> str:
-    path = str(tmp_path / "solilos.db")
+    path = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(path)
     conn.executescript(_SCHEMA)
     conn.commit()
@@ -86,7 +86,7 @@ def _new_handler(
     monkeypatch.setattr(
         handler_mod,
         "settings",
-        dataclasses.replace(handler_mod.settings, solilos_db_path=db),
+        dataclasses.replace(handler_mod.settings, solaris_db_path=db),
     )
     monkeypatch.setattr(handler_mod, "get_extractor", lambda: extractor)
     h = GatekeeperHandler(None, None, _StubInfo())

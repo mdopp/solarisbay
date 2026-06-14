@@ -1,4 +1,4 @@
-"""Solilos gatekeeper — voice-pipeline orchestrator.
+"""Solaris gatekeeper — voice-pipeline orchestrator.
 
 Listens for Wyoming-protocol connections from satellites (HA Voice PE or
 wyoming-satellite clients), drives whisper for STT and piper for TTS, and

@@ -18,7 +18,7 @@ opens it, so a later unrelated turn can't enrol into someone else's profile, and
 a request no gatekeeper picks up (speaker-ID off) ages out so the engine side can
 time out honestly rather than hang.
 
-Sync sqlite3 over the same `solilos.db`; the table is provisioned by alembic
+Sync sqlite3 over the same `solaris.db`; the table is provisioned by alembic
 migration `0014_enroll_requests`. A missing table/DB makes every op a no-op so
 the STT path keeps working when the init container hasn't migrated yet.
 """

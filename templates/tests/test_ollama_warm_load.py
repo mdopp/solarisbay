@@ -67,8 +67,8 @@ def test_warm_load_fails_soft(pd, monkeypatch):
 def test_main_warms_after_pulls(pd):
     src = (TEMPLATES / "ollama" / "post-deploy.py").read_text(encoding="utf-8")
     assert src.index("def main") < src.index("warm_load_model(ollama_url, warm)")
-    # Ground truth = locally installed tags (solbay#339); env list only as
-    # fallback. Small-first is load-bearing (solbay#340): with e2b resident
+    # Ground truth = locally installed tags (solarisbay#339); env list only as
+    # fallback. Small-first is load-bearing (solarisbay#340): with e2b resident
     # a 12b load co-exists; the reverse order evicts 12b.
     assert "local_chat_tags(ollama_url)" in src
     assert "(*extra_models, model)" in src

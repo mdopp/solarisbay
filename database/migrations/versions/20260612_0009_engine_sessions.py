@@ -1,11 +1,11 @@
-"""add Sol Engine session, message and timer tables
+"""add Solaris Engine session, message and timer tables
 
 Revision ID: 0009_engine_sessions
 Revises: 0008_session_traces_profile
 Create Date: 2026-06-12
 
-Phase 1 of the Sol Engine (Hermes replacement): conversation state moves from
-Hermes' per-gateway session store into solilos.db, owned by the chat server's
+Phase 1 of the Solaris Engine (Hermes replacement): conversation state moves from
+Hermes' per-gateway session store into solaris.db, owned by the chat server's
 in-process engine. `engine_sessions` carries ownership as a plain column —
 the Hermes-era `[uid:...]` title-marker workaround dies with the external
 store. `engine_messages` is the verbatim turn history (tool calls and
@@ -86,5 +86,5 @@ def downgrade() -> None:
     # One-way, matching the other migrations: a downgrade would drop live
     # conversation history.
     raise NotImplementedError(
-        "Downgrade is not supported. Delete solilos.db and re-run upgrade if needed."
+        "Downgrade is not supported. Delete solaris.db and re-run upgrade if needed."
     )

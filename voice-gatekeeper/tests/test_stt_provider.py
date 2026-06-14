@@ -6,7 +6,7 @@ back. In that mode the gatekeeper must:
 
   * transcribe + resolve the speaking resident,
   * return the `Transcript` to HA (so its pipeline continues to
-    conversation.sol),
+    conversation.solaris),
   * stash `{transcript -> uid}` for the engine facade to read,
   * and NOT do the full satellite turn (no facade POST, no piper TTS).
 
@@ -36,7 +36,7 @@ CREATE TABLE voice_uid_stash (
 
 
 def _stash_db(tmp_path) -> str:
-    path = str(tmp_path / "solilos.db")
+    path = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(path)
     conn.executescript(_STASH_SCHEMA)
     conn.commit()
@@ -69,7 +69,7 @@ async def test_stt_mode_returns_transcript_and_stashes_uid(tmp_path, monkeypatch
     monkeypatch.setattr(
         handler_mod,
         "settings",
-        dataclasses.replace(handler_mod.settings, solilos_db_path=db),
+        dataclasses.replace(handler_mod.settings, solaris_db_path=db),
     )
 
     handler = GatekeeperHandler(None, None, _StubInfo())
@@ -77,7 +77,7 @@ async def test_stt_mode_returns_transcript_and_stashes_uid(tmp_path, monkeypatch
     handler._transcribe = AsyncMock(return_value="mach das licht an")
     handler._resolve_uid = AsyncMock(return_value="anna")
     # Guard rails: the STT path must touch neither the facade nor TTS.
-    handler._sol.converse = AsyncMock()
+    handler._solaris.converse = AsyncMock()
     handler._synthesize_and_stream = AsyncMock()
 
     last = await _drive(handler, [Transcribe().event(), *_audio_events()])
@@ -98,7 +98,7 @@ async def test_stt_mode_returns_transcript_and_stashes_uid(tmp_path, monkeypatch
     conn.close()
     assert row[0] == "anna"
     # Never ran the full satellite turn.
-    handler._sol.converse.assert_not_awaited()
+    handler._solaris.converse.assert_not_awaited()
     handler._synthesize_and_stream.assert_not_awaited()
 
 
@@ -107,7 +107,7 @@ async def test_stt_mode_empty_transcript_returns_empty_no_stash(tmp_path, monkey
     monkeypatch.setattr(
         handler_mod,
         "settings",
-        dataclasses.replace(handler_mod.settings, solilos_db_path=db),
+        dataclasses.replace(handler_mod.settings, solaris_db_path=db),
     )
 
     handler = GatekeeperHandler(None, None, _StubInfo())
@@ -137,7 +137,7 @@ async def test_satellite_path_unchanged_no_transcribe(tmp_path, monkeypatch):
     monkeypatch.setattr(
         handler_mod,
         "settings",
-        dataclasses.replace(handler_mod.settings, solilos_db_path=db),
+        dataclasses.replace(handler_mod.settings, solaris_db_path=db),
     )
 
     handler = GatekeeperHandler(None, None, _StubInfo())
@@ -145,13 +145,13 @@ async def test_satellite_path_unchanged_no_transcribe(tmp_path, monkeypatch):
     handler._transcribe = AsyncMock(return_value="hallo")
     handler._resolve_uid = AsyncMock(return_value="michael")
     handler._resolve_location = AsyncMock(return_value=None)
-    handler._sol.converse = AsyncMock(return_value="Hallo zurück.")
+    handler._solaris.converse = AsyncMock(return_value="Hallo zurück.")
     handler._synthesize_and_stream = AsyncMock()
 
     await _drive(handler, _audio_events())
 
     # Full turn ran.
-    handler._sol.converse.assert_awaited_once()
+    handler._solaris.converse.assert_awaited_once()
     handler._synthesize_and_stream.assert_awaited_once_with("Hallo zurück.")
     # No Transcript was returned (satellite contract) and nothing stashed.
     for call in handler.write_event.await_args_list:

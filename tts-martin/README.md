@@ -1,4 +1,4 @@
-# solilos-tts — Sol's voice (Kokoro-Martin)
+# solaris-tts — Solaris's voice (Kokoro-Martin)
 
 Kokoro-82M ONNX, German single speaker **Martin** — vendored from
 [Godelaune/Kokoro-82M-ONNX-German-Martin](https://huggingface.co/Godelaune/Kokoro-82M-ONNX-German-Martin)
