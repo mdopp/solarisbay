@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.13.0](https://github.com/mdopp/solbay/compare/v0.12.1...v0.13.0) (2026-06-15)
+
+
+### Features
+
+* **chat:** anchor the transcript to the bottom, fix mobile keyboard gap ([c22a04c](https://github.com/mdopp/solbay/commit/c22a04cbbf57cbd008fef859b07c57a1b0cecbf7)), closes [#412](https://github.com/mdopp/solbay/issues/412)
+* **chat:** graphical VRAM headroom from ServiceBay's real GPU numbers ([#401](https://github.com/mdopp/solbay/issues/401)) ([8f9fd5b](https://github.com/mdopp/solbay/commit/8f9fd5b0e308413a3857a6e736b416ac8b17dbbb))
+* **chat:** guide self-enrolment by name not technical uid ([#399](https://github.com/mdopp/solbay/issues/399)) ([2270373](https://github.com/mdopp/solbay/commit/2270373cae754118514eb8dc68a6e88ab571894d)), closes [#396](https://github.com/mdopp/solbay/issues/396)
+* **chat:** move settings + search into inline command cards, merge mobile header ([0be8424](https://github.com/mdopp/solbay/commit/0be8424c4f9a036a70bb9c2102b04a8d87762292)), closes [#410](https://github.com/mdopp/solbay/issues/410) [#411](https://github.com/mdopp/solbay/issues/411)
+* **chat:** self-service voice enrolment for the household profile ([#397](https://github.com/mdopp/solbay/issues/397)) ([10e9013](https://github.com/mdopp/solbay/commit/10e90137e4e3411d70c34dddba1b9a0362806c84)), closes [#396](https://github.com/mdopp/solbay/issues/396)
+* **chat:** voice onboarding reliability and chat-UI command-card consolidation ([1fa1717](https://github.com/mdopp/solbay/commit/1fa171748a3686f614a967d729f3aa8f6389f377))
+* **skill:** pin the self-enrolment step order in the household soul ([#400](https://github.com/mdopp/solbay/issues/400)) ([10071e6](https://github.com/mdopp/solbay/commit/10071e61f2ee02f382c3e6413caef4b7a6cc6fcb)), closes [#396](https://github.com/mdopp/solbay/issues/396)
+* **skill:** rename the household persona to Solaris, enrol on sentences ([#403](https://github.com/mdopp/solbay/issues/403)) ([f99659b](https://github.com/mdopp/solbay/commit/f99659b8c5952506371630d409e64b4573663b60)), closes [#396](https://github.com/mdopp/solbay/issues/396)
+* **solaris:** rebrand stage 2 — coordinated repo-wide artifact rename + draft BRAND.md ([75f3818](https://github.com/mdopp/solbay/commit/75f3818c98e87ee2c05d915ebf33d8ad09cc2d12))
+* **solaris:** rebrand stage 2 — rename artifacts solilos→solaris, solbay→solarisbay ([1b6530a](https://github.com/mdopp/solbay/commit/1b6530a0aef4bdd7ae46ad77d0d37b4347947be6)), closes [#408](https://github.com/mdopp/solbay/issues/408)
+* **template:** switch the household fast model to gemma4:e4b ([#402](https://github.com/mdopp/solbay/issues/402)) ([ccb197c](https://github.com/mdopp/solbay/commit/ccb197ce46301f26a1c8bdc6c826b78c47fbfa19))
+
+
+### Bug Fixes
+
+* **chat:** fold the turn trace into one step list, drop the redundant block ([102bc86](https://github.com/mdopp/solbay/commit/102bc868e28d086c3e308fd7700f3713bf777c9b)), closes [#406](https://github.com/mdopp/solbay/issues/406)
+* **chat:** hand the model the exact 3-sentence enrol prompt to echo ([f4de2d6](https://github.com/mdopp/solbay/commit/f4de2d6865a55cc1ab105a364ae246c5b5369de3)), closes [#404](https://github.com/mdopp/solbay/issues/404)
+* **chat:** persist a voice turn's trace into its durable Zuhause session ([f6c0979](https://github.com/mdopp/solbay/commit/f6c0979256c69393e44efe7503d87177efc2dc7d)), closes [#405](https://github.com/mdopp/solbay/issues/405)
+* **chat:** remove the activity bubble on a stopped turn ([f1fc218](https://github.com/mdopp/solbay/commit/f1fc218a4feec42307feb6a8b541a808a0bace5b))
+* **chat:** remove the live activity bubble on a stopped turn ([d411611](https://github.com/mdopp/solbay/commit/d411611be3f6e116b0eeb0465173d2d47f3883ae)), closes [#414](https://github.com/mdopp/solbay/issues/414)
+* **template:** wait for gatekeeper Wyoming STT before wiring it as Assist STT ([8aaee5e](https://github.com/mdopp/solbay/commit/8aaee5e2821d339ce70f7f0bdf0f0baaa819a2d1)), closes [#395](https://github.com/mdopp/solbay/issues/395)
+
 ## [0.12.1](https://github.com/mdopp/solbay/compare/v0.12.0...v0.12.1) (2026-06-13)
 
 
