@@ -268,7 +268,13 @@ def ship_alarm_sound(data_dir: str) -> bool:
 
 
 def _ha_token_timeout() -> int:
-    return int(os.environ.get("HA_TOKEN_TIMEOUT", "90"))
+    # On a fresh install HA's auto-onboarding (servicebay#1847) writes
+    # `.solaris-long-lived-token` only at the END of HA's first boot+onboard
+    # run, which on a cold box runs past the old 90s window — the deploy then
+    # adopted nothing and the engine came up with an empty HASS_TOKEN (#425).
+    # 180s covers a cold first boot; an existing token is found on the first
+    # poll so a re-deploy doesn't pay this.
+    return int(os.environ.get("HA_TOKEN_TIMEOUT", "180"))
 
 
 def _ha_api_timeout() -> int:
@@ -343,11 +349,24 @@ def adopt_ha_long_lived_token(data_dir: str) -> str | None:
     except OSError as e:
         jlog("warn", "ha", "could not read solaris.yml", path=pod_yml, error=str(e))
         return None
-    new = re.sub(
-        r"(- name: HASS_TOKEN\n\s+value: )[^\n]+",
+    new, n = re.subn(
+        r'(- name: HASS_TOKEN\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
         lambda m: m.group(1) + '"' + token + '"',
         src,
     )
+    if n == 0:
+        # The regex found no HASS_TOKEN env line to patch — adoption would
+        # silently no-op and the engine would restart with an empty token. Fail
+        # loudly instead of returning a token that never reaches the container.
+        jlog(
+            "warn",
+            "ha",
+            "HASS_TOKEN env entry not found in solaris.yml — token NOT adopted; "
+            "the engine cannot reach Home Assistant. Check the chat container's "
+            "HASS_TOKEN env block in templates/solaris/template.yml.",
+            path=pod_yml,
+        )
+        return None
     if new != src:
         try:
             with open(pod_yml, "w", encoding="utf-8") as f:
@@ -356,6 +375,8 @@ def adopt_ha_long_lived_token(data_dir: str) -> str | None:
             jlog("warn", "ha", "could not write patched solaris.yml", error=str(e))
             return None
         jlog("info", "ha", "adopted HA long-lived token", token_path=token_path)
+    else:
+        jlog("info", "ha", "HASS_TOKEN already current in solaris.yml")
     _wait_for_ha_api(token)
     return token
 
