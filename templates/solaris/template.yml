@@ -9,9 +9,9 @@ metadata:
     servicebay.schema-version: "1"
     # Host ports on one tile: the chat server (the Solaris Engine + chat surface +
     # the Ollama-compatible facade HA's conversation agent calls) and the
-    # gatekeeper's Wyoming listener. ServiceBay can't substitute {{VAR}} inside
-    # an annotation block scalar (#136) but DOES substitute in this inline
-    # annotation, so the ports stay variable-driven.
+    # gatekeeper's Wyoming listener. ServiceBay can't substitute a variable
+    # placeholder inside an annotation block scalar (#136) but DOES substitute in
+    # this inline annotation, so the ports stay variable-driven.
     servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp"
     # External dependencies only (#271): ollama (the engine's LLM backend),
     # home-assistant (device control + the Assist pipeline that fronts the
@@ -20,9 +20,9 @@ metadata:
     # (Authelia forward-auth gates it).
     servicebay.dependencies: "ollama,home-assistant,voice,nginx,auth"
     # One health probe for the service: the chat server serves /health (200,
-    # no auth) once up. ServiceBay can't substitute {{VAR}} inside an
-    # annotation block scalar (#136), so the port is the literal default; an
-    # operator changing CHAT_PORT must update this literal by hand too.
+    # no auth) once up. ServiceBay can't substitute a variable placeholder
+    # inside an annotation block scalar (#136), so the port is the literal
+    # default; an operator changing CHAT_PORT must update this literal by hand too.
     servicebay.healthcheck: |
       url: http://127.0.0.1:8787/health
       interval: 30s
