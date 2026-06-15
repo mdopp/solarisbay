@@ -5,7 +5,7 @@
 > when you ask.
 
 **Tagline:** Help yourself think.
-**Voice:** "Solaris" · wake phrase "Hey Solaris"
+**Voice:** "Solaris" · wake word "Solaris" (one word — no "Hey"/"Ok" prefix)
 **Home:** SolarisBay, on ServiceBay
 
 ---
@@ -39,7 +39,7 @@ the world knows.
 
 ## Voice & wake
 
-- Wake phrase: **"Hey Solaris."**
+- Wake word: **"Solaris"** — a single word, **no "Hey"/"Ok" prefix**. You don't summon a device; you say its name.
 - **Solaris** is the mind you talk to — the corpus of everything you've said and
   the voice that answers. **SolarisBay** is the home it lives in. One name to
   call, one place it rests — the sun that lights your stored knowledge, the one
@@ -64,7 +64,7 @@ Supporting lines:
 
 A personal knowledge base and agent: your chats, documents, notes, and the
 digital reflection of your thinking — captured, connected, and reachable by
-voice ("Hey Solaris") or chat. It runs **on ServiceBay**, which is its harbor:
+voice ("Solaris") or chat. It runs **on ServiceBay**, which is its harbor:
 
 > **ServiceBay** hosts **SolarisBay** (the home & store) · **Solaris** is the
 > mind that lives there — and the voice you summon.
