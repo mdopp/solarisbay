@@ -213,6 +213,14 @@ spec:
       value: "http://127.0.0.1:10750"
     - name: PUSH_TOKEN
       value: "{{PUSH_TOKEN}}"
+    # The household Immich instance the photo-ingest adapter reads (read-only,
+    # #206) to map assets/faces/EXIF-geo into OKF events/people/places. Empty
+    # IMMICH_BASE_URL disables the adapter; IMMICH_API_KEY is a read-only Immich
+    # API key. Loopback when Immich runs on the same box (hostNetwork pod).
+    - name: IMMICH_BASE_URL
+      value: "{{IMMICH_BASE_URL}}"
+    - name: IMMICH_API_KEY
+      value: "{{IMMICH_API_KEY}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint

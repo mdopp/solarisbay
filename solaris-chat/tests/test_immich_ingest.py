@@ -1,0 +1,268 @@
+"""Immich ingest adapter (#206, docs/okf-write-contract.md §6).
+
+The Immich client is mocked (no live instance): a `FakeImmichClient` yields
+`ImmichAsset` dataclasses, so these cover the asset→event/person/place mapping,
+the face→person `depicted` edge, the shared-asset→household scope, and the
+incremental/idempotent skip — without touching the REST layer.
+
+Schema is built from inlined DDL mirroring the #446 migration (importing alembic
+from a solaris-chat test fails CI's clean env).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+from collections.abc import AsyncIterator
+
+import pytest
+
+from solaris_chat.engine.ingest import ImmichIngest
+from solaris_chat.engine.ingest.immich_client import ImmichAsset, ImmichPerson
+from solaris_chat.engine.knowledge import projection
+from solaris_chat.engine.knowledge.writer import OkfWriter
+
+
+# Mirrors database/migrations/versions/20260615_0016_okf_knowledge_index.py.
+_SCHEMA = """
+CREATE TABLE entities (
+  id TEXT PRIMARY KEY, type TEXT NOT NULL, canonical_name TEXT NOT NULL,
+  resident_uid TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE entity_aliases (
+  entity_id TEXT NOT NULL, alias TEXT NOT NULL,
+  PRIMARY KEY (entity_id, alias),
+  FOREIGN KEY (entity_id) REFERENCES entities (id));
+CREATE INDEX entity_aliases_alias_idx ON entity_aliases (alias);
+CREATE TABLE facts (
+  id TEXT PRIMARY KEY, subject_entity_id TEXT, resident_uid TEXT NOT NULL,
+  predicate TEXT NOT NULL, value TEXT NOT NULL, confidence REAL,
+  source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (subject_entity_id) REFERENCES entities (id));
+CREATE INDEX facts_subject_predicate_idx ON facts (subject_entity_id, predicate);
+CREATE TABLE events (
+  id TEXT PRIMARY KEY, ts TEXT NOT NULL, resident_uid TEXT NOT NULL,
+  kind TEXT NOT NULL, source TEXT NOT NULL);
+CREATE INDEX events_ts_idx ON events (ts);
+CREATE INDEX events_resident_ts_idx ON events (resident_uid, ts);
+CREATE TABLE event_entities (
+  event_id TEXT NOT NULL, entity_id TEXT NOT NULL, role TEXT NOT NULL,
+  PRIMARY KEY (event_id, entity_id, role),
+  FOREIGN KEY (event_id) REFERENCES events (id),
+  FOREIGN KEY (entity_id) REFERENCES entities (id));
+CREATE TABLE concepts (
+  id TEXT PRIMARY KEY, ref_id TEXT NOT NULL,
+  ref_kind TEXT NOT NULL CHECK (ref_kind IN ('entity', 'event')),
+  okf_path TEXT NOT NULL, embedding_id TEXT, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE ingest_log (
+  source TEXT NOT NULL, external_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+  ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (source, external_id));
+CREATE INDEX ingest_log_source_external_idx ON ingest_log (source, external_id);
+"""
+
+
+class FakeImmichClient:
+    """A mocked read-only Immich source yielding canned `ImmichAsset`s."""
+
+    def __init__(self, assets: list[ImmichAsset]):
+        self.assets = assets
+        self.updated_after_seen: list[str] = []
+
+    async def iter_assets(
+        self, *, updated_after: str = ""
+    ) -> AsyncIterator[ImmichAsset]:
+        self.updated_after_seen.append(updated_after)
+        for asset in self.assets:
+            yield asset
+
+    def asset_uri(self, asset_id: str) -> str:
+        return f"immich://asset/{asset_id}"
+
+
+@pytest.fixture
+def env(tmp_path):
+    db_path = str(tmp_path / "solaris.db")
+    notes_dir = str(tmp_path / "notes")
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    conn.close()
+    writer = OkfWriter(db_path=db_path, notes_dir=notes_dir)
+    return writer, db_path, tmp_path
+
+
+def _asset(**kw) -> ImmichAsset:
+    base = dict(
+        id="a1",
+        file_name="IMG_0001.jpg",
+        when="2026-05-30T10:00:00",
+        checksum="sha-1",
+    )
+    base.update(kw)
+    return ImmichAsset(**base)
+
+
+def _run(client, writer, *, uid="mdopp", updated_after=""):
+    ingest = ImmichIngest(client, writer, ingesting_uid=uid)
+    return asyncio.run(ingest.run(updated_after=updated_after))
+
+
+# --- asset -> event / person / place mapping ---------------------------------
+
+
+def test_asset_maps_to_event_with_media_and_resource(env):
+    writer, db_path, _ = env
+    client = FakeImmichClient([_asset()])
+    stats = _run(client, writer)
+    assert stats.assets == 1 and stats.events_written == 1
+    conn = projection.open_conn(db_path)
+    event = conn.execute("SELECT * FROM events").fetchone()
+    assert event["kind"] == "photo" and event["ts"] == "2026-05-30T10:00:00"
+    concept = conn.execute(
+        "SELECT okf_path FROM concepts WHERE ref_kind = 'event'"
+    ).fetchone()
+    assert concept["okf_path"] == "okf/events/2026-05-30-img-0001-jpg-a1.md"
+    conn.close()
+    text = next((env[2] / "notes").glob("okf/events/*.md")).read_text()
+    assert "resource: immich://asset/a1" in text
+    assert "media:" in text and "- immich://asset/a1" in text
+
+
+def test_named_face_creates_person_and_depicted_edge(env):
+    writer, db_path, tmp_path = env
+    client = FakeImmichClient(
+        [_asset(people=[ImmichPerson(id="p1", name="Anna Müller")])]
+    )
+    stats = _run(client, writer)
+    assert stats.people_written == 1
+    conn = projection.open_conn(db_path)
+    person = conn.execute("SELECT * FROM entities WHERE type = 'person'").fetchone()
+    assert person["canonical_name"] == "Anna Müller"
+    edge = conn.execute("SELECT * FROM event_entities").fetchone()
+    assert edge["role"] == "depicted" and edge["entity_id"] == person["id"]
+    conn.close()
+    person_path = tmp_path / "notes" / "okf" / "people" / "anna-mueller.md"
+    assert person_path.is_file()
+
+
+def test_unnamed_face_is_not_ingested(env):
+    writer, db_path, _ = env
+    # An Immich face cluster with no name yields no ImmichPerson (filtered in
+    # the client); the adapter must not write an entity or a depicted edge.
+    client = FakeImmichClient([_asset(people=[])])
+    _run(client, writer)
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 0
+    assert projection.row_count(conn, "event_entities") == 0
+    conn.close()
+
+
+def test_geo_creates_place_and_event_at_edge(env):
+    writer, db_path, tmp_path = env
+    client = FakeImmichClient(
+        [_asset(latitude=48.1372, longitude=11.5756, city="München", country="DE")]
+    )
+    stats = _run(client, writer)
+    assert stats.places_written == 1
+    conn = projection.open_conn(db_path)
+    place = conn.execute("SELECT * FROM entities WHERE type = 'place'").fetchone()
+    assert place["canonical_name"] == "München, DE"
+    edge = conn.execute("SELECT * FROM event_entities WHERE role = 'at'").fetchone()
+    assert edge["entity_id"] == place["id"]
+    conn.close()
+    place_text = (tmp_path / "notes" / "okf" / "places" / "muenchen-de.md").read_text()
+    assert "geo: 48.1372,11.5756" in place_text
+
+
+def test_asset_without_geo_writes_no_place(env):
+    writer, db_path, _ = env
+    _run(FakeImmichClient([_asset()]), writer)
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 0  # no person, no place
+    conn.close()
+
+
+# --- shared scope ------------------------------------------------------------
+
+
+def test_shared_asset_maps_to_household_scope(env):
+    writer, db_path, _ = env
+    client = FakeImmichClient(
+        [
+            _asset(
+                people=[ImmichPerson(id="p1", name="Anna")],
+                latitude=48.0,
+                longitude=11.0,
+                city="Munich",
+                shared_with=["lena", "mdopp"],
+            )
+        ]
+    )
+    _run(client, writer, uid="mdopp")
+    conn = projection.open_conn(db_path)
+    # Shared → every concept (event/person/place) is household-scoped (§6).
+    scopes = {r[0] for r in conn.execute("SELECT DISTINCT resident_uid FROM events")}
+    scopes |= {r[0] for r in conn.execute("SELECT DISTINCT resident_uid FROM entities")}
+    assert scopes == {"household"}
+    conn.close()
+
+
+def test_unshared_asset_defaults_to_ingesting_resident(env):
+    writer, db_path, _ = env
+    client = FakeImmichClient([_asset(people=[ImmichPerson(id="p1", name="Anna")])])
+    _run(client, writer, uid="lena")
+    conn = projection.open_conn(db_path)
+    assert conn.execute("SELECT resident_uid FROM events").fetchone()[0] == "lena"
+    assert conn.execute("SELECT resident_uid FROM entities").fetchone()[0] == "lena"
+    conn.close()
+
+
+# --- incremental / idempotent ------------------------------------------------
+
+
+def test_reingest_unchanged_is_skipped(env):
+    writer, db_path, _ = env
+    client = FakeImmichClient([_asset()])
+    _run(client, writer)
+    stats = _run(FakeImmichClient([_asset()]), writer)
+    assert stats.assets == 1 and stats.skipped == 1 and stats.events_written == 0
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "events") == 1
+    assert projection.row_count(conn, "ingest_log") == 1
+    conn.close()
+
+
+def test_changed_checksum_reingests(env):
+    writer, db_path, _ = env
+    _run(FakeImmichClient([_asset(checksum="sha-1")]), writer)
+    stats = _run(FakeImmichClient([_asset(checksum="sha-2")]), writer)
+    # New checksum rides the body -> content_hash moves -> not skipped, no dup.
+    assert stats.events_written == 1 and stats.skipped == 0
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "events") == 1
+    log = conn.execute(
+        "SELECT content_hash FROM ingest_log WHERE external_id = 'asset/a1'"
+    ).fetchone()
+    assert log is not None
+    conn.close()
+
+
+def test_updated_after_cursor_is_passed_through(env):
+    writer, _, _ = env
+    client = FakeImmichClient([])
+    _run(client, writer, updated_after="2026-05-01T00:00:00")
+    assert client.updated_after_seen == ["2026-05-01T00:00:00"]
+
+
+def test_same_place_dedups_across_assets(env):
+    writer, db_path, _ = env
+    a1 = _asset(id="a1", checksum="c1", latitude=48.0, longitude=11.0, city="Munich")
+    a2 = _asset(id="a2", checksum="c2", latitude=48.0, longitude=11.0, city="Munich")
+    _run(FakeImmichClient([a1, a2]), writer)
+    conn = projection.open_conn(db_path)
+    # Two assets at one spot -> two events, one shared place concept.
+    assert projection.row_count(conn, "events") == 2
+    assert projection.row_count(conn, "entities") == 1
+    conn.close()

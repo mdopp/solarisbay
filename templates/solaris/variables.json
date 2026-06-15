@@ -140,6 +140,16 @@
     "type": "secret",
     "description": "Bearer token for the gatekeeper's room MCP server (set_room/list_rooms). The listener binds loopback (127.0.0.1); a blank token disables auth, which is fine for that loopback-only default."
   },
+  "IMMICH_BASE_URL": {
+    "type": "text",
+    "description": "Optional: base URL of your household Immich instance (e.g. http://127.0.0.1:2283). When set together with IMMICH_API_KEY, the photo-ingest adapter (#206) reads the library READ-ONLY and maps assets/faces/EXIF-geo into OKF event/person/place concepts. Leave blank to disable photo ingestion.",
+    "default": ""
+  },
+  "IMMICH_API_KEY": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: a READ-ONLY Immich API key (Account Settings → API Keys). Pair with IMMICH_BASE_URL to enable the photo-ingest adapter. Leave blank to skip photo ingestion."
+  },
   "SERVICEBAY_MCP_URL": {
     "type": "text",
     "description": "ServiceBay MCP control surface URL. The admin persona's servicebay_admin toolbox connects here (token minted by the post-deploy, scopes read+lifecycle+mutate). Reached via host loopback.",

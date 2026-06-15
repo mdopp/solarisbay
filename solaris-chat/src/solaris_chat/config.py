@@ -47,6 +47,8 @@ class Settings:
     sb_mcp_token_path: str
     gatekeeper_url: str
     gatekeeper_token: str
+    immich_base_url: str
+    immich_api_key: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -160,6 +162,11 @@ class Settings:
                 "GATEKEEPER_URL", "http://127.0.0.1:10750"
             ).strip(),
             gatekeeper_token=os.environ.get("PUSH_TOKEN", "").strip(),
+            # The household Immich instance the photo-ingest adapter reads
+            # (read-only) to map assets/faces/EXIF-geo into OKF
+            # events/people/places (#206). Empty ⇒ ingest disabled.
+            immich_base_url=os.environ.get("IMMICH_BASE_URL", "").strip(),
+            immich_api_key=os.environ.get("IMMICH_API_KEY", "").strip(),
         )
 
 
