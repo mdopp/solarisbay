@@ -322,9 +322,14 @@ def adopt_ha_long_lived_token(data_dir: str) -> str | None:
     token = _wait_for_ha_token(token_path)
     if token is None:
         jlog(
-            "info",
+            "warn",
             "ha",
-            "no HA long-lived token after retry — likely operator opted out of HA auto-onboarding",
+            "no HA long-lived token to adopt — HASS_TOKEN stays empty, the engine "
+            "cannot reach Home Assistant (no device control / Assist tool calls). "
+            "ServiceBay's HA auto-onboarding (#934/#1002) writes this file; a fresh "
+            "install with no migrated data won't have it until HA onboarding has run. "
+            "Fix: (re)run HA auto-onboarding so it writes the token file, or drop a "
+            "long-lived token there by hand, then redeploy Solaris to adopt it.",
             path=token_path,
         )
         return None

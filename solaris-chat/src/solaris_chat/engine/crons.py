@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from solaris_chat import compaction
+from solaris_chat.engine import store
 from solaris_chat.logging import log
 
 if TYPE_CHECKING:
@@ -223,6 +224,11 @@ class CronRunner:
             log.error("engine.cron.compact_query_failed", error=str(e))
             return
         for row in rows:
+            # The durable household session (#345) is never forked into a
+            # `Fortsetzung` continuation — that would surface as a second
+            # "Zuhause" row (#419). Skip it; it stays in-place.
+            if row["id"] == store.household_session_id(row["owner_uid"]):
+                continue
             usage = compaction.usage_fraction(dict(row), self._context_window)
             if usage is None or usage < _STALE_MIN_USAGE:
                 continue

@@ -1,13 +1,14 @@
-"""Frontend-contract checks for the chat-header persona × speed dropdown (#278).
+"""Frontend-contract checks for the persona × speed selection (#278, #420).
 
-The separate Thinking (Aus/An) and Persona selectors are combined into ONE
-dropdown whose entries pair each persona with a speed (schnell/Thinking),
-mapping back to the unchanged payload.personality + payload.reasoning wiring.
-It carries the #274 hide paths: hidden in the pinned "Zuhause" chat and in the
-ServiceBay-admin embed. The user-facing Thema topic picker is retired (#279d) —
-inline #tag/@person mentions replace it; only the internal household binding
-stays. The real check is the box-verify across the contexts; these lock the
-markup/JS contract.
+The persona × speed choice no longer lives in a chat-header dropdown: #420
+removed the Settings button and the top persona dropdown and moved the choice
+to the `/persona` slash command, which crosses each persona with a speed
+(schnell/Thinking) plus the admin profile and persists the pick for the NEXT
+new chat (mapping back to the unchanged payload.personality + payload.reasoning
+wiring). The household "Zuhause" chat always runs fast. The user-facing Thema
+topic picker is retired (#279d) — inline #tag/@person mentions replace it; only
+the internal household binding stays. The real check is the box-verify across
+the contexts; these lock the markup/JS contract.
 """
 
 from __future__ import annotations
@@ -19,53 +20,50 @@ from solaris_chat.server import STATIC_DIR
 _HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
-def test_separate_reasoning_control_is_gone():
-    # The standalone Thinking toggle and its select are removed; only the single
-    # combined persona dropdown remains in the header.
+def test_header_persona_dropdown_and_settings_button_are_gone():
+    # #420: the standalone Thinking toggle, the header persona dropdown, and the
+    # Settings button are all removed — the choice moved to the /persona command.
     assert 'id="reasoning-control"' not in _HTML
     assert 'id="reasoning-mode"' not in _HTML
-    assert 'id="persona-control"' in _HTML
-    assert 'id="personality"' in _HTML
+    assert 'id="persona-control"' not in _HTML
+    assert 'id="personality"' not in _HTML
+    assert 'id="open-settings"' not in _HTML
+    assert "personalitySel" not in _HTML
 
 
-def test_dropdown_crosses_persona_with_speed():
+def test_persona_choices_cross_persona_with_speed():
     # Each persona is crossed with a speed: schnell (reasoning none) and Thinking
-    # (reasoning high). The model the chat runs on follows the admin Model
-    # setting; the household chat hides this control and is always Solaris/schnell.
+    # (reasoning high). personaChoices() builds the /persona card entries; the
+    # household chat is always Solaris/schnell regardless of the persisted pick.
     assert '{ suffix: "schnell", reasoning: "none" }' in _HTML
     assert '{ suffix: "Thinking", reasoning: "high" }' in _HTML
-    assert 'opt.value = p.id + "|" + sp.reasoning;' in _HTML
-    assert 'opt.textContent = p.label + " · " + sp.suffix;' in _HTML
+    assert "function personaChoices()" in _HTML
+    assert 'value: p.id + "|" + sp.reasoning,' in _HTML
+    assert 'label: p.label + " · " + sp.suffix,' in _HTML
 
 
 def test_selection_maps_back_to_persona_and_reasoning():
-    # currentPersonality()/currentReasoning() unpack the combined value so the
-    # backend personality + reasoning routing is unchanged.
+    # currentPersonality()/currentReasoning() unpack the persisted combined value
+    # so the backend personality + reasoning routing is unchanged.
     assert "function parsePersonaSpeed(v)" in _HTML
     assert (
-        "function currentPersonality() { return parsePersonaSpeed(personalitySel.value).id; }"
+        "function currentPersonality() { return parsePersonaSpeed(personaSpeed()).id; }"
         in _HTML
     )
     assert (
-        "function currentReasoning() { return parsePersonaSpeed(personalitySel.value).reasoning; }"
+        "function currentReasoning() { return parsePersonaSpeed(personaSpeed()).reasoning; }"
         in _HTML
     )
     # The turn payload still sends both fields.
     assert "personality: currentPersonality(), reasoning: currentReasoning()" in _HTML
 
 
-def test_household_hides_the_combined_control():
-    # syncPinnedActive hides the single combined persona control when the
-    # household context is active — the #274 hide path on the new control.
-    sync = re.search(
-        r"function syncPinnedActive\(activeS\) \{(.*?)\n      \}", _HTML, re.S
-    )
-    assert sync, "syncPinnedActive not found"
-    body = sync.group(1)
-    assert "reasoningCtrl" not in body
-    assert "personaCtrl.hidden = active" in body
-    # Highlight stays selection-driven (no #262 always-highlight regression).
-    assert 'householdBtn.classList.toggle("active", active)' in body
+def test_persona_choice_persists_for_next_chat():
+    # #420: the /persona pick is persisted (next-new-chat scope), not applied to a
+    # live header control — set via setPersonaSpeed, read via personaSpeed.
+    assert "function setPersonaSpeed(value)" in _HTML
+    assert 'localStorage.setItem("solaris.persona-speed", value);' in _HTML
+    assert "function personaSpeed()" in _HTML
 
 
 def test_thema_picker_is_retired():
@@ -87,11 +85,10 @@ def test_topic_dashboard_modal_is_removed():
     assert "function openTopicDashboard" not in _HTML
 
 
-def test_embed_hides_persona():
-    rule = re.search(r"\.embed #persona-control \{([^}]*)\}", _HTML)
-    assert rule, "embed persona hide rule missing"
-    assert "display: none" in rule.group(1)
-    # The retired Thema control is no longer in the embed hide rule.
+def test_no_header_persona_or_topic_controls():
+    # #420: with the header dropdown gone there is nothing to hide in the embed —
+    # neither the persona control nor the retired Thema control exists.
+    assert "#persona-control" not in _HTML
     assert "#topic-control" not in _HTML
 
 
@@ -134,26 +131,22 @@ def test_household_chat_title_reads_zuhause():
     )
 
 
-def test_admin_dropdown_option_selects_admin_gateway():
-    # The #293 admin profile is an admin-gated dropdown option whose value packs
+def test_admin_persona_choice_selects_admin_gateway():
+    # The #293 admin profile is an admin-gated /persona choice whose value packs
     # the maintenance persona id, so a new chat under it routes to the admin
     # Hermes gateway server-side (the server re-checks Remote-Groups).
     assert 'var ADMIN_PERSONA = "servicebay-maintenance";' in _HTML
-    assert "function addAdminOption()" in _HTML
-    # Gated: only added when the caller is an admin.
-    add = re.search(r"function addAdminOption\(\) \{(.*?)\n      \}", _HTML, re.S)
-    assert add, "addAdminOption not found"
-    body = add.group(1)
-    assert "if (!isAdmin) return;" in body
-    # The option value carries the maintenance persona (so parsePersonaSpeed +
+    # The admin entry is appended by personaChoices() only when isAdmin.
+    choices = re.search(r"function personaChoices\(\) \{(.*?)\n      \}", _HTML, re.S)
+    assert choices, "personaChoices not found"
+    body = choices.group(1)
+    assert "if (isAdmin) {" in body
+    # The choice value carries the maintenance persona (so parsePersonaSpeed +
     # currentPersonality() send it as payload.personality → admin routing).
-    assert 'opt.value = ADMIN_PERSONA + "|none";' in body
-    assert 'opt.textContent = "Admin";' in body
-    # Appended only after BOTH the persona list and whoami (isAdmin) have loaded.
-    assert (
-        "Promise.all([loadPersonalities(), loadWhoami()]).then(function () {" in _HTML
-    )
-    assert "addAdminOption();" in _HTML
+    assert 'value: ADMIN_PERSONA + "|none",' in body
+    assert 'label: "Admin",' in body
+    # isAdmin is established from whoami before the choice is offered.
+    assert "function loadWhoami()" in _HTML
 
 
 def test_standalone_deep_dropdown_option_is_removed():

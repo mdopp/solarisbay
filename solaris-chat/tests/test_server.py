@@ -1809,6 +1809,24 @@ async def test_whoami_reports_context_window(aiohttp_client):
     assert body["context_window"] == 4096
 
 
+async def test_whoami_reports_durable_household_session_id(aiohttp_client):
+    # The pinned "Zuhause" row opens the resident's ONE durable household session
+    # (#345/#419); /api/whoami exposes its deterministic id so the front end
+    # routes the click into it instead of minting a fresh chat.
+    from solaris_chat.engine import store
+
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+    )
+    client = await aiohttp_client(app)
+    body = await (
+        await client.get("/api/whoami", headers={"Remote-User": "cdopp"})
+    ).json()
+    assert body["household_session_id"] == store.household_session_id("cdopp")
+
+
 # --- Soul edit (admin, direct file write on the chat-owned volume) --------
 
 

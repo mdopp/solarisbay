@@ -193,3 +193,33 @@ async def test_compactor_picks_stale_long_sessions(db, monkeypatch):
     runner = _runner(db, deep, jobs=(job,))
     await runner.tick(datetime(2026, 6, 12, 4, 20, tzinfo=_TZ))
     assert compacted == [("old-long", True)]
+
+
+async def test_compactor_never_forks_the_durable_household_session(db, monkeypatch):
+    # The durable household session (#345) must NOT be compacted into a
+    # `Fortsetzung` continuation by the nightly cron — that would surface as a
+    # second "Zuhause" row (#419). Even stale + long, it is skipped in-place.
+    from solaris_chat.engine import store
+
+    hh = store.household_session_id("anna")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO engine_sessions (id, owner_uid, input_tokens, output_tokens,"
+        " last_activity) VALUES (?, 'anna', 30000, 2000, datetime('now', '-30 days'))",
+        (hh,),
+    )
+    conn.commit()
+    conn.close()
+
+    compacted = []
+
+    async def fake_compact(client, uid, session_id, *, context_window, force=False):
+        compacted.append((session_id, force))
+        return "continuation-1"
+
+    monkeypatch.setattr(crons.compaction, "compact_session", fake_compact)
+    job = crons.CronJob(name="chat-compactor", minute=15, hour=4)
+    _baseline(db, "chat-compactor")
+    runner = _runner(db, _FakeDeep(), jobs=(job,))
+    await runner.tick(datetime(2026, 6, 12, 4, 20, tzinfo=_TZ))
+    assert compacted == []
