@@ -19,7 +19,7 @@ resident's phone.
 **Two ways this runs:**
 - **On request** — a resident explicitly asks for the entry (interactive).
 - **Unattended daily cron** — `solarisbay`'s post-deploy registers a
-  Hermes job (`59 23 * * *`) that fires this skill at 23:59 with no resident
+  cron job (`59 23 * * *`) that fires this skill at 23:59 with no resident
   present. In that mode you must **not** ask anyone for input (see step 2).
 
 The Honcho cross-resident aggregated-highlights extraction is still a separate,
@@ -90,9 +90,9 @@ household.
 - Ensure `/opt/data/notes/journal/` exists (create it if missing).
 - Target file: `/opt/data/notes/journal/journal_<date>.md`.
 - **If the file already exists** (a re-run on the same day): read it with
-  `view_file` and *merge* the new highlights into the existing sections —
+  `notes_read` and *merge* the new highlights into the existing sections —
   never overwrite an earlier entry for that day.
-- Write with `write_file` (or `replace_file_content` for the merge case).
+- Write with `note_write` (new file) or `note_write` with `append=true` (merge case).
 - Write only under `/opt/data/notes/journal/` — never elsewhere.
 
 ### 5. Confirm to the resident
@@ -157,14 +157,14 @@ created_at: {{timestamp}}
 
 ## Verification Checklist
 
-1. Ask Hermes: "Schreib die Familienchronik für heute."
+1. Ask Solaris: "Schreib die Familienchronik für heute."
 2. Confirm `/opt/data/notes/journal/journal_<today>.md` exists (inside the
    container or at `{{DATA_DIR}}/file-share/data/notes/journal/` on the host),
    with valid `type: journal` frontmatter and the standard sections.
 3. Re-run on the same day with a new highlight and confirm the entry is
    *merged*, not overwritten.
-4. Ask Hermes to recall the day's journal and confirm `qmd` retrieves it.
-5. Confirm the daily cron is registered: `hermes cron list` (or
-   `GET /api/jobs`) shows `solaris-daily-chronicle` at `59 23 * * *`. Force a
-   run with `hermes cron run solaris-daily-chronicle` and confirm it writes the
-   entry unattended (no prompt for resident input).
+4. Ask Solaris to recall the day's journal and confirm `qmd` retrieves it.
+5. Confirm the daily cron is registered in the chat admin UI (`/cron` or the
+   admin soul) — shows `solaris-daily-chronicle` at `59 23 * * *`. Trigger a
+   manual run from the admin UI and confirm it writes the entry unattended (no
+   prompt for resident input).

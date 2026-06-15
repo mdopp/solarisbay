@@ -10,7 +10,7 @@ license: MIT
 
 ## Overview
 
-This skill defines the operating procedures for **Solaris Phase 4** (the Self-Enhancement Loop). It equips the Hermes Agent with instructions to perform:
+This skill defines the operating procedures for **Solaris Phase 4** (the Self-Enhancement Loop). It equips the Solaris Engine with instructions to perform:
 1. **Dynamic Knowledge Writing**: Writing or updating structured facts and markdown notes in `/opt/data/notes/` so the hybrid-retrieval system picks them up.
 2. **Dynamic Skill Drafting**: Authoring new skill specifications into a **pending** directory; an administrator must promote them from the ServiceBay dashboard before they go live. Solaris never auto-activates a skill it wrote, and never executes scratch scripts in a regular shell.
 3. **Dynamic Agent Configuration**: Direct conversational feedback rules that update Honcho peer templates and custom instructions.
@@ -28,9 +28,9 @@ When the user shares household facts, preferences, or notes (e.g., "Remember tha
 
 ### Operating Sequence:
 1. Formulate a clean Markdown block summarizing the new facts, including tags and date updated. **Topic tag (conditional)**: if the turn context carries an active-topic line `[Active topic: <name> #topic/<slug>]`, add that exact `#topic/<slug>` tag to the fact block's `#tags` so the fact is retrievable by topic. The slug may be hierarchical (e.g. `#topic/projekt/wintergarten`). Omit it entirely when no active topic is present.
-2. Read the existing note file using `view_file` if it exists.
+2. Read the existing note file using `notes_read` if it exists.
 3. **Wiki-link the named entities** (see "Wiki-linking facts" below) so the note joins the Obsidian graph instead of sitting isolated.
-4. Append or rewrite the file using `write_to_file` (or `replace_file_content` for edits) under `/opt/data/notes/`.
+4. Append or rewrite the file using `note_write` (new file) or `note_write` with `append=true` (for edits) under `/opt/data/notes/`.
 5. **Create stub notes** for any new people/places you linked that the vault doesn't have yet (see below).
 6. Inform the user: *"Ich habe mir das notiert in <filename>."*
 
@@ -93,13 +93,13 @@ When a user requests a new automation or capability (e.g., "Learn how to parse l
 
 - **Write only to `/opt/data/skills-pending/<slug>/SKILL.md`.** Never write to `/opt/data/skills/solaris/...` directly. Hermes auto-discovers skills under `/opt/data/skills/solaris`; auto-writing there would make the new skill live with no human review, which is a prompt-injection risk.
 - **Do not execute the skill's scripts.** No `run_command` against generated Python, JavaScript, or shell. Test scripts may be drafted alongside SKILL.md as *files* (e.g. `<slug>/scratch/test_run.py`) for the admin to inspect, but Solaris never runs them itself in the current Hermes shell. A sandboxed test runtime is a planned follow-up; until it lands, drafted scripts are inert until promotion.
-- **Do not call `restart_service hermes`.** Promotion triggers the restart from the dashboard. Solaris's job ends at "wrote the SKILL.md to pending".
+- **Do not call `restart_service`.** Promotion triggers the restart from the dashboard. Solaris's job ends at "wrote the SKILL.md to pending".
 - **Use a safe `<slug>`.** Lowercase letters, digits, dashes; no `/`, `..`, leading dots, or whitespace. Reject names that would escape `/opt/data/skills-pending/`.
 
 ### Operating Sequence:
 
 1. Create `/opt/data/skills-pending/<slug>/` (mkdir is fine; the directory is auto-created on first write).
-2. Write the SKILL.md frontmatter and body using `write_to_file`. Include:
+2. Write the SKILL.md frontmatter and body using `note_write`. Include:
    - `name: solaris-custom-<slug>`
    - `description:` a clear, single-paragraph LLM-router description.
    - `version: 1.0.0`, `author: Solaris Dynamic Compiler`, `license: MIT`.
@@ -131,7 +131,7 @@ license: MIT
 ### What admin promotion does (for context, not actions you take):
 
 1. The ServiceBay dashboard's *Pending Solaris skills* section lists every directory under `/opt/data/skills-pending/`.
-2. Admin clicks **Promote**: the directory moves to `/opt/data/skills/solaris/<slug>/`, then ServiceBay restarts the `hermes` service so the new skill is loaded.
+2. Admin clicks **Promote**: the directory moves to `/opt/data/skills/solaris/<slug>/`, then ServiceBay restarts the `solaris` service so the new skill is loaded.
 3. Admin clicks **Reject**: the directory is deleted from pending. The skill never goes live.
 
 ---

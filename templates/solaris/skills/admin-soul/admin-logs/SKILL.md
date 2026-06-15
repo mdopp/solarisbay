@@ -32,8 +32,8 @@ Out of scope:
 - **`get_container_logs <container>`** — one container (`<service>-<app>`). Use
   this for a precise read; it's the default for a deep-dive.
 - **`get_service_logs <service>`** — interleaves every container in the service's
-  pod. Use it when the failure spans a sidecar (e.g. `solaris-config-agent`
-  alongside `solaris-hermes`) or you don't yet know which container logged the
+  pod. Use it when the failure spans a sidecar (e.g. `solaris-gatekeeper`
+  alongside `solaris-chat`) or you don't yet know which container logged the
   error.
 
 Resolve the container name the same way `solaris-admin-diagnose` does

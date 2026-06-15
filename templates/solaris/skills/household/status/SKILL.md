@@ -1,6 +1,6 @@
 ---
 name: solaris-status
-description: Use when the user asks "is Solaris alive?", "is everything working?", "why isn't the light responding?", or any other "health-check" style question. Probes the configured Solaris dependencies (solaris.db, Ollama, Hermes, Home Assistant, ServiceBay-MCP) and reports per-component status. Read-only.
+description: Use when the user asks "is Solaris alive?", "is everything working?", "why isn't the light responding?", or any other "health-check" style question. Probes the configured Solaris dependencies (solaris.db, Ollama, Home Assistant, ServiceBay-MCP) and reports per-component status. Read-only.
 version: 0.3.0
 author: Solaris
 license: MIT
@@ -29,7 +29,6 @@ Quick "is everything OK?" probe across every Solaris dependency. Read-only — n
      "ok": false,
      "results": [
        {"name": "ollama", "ok": true, "latency_ms": 8, "type": "http"},
-       {"name": "hermes-api", "ok": true, "latency_ms": 12, "type": "http"},
        {"name": "home-assistant", "ok": false, "latency_ms": 3000, "type": "http", "detail": "ConnectError: ..."},
        {"name": "solaris.db", "ok": true, "latency_ms": 1, "type": "script"}
      ]
@@ -39,7 +38,7 @@ Quick "is everything OK?" probe across every Solaris dependency. Read-only — n
 4. Summarise verbally:
    - **All green** → "Alles ok." or "Alles grün."
    - **One red** → name it: "Home Assistant antwortet nicht — ich erreiche die Haussteuerung gerade nicht."
-   - **Multiple red** → group by impact: "Hermes und Ollama sind beide down — das ist ernst."
+   - **Multiple red** → group by impact: "Ollama und Home Assistant sind beide down — das ist ernst."
 
 ## What gets probed
 
@@ -48,9 +47,8 @@ This skill **does not** define what gets probed. The set of health checks is **d
 | Check | Type | Purpose |
 |---|---|---|
 | `solaris.db` | `script` | SQLite open + `SELECT 1` on `cloud_audit` — Solaris's audit state readable |
-| `hermes-api` | `http` | Hermes' `/health` endpoint reachable with the token |
 | `ollama` | `http` | Local LLM responding to `/api/tags` |
-| `home-assistant` | `http` | Home Assistant reachable (Hermes native HA gateway target) |
+| `home-assistant` | `http` | Home Assistant reachable (reached via the engine's HA tools/MCP) |
 | `servicebay-mcp` | `http` | Platform control surface reachable |
 | `gatekeeper` *(Phase 1)* | `http` | Gatekeeper container's internal `/push/health` |
 | `voice-whisper` *(Phase 1)* | `podman` | Whisper container running |
@@ -62,7 +60,7 @@ ServiceBay's existing templates (`home-assistant`, `media`, …) register their 
 
 - **Skill correctness** — we know Hermes is reachable, not that a specific skill behaves. For that, `solaris-audit-query` over `cloud_audit` and the relevant SKILL events.
 - **Voice latency** — `podman`/`http` checks say the service is up, not that it's fast. For latency hunting, `solaris-debug-set` + the gatekeeper's `gatekeeper.transcript` / `gatekeeper.response` timestamps.
-- **HA device state** — "is the office light actually on?" is a Hermes HA-tool query, not a status probe.
+- **HA device state** — "is the office light actually on?" is an HA-tool query, not a status probe.
 
 ## Failure paths
 
@@ -72,7 +70,7 @@ ServiceBay's existing templates (`home-assistant`, `media`, …) register their 
 
 | Phase | Checks registered by solarisbay's post-deploy |
 |---|---|
-| **0 (now)** | solaris.db, hermes-api, ollama, home-assistant, servicebay-mcp |
+| **0 (now)** | solaris.db, ollama, home-assistant, servicebay-mcp |
 | **1** | + gatekeeper, voice-whisper, voice-piper |
 | **2** | + gatekeeper-speaker-id (model loaded? embeddings table populated?) |
 | **3a** | + ingestion-pipeline backlog (rows in incoming state) |

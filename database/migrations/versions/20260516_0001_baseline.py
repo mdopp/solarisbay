@@ -13,6 +13,8 @@ Storage choice rationale: see schema/README.md.
 
 from __future__ import annotations
 
+import os
+
 from alembic import op
 
 
@@ -35,11 +37,21 @@ def upgrade() -> None:
         )
         """
     )
+    # Initial debug_mode.active comes from the operator's install-wizard
+    # choice (SOLARIS_DEBUG_MODE_DEFAULT on the schema-init container);
+    # fall back to true only when unset, to preserve prior behavior.
+    debug_active = os.environ.get(
+        "SOLARIS_DEBUG_MODE_DEFAULT", "true"
+    ).strip().lower() in (
+        "true",
+        "1",
+        "yes",
+    )
     op.execute(
-        """
+        f"""
         INSERT INTO system_settings (key, value) VALUES
           ('debug_mode',
-           '{"active": true, "verbose_until": null, "latency_annotations": false}')
+           '{{"active": {"true" if debug_active else "false"}, "verbose_until": null, "latency_annotations": false}}')
         ON CONFLICT(key) DO NOTHING
         """
     )

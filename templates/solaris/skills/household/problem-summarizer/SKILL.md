@@ -24,7 +24,7 @@ system; this one *remembers* how past problems were solved.
 **Two ways this runs:**
 - **On request** — an admin explicitly asks to summarize problems / update the
   KB (interactive).
-- **Unattended cron** — `solarisbay`'s post-deploy registers a Hermes job
+- **Unattended cron** — `solarisbay`'s post-deploy registers a cron job
   (`30 4 * * 1`, Mondays 04:30) that fires this skill weekly with no admin
   present. In that mode you must **not** ask anyone for input (see step 4).
 
@@ -49,9 +49,9 @@ Out of scope:
 ### 1. Gather troubleshooting signal from what is available now
 Compile only from sources you actually have — do **not** invent problems:
 - **System logs** — recent error/warn lines from the stack. Use the `terminal`
-  tool, e.g. `podman logs --since 168h solaris-hermes 2>&1 | grep -iE "error|warn|fail"`
-  for the Hermes container, and the equivalent for other Solaris containers
-  (`gatekeeper`, `ollama`, …). Look for *resolved* sequences: an error followed
+  tool, e.g. `podman logs --since 168h solaris-chat 2>&1 | grep -iE "error|warn|fail"`
+  for the chat container, and the equivalent for other Solaris containers
+  (`solaris-gatekeeper`, `ollama`, …). Look for *resolved* sequences: an error followed
   later by a quiet period or an explicit fix.
 - **Past admin/diagnostic conversations (from memory)** — recall diagnostic
   threads from your memory provider where a problem was reported, investigated,
@@ -77,10 +77,10 @@ terse; German for a German household, but keep command/file names verbatim.
 - Ensure `/opt/data/notes/knowledge-base/` exists (create it if missing).
 - Target file: `/opt/data/notes/knowledge-base/troubleshooting.md`.
 - **If the file already exists** (the normal case after the first run): read it
-  with `view_file` and *merge* — update an existing problem's entry in place
+  with `notes_read` and *merge* — update an existing problem's entry in place
   when you have new indicators/solution detail, append genuinely new problems,
   and never drop or overwrite an entry you don't have a reason to change.
-- Write with `write_file` (first run) or `replace_file_content` (the merge
+- Write with `note_write` (first run) or `note_write` with `append=true` (the merge
   case). Write **only** this one file.
 
 **If there's too little for a meaningful update:**
@@ -138,13 +138,12 @@ updated_at: {{timestamp}}
 
 ## Verification checklist
 
-1. Ask Hermes: "Fass die letzten Probleme und Lösungen zusammen."
+1. Ask Solaris: "Fass die letzten Probleme und Lösungen zusammen."
 2. Confirm `/opt/data/notes/knowledge-base/troubleshooting.md` exists (inside
    the container or at `{{DATA_DIR}}/file-share/data/notes/knowledge-base/` on
    the host), with valid `type: knowledge-base` frontmatter and at least one
    `## ` problem block in the Problem/Indicators/Solution shape.
 3. Re-run and confirm entries are *merged*, not duplicated/overwritten.
-4. Confirm the weekly cron is registered: `GET /api/jobs` (or `hermes cron
-   list`) shows `solaris-problem-summarizer` at `30 4 * * 1`. Force a run and
-   confirm it updates the KB unattended (no prompt for admin input).
-```
+4. Confirm the weekly cron is registered in the chat admin UI — shows
+   `solaris-problem-summarizer` at `30 4 * * 1`. Trigger a manual run from the
+   admin UI and confirm it updates the KB unattended (no prompt for admin input).

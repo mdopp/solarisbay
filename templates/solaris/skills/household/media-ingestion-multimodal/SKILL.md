@@ -109,7 +109,7 @@ lets backlinks accumulate on that entity over time.
    path-unsafe characters `/` and `\`; keep spaces and capitalisation so the
    basename matches the `[[Entity]]` link).
 4. **Idempotent** — never overwrite. If the existence check in 3b found a note
-   anywhere in the vault, skip; only `write_file` when the target is genuinely
+   anywhere in the vault, skip; only `note_write` when the target is genuinely
    absent.
 5. **Minimal content, no fabrication** — write only the name and type; do not
    invent biography, discography, or dates. Use the stub template below.
@@ -138,7 +138,7 @@ Then continue to step 4 and write the ingested item's own note as usual — its
   - Books: `book_<sanitized_title>.md`
   - Albums: `album_<sanitized_artist>_<sanitized_title>.md`
   - Documents: `doc_<sanitized_subject>_<date>.md`
-- Write the compiled Markdown note into `/opt/data/notes/<filename>` using the file system `write_file` or `terminal` tool.
+- Write the compiled Markdown note into `/opt/data/notes/<filename>` using `note_write`.
 - Ensure the `/opt/data/notes` parent directory is created if not already present.
 
 ### 5. Proactive Resident Confirmation
@@ -262,4 +262,4 @@ To verify correctness:
 1. Upload an image of a book cover or document page via Signal or Telegram.
 2. Verify that `media-ingestion-multimodal` triggers and correctly runs the vision analysis.
 3. Check `/opt/data/notes/` inside the container or `{{DATA_DIR}}/file-share/data/notes` on the host to ensure the Markdown file exists and is populated correctly.
-4. Ask Hermes: "Erzähl mir von dem Buch, das ich heute hinzugefügt habe" and confirm the native `qmd` skill retrieves it.
+4. Ask Solaris: "Erzähl mir von dem Buch, das ich heute hinzugefügt habe" and confirm the native `qmd` skill retrieves it.
