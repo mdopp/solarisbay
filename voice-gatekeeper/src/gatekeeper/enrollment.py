@@ -98,7 +98,7 @@ def add_routes(
                 {
                     "ok": False,
                     "reason": "speaker_id_disabled",
-                    "hint": "set SOLILOS_SPEAKER_ID_ENABLED=1 and install [speaker-id] extras",
+                    "hint": "set SOLARIS_SPEAKER_ID_ENABLED=1 and install [speaker-id] extras",
                 },
                 status=503,
             )

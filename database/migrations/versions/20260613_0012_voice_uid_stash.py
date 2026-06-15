@@ -8,7 +8,7 @@ The transcript-keyed uid side-channel for the live HA Assist path (#350,
 approach b). When the gatekeeper serves as HA's Wyoming STT provider it
 resolves the speaking resident (ECAPA + k-NN) and stashes
 `{transcript -> uid}` here; the engine facade looks the uid up by the
-incoming utterance text when HA calls `conversation.sol` for the same turn.
+incoming utterance text when HA calls `conversation.solaris` for the same turn.
 Consume-once + short TTL so a stale uid never leaks into a later turn.
 """
 
@@ -37,5 +37,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     raise NotImplementedError(
-        "Downgrade is not supported. Delete solilos.db and re-run upgrade if needed."
+        "Downgrade is not supported. Delete solaris.db and re-run upgrade if needed."
     )

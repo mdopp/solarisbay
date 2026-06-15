@@ -1,6 +1,6 @@
 name: build-images
 
-# Build and publish container images for Solilos.
+# Build and publish container images for Solaris.
 #
 # - On push to `main` and tags `v*`: builds + pushes to GHCR.
 # - On pull requests touching image sources: builds without pushing,
@@ -16,7 +16,7 @@ on:
     paths:
       - 'voice-gatekeeper/**'
       - 'database/**'
-      - 'solilos-chat/**'
+      - 'solaris-chat/**'
       - 'tts-martin/**'
       - 'tts-martin/**'
       - '.github/workflows/build-images.yml'
@@ -24,7 +24,7 @@ on:
     paths:
       - 'voice-gatekeeper/**'
       - 'database/**'
-      - 'solilos-chat/**'
+      - 'solaris-chat/**'
       - 'tts-martin/**'
       - '.github/workflows/build-images.yml'
   workflow_dispatch:
@@ -46,30 +46,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: solilos-gatekeeper
+          - image: solaris-gatekeeper
             context: voice-gatekeeper
-            description: "Solilos Wyoming-to-Hermes bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Runs as a container inside the SolBay pod; reaches ServiceBay's voice template via host loopback (both pods hostNetwork)."
-          - image: solilos-gatekeeper-ml
+            description: "Solaris Wyoming-to-Hermes bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Runs as a container inside the SolarisBay pod; reaches ServiceBay's voice template via host loopback (both pods hostNetwork)."
+          - image: solaris-gatekeeper-ml
             context: voice-gatekeeper
             build_args: |
               EXTRAS=[speaker-id]
-            description: "Solilos gatekeeper with Phase-2 speaker-ID baked in (SpeechBrain + torch / ECAPA). Same bridge as solilos-gatekeeper; use this image and set SOLILOS_SPEAKER_ID_ENABLED=true to resolve the speaking resident per turn. Larger image (torch); biometric."
-          - image: solilos-schema-init
+            description: "Solaris gatekeeper with Phase-2 speaker-ID baked in (SpeechBrain + torch / ECAPA). Same bridge as solaris-gatekeeper; use this image and set SOLARIS_SPEAKER_ID_ENABLED=true to resolve the speaking resident per turn. Larger image (torch); biometric."
+          - image: solaris-schema-init
             context: database
-            description: "Solilos schema-init sidecar — runs alembic upgrade head against the SolBay pod's local SQLite (solilos.db) on every pod start. Idempotent."
-          - image: solilos-tts
+            description: "Solaris schema-init sidecar — runs alembic upgrade head against the SolarisBay pod's local SQLite (solaris.db) on every pod start. Idempotent."
+          - image: solaris-tts
             context: tts-martin
-            description: "Sol's voice — Kokoro-82M ONNX German single speaker Martin (Apache-2.0, vendored from Godelaune/Kokoro-82M-ONNX-German-Martin with the model baked in). OpenAI-compatible /v1/audio/speech on :8881; KOKORO_ONNX_PROVIDER=cuda puts the 82M model on the GPU."
-          - image: solilos-chat
-            context: solilos-chat
+            description: "Solaris's voice — Kokoro-82M ONNX German single speaker Martin (Apache-2.0, vendored from Godelaune/Kokoro-82M-ONNX-German-Martin with the model baked in). OpenAI-compatible /v1/audio/speech on :8881; KOKORO_ONNX_PROVIDER=cuda puts the 82M model on the GPU."
+          - image: solaris-chat
+            context: solaris-chat
             inject_version: true
-            description: "Solilos chat — the Sol Engine agent core (direct Ollama agent loop, HA tools, scheduler, crons) with its chat surface and the Ollama-compatible facade for HA Assist. Reads the Authelia Remote-User header for SSO; holds SOL_API_KEY server-side."
+            description: "Solaris chat — the Solaris Engine agent core (direct Ollama agent loop, HA tools, scheduler, crons) with its chat surface and the Ollama-compatible facade for HA Assist. Reads the Authelia Remote-User header for SSO; holds SOLARIS_API_KEY server-side."
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           # Full history + tags so `git describe --tags` can compute the
-          # SOLILOS_VERSION badge value (shallow checkout sees no tags).
+          # SOLARIS_VERSION badge value (shallow checkout sees no tags).
           fetch-depth: 0
           ref: ${{ inputs.ref || github.ref }}
 
@@ -132,7 +132,7 @@ jobs:
           file: ${{ matrix.context }}/Dockerfile
           build-args: |
             ${{ matrix.build_args }}
-            ${{ matrix.inject_version && format('SOLILOS_VERSION={0}', steps.version.outputs.v) || '' }}
+            ${{ matrix.inject_version && format('SOLARIS_VERSION={0}', steps.version.outputs.v) || '' }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

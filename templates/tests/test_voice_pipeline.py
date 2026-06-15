@@ -2,7 +2,7 @@
 
 wire_voice_pipeline registers wyoming whisper/piper, creates the ollama-
 integration conversation agent against the engine facade and builds the
-"Sol" Assist pipeline. The HA REST helpers are monkeypatched with canned
+"Solaris" Assist pipeline. The HA REST helpers are monkeypatched with canned
 responses; the websocket path is covered by patching HAWebSocket."""
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def _load(name: str, path: pathlib.Path):
 
 @pytest.fixture(scope="module")
 def pd():
-    return _load("solilos_pd_voice", TEMPLATES / "solilos" / "post-deploy.py")
+    return _load("solaris_pd_voice", TEMPLATES / "solaris" / "post-deploy.py")
 
 
 def test_flow_create_happy_path(pd, monkeypatch):
@@ -91,7 +91,7 @@ def test_conversation_agent_creates_entry_and_subentry(pd, monkeypatch):
             return 200, {"type": "create_entry"}
         raise AssertionError(f"unexpected POST {path}")
 
-    entities = iter(["", "conversation.sol"])
+    entities = iter(["", "conversation.solaris"])
 
     monkeypatch.setattr(pd, "_ha_post", fake_post)
     monkeypatch.setattr(
@@ -99,7 +99,7 @@ def test_conversation_agent_creates_entry_and_subentry(pd, monkeypatch):
     )
     monkeypatch.setattr(pd.time, "sleep", lambda s: None)
     entity = pd.ensure_conversation_agent("tok", "8787", "key")
-    assert entity == "conversation.sol"
+    assert entity == "conversation.solaris"
     assert subentry_posts[0] == {"handler": ["oll1", "conversation"]}
     assert subentry_posts[1]["model"] == pd.ENGINE_MODEL
     assert subentry_posts[1]["name"] == pd.CONVERSATION_AGENT_NAME
@@ -116,9 +116,9 @@ def test_conversation_agent_idempotent_when_entity_exists(pd, monkeypatch):
     monkeypatch.setattr(pd, "_ha_post", fake_post)
     monkeypatch.setattr(pd, "_ollama_entry_id", lambda token, url: "oll1")
     monkeypatch.setattr(
-        pd, "_find_entity", lambda token, prefix, needle="": "conversation.sol"
+        pd, "_find_entity", lambda token, prefix, needle="": "conversation.solaris"
     )
-    assert pd.ensure_conversation_agent("tok", "8787", "key") == "conversation.sol"
+    assert pd.ensure_conversation_agent("tok", "8787", "key") == "conversation.solaris"
 
 
 class _FakeWS:
@@ -160,10 +160,10 @@ def test_pipeline_created_and_preferred(pd, monkeypatch):
     monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
     assigned = []
     monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: assigned.append(1))
-    assert pd.ensure_assist_pipeline("tok", "conversation.sol") is True
+    assert pd.ensure_assist_pipeline("tok", "conversation.solaris") is True
     create = _FakeWS.created[0]
-    assert create["name"] == "Sol"
-    assert create["conversation_engine"] == "conversation.sol"
+    assert create["name"] == "Solaris"
+    assert create["conversation_engine"] == "conversation.solaris"
     assert create["stt_engine"] == "stt.faster_whisper"
     assert create["tts_engine"] == "tts.piper"
     assert create["language"] == "de"
@@ -188,7 +188,7 @@ def test_pipeline_prefers_martin_bridge(pd, monkeypatch):
     monkeypatch.setattr(pd, "_find_entity", find)
     monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
     monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
-    assert pd.ensure_assist_pipeline("tok", "conversation.sol") is True
+    assert pd.ensure_assist_pipeline("tok", "conversation.solaris") is True
     create = _FakeWS.created[0]
     assert create["tts_engine"] == "tts.openai_streaming"
     assert create["tts_language"] == "de"
@@ -210,7 +210,7 @@ def test_pipeline_piper_fallback_keeps_regional_language(pd, monkeypatch):
     monkeypatch.setattr(pd, "_find_entity", find)
     monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
     monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
-    assert pd.ensure_assist_pipeline("tok", "conversation.sol") is True
+    assert pd.ensure_assist_pipeline("tok", "conversation.solaris") is True
     create = _FakeWS.created[0]
     assert create["tts_engine"] == "tts.piper"
     assert create["tts_language"] == "de_DE"
@@ -224,12 +224,12 @@ def test_existing_pipeline_converges_onto_martin(pd, monkeypatch):
     _FakeWS.updated = []
     _FakeWS.pipelines = [
         {
-            "name": "Sol",
+            "name": "Solaris",
             "id": "p-old",
             "tts_engine": "tts.piper",
             "tts_language": "de_DE",
             "tts_voice": None,
-            "conversation_engine": "conversation.sol",
+            "conversation_engine": "conversation.solaris",
             "conversation_language": "de",
             "language": "de",
             "stt_engine": "stt.faster_whisper",
@@ -258,7 +258,7 @@ def test_existing_pipeline_converges_onto_martin(pd, monkeypatch):
     monkeypatch.setattr(pd, "_find_entity", find)
     monkeypatch.setattr(pd, "HAWebSocket", _WS)
     monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
-    assert pd.ensure_assist_pipeline("tok", "conversation.sol") is True
+    assert pd.ensure_assist_pipeline("tok", "conversation.solaris") is True
     assert _FakeWS.created == []
     upd = _FakeWS.updated[0]
     assert upd["tts_engine"] == "tts.openai_streaming"
@@ -269,7 +269,7 @@ def test_existing_pipeline_converges_onto_martin(pd, monkeypatch):
 
 def test_pipeline_idempotent_on_name(pd, monkeypatch):
     _FakeWS.created, _FakeWS.preferred = [], []
-    _FakeWS.pipelines = [{"name": "Sol", "id": "p-existing"}]
+    _FakeWS.pipelines = [{"name": "Solaris", "id": "p-existing"}]
     entity_map = {"stt.": "stt.x", "tts.": "tts.y"}
     monkeypatch.setattr(
         pd,
@@ -278,7 +278,7 @@ def test_pipeline_idempotent_on_name(pd, monkeypatch):
     )
     monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
     monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
-    assert pd.ensure_assist_pipeline("tok", "conversation.sol") is True
+    assert pd.ensure_assist_pipeline("tok", "conversation.solaris") is True
     assert _FakeWS.created == []
     assert _FakeWS.preferred == ["p-existing"]
 
@@ -291,7 +291,7 @@ def test_pipeline_prefers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
 
     def find(token, prefix, needle=""):
         if prefix == "stt." and needle == "gatekeeper":
-            return "stt.solilos_gatekeeper_asr"
+            return "stt.solaris_gatekeeper_asr"
         if prefix == "stt.":
             return "stt.faster_whisper"
         if prefix == "tts.":
@@ -302,10 +302,10 @@ def test_pipeline_prefers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
     monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
     monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
     ok = pd.ensure_assist_pipeline(
-        "tok", "conversation.sol", prefer_gatekeeper_stt=True
+        "tok", "conversation.solaris", prefer_gatekeeper_stt=True
     )
     assert ok is True
-    assert _FakeWS.created[0]["stt_engine"] == "stt.solilos_gatekeeper_asr"
+    assert _FakeWS.created[0]["stt_engine"] == "stt.solaris_gatekeeper_asr"
 
 
 def test_pipeline_stt_unchanged_when_speaker_id_off(pd, monkeypatch):
@@ -316,7 +316,7 @@ def test_pipeline_stt_unchanged_when_speaker_id_off(pd, monkeypatch):
     )
     monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
     monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
-    pd.ensure_assist_pipeline("tok", "conversation.sol")  # default: off
+    pd.ensure_assist_pipeline("tok", "conversation.solaris")  # default: off
     assert _FakeWS.created[0]["stt_engine"] == "stt.faster_whisper"
 
 
@@ -326,12 +326,12 @@ def test_existing_pipeline_converges_stt_to_gatekeeper(pd, monkeypatch):
     _FakeWS.created, _FakeWS.preferred, _FakeWS.updated = [], [], []
     _FakeWS.pipelines = [
         {
-            "name": "Sol",
+            "name": "Solaris",
             "id": "p-old",
             "tts_engine": "tts.piper",
             "tts_language": "de_DE",
             "tts_voice": None,
-            "conversation_engine": "conversation.sol",
+            "conversation_engine": "conversation.solaris",
             "conversation_language": "de",
             "language": "de",
             "stt_engine": "stt.faster_whisper",
@@ -343,7 +343,7 @@ def test_existing_pipeline_converges_stt_to_gatekeeper(pd, monkeypatch):
 
     def find(token, prefix, needle=""):
         if prefix == "stt." and needle == "gatekeeper":
-            return "stt.solilos_gatekeeper_asr"
+            return "stt.solaris_gatekeeper_asr"
         if prefix == "stt.":
             return "stt.faster_whisper"
         if prefix == "tts." and needle == "openai":
@@ -356,11 +356,11 @@ def test_existing_pipeline_converges_stt_to_gatekeeper(pd, monkeypatch):
     monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
     monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
     ok = pd.ensure_assist_pipeline(
-        "tok", "conversation.sol", prefer_gatekeeper_stt=True
+        "tok", "conversation.solaris", prefer_gatekeeper_stt=True
     )
     assert ok is True
     assert _FakeWS.created == []
-    assert _FakeWS.updated[0]["stt_engine"] == "stt.solilos_gatekeeper_asr"
+    assert _FakeWS.updated[0]["stt_engine"] == "stt.solaris_gatekeeper_asr"
 
 
 def test_wire_registers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
@@ -369,7 +369,9 @@ def test_wire_registers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
     monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
     monkeypatch.setattr(pd, "_wait_for_port", lambda host, port, timeout_secs=60: True)
     monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
-    monkeypatch.setattr(pd, "ensure_conversation_agent", lambda *a: "conversation.sol")
+    monkeypatch.setattr(
+        pd, "ensure_conversation_agent", lambda *a: "conversation.solaris"
+    )
     seen = {}
     monkeypatch.setattr(
         pd,
@@ -382,7 +384,7 @@ def test_wire_registers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
     monkeypatch.setattr(
         pd,
         "gatekeeper_container_env",
-        lambda name: "true" if name == "SOLILOS_SPEAKER_ID_ENABLED" else "10700",
+        lambda name: "true" if name == "SOLARIS_SPEAKER_ID_ENABLED" else "10700",
     )
     pd.wire_voice_pipeline("tok", "8787", "key")
     assert "gatekeeper" in wired
@@ -403,7 +405,9 @@ def test_wire_waits_for_gatekeeper_port_before_registering(pd, monkeypatch):
 
     monkeypatch.setattr(pd, "_wait_for_port", fake_wait)
     monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
-    monkeypatch.setattr(pd, "ensure_conversation_agent", lambda *a: "conversation.sol")
+    monkeypatch.setattr(
+        pd, "ensure_conversation_agent", lambda *a: "conversation.solaris"
+    )
     seen = {}
     monkeypatch.setattr(
         pd,
@@ -415,7 +419,7 @@ def test_wire_waits_for_gatekeeper_port_before_registering(pd, monkeypatch):
     monkeypatch.setattr(
         pd,
         "gatekeeper_container_env",
-        lambda name: "true" if name == "SOLILOS_SPEAKER_ID_ENABLED" else "10700",
+        lambda name: "true" if name == "SOLARIS_SPEAKER_ID_ENABLED" else "10700",
     )
     pd.wire_voice_pipeline("tok", "8787", "key")
     assert waited == [10700]
@@ -432,7 +436,9 @@ def test_wire_skips_gatekeeper_stt_when_port_never_up(pd, monkeypatch):
     monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
     monkeypatch.setattr(pd, "_wait_for_port", lambda host, port, timeout_secs=60: False)
     monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
-    monkeypatch.setattr(pd, "ensure_conversation_agent", lambda *a: "conversation.sol")
+    monkeypatch.setattr(
+        pd, "ensure_conversation_agent", lambda *a: "conversation.solaris"
+    )
     seen = {}
     monkeypatch.setattr(
         pd,
@@ -444,7 +450,7 @@ def test_wire_skips_gatekeeper_stt_when_port_never_up(pd, monkeypatch):
     monkeypatch.setattr(
         pd,
         "gatekeeper_container_env",
-        lambda name: "true" if name == "SOLILOS_SPEAKER_ID_ENABLED" else "10700",
+        lambda name: "true" if name == "SOLARIS_SPEAKER_ID_ENABLED" else "10700",
     )
     pd.wire_voice_pipeline("tok", "8787", "key")
     assert "gatekeeper" not in wired
@@ -456,7 +462,9 @@ def test_wire_no_gatekeeper_stt_when_speaker_id_off(pd, monkeypatch):
     monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
     monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
     monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
-    monkeypatch.setattr(pd, "ensure_conversation_agent", lambda *a: "conversation.sol")
+    monkeypatch.setattr(
+        pd, "ensure_conversation_agent", lambda *a: "conversation.solaris"
+    )
     seen = {}
     monkeypatch.setattr(
         pd,

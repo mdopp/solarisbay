@@ -4,7 +4,7 @@ Revision ID: 0010_engine_cron_runs
 Revises: 0009_engine_sessions
 Create Date: 2026-06-12
 
-Phase 3 of the Sol Engine: the night jobs (daily-chronicle,
+Phase 3 of the Solaris Engine: the night jobs (daily-chronicle,
 problem-summarizer, chat-compactor) move from Hermes' jobs.json onto the
 engine scheduler. Jobs are defined in code (idempotent by construction —
 the Hermes-era upgrade de-dup problem from #332 can't recur); this table
@@ -35,5 +35,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     raise NotImplementedError(
-        "Downgrade is not supported. Delete solilos.db and re-run upgrade if needed."
+        "Downgrade is not supported. Delete solaris.db and re-run upgrade if needed."
     )

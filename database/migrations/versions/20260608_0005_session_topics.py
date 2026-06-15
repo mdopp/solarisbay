@@ -4,7 +4,7 @@ Revision ID: 0005_session_topics
 Revises: 0004_topics
 Create Date: 2026-06-08
 
-The chat<->topic assignment (solilos-architecture.md §3, D1): a chat has exactly
+The chat<->topic assignment (solaris-architecture.md §3, D1): a chat has exactly
 one *primary* topic and any number of *secondary* tags. `topic_slug` references
 the `topics` registry (0004); `owner_uid` scopes the assignment per-resident
 (D3). The partial unique index enforces at-most-one primary row per session;
@@ -55,5 +55,5 @@ def downgrade() -> None:
     # One-way, matching the other migrations: a downgrade would drop every
     # chat<->topic assignment.
     raise NotImplementedError(
-        "Downgrade is not supported. Delete solilos.db and re-run upgrade if needed."
+        "Downgrade is not supported. Delete solaris.db and re-run upgrade if needed."
     )

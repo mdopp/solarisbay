@@ -4,7 +4,7 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "package-name": "solilos",
+      "package-name": "solaris",
       "changelog-path": "CHANGELOG.md"
     }
   }

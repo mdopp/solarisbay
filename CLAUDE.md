@@ -1,10 +1,10 @@
-# Solilos — house rules
+# Solaris — house rules
 
-Solilos is a household AI assistant packaged as ServiceBay artifacts: ServiceBay
-Pod-YAML templates, the `solilos-chat` Sol Engine (agent core + chat surface,
+Solaris is a household AI assistant packaged as ServiceBay artifacts: ServiceBay
+Pod-YAML templates, the `solaris-chat` Solaris Engine (agent core + chat surface,
 the code-heavy part), its skill packs (markdown prompt content), the
 `voice-gatekeeper` Wyoming bridge, the `database` alembic schema-init sidecar,
-and the bundled `solbay` stack. It runs **on ServiceBay**. See `README.md` for
+and the bundled `solarisbay` stack. It runs **on ServiceBay**. See `README.md` for
 the full layout.
 
 These rules apply to every session, human or agent.
@@ -13,7 +13,7 @@ These rules apply to every session, human or agent.
 
 - **Conventional Commits**: `type(scope): subject` — `feat`/`fix`/`refactor`/
   `chore`/`docs`/`test`. Scope mirrors the path: `fix(gatekeeper):`,
-  `feat(skill):`, `fix(template):`, `feat(solbay):`, `chore(db):`,
+  `feat(skill):`, `fix(template):`, `feat(solarisbay):`, `chore(db):`,
   `docs:`.
 - **No parentheses in the subject** beyond the conventional `(scope)`. A stray
   `(...)` token can make release tooling run green but cut no release — keep
@@ -34,10 +34,10 @@ These rules apply to every session, human or agent.
 ## Verify in the real environment
 
 - Type-check + tests prove code correctness, not **feature** correctness.
-- Template (`templates/**`), skill (`**/skills/*/SKILL.md`), `solilos-chat`,
+- Template (`templates/**`), skill (`**/skills/*/SKILL.md`), `solaris-chat`,
   `voice-gatekeeper`, `database`/migration and `stacks/**` changes are verified
   by **deploying the changed artifact through ServiceBay onto the box** and
-  checking the Solilos runtime — not by CI alone (CI only builds images). If
+  checking the Solaris runtime — not by CI alone (CI only builds images). If
   you can't verify on the box, say so explicitly.
 
 ## Releases
@@ -45,8 +45,8 @@ These rules apply to every session, human or agent.
 - Releases are automated via **release-please**. It maintains a release PR that
   bumps the version + `CHANGELOG.md` from the conventional commits on `main`.
   **Merging that release PR** cuts the `vX.Y.Z` tag + GitHub release, which
-  triggers `build-images.yml` to publish `solilos-gatekeeper`,
-  `solilos-gatekeeper-ml`, `solilos-chat`, and `schema-init` to GHCR.
+  triggers `build-images.yml` to publish `solaris-gatekeeper`,
+  `solaris-gatekeeper-ml`, `solaris-chat`, and `schema-init` to GHCR.
 - Conventional Commits + paren-free subjects (above) are load-bearing:
   release-please derives the version bump and CHANGELOG from them.
 - **Don't** hand-bump versions in `pyproject.toml` or create/push tags by hand —

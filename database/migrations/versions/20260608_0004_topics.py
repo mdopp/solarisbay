@@ -4,7 +4,7 @@ Revision ID: 0004_topics
 Revises: 0003_voice_pe_rooms
 Create Date: 2026-06-08
 
-The topics registry (solilos-architecture.md §3): a cross-cutting, persistent
+The topics registry (solaris-architecture.md §3): a cross-cutting, persistent
 label grouping a theme/project/context across chats, notes, and future graph
 nodes. `parent` gives hierarchy (`projekt/wintergarten` → `projekt`); `scope`
 is per-resident by default (D3) and widens to `shared`/`admin`; a topic carries
@@ -62,5 +62,5 @@ def downgrade() -> None:
     # One-way, matching the other migrations: a downgrade would drop the
     # topic registry and any chat/data assignments referencing it.
     raise NotImplementedError(
-        "Downgrade is not supported. Delete solilos.db and re-run upgrade if needed."
+        "Downgrade is not supported. Delete solaris.db and re-run upgrade if needed."
     )

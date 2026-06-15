@@ -30,5 +30,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     # One-way, matching the other migrations: a downgrade would drop the columns.
     raise NotImplementedError(
-        "Downgrade is not supported. Delete solilos.db and re-run upgrade if needed."
+        "Downgrade is not supported. Delete solaris.db and re-run upgrade if needed."
     )

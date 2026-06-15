@@ -123,7 +123,7 @@ def build_combined_app(
 
     Defined here (not in __main__) so tests can construct the full
     aiohttp surface without spinning up the Wyoming server. Room routes
-    need solilos.db regardless of speaker-ID; enrolment is gated on it."""
+    need solaris.db regardless of speaker-ID; enrolment is gated on it."""
     app = build_app(piper_uri=piper_uri, devices=devices, push_token=push_token)
     if db_path:
         # Imported here to keep these modules out of the push-only test

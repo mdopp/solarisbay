@@ -50,7 +50,7 @@ def test_max_loaded_models_default_is_two_for_e4b(variables):
 
 def test_context_length_default_is_32k(variables):
     # The 131k window existed only because the Hermes-era base prompt grew to
-    # ~25k tokens; the Sol Engine prompt is ≤3k, and the KV saving (12b ≈8.95
+    # ~25k tokens; the Solaris Engine prompt is ≤3k, and the KV saving (12b ≈8.95
     # vs ≈10.3 GB) is what fits the three-model trio on the 16 GB GPU.
     assert variables["OLLAMA_CONTEXT_LENGTH"]["default"] == "32768"
 

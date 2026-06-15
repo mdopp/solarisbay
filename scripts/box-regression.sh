@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Solilos box regression — run ON the box after every deploy.
+# Solaris box regression — run ON the box after every deploy.
 #
 # Covers the integration paths unit tests cannot see (born from the
 # 2026-06-12 breakages, each check names the incident it would have
@@ -14,10 +14,10 @@ bad()  { FAIL=$((FAIL+1)); echo "  ❌ $1"; }
 
 CHAT=http://127.0.0.1:8787
 HA=http://127.0.0.1:8123
-TOKEN=$(cat /mnt/data/stacks/home-assistant/homeassistant/.solilos-long-lived-token 2>/dev/null)
-KEY=$(podman exec solilos-chat printenv SOL_API_KEY 2>/dev/null)
+TOKEN=$(cat /mnt/data/stacks/home-assistant/homeassistant/.solaris-long-lived-token 2>/dev/null)
+KEY=$(podman exec solaris-chat printenv SOLARIS_API_KEY 2>/dev/null)
 
-echo "== solilos box regression $(date -u +%FT%TZ) =="
+echo "== solaris box regression $(date -u +%FT%TZ) =="
 
 # 1. health
 curl -sf -m 5 $CHAT/health >/dev/null && ok "chat /health" || bad "chat /health"
@@ -34,14 +34,14 @@ fi
 
 # 3. facade non-stream turn (gatekeeper/HA path)
 R=$(curl -s -m 90 -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"model":"sol","stream":false,"messages":[{"role":"user","content":"Sag nur Hallo."}]}' \
+  -d '{"model":"solaris","stream":false,"messages":[{"role":"user","content":"Sag nur Hallo."}]}' \
   $CHAT/ollama/api/chat | python3 -c "import json,sys; print(json.load(sys.stdin)['message']['content'])" 2>/dev/null)
 [ -n "$R" ] && ok "facade turn: $R" || bad "facade turn"
 
-# 4. conversation.sol tool truthfulness — the reported light states must
+# 4. conversation.solaris tool truthfulness — the reported light states must
 #    match HA's real states (incident: narration without tool calls).
 SAID=$(curl -s -m 90 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"text": "Welche Lichter sind an?", "agent_id": "conversation.sol", "language": "de"}' \
+  -d '{"text": "Welche Lichter sind an?", "agent_id": "conversation.solaris", "language": "de"}' \
   $HA/api/conversation/process | python3 -c "import json,sys; print(json.load(sys.stdin)['response']['speech']['plain']['speech'])" 2>/dev/null)
 REAL=$(curl -s -m 10 -H "Authorization: Bearer $TOKEN" $HA/api/states | python3 -c "
 import json,sys
@@ -53,7 +53,7 @@ if [ -z "$REAL" ]; then
   if echo "$SAID" | grep -qiE "kein|nicht"; then
     ok "state truthfulness (none on): $SAID"
   else
-    bad "state truthfulness — HA: none on, Sol: $SAID"
+    bad "state truthfulness — HA: none on, Solaris: $SAID"
   fi
 else
   MISS=0
@@ -61,7 +61,7 @@ else
   if [ $MISS = 0 ]; then
     ok "state truthfulness: $SAID"
   else
-    bad "state truthfulness — HA on: [$REAL] vs Sol: $SAID"
+    bad "state truthfulness — HA on: [$REAL] vs Solaris: $SAID"
   fi
 fi
 
@@ -133,10 +133,10 @@ class WS:
                     raise RuntimeError(m.get("error"))
                 return m.get("result") or {}
 
-token = open("/mnt/data/stacks/home-assistant/homeassistant/.solilos-long-lived-token").read().strip()
+token = open("/mnt/data/stacks/home-assistant/homeassistant/.solaris-long-lived-token").read().strip()
 ws = WS(token)
-sol = [p for p in ws.cmd({"type": "assist_pipeline/pipeline/list"})["pipelines"] if p["name"] == "Sol"][0]
-print(sol["tts_engine"], sol["tts_language"], sol["tts_voice"])
+solaris = [p for p in ws.cmd({"type": "assist_pipeline/pipeline/list"})["pipelines"] if p["name"] == "Solaris"][0]
+print(solaris["tts_engine"], solaris["tts_language"], solaris["tts_voice"])
 PYEOF
 )
 case "$PIPE" in

@@ -1,4 +1,4 @@
-"""Tests for the Sol-Engine-era solilos Pod topology (Phase 4 decommission).
+"""Tests for the Solaris-Engine-era solaris Pod topology (Phase 4 decommission).
 
 The Pod runs exactly TWO app containers: `chat` (the engine — agent loop,
 chat surface, Ollama facade for HA, scheduler, crons) and `gatekeeper` (the
@@ -17,22 +17,22 @@ import re
 import pytest
 
 TEMPLATES = pathlib.Path(__file__).resolve().parents[1]
-SOLILOS = TEMPLATES / "solilos"
+SOLARIS = TEMPLATES / "solaris"
 
 
 @pytest.fixture(scope="module")
 def raw_template() -> str:
-    return (SOLILOS / "template.yml").read_text(encoding="utf-8")
+    return (SOLARIS / "template.yml").read_text(encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
 def variables() -> dict:
-    return json.loads((SOLILOS / "variables.json").read_text(encoding="utf-8"))
+    return json.loads((SOLARIS / "variables.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
 def post_deploy_src() -> str:
-    return (SOLILOS / "post-deploy.py").read_text(encoding="utf-8")
+    return (SOLARIS / "post-deploy.py").read_text(encoding="utf-8")
 
 
 # The CI templates job runs stdlib-only (`pip install pytest`, no PyYAML), so
@@ -82,7 +82,7 @@ def test_init_containers_are_notes_perms_and_schema_init(raw_template):
 def test_chat_carries_engine_env(raw_template):
     chat = _block(raw_template, "chat")
     for needed in (
-        "SOL_API_KEY",
+        "SOLARIS_API_KEY",
         "SOUL_PATH",
         "ADMIN_SOUL_PATH",
         "ADMIN_SKILLS_DIR",
@@ -107,9 +107,9 @@ def test_chat_binds_loopback(raw_template):
 
 def test_gatekeeper_speaks_the_engine_facade(raw_template):
     gk = _block(raw_template, "gatekeeper")
-    assert "SOL_ENGINE_URL" in gk
+    assert "SOLARIS_ENGINE_URL" in gk
     assert "http://127.0.0.1:{{CHAT_PORT}}/ollama" in gk
-    assert "SOL_API_KEY" in gk
+    assert "SOLARIS_API_KEY" in gk
 
 
 def test_gatekeeper_has_no_admin_access(raw_template):
@@ -131,8 +131,8 @@ def test_all_mounts_resolve_to_declared_volumes(raw_template):
 
 
 def test_variables_renamed_to_engine_era(variables):
-    assert "SOL_API_KEY" in variables
-    assert variables["SOL_API_KEY"]["type"] == "secret"
+    assert "SOLARIS_API_KEY" in variables
+    assert variables["SOLARIS_API_KEY"]["type"] == "secret"
     assert variables["CHAT_PORT"]["default"] == "8787"
     assert "CHAT_IMAGE" in variables
     for gone in (

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solaris-chat"
+version = "0.1.0"
+description = "Solaris household chat — the Solaris Engine agent core and its chat surface."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Michael Dopp", email = "mdopp79@gmail.com" }]
+dependencies = [
+  "aiohttp>=3.9",
+  # Keyless web-search backend for the engine's web_search tool (the same
+  # DuckDuckGo client the Hermes-era post-deploy installed).
+  "ddgs>=9",
+  # Official MCP SDK — the admin profile's servicebay_admin toolbox.
+  "mcp>=1.9",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7",
+  "pytest-asyncio>=0.23",
+  "pytest-aiohttp>=1.0",
+]
+
+[project.scripts]
+solaris-chat = "solaris_chat.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/mdopp/solarisbay"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["solaris_chat*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.package-data]
+solaris_chat = ["static/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

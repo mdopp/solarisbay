@@ -17,7 +17,7 @@ Caller pattern:
     log.warn("gatekeeper.push.unauthorized", trace_id=trace_id)
     log.error("gatekeeper.hermes.error", trace_id=trace_id, status=503)
 
-`tag` defaults to `gatekeeper` (overridable via `SOLILOS_COMPONENT`).
+`tag` defaults to `gatekeeper` (overridable via `SOLARIS_COMPONENT`).
 """
 
 from __future__ import annotations
@@ -57,4 +57,4 @@ class _Logger:
         self._emit("error", message, **args)
 
 
-log = _Logger(os.environ.get("SOLILOS_COMPONENT", "gatekeeper"))
+log = _Logger(os.environ.get("SOLARIS_COMPONENT", "gatekeeper"))

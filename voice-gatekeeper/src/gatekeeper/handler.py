@@ -18,7 +18,7 @@ the audio and expects a `Transcript` back — HA, not the gatekeeper, runs the
 conversation step. In that mode the gatekeeper transcribes + resolves the
 speaking resident, returns the `Transcript` to HA, and stashes
 `{transcript -> uid}` for the engine facade to read on the following
-`conversation.sol` turn — it does NOT POST to the facade or synthesize TTS.
+`conversation.solaris` turn — it does NOT POST to the facade or synthesize TTS.
 The wyoming-satellite turn above (no `Transcribe`) is unchanged.
 """
 
@@ -44,7 +44,7 @@ from .enroll_stash import (
     increment_collected,
     take_embeddings,
 )
-from .sol import SolClient
+from .solaris import SolarisClient
 from .rooms_store import get_room
 from .speaker import average_embeddings, get_extractor, resolve_speaker
 from .tts import synthesize_to_writer
@@ -79,7 +79,7 @@ class GatekeeperHandler(AsyncEventHandler):
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         info: Info | None = None,
-        sol: SolClient | None = None,
+        solaris: SolarisClient | None = None,
     ):
         super().__init__(reader, writer)
         self._info = info
@@ -90,7 +90,9 @@ class GatekeeperHandler(AsyncEventHandler):
         # Set when the client opens with a Transcribe event — HA's STT client
         # does, a wyoming-satellite doesn't. Selects STT-provider mode (#350).
         self._stt_mode = False
-        self._sol = sol or SolClient(settings.engine_url, settings.engine_token)
+        self._solaris = solaris or SolarisClient(
+            settings.engine_url, settings.engine_token
+        )
         log.info(
             "gatekeeper.session.open",
             trace_id=self.trace_id,
@@ -172,7 +174,7 @@ class GatekeeperHandler(AsyncEventHandler):
         uid = await self._resolve_uid()
         endpoint = f"voice-pe:{self.client_id or 'unknown'}"
         location = await self._resolve_location()
-        response = await self._sol.converse(
+        response = await self._solaris.converse(
             text=transcript,
             uid=uid,
             endpoint=endpoint,
@@ -180,7 +182,7 @@ class GatekeeperHandler(AsyncEventHandler):
             trace_id=self.trace_id,
         )
         if not response:
-            log.warn("gatekeeper.sol.empty", trace_id=self.trace_id)
+            log.warn("gatekeeper.solaris.empty", trace_id=self.trace_id)
             return
         log.info("gatekeeper.response", trace_id=self.trace_id, length=len(response))
 
@@ -195,7 +197,7 @@ class GatekeeperHandler(AsyncEventHandler):
     async def _process_stt_provider(self) -> None:
         """STT-provider mode (#350): transcribe + resolve the speaking
         resident, return a Transcript to HA so its Assist pipeline continues
-        to conversation.sol as normal, and stash {transcript -> uid} for the
+        to conversation.solaris as normal, and stash {transcript -> uid} for the
         engine facade to read on that following turn. No facade POST, no TTS —
         HA owns the conversation + the spoken response."""
         if not self._audio_buffer or self._audio_start is None:
@@ -214,7 +216,7 @@ class GatekeeperHandler(AsyncEventHandler):
         if transcript:
             uid = await self._resolve_uid()
             await asyncio.to_thread(
-                stash_uid, settings.solilos_db_path, transcript, uid
+                stash_uid, settings.solaris_db_path, transcript, uid
             )
             log.info("gatekeeper.stt_provider.stash", trace_id=self.trace_id, uid=uid)
             await self._capture_enrollment()
@@ -232,7 +234,7 @@ class GatekeeperHandler(AsyncEventHandler):
         if extractor is None or self._audio_start is None or not self._audio_buffer:
             return
         request = await asyncio.to_thread(
-            claim_active_request, settings.solilos_db_path
+            claim_active_request, settings.solaris_db_path
         )
         if request is None:
             return
@@ -260,7 +262,7 @@ class GatekeeperHandler(AsyncEventHandler):
 
         held = add_embedding(request.uid, embedding)
         await asyncio.to_thread(
-            increment_collected, settings.solilos_db_path, request.uid
+            increment_collected, settings.solaris_db_path, request.uid
         )
         log.info(
             "gatekeeper.enroll.captured",
@@ -276,7 +278,7 @@ class GatekeeperHandler(AsyncEventHandler):
             averaged = await asyncio.to_thread(average_embeddings, embeddings)
             await asyncio.to_thread(
                 upsert_embedding,
-                settings.solilos_db_path,
+                settings.solaris_db_path,
                 request.uid,
                 averaged,
                 sample_count=len(embeddings),
@@ -285,7 +287,7 @@ class GatekeeperHandler(AsyncEventHandler):
         except Exception as exc:  # noqa: BLE001 — enrol failure → honest result
             await asyncio.to_thread(
                 finish_request,
-                settings.solilos_db_path,
+                settings.solaris_db_path,
                 request.uid,
                 ok=False,
                 result=str(exc),
@@ -296,7 +298,7 @@ class GatekeeperHandler(AsyncEventHandler):
             return
         await asyncio.to_thread(
             finish_request,
-            settings.solilos_db_path,
+            settings.solaris_db_path,
             request.uid,
             ok=True,
             result=str(len(embeddings)),
@@ -338,7 +340,7 @@ class GatekeeperHandler(AsyncEventHandler):
                 error=str(exc),
             )
             return settings.default_uid
-        candidates = await asyncio.to_thread(list_embeddings, settings.solilos_db_path)
+        candidates = await asyncio.to_thread(list_embeddings, settings.solaris_db_path)
         uid, match = resolve_speaker(
             query,
             candidates,
@@ -365,7 +367,7 @@ class GatekeeperHandler(AsyncEventHandler):
         ):
             return GUEST_UID
         if uid != settings.default_uid:
-            await asyncio.to_thread(touch_last_seen, settings.solilos_db_path, uid)
+            await asyncio.to_thread(touch_last_seen, settings.solaris_db_path, uid)
         return uid
 
     async def _resolve_location(self) -> str | None:
@@ -376,7 +378,7 @@ class GatekeeperHandler(AsyncEventHandler):
             return None
         try:
             return await asyncio.to_thread(
-                get_room, settings.solilos_db_path, self.client_id
+                get_room, settings.solaris_db_path, self.client_id
             )
         except Exception:  # noqa: BLE001 — room lookup is best-effort
             return None

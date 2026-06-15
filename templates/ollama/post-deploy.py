@@ -247,7 +247,7 @@ def pull_model(ollama_url: str, model: str, stall_sec: int) -> bool:
 def local_chat_tags(ollama_url: str) -> list[str]:
     """The locally installed chat tags from /api/tags (embed models skipped).
     The install env can't be trusted for the model list — OLLAMA_EXTRA_MODELS
-    arrived empty on the box (solbay#339) — but what's pulled locally is
+    arrived empty on the box (solarisbay#339) — but what's pulled locally is
     ground truth for what should be warm."""
     req = urllib.request.Request(f"{ollama_url}/api/tags")
     try:
@@ -705,7 +705,7 @@ def main() -> int:
             jlog(
                 "warn",
                 "ollama:pull",
-                'vision-model pull did not complete; Solilos\'s media-ingestion-multimodal skill will fall back to text-only. Pull manually with `curl -X POST http://127.0.0.1:%s/api/pull -d \'{"name":"%s"}\'` or bump OLLAMA_READINESS_TIMEOUT_SECONDS.'
+                'vision-model pull did not complete; Solaris\'s media-ingestion-multimodal skill will fall back to text-only. Pull manually with `curl -X POST http://127.0.0.1:%s/api/pull -d \'{"name":"%s"}\'` or bump OLLAMA_READINESS_TIMEOUT_SECONDS.'
                 % (port, vision_model),
                 model=vision_model,
             )
@@ -727,8 +727,8 @@ def main() -> int:
 
     # Warm-load the chat models so the first post-deploy turn doesn't pay
     # the cold reload. Source of truth = the locally installed tags
-    # (solbay#339: the env-derived list missed e2b). Order is load-bearing
-    # (solbay#340, box-measured): SMALL first — with e2b resident a 12b
+    # (solarisbay#339: the env-derived list missed e2b). Order is load-bearing
+    # (solarisbay#340, box-measured): SMALL first — with e2b resident a 12b
     # load co-exists (13.9/16.4 GiB), but loading 12b first makes the
     # subsequent e2b load evict it (ollama's free-VRAM check is
     # conservative). Small-first ends with everything resident.
@@ -748,7 +748,7 @@ def main() -> int:
             f"   Embedding model: {embed_model} (target this for RAG, not the chat model)."
         )
     print(
-        f"   Other ServiceBay templates (hermes, solbay) can reach it at http://127.0.0.1:{port}."
+        f"   Other ServiceBay templates (hermes, solarisbay) can reach it at http://127.0.0.1:{port}."
     )
     return 0
 

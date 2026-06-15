@@ -1,16 +1,16 @@
-# Migration sidecar for the solbay ServiceBay template.
-# Runs `alembic upgrade head` against /var/lib/solilos/solilos.db on every
+# Migration sidecar for the solarisbay ServiceBay template.
+# Runs `alembic upgrade head` against /var/lib/solaris/solaris.db on every
 # pod start. Idempotent.
 #
-# Image: ghcr.io/mdopp/solilos-schema-init
+# Image: ghcr.io/mdopp/solaris-schema-init
 
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    SOLILOS_DB_URL=sqlite:////var/lib/solilos/solilos.db
+    SOLARIS_DB_URL=sqlite:////var/lib/solaris/solaris.db
 
-WORKDIR /opt/solilos-schema
+WORKDIR /opt/solaris-schema
 
 # Install runtime deps. No application package — we only need Alembic +
 # SQLAlchemy to drive op.execute() against SQLite. The migration files

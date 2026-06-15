@@ -15,7 +15,7 @@ from wyoming.server import AsyncServer
 from . import __version__ as GATEKEEPER_VERSION
 from .config import settings
 from .handler import GatekeeperHandler
-from .sol import SolClient
+from .solaris import SolarisClient
 from .mcp_server import serve as serve_mcp
 from .push import serve as serve_push
 
@@ -36,19 +36,19 @@ def _info() -> Info:
     return Info(
         asr=[
             AsrProgram(
-                name="solilos-gatekeeper-asr",
-                description="Solilos gatekeeper — ASR via internal Whisper",
+                name="solaris-gatekeeper-asr",
+                description="Solaris gatekeeper — ASR via internal Whisper",
                 attribution=Attribution(
-                    name="Solilos", url="https://github.com/mdopp/servicebay"
+                    name="Solaris", url="https://github.com/mdopp/servicebay"
                 ),
                 installed=True,
                 version=GATEKEEPER_VERSION,
                 models=[
                     AsrModel(
-                        name="solilos-gatekeeper",
-                        description="Gatekeeper pipeline (Whisper -> Sol -> Piper)",
+                        name="solaris-gatekeeper",
+                        description="Gatekeeper pipeline (Whisper -> Solaris -> Piper)",
                         attribution=Attribution(
-                            name="Solilos", url="https://github.com/mdopp/servicebay"
+                            name="Solaris", url="https://github.com/mdopp/servicebay"
                         ),
                         installed=True,
                         version=GATEKEEPER_VERSION,
@@ -59,10 +59,10 @@ def _info() -> Info:
         ],
         tts=[
             TtsProgram(
-                name="solilos-gatekeeper-tts",
-                description="Solilos gatekeeper — TTS via internal Piper",
+                name="solaris-gatekeeper-tts",
+                description="Solaris gatekeeper — TTS via internal Piper",
                 attribution=Attribution(
-                    name="Solilos", url="https://github.com/mdopp/servicebay"
+                    name="Solaris", url="https://github.com/mdopp/servicebay"
                 ),
                 installed=True,
                 version=GATEKEEPER_VERSION,
@@ -75,10 +75,10 @@ def _info() -> Info:
 async def _serve_wyoming() -> None:
     server = AsyncServer.from_uri(settings.gatekeeper_uri)
     log.info("gatekeeper.boot", uri=settings.gatekeeper_uri)
-    # One shared Sol client so its per-conversation rolling history survives
+    # One shared Solaris client so its per-conversation rolling history survives
     # across connections — each Wyoming turn is its own connection (#142).
-    sol = SolClient(settings.engine_url, settings.engine_token)
-    await server.run(lambda r, w: GatekeeperHandler(r, w, _info(), sol))
+    solaris = SolarisClient(settings.engine_url, settings.engine_token)
+    await server.run(lambda r, w: GatekeeperHandler(r, w, _info(), solaris))
 
 
 async def _serve() -> None:
@@ -90,14 +90,14 @@ async def _serve() -> None:
             piper_uri=settings.piper_uri,
             devices=settings.voice_pe_devices,
             push_token=settings.push_token,
-            db_path=settings.solilos_db_path,
+            db_path=settings.solaris_db_path,
             speaker_id_enabled=settings.speaker_id_enabled,
         ),
         name="push",
     )
     mcp = asyncio.create_task(
         serve_mcp(
-            db_path=settings.solilos_db_path,
+            db_path=settings.solaris_db_path,
             host=settings.mcp_host,
             port=settings.mcp_port,
             token=settings.mcp_token,
