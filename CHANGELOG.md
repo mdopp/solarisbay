@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.14.0](https://github.com/mdopp/solarisbay/compare/v0.13.0...v0.14.0) (2026-06-15)
+
+
+### Features
+
+* **chat:** /persona and /model commands, drop Settings button + persona dropdown ([788e840](https://github.com/mdopp/solarisbay/commit/788e8405ceda50276aa5a06d18bf152d221993c7)), closes [#420](https://github.com/mdopp/solarisbay/issues/420)
+* **chat:** structured LLM-call trace modal + usable skill/soul editor ([dae3e63](https://github.com/mdopp/solarisbay/commit/dae3e63cacecc86ba32a7046da4bba3f7338c146)), closes [#416](https://github.com/mdopp/solarisbay/issues/416) [#418](https://github.com/mdopp/solarisbay/issues/418)
+* **chat:** wire dynamic-skills promotion to the generic SB approval API ([5a0f6ce](https://github.com/mdopp/solarisbay/commit/5a0f6ce98296b368cc34cd6f2f24b704c143efa9)), closes [#427](https://github.com/mdopp/solarisbay/issues/427)
+* dynamic-skills SB-approval promotion + custom Solaris wake-word wiring ([e1b78f2](https://github.com/mdopp/solarisbay/commit/e1b78f28d3d91586a876519ef266267982982549))
+* **template:** wire custom "Solaris" wake word + ship model-gen recipe ([9868db6](https://github.com/mdopp/solarisbay/commit/9868db682d05e0640171afb136b5302a142cb5c3)), closes [#407](https://github.com/mdopp/solarisbay/issues/407)
+
+
+### Bug Fixes
+
+* **chat:** household slash commands, /help parity, single durable household session ([9281c3d](https://github.com/mdopp/solarisbay/commit/9281c3df5b77873ce42fcd8b3f5970f92a496f22)), closes [#421](https://github.com/mdopp/solarisbay/issues/421) [#417](https://github.com/mdopp/solarisbay/issues/417) [#419](https://github.com/mdopp/solarisbay/issues/419)
+* **db:** seed debug_mode from SOLARIS_DEBUG_MODE_DEFAULT env ([ffc9748](https://github.com/mdopp/solarisbay/commit/ffc9748ed4c92df3404642dab76b66bb1bec0388)), closes [#432](https://github.com/mdopp/solarisbay/issues/432)
+* **engine:** containment-check skill promotion path against symlink escape ([7f7837e](https://github.com/mdopp/solarisbay/commit/7f7837e4397f2f9f358963def6c360998e278148))
+* **engine:** containment-check skill promotion path against symlink escape ([b0cbfa4](https://github.com/mdopp/solarisbay/commit/b0cbfa472bb063f0de411a79d362628761e5b92c)), closes [#439](https://github.com/mdopp/solarisbay/issues/439)
+* **gatekeeper:** gate enrolment listing and scope session delete by owner ([78a21fb](https://github.com/mdopp/solarisbay/commit/78a21fbe2e437421a19efdeee6e5ba2e70bfc3c0)), closes [#437](https://github.com/mdopp/solarisbay/issues/437) [#438](https://github.com/mdopp/solarisbay/issues/438)
+* **gatekeeper:** serialise concurrent same-uid enroll capture ([5a3bbb0](https://github.com/mdopp/solarisbay/commit/5a3bbb0f9e23772abf5361976168684765efeaf9)), closes [#441](https://github.com/mdopp/solarisbay/issues/441)
+* post-Hermes skill cleanup + debug_mode default from env ([e2a3357](https://github.com/mdopp/solarisbay/commit/e2a3357f708db2acadce55b8994a3e6319273450))
+* **security:** auth-gate /enrolments + owner-gate session delete ([#437](https://github.com/mdopp/solarisbay/issues/437), [#438](https://github.com/mdopp/solarisbay/issues/438)) ([0e3cb56](https://github.com/mdopp/solarisbay/commit/0e3cb562826b483ae0107aa2f1fbec6d987b67db))
+* **skill:** replace stale Hermes tool names and drop dead hermes-api check ([91c001d](https://github.com/mdopp/solarisbay/commit/91c001df059128d3a25ec9076f2b28511c65e7dc)), closes [#431](https://github.com/mdopp/solarisbay/issues/431) [#433](https://github.com/mdopp/solarisbay/issues/433)
+* **skill:** update admin-diagnose and admin-logs container name map ([c35ddc7](https://github.com/mdopp/solarisbay/commit/c35ddc7a8f4a028613a8b50ccff42769765e9042)), closes [#430](https://github.com/mdopp/solarisbay/issues/430)
+* **template:** drop {{VAR}} comment false-positive, clarify HA token absence ([9b733dd](https://github.com/mdopp/solarisbay/commit/9b733dd3e6f213dca0fd96f0b07bc6f134384090)), closes [#424](https://github.com/mdopp/solarisbay/issues/424) [#425](https://github.com/mdopp/solarisbay/issues/425)
+* **template:** forward GATEKEEPER_URL and PUSH_TOKEN to the chat container ([912eb95](https://github.com/mdopp/solarisbay/commit/912eb95ca92f351ca2795753fafd0104308b57bf)), closes [#440](https://github.com/mdopp/solarisbay/issues/440)
+* **template:** robustify HA long-lived token adoption ([6c40065](https://github.com/mdopp/solarisbay/commit/6c4006573071a87bb11d6938437b0d8f21b91fdd))
+* **template:** robustify HA long-lived token adoption ([717b9f5](https://github.com/mdopp/solarisbay/commit/717b9f576b364f28d17ad6e76c8b2d11b15f7a42)), closes [#425](https://github.com/mdopp/solarisbay/issues/425)
+* wire gatekeeper push into chat container + serialise enroll capture ([b519532](https://github.com/mdopp/solarisbay/commit/b519532e36684bbc2c822d923e20d2c8dd8e3e1d))
+
 ## [0.13.0](https://github.com/mdopp/solbay/compare/v0.12.1...v0.13.0) (2026-06-15)
 
 
