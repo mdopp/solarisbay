@@ -165,7 +165,11 @@ def add_routes(
             {"ok": True, "uid": uid, "samples_used": len(embeddings)}
         )
 
-    async def list_enrolments(_request: web.Request) -> web.Response:
+    async def list_enrolments(request: web.Request) -> web.Response:
+        if not _auth_ok(request, push_token):
+            return web.json_response(
+                {"ok": False, "reason": "unauthorized"}, status=401
+            )
         uids = await asyncio.to_thread(list_uids, db_path)
         return web.json_response({"uids": uids})
 
