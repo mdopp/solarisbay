@@ -36,7 +36,7 @@ Out of scope:
 
 ServiceBay deploys a **service** as a Pod that holds one or more **containers**,
 named `<service>-<app>` (e.g. service `jellyfin` → container `jellyfin-jellyfin`;
-service `solaris` → containers `solaris-hermes`, `solaris-config-agent`). The
+service `solaris` → containers `solaris-chat`, `solaris-gatekeeper`). The
 operator speaks in service names; the soul must translate. **Never ask the
 operator for a container name** — derive it:
 
