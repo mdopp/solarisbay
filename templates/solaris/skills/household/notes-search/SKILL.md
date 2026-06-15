@@ -35,7 +35,7 @@ not part of this skill.
 Out of scope:
 - Writing/updating notes → `solaris-dynamic-skills` / `media-ingestion-multimodal`.
 - The dated journal → `solaris-daily-chronicle`.
-- Conversation history → that's Hermes' memory provider, not the notes vault.
+- Conversation history → that's the engine's memory provider, not the notes vault.
 
 ## Operating sequence
 
@@ -73,7 +73,7 @@ Out of scope:
 3. **Rank + pick** the most relevant 1–5 notes. Prefer frontmatter/title hits
    over incidental body mentions. For a topic request, list the matching notes
    rather than collapsing to one.
-4. **Read the chosen notes** with `view_file` to get the full content.
+4. **Read the chosen notes** with `notes_read` to get the full content.
 5. **Answer from them**, and say which note(s) it came from (the filename or
    the wiki-link, e.g. "steht in `fact_garden.md`"). Don't read UUIDs/hashes
    aloud.
@@ -101,6 +101,6 @@ Out of scope:
 
 - Write paths: `media-ingestion-multimodal`, `solaris-dynamic-skills`,
   `solaris-daily-chronicle`.
-- Semantic upgrade: Hermes' native `qmd` skill (hybrid BM25 + vector + rerank)
-  — needs the `@tobilu/qmd` engine + models installed in the Hermes image and
-  the optional skill enabled; out of scope for this keyword retriever.
+- Semantic upgrade: the native `qmd` skill (hybrid BM25 + vector + rerank)
+  — needs the `@tobilu/qmd` engine + models installed and the optional skill
+  enabled; out of scope for this keyword retriever.
