@@ -127,6 +127,21 @@
     "description": "Wyoming wakeword endpoint. Advertised in the gatekeeper's Info; satellites do wakeword on-device, so server-side orchestration is optional.",
     "default": "tcp://127.0.0.1:10400"
   },
+  "OPENWAKEWORD_CUSTOM_DIR": {
+    "type": "text",
+    "description": "Host directory mounted into the openWakeWord container at /custom_models and scanned via --custom-model-dir (#456 folds in #407). The post-deploy drops the trained \"Solaris\" wake-word model (solaris.tflite) here so it shows up as a selectable wake word that the Solaris Assist pipeline pins. Solaris owns its whole voice pipeline; the wake word, Whisper STT and the Kokoro \"martin\" voice are all Solaris-defined, so they live in this stack rather than ServiceBay's app-agnostic voice template.",
+    "default": "/mnt/data/voice/custom"
+  },
+  "WHISPER_MODEL": {
+    "type": "text",
+    "description": "faster-whisper model for the Solaris-owned Whisper STT companion container (#456). Leave at the default and the post-deploy auto-upgrades it to a larger model on a CDI GPU box (base-int8 → medium-int8), which the GPU runs faster than the CPU ran base (box-measured 0.38s vs 0.83-2.86s). Set an explicit non-default model to keep your choice on both the GPU and CPU path.",
+    "default": "base-int8"
+  },
+  "WHISPER_LANGUAGE": {
+    "type": "text",
+    "description": "Spoken language for the Solaris-owned Whisper STT (#456). Default `de` matches the German household.",
+    "default": "de"
+  },
   "VOICE_PE_DEVICES": {
     "type": "text",
     "description": "JSON map from short device name to Wyoming URI, e.g. `{\"office\": \"tcp://192.168.1.10:10700\"}`. The gatekeeper's `POST /push` endpoint resolves `voice-pe:<name>` against this map. Leave as `{}` until you've paired at least one wyoming-satellite device.",

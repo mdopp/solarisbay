@@ -66,6 +66,29 @@ ENGINE_MODEL = "solaris"
 # as a wake_word with this id.
 WAKE_WORD_MODEL = "solaris"
 OPENWAKEWORD_CUSTOM_DIR = "/mnt/data/voice/custom"
+
+# ── Solaris-owned voice pipeline (#456) ──────────────────────────────────────
+# Solaris owns its WHOLE voice pipeline (wake word "Solaris", Whisper STT, the
+# Kokoro "martin" voice + bridge) instead of it living in ServiceBay's
+# app-agnostic `voice` template. Whisper and the Kokoro TTS need the GPU, and
+# `podman kube play` silently drops CDI device requests when expressed as
+# resources.limits (#1026) — so the GPU units are companion `.container`
+# Quadlets with `AddDevice=nvidia.com/gpu=all` + `SecurityLabelDisable=true`,
+# exactly the ollama-fixup pattern. openWakeWord rides the solaris pod
+# (template.yml) because it needs no GPU. ServiceBay provides only the platform
+# capability (GPU/CDI passthrough, HA, the Wyoming runtime/images).
+WHISPER_UNIT = "voice-whisper"
+TTS_UNIT = "voice-tts"
+TTS_BRIDGE_UNIT = "voice-tts-bridge"
+TTS_IMAGE = "ghcr.io/mdopp/solaris-tts:latest"
+TTS_BRIDGE_IMAGE = "ghcr.io/roryeckel/wyoming_openai:latest"
+
+# The whisper wizard default. On a CDI GPU box the default upgrades to the
+# better model the GPU runs faster than the CPU ran base (box-measured 0.38s vs
+# 0.83-2.86s, servicebay#1809). An explicit non-default model is kept on both
+# paths (one knob, no GPU-specific knob).
+WHISPER_CPU_DEFAULT_MODEL = "base-int8"
+WHISPER_GPU_DEFAULT_MODEL = "medium-int8"
 # HA's conversation subentry prompt — folded after the engine's own system
 # block by the facade, so keep it to the voice-delivery essentials.
 VOICE_PROMPT = "Antworte kurz, gesprochen und ohne Markdown."
@@ -176,6 +199,276 @@ def selected_tts_voice(default: str = "martin") -> str:
     except (ValueError, AttributeError):
         return default
     return voice.strip() if isinstance(voice, str) and voice.strip() else default
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 0. VOICE PIPELINE QUADLETS — Solaris owns whisper + Kokoro-Martin TTS +
+#    the wyoming bridge end-to-end (#456). GPU units via CDI companion Quadlets
+#    (#1026); openWakeWord rides the solaris pod. Ported from ServiceBay's
+#    voice template (servicebay#1809/#1815/#1832) — same Wyoming endpoints, so
+#    the Assist-pipeline wiring downstream is unchanged.
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def cdi_available() -> bool:
+    """True when an NVIDIA CDI spec is registered (#1026) — the marker the
+    ollama fixup and the voice template both use to choose the GPU path."""
+    return os.path.exists("/etc/cdi/nvidia.yaml")
+
+
+def service_active(unit: str) -> bool:
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "is-active", f"{unit}.service"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return False
+    return out.stdout.strip() == "active"
+
+
+def install_unit(unit: str, content: str) -> bool:
+    """Write + activate one companion `.container` Quadlet, idempotently:
+    rewrite only on content drift; (re)start when drifted or inactive."""
+    systemd_dir = os.path.expanduser("~/.config/containers/systemd")
+    unit_path = os.path.join(systemd_dir, f"{unit}.container")
+    existing = ""
+    if os.path.exists(unit_path):
+        try:
+            with open(unit_path, encoding="utf-8") as f:
+                existing = f.read()
+        except OSError:
+            existing = ""
+    if existing == content and service_active(unit):
+        jlog("info", "voice-unit", f"{unit}: current and active — no-op")
+        return True
+    try:
+        os.makedirs(systemd_dir, exist_ok=True)
+        with open(unit_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(unit_path, 0o644)
+    except OSError as e:
+        jlog("warn", "voice-unit", f"{unit}: could not write unit", error=str(e))
+        return False
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    started = subprocess.run(
+        ["systemctl", "--user", "restart", f"{unit}.service"],
+        capture_output=True,
+        text=True,
+    )
+    if started.returncode != 0:
+        jlog(
+            "warn",
+            "voice-unit",
+            f"{unit}: systemctl restart failed",
+            error=started.stderr[:300],
+        )
+        return False
+    jlog("info", "voice-unit", f"{unit}: installed + started")
+    return True
+
+
+def render_whisper_unit(data_dir: str, model: str, language: str, gpu: bool) -> str:
+    """Render the voice-whisper `.container` Quadlet (pure). GPU path uses the
+    linuxserver faster-whisper:gpu image with the CDI device + SELinux
+    relaxation (#1026); CPU path the rhasspy wyoming-whisper image. Same
+    Wyoming endpoint (tcp://0.0.0.0:10300) either way."""
+    if gpu:
+        return (
+            "[Unit]\n"
+            "Description=Solaris Voice Whisper STT (Wyoming, GPU via CDI #456)\n"
+            "Wants=network-online.target\n"
+            "After=network-online.target\n"
+            "\n"
+            "[Container]\n"
+            "Image=lscr.io/linuxserver/faster-whisper:gpu\n"
+            f"ContainerName={WHISPER_UNIT}\n"
+            "Network=host\n"
+            f"Environment=WHISPER_MODEL={model}\n"
+            f"Environment=WHISPER_LANG={language}\n"
+            "# Beam 1: greedy decode — GPU headroom goes into the bigger model.\n"
+            "Environment=WHISPER_BEAM=1\n"
+            "# CDI device — podman kube play silently drops this when expressed\n"
+            "# as resources.limits (#1026), which is why whisper is a Quadlet.\n"
+            "AddDevice=nvidia.com/gpu=all\n"
+            "# SELinux relaxation for NVML/CUDA init on FCoS (same fixup as\n"
+            "# ollama, #1026) — without it driver init fails.\n"
+            "SecurityLabelDisable=true\n"
+            "# linuxserver image keeps its model cache under /config.\n"
+            f"Volume={data_dir}/voice/whisper-gpu:/config:Z\n"
+            "AutoUpdate=registry\n"
+            "\n"
+            "[Service]\n"
+            "Restart=on-failure\n"
+            "RestartSec=5\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        )
+    return (
+        "[Unit]\n"
+        "Description=Solaris Voice Whisper STT (Wyoming, CPU #456)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Container]\n"
+        "Image=docker.io/rhasspy/wyoming-whisper:latest\n"
+        f"ContainerName={WHISPER_UNIT}\n"
+        "Network=host\n"
+        f"Exec=--model {model} --language {language}"
+        " --data-dir /data --uri tcp://0.0.0.0:10300\n"
+        f"Volume={data_dir}/voice/whisper:/data:Z\n"
+        "AutoUpdate=registry\n"
+        "\n"
+        "[Service]\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def render_tts_unit() -> str:
+    """Render the Kokoro-Martin TTS `.container` Quadlet (pure, GPU via CDI).
+    The bundled solaris-tts image serves the OpenAI-compatible API on :8881."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Voice TTS Kokoro-Martin (OpenAI API, GPU via CDI #456)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Container]\n"
+        f"Image={TTS_IMAGE}\n"
+        f"ContainerName={TTS_UNIT}\n"
+        "Network=host\n"
+        "# The 82M ONNX model on the CUDA provider: box-measured 0.29-0.36s\n"
+        "# for a 7.4s sentence, 0.03s warm for a short one, ~1.2 GiB VRAM.\n"
+        "Environment=KOKORO_ONNX_PROVIDER=cuda\n"
+        "Environment=KOKORO_ONNX_VOICE=martin\n"
+        "Environment=KOKORO_ONNX_LANG=de\n"
+        "AddDevice=nvidia.com/gpu=all\n"
+        "SecurityLabelDisable=true\n"
+        "AutoUpdate=registry\n"
+        "\n"
+        "[Service]\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def render_tts_bridge_unit() -> str:
+    """Render the wyoming_openai bridge `.container` Quadlet (pure). It fronts
+    the Kokoro OpenAI API as a streaming `tts.openai_streaming` HA entity on
+    the Wyoming port :10203 (box-verified entity name)."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Voice TTS wyoming bridge (Kokoro-Martin -> HA, #456)\n"
+        "Wants=network-online.target\n"
+        f"After=network-online.target {TTS_UNIT}.service\n"
+        "\n"
+        "[Container]\n"
+        f"Image={TTS_BRIDGE_IMAGE}\n"
+        f"ContainerName={TTS_BRIDGE_UNIT}\n"
+        "Network=host\n"
+        "Exec=python3 -m wyoming_openai --uri tcp://0.0.0.0:10203"
+        " --languages de --tts-openai-url http://127.0.0.1:8881/v1"
+        " --tts-models kokoro --tts-streaming-models kokoro"
+        " --tts-backend KOKORO_FASTAPI\n"
+        "AutoUpdate=registry\n"
+        "\n"
+        "[Service]\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def install_whisper_unit(data_dir: str) -> bool:
+    """Write + activate the companion whisper Quadlet (GPU when CDI is
+    registered, CPU otherwise). Creates the model-cache host dir first —
+    Quadlet Volume= does NOT create it (unlike kube DirectoryOrCreate), so
+    without this the unit fails `statfs …: no such file or directory`."""
+    gpu = cdi_available()
+    model = env("WHISPER_MODEL", WHISPER_CPU_DEFAULT_MODEL)
+    if gpu and model == WHISPER_CPU_DEFAULT_MODEL:
+        model = WHISPER_GPU_DEFAULT_MODEL
+    language = env("WHISPER_LANGUAGE", "de")
+    volume_dir = os.path.join(data_dir, "voice", "whisper-gpu" if gpu else "whisper")
+    try:
+        os.makedirs(volume_dir, exist_ok=True)
+    except OSError as e:
+        jlog("warn", "voice-unit", "whisper: could not create cache dir", error=str(e))
+        return False
+    jlog(
+        "info",
+        "voice-unit",
+        "whisper path selected",
+        gpu=gpu,
+        model=model,
+    )
+    return install_unit(
+        WHISPER_UNIT, render_whisper_unit(data_dir, model, language, gpu)
+    )
+
+
+def install_tts_units() -> bool:
+    """GPU boxes get Solaris's Martin voice: the Kokoro OpenAI TTS on :8881 and
+    the wyoming bridge on :10203. CPU-only boxes have no Kokoro TTS (the bundled
+    image needs CUDA); the Assist wiring then keeps piper. Returns True only
+    when both GPU units are up."""
+    if not cdi_available():
+        jlog("info", "voice-unit", "tts: no CDI GPU — skipping Kokoro-Martin units")
+        return False
+    ok_tts = install_unit(TTS_UNIT, render_tts_unit())
+    ok_bridge = install_unit(TTS_BRIDGE_UNIT, render_tts_bridge_unit())
+    return ok_tts and ok_bridge
+
+
+def setup_custom_models_dir(custom_dir: str) -> None:
+    """Ensure the openWakeWord custom-models host dir exists (#456 folds in
+    #407). template.yml mounts it into the openwakeword pod container at
+    /custom_models and passes `--custom-model-dir /custom_models`; the trained
+    "Solaris" `.tflite` is dropped here by install_wake_word_model. Empty/unset
+    custom_dir → no-op."""
+    if not custom_dir:
+        return
+    try:
+        os.makedirs(custom_dir, exist_ok=True)
+    except OSError as e:
+        jlog(
+            "warn",
+            "wakeword",
+            "could not create custom models dir",
+            path=custom_dir,
+            error=str(e),
+        )
+        return
+    jlog("info", "wakeword", "custom models dir ready", path=custom_dir)
+
+
+def install_voice_pipeline(data_dir: str) -> None:
+    """Stand up the Solaris-owned voice pipeline containers (#456): whisper STT
+    (GPU/CPU), the Kokoro-Martin TTS + wyoming bridge (GPU boxes), and the
+    openWakeWord custom-models dir. The Assist-pipeline wiring (later, in
+    wire_voice_pipeline) points HA at these same Wyoming endpoints.
+
+    The whisper model cache lives at the same host path
+    (<data_dir>/voice/whisper{-gpu}) the ServiceBay voice template wrote, so
+    the multi-gigabyte cache is reused in place across the ownership move — no
+    data migration."""
+    setup_custom_models_dir(env("OPENWAKEWORD_CUSTOM_DIR", OPENWAKEWORD_CUSTOM_DIR))
+    install_whisper_unit(data_dir)
+    install_tts_units()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1292,6 +1585,11 @@ def main() -> int:
         or chat_container_env("SB_MCP_URL")
         or "http://127.0.0.1:5888/mcp"
     )
+
+    # ── 0. voice pipeline containers (#456) ──────────────────────────────────
+    # Stand up Solaris's own whisper/Kokoro-TTS/bridge before wiring HA at
+    # their endpoints; openWakeWord rides the solaris pod (template.yml).
+    install_voice_pipeline(data_dir)
 
     # ── 1. engine soul ───────────────────────────────────────────────────────
     write_engine_soul(data_dir)
