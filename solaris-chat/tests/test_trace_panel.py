@@ -67,11 +67,15 @@ def test_detail_modal_reads_nested_request_response_shape():
     assert "var req = d.request || {};" in _HTML
     assert "var resp = d.response || {};" in _HTML
     assert "var msgs = req.messages || [];" in _HTML
-    assert 'section("model", req.model)' in _HTML
-    assert 'section("tools[] (" + req.tools.length + ")"' in _HTML
-    assert 'section("messages[] (" + msgs.length + ")"' in _HTML
-    assert 'section("response", resp.final)' in _HTML
-    assert 'section("tool_calls", JSON.stringify(resp.tool_calls, null, 2))' in _HTML
+    # #416: the modal renders structured collapsible sections via head()/sec()
+    # instead of the old flat section() dump — the model headline, a tools[]
+    # section, one section per message (role-driven), the response and tool_calls.
+    assert 'head("model: " + req.model)' in _HTML
+    assert 'sec("tools[" + req.tools.length + "]"' in _HTML
+    assert "msgs.forEach(function (m) {" in _HTML
+    assert 'sec(m.role || "message"' in _HTML
+    assert 'sec("response", preview(resp.final), resp.final, true)' in _HTML
+    assert 'sec("tool_calls[" + resp.tool_calls.length + "]"' in _HTML
     # No leftover flat-shape reads that the proxy never returns at top level.
     assert "d.model" not in _HTML
     assert "d.final" not in _HTML
