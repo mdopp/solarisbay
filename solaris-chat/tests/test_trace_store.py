@@ -34,6 +34,7 @@ CREATE TABLE session_traces (
   detail_id         INTEGER,
   step_kind         TEXT,
   tool_name         TEXT,
+  detail_json       TEXT,
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (session_id, trace_id, step_order)
 );
@@ -118,6 +119,26 @@ def test_interleaved_llm_and_tool_steps_round_trip(tmp_path):
     assert got[1]["tool_name"] == "ha_call_service"
     assert got[1]["wall_s"] == 0.42
     assert got[0]["tool_name"] is None
+
+
+def test_detail_for_round_trips_persisted_body(tmp_path):
+    # The detail body is stored next to the step and read back by detail_id,
+    # per-resident scoped (#451). A step without a body returns None.
+    db = _db(tmp_path)
+    steps = [
+        _step(detail_id="tr-a:0", detail_json='{"request": {"model": "m"}}'),
+        {"step_kind": "tool", "tool_name": "ha", "wall_s": 0.4},
+    ]
+    trace_store.persist_trace(db, "sess-1", "tr-a", "mdopp", steps)
+    assert (
+        trace_store.detail_for(db, "mdopp", "tr-a:0") == '{"request": {"model": "m"}}'
+    )
+    # Wrong resident, unknown id, missing db all return None.
+    assert trace_store.detail_for(db, "lena", "tr-a:0") is None
+    assert trace_store.detail_for(db, "mdopp", "tr-a:9") is None
+    assert (
+        trace_store.detail_for(str(tmp_path / "absent.db"), "mdopp", "tr-a:0") is None
+    )
 
 
 def test_scopes_to_resident(tmp_path):
@@ -212,10 +233,71 @@ async def test_turn_persists_engine_steps_and_endpoint_serves_them(
     body = await r.json()
     assert body["ok"] is True
     # Only the two in-turn calls (the pre-turn record is dropped), in step
-    # order, each carrying the recorder id as detail_id.
-    assert [s["detail_id"] for s in body["steps"]] == [1, 2]
+    # order. detail_id is now the stable per-step key (`<trace_id>:<order>`),
+    # not the recorder ring id, so it survives a restart (#451).
+    assert len(body["steps"]) == 2
+    assert all(":" in s["detail_id"] for s in body["steps"])
+    assert [s["detail_id"].rsplit(":", 1)[1] for s in body["steps"]] == ["0", "1"]
     assert body["steps"][0]["finish_reason"] == "tool_calls"
     assert body["steps"][0]["profile"] == "household"
+
+
+async def test_persisted_detail_survives_recorder_restart(aiohttp_client, tmp_path):
+    # The crux of #451: run a turn (recorder records the bodies), then build a
+    # FRESH app with an EMPTY recorder (simulating an engine restart / reload).
+    # The persisted detail body must still serve at /__traces__/<detail_id>.
+    db = _db(tmp_path)
+    recorder = TraceRecorder()
+    app = build_app(
+        hermes=_RecordingHermes(recorder),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path / "att"),
+        solaris_db_path=db,
+        trace_recorder=recorder,
+    )
+    client = await aiohttp_client(app)
+    r = await client.post(
+        "/api/chat", json={"input": "hallo"}, headers={"Remote-User": "mdopp"}
+    )
+    assert r.status == 200
+
+    # Fresh recorder = no in-process detail ring (ids would restart at 0).
+    fresh = TraceRecorder()
+    app2 = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path / "att"),
+        solaris_db_path=db,
+        trace_recorder=fresh,
+    )
+    client2 = await aiohttp_client(app2)
+
+    r = await client2.get(
+        "/api/sessions/sess-1/trace", headers={"Remote-User": "mdopp"}
+    )
+    steps = (await r.json())["steps"]
+    detail_id = steps[0]["detail_id"]
+    assert detail_id and ":" in detail_id
+
+    # The persisted body resolves even though the recorder ring is empty —
+    # using the URL-encoded form the browser sends (encodeURIComponent of the
+    # `<trace_id>:<order>` key, so the `:` arrives as %3A).
+    from urllib.parse import quote
+
+    r = await client2.get(
+        "/__traces__/" + quote(detail_id, safe=""), headers={"Remote-User": "mdopp"}
+    )
+    assert r.status == 200
+    d = await r.json()
+    assert d["request"]["model"] == "m"
+    assert "messages" in d["request"]
+    assert d["response"]["final"] == "ok"
+
+    # Per-resident scope: another resident can't read it.
+    r = await client2.get("/__traces__/" + detail_id, headers={"Remote-User": "lena"})
+    assert r.status == 404
 
 
 async def test_trace_detail_served_in_process(aiohttp_client, tmp_path):

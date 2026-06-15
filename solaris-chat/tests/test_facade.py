@@ -422,6 +422,7 @@ CREATE TABLE session_traces (
   detail_id         INTEGER,
   step_kind         TEXT,
   tool_name         TEXT,
+  detail_json       TEXT,
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (session_id, trace_id, step_order)
 );

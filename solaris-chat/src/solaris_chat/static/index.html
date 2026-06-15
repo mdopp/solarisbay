@@ -1718,7 +1718,25 @@
             el.appendChild(meta);
             scrollDown(atBottom());
           },
-          fail: function (msg) { if (activity.parentNode) el.removeChild(activity); el.className = "msg system"; body.textContent = msg; }
+          fail: function (msg) { if (activity.parentNode) el.removeChild(activity); el.className = "msg system"; body.textContent = msg; },
+          // Resume support (#452): a mobile transport drop rejects the fetch
+          // reader mid-stream, but the turn usually finished server-side and is
+          // persisted. hasContent() lets the caller tell a partial render from a
+          // never-started turn; replace() swaps in the authoritative persisted
+          // answer over whatever streamed, then closes the bubble cleanly — so a
+          // recovered drop reads like a normal finish, not a "Netzwerkfehler".
+          contentLength: function () { return buffer.length; },
+          replace: function (raw) {
+            if (done) return; done = true;
+            if (activity.parentNode) el.removeChild(activity);
+            if (bubble && bubble.parentNode) el.removeChild(bubble);
+            buffer = String(raw == null ? "" : raw);
+            if (!buffer) body.textContent = "(no reply)";
+            else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
+            renderMermaidIn(body);
+            el.appendChild(metaLine(new Date(), Date.now() - started));
+            scrollDown(atBottom());
+          }
         };
       }
 
@@ -2330,6 +2348,53 @@
         setStreaming(false);
       });
 
+      // Resume a turn whose SSE stream dropped mid-flight (#452). A mobile radio
+      // / reverse-proxy idle-out rejects the fetch reader, but the generation
+      // usually finished server-side and is persisted. Rather than flashing a
+      // hard error over already-rendered content, poll the session's persisted
+      // last assistant turn (a few tries, the model may still be finishing) and
+      // swap in the authoritative answer. Only when nothing can be recovered —
+      // no session yet, or the persisted reply is no longer than what streamed —
+      // do we surface a real error. Returns a Promise that resolves true on a
+      // successful resume, false otherwise.
+      function resumeTurn(turn) {
+        var msg = turn.msg;
+        if (!sessionId) return Promise.resolve(false);
+        var streamed = msg.contentLength();
+        var attempts = [600, 1500, 3000]; // ms backoff; the turn may still close
+        function tryOnce(i) {
+          if (turn.stopped || activeTurn !== turn) return Promise.resolve(true);
+          return fetch("/api/sessions/" + encodeURIComponent(sessionId))
+            .then(function (r) { if (!r.ok) throw new Error("no session"); return r.json(); })
+            .then(function (j) {
+              var msgs = ((j && j.session) || {}).messages || [];
+              var last = null;
+              for (var k = msgs.length - 1; k >= 0; k--) {
+                if (msgs[k].role === "assistant") { last = msgs[k]; break; }
+              }
+              var persisted = (last && last.content) || "";
+              // Resume only once the persisted answer is at least as complete as
+              // what reached us — an empty/shorter body means the turn hasn't
+              // finished persisting yet, so wait and retry before giving up.
+              if (persisted && persisted.length >= streamed) {
+                msg.replace(persisted);
+                loadSessionTrace();
+                return true;
+              }
+              throw new Error("not yet");
+            })
+            .catch(function () {
+              if (i + 1 < attempts.length) {
+                return new Promise(function (res) { setTimeout(res, attempts[i + 1]); })
+                  .then(function () { return tryOnce(i + 1); });
+              }
+              return false;
+            });
+        }
+        return new Promise(function (res) { setTimeout(res, attempts[0]); })
+          .then(function () { return tryOnce(0); });
+      }
+
       // Run one chat turn: stream `text`/`images` to the open session and append
       // a fresh assistant reply. Shared by the composer submit and the per-turn
       // Wiederholen re-run (#308) so both go through one send path.
@@ -2342,7 +2407,15 @@
         setStreaming(true);
         return streamChat(text, msg, images, controller.signal)
           .then(function () { if (!turn.stopped) msg.finish(); if (firstTurn) loadSessions(); loadTagCloud(); loadSessionTrace(); })
-          .catch(function () { if (!turn.stopped) msg.fail("Network error. Please try again."); })
+          .catch(function () {
+            if (turn.stopped) return;
+            // Don't hard-fail over a partial render: a mobile drop usually still
+            // finished server-side, so try to recover the persisted turn first.
+            return resumeTurn(turn).then(function (ok) {
+              if (!ok && !turn.stopped) msg.fail("Network error. Please try again.");
+              else if (ok && firstTurn) loadSessions();
+            });
+          })
           .finally(function () { if (activeTurn === turn) setStreaming(false); });
       }
 

@@ -37,6 +37,7 @@ _STEP_FIELDS = (
     "detail_id",
     "step_kind",
     "tool_name",
+    "detail_json",
 )
 
 
@@ -85,8 +86,8 @@ def persist_trace(
                   (session_id, trace_id, step_order, owner_uid,
                    model, profile, wall_s, prompt_tokens, completion_tokens,
                    context_free, finish_reason, n_tools, detail_id,
-                   step_kind, tool_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   step_kind, tool_name, detail_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -124,3 +125,25 @@ def list_session_trace(
     except sqlite3.OperationalError:
         return []
     return [dict(r) for r in rows]
+
+
+def detail_for(db_path: str, owner_uid: str, detail_id: str) -> str | None:
+    """The persisted request/response body (#451) for one step, by `detail_id`.
+
+    `detail_id` is the stable per-step key persisted in `persist_trace`
+    (`<trace_id>:<step_order>`), so it survives a process restart unlike the
+    in-process recorder ring. Per-resident scoped. Returns the raw JSON string
+    (the same shape the ring's `detail()` held) or None when absent.
+    """
+    if not Path(db_path).exists():
+        return None
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT detail_json FROM session_traces "
+                "WHERE owner_uid = ? AND detail_id = ?",
+                (owner_uid, detail_id),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row["detail_json"] if row and row["detail_json"] is not None else None
