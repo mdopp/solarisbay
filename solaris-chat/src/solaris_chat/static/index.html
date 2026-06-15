@@ -222,9 +222,6 @@
     .embed .header-burger, .embed .brand-wordmark { display: none; }
     .chat-header .embed-settings { display: none; }
     .embed .chat-header .embed-settings { display: inline-flex; }
-    /* ServiceBay-admin embed (#274): persona is server-locked to Technical, so
-       the Persona selector offers no choice. */
-    .embed #persona-control { display: none; }
 
     .view { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
     .view.active { display: flex; }
@@ -577,15 +574,6 @@
     .model-row .btn-primary { padding: 7px 16px; }
     .model-current { color: var(--muted); font-size: 13px; margin: 4px 0 12px; }
 
-    /* Settings: skills/soul/model live behind one entry, not in the main nav. */
-    .rail-foot .settings-btn {
-      display: flex; align-items: center; gap: 9px; width: 100%;
-      padding: 9px 11px; border-radius: 10px; color: var(--muted);
-      font-weight: 500; font-size: 14px; margin-bottom: 8px;
-      border: 1px solid transparent;
-    }
-    .rail-foot .settings-btn:hover { background: var(--bubble-sol); color: var(--ink); }
-    .rail-foot .settings-btn.active { background: var(--accent-soft); color: var(--accent); border-color: rgba(249, 115, 22, 0.22); }
     .seg { display: flex; gap: 4px; }
     .seg button { color: var(--muted); font-weight: 500; padding: 5px 12px; border-radius: 9px; font-size: 13px; border: 1px solid transparent; }
     .seg button:hover { background: var(--bubble-sol); color: var(--ink); }
@@ -737,16 +725,10 @@
       position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
       font-size: 11px; color: var(--muted); pointer-events: none;
     }
-    .chat-header .persona { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
-    .chat-header select {
-      font: inherit; font-size: 13px; padding: 5px 9px; border: 1px solid var(--line);
-      border-radius: 9px; background: var(--panel); color: var(--ink);
-    }
     @media (min-width: 761px) { .chat-header { padding-left: 32px; padding-right: 32px; } }
     @media (max-width: 760px) {
       .chat-header { gap: 8px; padding: 10px 14px; }
       .chat-title { max-width: 30%; }
-      .chat-header .persona label { display: none; }
     }
 
     /* Settings + search inline cards (#410/#411): a setting pane or the search
@@ -852,9 +834,6 @@
     </div>
 
     <div class="rail-foot">
-      <button class="settings-btn" id="open-settings" type="button">
-        <svg class="ic"><use href="#i-settings"></use></svg> Settings
-      </button>
       <div class="rail-user">
         <span class="avatar" id="avatar">·</span>
         <span class="who-wrap">
@@ -883,10 +862,6 @@
         <span class="chat-title" id="chat-title">Neuer Chat</span>
         <span class="incognito-badge" id="incognito-badge" hidden title="Temporärer Chat: nichts wird gespeichert, wird beim Schließen gelöscht"><svg class="ic"><use href="#i-ghost"></use></svg> Temporär</span>
         <span class="chat-head-grow"></span>
-        <span class="persona" id="persona-control">
-          <label for="personality">Persona</label>
-          <select id="personality" aria-label="Persona for new sessions" title="Persona — gilt für den nächsten neuen Chat. Household antwortet immer schnell."></select>
-        </span>
         <!-- "Solaris" wordmark with the "i" as our brand glyph (#411), shown on
              mobile in the merged header in place of the retired .topbar. -->
         <span class="brand-wordmark" aria-label="Solaris">Solar<img class="brand-i" src="/static/solaris-mark.svg" alt="i" />s</span>
@@ -1142,7 +1117,6 @@
       var householdBtn = document.getElementById("pinned-household");
       var incognitoBadge = document.getElementById("incognito-badge");
       var backdrop = document.getElementById("backdrop");
-      var personalitySel = document.getElementById("personality");
       var adminBadge = document.getElementById("admin-badge");
       var sessionId = null;
       // Topic chosen in the picker before the first message of a NEW chat
@@ -1170,7 +1144,6 @@
       // household topic, and each chat's primary-topic chip in the list shows its
       // display name. Available topics come from GET /api/topics; the server
       // binds a topic's default model/persona at session create (D2/#242).
-      var personaCtrl = document.getElementById("persona-control");
       var tagCloudPanel = document.getElementById("tag-cloud");
       var tagCloudStrip = document.getElementById("tag-cloud-strip");
       var topicsList = [];
@@ -1190,13 +1163,15 @@
           .catch(function () {});
       }
 
-      // ---- Persona × speed selector (#278) ----
-      // One dropdown crosses each persona with a speed: "fast" (reasoning none,
+      // ---- Persona × speed (#278/#420) ----
+      // A persona crosses each identity with a speed: "fast" (reasoning none,
       // ~1.5-3s) or "thinking" (reasoning high — the model reasons and the chat
-      // renders the thinking block). The option value packs both as
-      // `<persona-id>|<reasoning>`; the two halves still drive the unchanged
-      // payload.personality + payload.reasoning wiring. Both are persisted
-      // locally and applied to the next new chat.
+      // renders the thinking block). The choice packs both as
+      // `<persona-id>|<reasoning>` and drives the unchanged payload.personality
+      // + payload.reasoning wiring. It is a PRE-CREATE choice: persisted locally
+      // and applied to the NEXT new chat (the household "Zuhause" chat always
+      // runs Solaris/fast regardless). Set via the `/persona` command (#420 —
+      // the header dropdown is gone).
       var REASONING_VALUES = { none: 1, low: 1, high: 1 };
       function parsePersonaSpeed(v) {
         var parts = (v || "solaris|none").split("|");
@@ -1204,8 +1179,13 @@
         var reasoning = REASONING_VALUES[parts[1]] ? parts[1] : "none";
         return { id: id, reasoning: reasoning };
       }
-      function currentPersonality() { return parsePersonaSpeed(personalitySel.value).id; }
-      function currentReasoning() { return parsePersonaSpeed(personalitySel.value).reasoning; }
+      function personaSpeed() {
+        return localStorage.getItem("solaris.persona-speed")
+          || (localStorage.getItem("solaris.personality") || "solaris") + "|"
+             + (REASONING_VALUES[localStorage.getItem("solaris.reasoning")] ? localStorage.getItem("solaris.reasoning") : "none");
+      }
+      function currentPersonality() { return parsePersonaSpeed(personaSpeed()).id; }
+      function currentReasoning() { return parsePersonaSpeed(personaSpeed()).reasoning; }
 
       // ---- Thinking-mode display preference (#185) ----
       // Reasoning models (gemma4 etc.) emit a <thinking>…</thinking> (or
@@ -1888,10 +1868,11 @@
         ["/search", "Search this chat — /search <text>"],
         ["/skills", "Skills Solaris draws on"],
         ["/soul", "Solaris's durable identity"],
+        ["/persona", "Persona & speed for the next new chat"],
         ["/tools", "What Solaris can do — toolsets & MCP servers"],
         ["/thinking", "Show, collapse, or hide thinking blocks"],
         ["/voice", "Solaris's spoken voice (admins)"],
-        ["/model", "Model, voice & VRAM (admins)"]
+        ["/model", "Everyday-chat model — Schnell/Gründlich (admins)"]
       ];
       function helpMarkdown() {
         var lines = ["**Commands** — type these in the message box:", ""];
@@ -1920,6 +1901,10 @@
         }
         if (cmd === "search") { openSearchCard(rest.trim()); return; }
         if (cmd === "skills" || cmd === "soul" || cmd === "tools") { openSettingCard(cmd); return; }
+        if (cmd === "persona") {
+          if (rest.trim()) { applyPersonaArg(rest.trim()); } else { openPersonaCard(); }
+          return;
+        }
         if (cmd === "thinking") { openSettingCard("prefs"); return; }
         if (cmd === "model" || cmd === "voice") {
           if (isAdmin) { openSettingCard("model"); } else { addText("system", "These settings are for admins."); }
@@ -2426,9 +2411,6 @@
           ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
           : pendingTopic === HOUSEHOLD_TOPIC;
         householdBtn.classList.toggle("active", active);
-        // The "Zuhause" chat has a fixed persona × speed (Solaris fast), so the
-        // Persona selector offers no choice — hide it (#274).
-        personaCtrl.hidden = active;
         if (active) {
           // Name the household chat "Zuhause" rather than the generic
           // new-chat placeholder, including the pre-first-turn state (#281).
@@ -2646,55 +2628,83 @@
         { suffix: "schnell", reasoning: "none" },
         { suffix: "Thinking", reasoning: "high" },
       ];
+      // The ServiceBay admin profile (#293): a single fixed choice (12b, no speed
+      // cross) whose value packs the maintenance persona id, so a new chat under
+      // it routes to the admin gateway server-side. Offered only to admins; the
+      // server re-checks Remote-Groups, so the choice is convenience, not the gate.
+      var ADMIN_PERSONA = "servicebay-maintenance";
+      var personaList = [];
       function loadPersonalities() {
         return fetch("/api/personalities")
           .then(function (r) { return r.ok ? r.json() : { personalities: [] }; })
-          .then(function (j) {
-            var list = (j && j.personalities) || [];
-            var saved = localStorage.getItem("solaris.persona-speed")
-              || (localStorage.getItem("solaris.personality") || "solaris") + "|"
-                 + (REASONING_VALUES[localStorage.getItem("solaris.reasoning")] ? localStorage.getItem("solaris.reasoning") : "none");
-            personalitySel.textContent = "";
-            list.forEach(function (p) {
-              PERSONA_SPEEDS.forEach(function (sp) {
-                var opt = document.createElement("option");
-                opt.value = p.id + "|" + sp.reasoning;
-                opt.textContent = p.label + " · " + sp.suffix;
-                opt.title = p.description;
-                if (opt.value === saved) opt.selected = true;
-                personalitySel.appendChild(opt);
-              });
-            });
-            personalitySel.title = "Persona — gilt für den nächsten neuen Chat";
-          })
+          .then(function (j) { personaList = (j && j.personalities) || []; })
           .catch(function () {});
       }
-      personalitySel.addEventListener("change", function () {
-        localStorage.setItem("solaris.persona-speed", personalitySel.value);
-      });
-
-      // The admin profile (#293): a single fixed option (12b, no speed cross)
-      // whose value packs the maintenance persona id, so a new chat under it is
-      // routed to the admin gateway server-side. Appended only for admins; the
-      // server re-checks Remote-Groups, so the dropdown is convenience, not the
-      // gate. Re-selects it if it was the persisted choice from a prior session.
-      var ADMIN_PERSONA = "servicebay-maintenance";
-      function addAdminOption() {
-        if (!isAdmin) return;
-        if (personalitySel.querySelector('option[value="' + ADMIN_PERSONA + '|none"]')) return;
-        var opt = document.createElement("option");
-        opt.value = ADMIN_PERSONA + "|none";
-        opt.textContent = "Admin";
-        opt.title = "ServiceBay admin profile (12b + admin tools) — admins only.";
-        personalitySel.appendChild(opt);
-        var saved = localStorage.getItem("solaris.persona-speed");
-        if (saved === opt.value) opt.selected = true;
+      // Every `<persona-id>|<reasoning>` the `/persona` command accepts: each
+      // persona crossed with each speed, plus the admin profile for admins. The
+      // persisted choice applies to the NEXT new chat (household stays fast).
+      function personaChoices() {
+        var out = [];
+        personaList.forEach(function (p) {
+          PERSONA_SPEEDS.forEach(function (sp) {
+            out.push({
+              value: p.id + "|" + sp.reasoning,
+              label: p.label + " · " + sp.suffix,
+              desc: p.description,
+            });
+          });
+        });
+        if (isAdmin) {
+          out.push({
+            value: ADMIN_PERSONA + "|none",
+            label: "Admin",
+            desc: "ServiceBay admin profile (12b + admin tools) — admins only.",
+          });
+        }
+        return out;
       }
-
-      // "Solaris Gründlich" is no longer a separate persona option: the 12b thorough
-      // model is now governed by the admin Model setting (Schnell/Gründlich), and
-      // "Solaris · Thinking" with Model = Gründlich routes to the solaris-deep gateway and
-      // renders the thinking block. One way to pick the model, one to pick speed.
+      function setPersonaSpeed(value) {
+        localStorage.setItem("solaris.persona-speed", value);
+      }
+      // `/persona` with no arg posts a card whose rows set the persona × speed;
+      // `/persona <id>[|<reasoning>]` sets it directly. Either way it's the
+      // pre-create choice for the next new chat — the header dropdown is gone (#420).
+      function openPersonaCard() {
+        var card = document.createElement("div");
+        card.className = "msg info settings-card settings-index";
+        var head = document.createElement("div");
+        head.className = "settings-card-head";
+        var title = document.createElement("span");
+        title.className = "settings-card-title"; title.textContent = "Persona — gilt für den nächsten neuen Chat";
+        head.appendChild(title); card.appendChild(head);
+        var current = personaSpeed();
+        personaChoices().forEach(function (c) {
+          var row = document.createElement("button");
+          row.type = "button";
+          row.className = "settings-index-row" + (c.value === current ? " active" : "");
+          var cmd = document.createElement("span"); cmd.className = "cmd"; cmd.textContent = c.label;
+          var desc = document.createElement("span"); desc.className = "cmd-desc"; desc.textContent = c.desc;
+          row.appendChild(cmd); row.appendChild(desc);
+          row.addEventListener("click", function () {
+            setPersonaSpeed(c.value);
+            addText("system", "Persona für den nächsten neuen Chat: " + c.label + ".");
+          });
+          card.appendChild(row);
+        });
+        log.appendChild(card);
+        scrollDown(true);
+        closeRail();
+      }
+      // `/persona <id>[|<reasoning>]`: accept a bare persona id (defaults to fast)
+      // or the packed `<id>|<reasoning>`; only offer the admin profile to admins.
+      function applyPersonaArg(arg) {
+        var parsed = parsePersonaSpeed(arg.indexOf("|") < 0 ? arg + "|none" : arg);
+        var value = parsed.id + "|" + parsed.reasoning;
+        var match = personaChoices().find(function (c) { return c.value === value; });
+        if (!match) { addText("system", "Unbekannte Persona `" + arg + "`. `/persona` zeigt die Auswahl."); return; }
+        setPersonaSpeed(value);
+        addText("system", "Persona für den nächsten neuen Chat: " + match.label + ".");
+      }
 
       // ---- Identity (footer + admin affordances) ----
       var isAdmin = false;
@@ -2822,6 +2832,7 @@
         ["model", "/model", "Model, voice & VRAM (admins)"],
         ["skills", "/skills", "Skills Solaris draws on"],
         ["soul", "/soul", "Solaris's durable identity"],
+        ["persona", "/persona", "Persona & speed for the next new chat"],
         ["tools", "/tools", "What Solaris can do"],
         ["prefs", "/thinking", "How replies are shown"]
       ];
@@ -2840,7 +2851,9 @@
           var cmd = document.createElement("span"); cmd.className = "cmd"; cmd.textContent = e[1];
           var desc = document.createElement("span"); desc.className = "cmd-desc"; desc.textContent = e[2];
           row.appendChild(cmd); row.appendChild(desc);
-          row.addEventListener("click", function () { openSettingCard(e[0]); });
+          row.addEventListener("click", function () {
+            if (e[0] === "persona") { openPersonaCard(); } else { openSettingCard(e[0]); }
+          });
           card.appendChild(row);
         });
         log.appendChild(card);
@@ -2850,7 +2863,6 @@
       // In embed mode only the Chat display-prefs card is offered (#227).
       var isEmbed = document.body.classList.contains("embed");
       function openSettings() { if (isEmbed) { openSettingCard("prefs"); } else { openSettingsIndex(); } }
-      document.getElementById("open-settings").addEventListener("click", openSettings);
       document.getElementById("embed-settings").addEventListener("click", openSettings);
       document.getElementById("brand-home").addEventListener("click", function () { showView("chat"); });
 
@@ -3429,13 +3441,10 @@
           .catch(function () { vramReadout.textContent = "Could not load the VRAM estimate."; vramWarn.hidden = true; vramBar.hidden = true; });
       }
 
-      // The Admin option (#293) is admin-gated: it appears only once both the
-      // persona list and whoami have resolved and the caller is an Authelia
-      // admin. Selecting it routes new chats to the engine's admin profile
-      // — the server re-enforces the gate, so a non-admin can never reach it.
-      Promise.all([loadPersonalities(), loadWhoami()]).then(function () {
-        addAdminOption();
-      });
+      // Load the persona catalog + identity so `/persona` can offer the full
+      // cross (and, for an Authelia admin, the admin profile #293 — the server
+      // re-enforces the gate, so a non-admin can never reach it).
+      Promise.all([loadPersonalities(), loadWhoami()]);
       loadTopics().then(loadSessions);
     })();
   </script>
