@@ -1,6 +1,6 @@
 ---
 name: solaris-guest-onboarding
-description: Use at the start of a conversation with an unknown/guest speaker — the turn's uid is `guest` (the gatekeeper heard a voice but matched no enrolled resident, #351/#353), e.g. they open with "Hallo", "Hey Solaris", "wer bist du?", "kannst du mir helfen?". Greet them, explain Solaris doesn't recognise them yet, and offer the two paths: (a) register as a resident (gated on admin approval) or (b) carry on as a guest (Q&A + simple light/media control, nothing is remembered). If they choose to register, set up the next step — collecting a name and a few spoken samples to enrol their voice — and hand off to the registration flow. The conversational entry point for the onboarding epic (#343).
+description: Use at the start of a conversation with an unknown/guest speaker — the turn's uid is `guest` (the gatekeeper heard a voice but matched no enrolled resident, #351/#353), e.g. they open with "Hallo", "Solaris", "wer bist du?", "kannst du mir helfen?". Greet them, explain Solaris doesn't recognise them yet, and offer the two paths: (a) register as a resident (gated on admin approval) or (b) carry on as a guest (Q&A + simple light/media control, nothing is remembered). If they choose to register, set up the next step — collecting a name and a few spoken samples to enrol their voice — and hand off to the registration flow. The conversational entry point for the onboarding epic (#343).
 version: 1.2.0
 author: Solaris
 license: MIT
@@ -30,7 +30,7 @@ Trigger when **both** hold:
    the guest profile. (A turn from a known resident or a text/chat session that
    already has a uid is **not** a guest turn — don't run this.)
 2. It is the **opening** of the interaction — a greeting or a first request, e.g.
-   *"Hallo"*, *"Hey Solaris"*, *"Wer bist du?"*, *"Kannst du mir helfen?"*. Lead with
+   *"Hallo"*, *"Solaris"*, *"Wer bist du?"*, *"Kannst du mir helfen?"*. Lead with
    the greeting + offer once, near the start.
 
 **Do not** trigger:
