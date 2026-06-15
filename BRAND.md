@@ -12,8 +12,6 @@
 
 ## The name
 
-<!-- DRAFT: Solaris narrative, pending owner review -->
-
 **Solaris** takes its name from Stanisław Lem's 1961 novel — the planet whose
 entire surface is a single sentient ocean: a vast, thinking thing that listens,
 remembers, and answers back in forms drawn from the minds of those who study it.
@@ -41,10 +39,11 @@ the world knows.
 
 ## Voice & wake
 
-- You call it **Solaris** — the living face of Solaris: the sun that lights your
-  stored knowledge, the one who turns to you when you speak.
 - Wake phrase: **"Hey Solaris."**
-- Solaris is the corpus and the home; **Solaris is who answers when you call.**
+- **Solaris** is the mind you talk to — the corpus of everything you've said and
+  the voice that answers. **SolarisBay** is the home it lives in. One name to
+  call, one place it rests — the sun that lights your stored knowledge, the one
+  who turns to you when you speak.
 
 ## Tagline
 
@@ -68,7 +67,7 @@ digital reflection of your thinking — captured, connected, and reachable by
 voice ("Hey Solaris") or chat. It runs **on ServiceBay**, which is its harbor:
 
 > **ServiceBay** hosts **SolarisBay** (the home & store) · **Solaris** is the
-> soul that lives there · **Solaris** is the voice you summon.
+> mind that lives there — and the voice you summon.
 
 **SolarisBay** is the home stack — the harbor where the soul rests (your chats,
 documents, knowledge) and the machinery that brings it alive runs. The `*Bay`
@@ -89,39 +88,19 @@ plain-spoken in the promise. Never self-help-cheesy, never cold-tech. It speaks
 - `solaris.com` is registered but parked (no live site) — acquisition target,
   not blocking.
 
-## Naming map (for the rename — see issue #138)
+## Naming convention
 
-| Layer | Today (OSCAR) | Becomes |
-|---|---|---|
-| Repo + ServiceBay registry | `mdopp/oscar` | `mdopp/solarisbay` |
-| Brand / soul | OSCAR | **Solaris** |
-| Voice / wake | "OSCAR" | **Solaris** / "Hey Solaris" |
-| Home stack + pod | `oscar-household`, `stacks/oscar` | **SolarisBay**, `stacks/solarisbay` |
-| Home template dir | `templates/oscar-household` | `templates/solarisbay` |
-| Hermes plugin + stack name | `name: oscar`, `~/.hermes/plugins/oscar/` | `name: solarisbay`, `~/.hermes/plugins/solarisbay/` |
-| Components (in-stack, bare roles) | `oscar-gatekeeper`, `oscar-household-init`, `oscar-data` | `gatekeeper`, `schema-init`, `solaris-data` |
-| Chat pod | `oscar-chat` image, `templates/hermes-chat`, pkg `oscar_chat` | `solaris-chat` image + `templates/solaris-chat` template + pod + `solaris-chat/` source dir, pkg `solaris_chat` |
-| Published images (GHCR, brand-prefixed) | `oscar-gatekeeper`, `oscar-household-init`, `oscar-chat`, `oscar-gatekeeper-ml` | `solaris-gatekeeper`, `solaris-schema-init`, `solaris-chat`, `solaris-gatekeeper-ml` |
-| Python projects | `oscar-gatekeeper`, `oscar-schema`, `oscar-chat` | `solaris-gatekeeper`, `solaris-schema`, `solaris-chat` |
-| Hermes skill names | `oscar-status`, `oscar-audit-query`, `oscar-debug-set`, `oscar-daily-chronicle`, `oscar-dynamic-skills`, `oscar-notes-search`, `oscar-room-enrollment`, `oscar-custom-*` | `solaris-status`, `solaris-audit-query`, `solaris-debug-set`, `solaris-daily-chronicle`, `solaris-dynamic-skills`, `solaris-notes-search`, `solaris-room-enrollment`, `solaris-custom-*` |
-| Wyoming program / MCP server names | `oscar-gatekeeper-asr/-tts`, `oscar-gatekeeper-rooms` | `solaris-gatekeeper-asr/-tts`, `solaris-gatekeeper-rooms` |
-| Notes namespace (tags + folders) | `#oscar/…`, `oscar/journal`, `oscar/ingested`, `oscar/stub` | `#solaris/…`, `solaris/journal`, `solaris/ingested`, `solaris/stub` |
-| HA onboarding account + token file | `oscar` user, `.oscar-long-lived-token` | `solaris` user, `.solaris-long-lived-token` |
-| Env vars | `OSCAR_*` | `SOLARIS_*` |
-| Data | `oscar.db`, `/var/lib/oscar`, `/opt/data/skills/oscar`, `{{DATA_DIR}}/oscar-household` | `solaris.db`, `/var/lib/solaris`, `/opt/data/skills/solaris`, `{{DATA_DIR}}/solarisbay` |
-
-Inside SolarisBay, in-stack containers keep bare role names; the brand prefix
-returns only on published artifacts (GHCR images, Python projects) where they
-must be identifiable. Two deliberate stems: home/voice on `solaris`/`solarisbay`
-(stack, pod, template dir, plugin, Hermes skill names, voice handle), brand
-artifacts on `solaris` (images, Python projects, env vars `SOLARIS_*`, data
-paths, notes namespace, Wyoming/MCP program names). The chat pod is the one
-brand-prefixed *template* (`solaris-chat`) so it lines up with its
-`solaris-chat` image and `solaris-chat/` source dir, alongside the role-named
-source dirs (`voice-gatekeeper/`, `database/`).
-Unchanged: `hermes`, `hermes-webui` (retired), `ollama`; generic package
-`gatekeeper`; `HERMES_*` / `GATEKEEPER_*` / `DEFAULT_UID`. The rename is a
-coordinated migration — see #138.
+Inside SolarisBay, in-stack containers keep bare role names (`gatekeeper`,
+`schema-init`); the brand prefix returns only on published artifacts (GHCR
+images `solaris-*`, Python projects) where they must be identifiable. Two
+deliberate stems: home/voice on `solaris`/`solarisbay` (stack, pod, template
+dir, voice handle), brand artifacts on `solaris` (images, Python projects, env
+vars `SOLARIS_*`, data paths `solaris.db` / `/var/lib/solaris`, notes
+namespace, Wyoming/MCP program names). The chat pod is the one brand-prefixed
+*template* (`solaris-chat`), lining up with its `solaris-chat` image and
+`solaris-chat/` source dir, alongside the role-named source dirs
+(`voice-gatekeeper/`, `database/`). Unchanged: `ollama`; generic package
+`gatekeeper`; `GATEKEEPER_*` / `DEFAULT_UID`.
 
 ---
 
