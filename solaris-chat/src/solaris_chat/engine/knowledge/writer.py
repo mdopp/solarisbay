@@ -1,0 +1,246 @@
+"""The OKF write-path core: `write_concept(record) -> concept_id`.
+
+Every ingestion adapter calls this. Given a normalized `ConceptRecord` it runs
+the five-step contract (docs/okf-write-contract.md §6) as one unit:
+
+  1. resolve/create the entity (alias dedup, per-resident scope);
+  2. write/update the OKF concept `.md` (source of truth);
+  3. update the `.db` projection (entities/facts/events/event_entities/concepts);
+  4. enqueue the whole-concept embedding (only when content_hash changed);
+  5. record `ingest_log` (skip the whole write when content_hash is unchanged).
+
+Adapter-agnostic on purpose: the adapter owns source-shape → `ConceptRecord`;
+the writer owns OKF + db + embed + log.
+"""
+
+from __future__ import annotations
+
+import uuid
+from pathlib import Path
+
+from . import okf, projection
+from .embedding import EmbeddingQueue, NullEmbeddingQueue
+from .records import ConceptRecord, WriteResult, is_event_type
+
+
+class OkfWriter:
+    def __init__(
+        self,
+        *,
+        db_path: str,
+        notes_dir: str,
+        embedding_queue: EmbeddingQueue | None = None,
+    ):
+        self._db_path = db_path
+        self._notes_root = Path(notes_dir)
+        self._embeddings = embedding_queue or NullEmbeddingQueue()
+
+    def write_concept(
+        self, record: ConceptRecord, *, ingesting_uid: str = ""
+    ) -> WriteResult:
+        """Run the full write path for one concept; return its `WriteResult`.
+
+        `ingesting_uid` is the default per-resident scope (§6): the uploading
+        resident. An explicit `record.resident` (e.g. an Immich shared-asset
+        mapping to `household`) wins over it.
+        """
+        resident = record.resident or ingesting_uid or "household"
+        record.resident = resident
+
+        is_event = is_event_type(record.type)
+        ref_kind = "event" if is_event else "entity"
+
+        conn = projection.open_conn(self._db_path)
+        try:
+            # 1. resolve/create the ref id (entity dedup; events are per-ingest).
+            if is_event:
+                ref_id = self._existing_event_id(conn, record) or uuid.uuid4().hex
+            else:
+                ref_id = (
+                    projection.resolve_entity(
+                        conn,
+                        type=record.type,
+                        canonical_name=record.title,
+                        resident_uid=resident,
+                        aliases=record.aliases,
+                    )
+                    or uuid.uuid4().hex
+                )
+
+            # OKF file text + its content_hash (the re-ingest skip key).
+            rel_path = okf.okf_path(record)
+            text = okf.render(record, entity_id=ref_id)
+            new_hash = okf.content_hash(text)
+
+            prior_hash = projection.ingest_log_hash(
+                conn, record.source, record.external_id
+            )
+            if prior_hash == new_hash:
+                existing = self._existing_concept(conn, ref_id, ref_kind, rel_path)
+                conn.commit()
+                return existing
+
+            # 2. write/update the OKF concept file (source of truth).
+            self._write_okf_file(rel_path, text)
+
+            # 3. update the .db projection.
+            if is_event:
+                self._project_event(conn, record, ref_id, resident)
+            else:
+                self._project_entity(conn, record, ref_id, resident, new_hash)
+
+            # 4. embedding — only reached because the hash changed.
+            embed_id = (
+                projection.concept_embedding_id(
+                    conn, self._concept_id(conn, ref_id, ref_kind)
+                )
+                or uuid.uuid4().hex
+            )
+            embed_text = "\n".join(
+                p for p in (record.title, record.description, record.body) if p
+            )
+            self._embeddings.enqueue(
+                concept_id=ref_id, embedding_id=embed_id, text=embed_text
+            )
+
+            concept_id = projection.upsert_concept(
+                conn,
+                ref_id=ref_id,
+                ref_kind=ref_kind,
+                okf_path=rel_path,
+                content_hash=new_hash,
+                embedding_id=embed_id,
+            )
+
+            # 5. ingest_log (idempotency marker).
+            projection.record_ingest(
+                conn,
+                source=record.source,
+                external_id=record.external_id,
+                content_hash=new_hash,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return WriteResult(
+            concept_id=concept_id,
+            ref_id=ref_id,
+            ref_kind=ref_kind,
+            okf_path=rel_path,
+            content_hash=new_hash,
+            skipped=False,
+            embedded=True,
+        )
+
+    # --- helpers --------------------------------------------------------------
+
+    def _project_entity(self, conn, record, entity_id, resident, content_hash) -> None:
+        exists = conn.execute(
+            "SELECT id FROM entities WHERE id = ?", (entity_id,)
+        ).fetchone()
+        projection.upsert_entity(
+            conn,
+            entity_id=entity_id,
+            is_new=exists is None,
+            type=record.type,
+            canonical_name=record.title,
+            resident_uid=resident,
+            source=record.source,
+            content_hash=content_hash,
+            aliases=record.aliases,
+        )
+        facts = [(r.rel, r.path, None) for r in record.relationships]
+        projection.replace_facts(
+            conn,
+            subject_entity_id=entity_id,
+            resident_uid=resident,
+            source=record.source,
+            facts=facts,
+        )
+
+    def _project_event(self, conn, record, event_id, resident) -> None:
+        exists = conn.execute(
+            "SELECT id FROM events WHERE id = ?", (event_id,)
+        ).fetchone()
+        projection.upsert_event(
+            conn,
+            event_id=event_id,
+            is_new=exists is None,
+            ts=record.event_ts or record.timestamp or "",
+            resident_uid=resident,
+            kind=record.event_kind or "event",
+            source=record.source,
+        )
+        members: list[tuple[str, str]] = []
+        for r in record.relationships:
+            # Prefer the OKF link path (`people/anna`); fall back to a bare name
+            # so an adapter can reference an entity either way.
+            target = projection.entity_id_for_okf_path(
+                conn, r.path
+            ) or projection.resolve_entity(
+                conn,
+                type="person",
+                canonical_name=r.path,
+                resident_uid=resident,
+                aliases=[],
+            )
+            if target is not None:
+                members.append((target, r.rel))
+        projection.set_event_entities(conn, event_id=event_id, members=members)
+
+    def _write_okf_file(self, rel_path: str, text: str) -> None:
+        # rel_path is built from safe_slug() components, so it cannot escape the
+        # notes root; resolve-check anyway as defence in depth.
+        path = (self._notes_root / rel_path).resolve()
+        if not str(path).startswith(str(self._notes_root.resolve())):
+            raise ValueError(f"OKF path escapes the vault: {rel_path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _existing_event_id(self, conn, record: ConceptRecord) -> str | None:
+        """Events have no canonical-name dedup; the stable key is the OKF path
+        (date-prefixed slug), so a re-ingest of the same event reuses its id."""
+        row = conn.execute(
+            "SELECT ref_id FROM concepts WHERE ref_kind = 'event' AND okf_path = ?",
+            (okf.okf_path(record),),
+        ).fetchone()
+        return row["ref_id"] if row else None
+
+    def _concept_id(self, conn, ref_id: str, ref_kind: str) -> str:
+        row = conn.execute(
+            "SELECT id FROM concepts WHERE ref_id = ? AND ref_kind = ?",
+            (ref_id, ref_kind),
+        ).fetchone()
+        return row["id"] if row else ""
+
+    def _existing_concept(self, conn, ref_id, ref_kind, rel_path) -> WriteResult:
+        row = conn.execute(
+            "SELECT id, content_hash FROM concepts WHERE ref_id = ? AND ref_kind = ?",
+            (ref_id, ref_kind),
+        ).fetchone()
+        return WriteResult(
+            concept_id=row["id"] if row else "",
+            ref_id=ref_id,
+            ref_kind=ref_kind,
+            okf_path=rel_path,
+            content_hash=row["content_hash"] if row else "",
+            skipped=True,
+            embedded=False,
+        )
+
+
+def write_concept(
+    record: ConceptRecord,
+    *,
+    db_path: str,
+    notes_dir: str,
+    ingesting_uid: str = "",
+    embedding_queue: EmbeddingQueue | None = None,
+) -> WriteResult:
+    """Module-level convenience over `OkfWriter` for one-shot adapter calls."""
+    return OkfWriter(
+        db_path=db_path,
+        notes_dir=notes_dir,
+        embedding_queue=embedding_queue,
+    ).write_concept(record, ingesting_uid=ingesting_uid)
