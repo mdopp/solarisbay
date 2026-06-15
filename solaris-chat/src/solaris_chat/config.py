@@ -47,6 +47,14 @@ class Settings:
     sb_mcp_token_path: str
     gatekeeper_url: str
     gatekeeper_token: str
+    immich_base_url: str
+    immich_api_key: str
+    caldav_url: str
+    caldav_username: str
+    caldav_password: str
+    carddav_url: str
+    carddav_username: str
+    carddav_password: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -160,6 +168,21 @@ class Settings:
                 "GATEKEEPER_URL", "http://127.0.0.1:10750"
             ).strip(),
             gatekeeper_token=os.environ.get("PUSH_TOKEN", "").strip(),
+            # The household Immich instance the photo-ingest adapter reads
+            # (read-only) to map assets/faces/EXIF-geo into OKF
+            # events/people/places (#206). Empty ⇒ ingest disabled.
+            immich_base_url=os.environ.get("IMMICH_BASE_URL", "").strip(),
+            immich_api_key=os.environ.get("IMMICH_API_KEY", "").strip(),
+            # The household CalDAV calendar + CardDAV address book the
+            # calendar/contacts-ingest adapter reads (read-only, #207) to map
+            # events/contacts into OKF event/person concepts. An empty url
+            # disables that half of the adapter.
+            caldav_url=os.environ.get("CALDAV_URL", "").strip(),
+            caldav_username=os.environ.get("CALDAV_USERNAME", "").strip(),
+            caldav_password=os.environ.get("CALDAV_PASSWORD", "").strip(),
+            carddav_url=os.environ.get("CARDDAV_URL", "").strip(),
+            carddav_username=os.environ.get("CARDDAV_USERNAME", "").strip(),
+            carddav_password=os.environ.get("CARDDAV_PASSWORD", "").strip(),
         )
 
 

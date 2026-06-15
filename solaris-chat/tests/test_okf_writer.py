@@ -1,0 +1,273 @@
+"""OKF write-path core (#447, docs/okf-write-contract.md §3–§6).
+
+The OKF knowledge-index schema is owned by the alembic migration in `database/`
+(#446); importing alembic from a solaris-chat test fails CI's clean env, so the
+fixture creates the same tables directly from DDL that mirrors the migration.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+
+import pytest
+
+from solaris_chat.engine.knowledge import (
+    ConceptRecord,
+    PendingEmbeddingQueue,
+    Relationship,
+    safe_slug,
+)
+from solaris_chat.engine.knowledge import projection
+from solaris_chat.engine.knowledge.writer import OkfWriter
+
+
+# Mirrors database/migrations/versions/20260615_0016_okf_knowledge_index.py.
+_SCHEMA = """
+CREATE TABLE entities (
+  id TEXT PRIMARY KEY, type TEXT NOT NULL, canonical_name TEXT NOT NULL,
+  resident_uid TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE entity_aliases (
+  entity_id TEXT NOT NULL, alias TEXT NOT NULL,
+  PRIMARY KEY (entity_id, alias),
+  FOREIGN KEY (entity_id) REFERENCES entities (id));
+CREATE INDEX entity_aliases_alias_idx ON entity_aliases (alias);
+CREATE TABLE facts (
+  id TEXT PRIMARY KEY, subject_entity_id TEXT, resident_uid TEXT NOT NULL,
+  predicate TEXT NOT NULL, value TEXT NOT NULL, confidence REAL,
+  source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (subject_entity_id) REFERENCES entities (id));
+CREATE INDEX facts_subject_predicate_idx ON facts (subject_entity_id, predicate);
+CREATE TABLE events (
+  id TEXT PRIMARY KEY, ts TEXT NOT NULL, resident_uid TEXT NOT NULL,
+  kind TEXT NOT NULL, source TEXT NOT NULL);
+CREATE INDEX events_ts_idx ON events (ts);
+CREATE INDEX events_resident_ts_idx ON events (resident_uid, ts);
+CREATE TABLE event_entities (
+  event_id TEXT NOT NULL, entity_id TEXT NOT NULL, role TEXT NOT NULL,
+  PRIMARY KEY (event_id, entity_id, role),
+  FOREIGN KEY (event_id) REFERENCES events (id),
+  FOREIGN KEY (entity_id) REFERENCES entities (id));
+CREATE TABLE concepts (
+  id TEXT PRIMARY KEY, ref_id TEXT NOT NULL,
+  ref_kind TEXT NOT NULL CHECK (ref_kind IN ('entity', 'event')),
+  okf_path TEXT NOT NULL, embedding_id TEXT, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE ingest_log (
+  source TEXT NOT NULL, external_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+  ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (source, external_id));
+CREATE INDEX ingest_log_source_external_idx ON ingest_log (source, external_id);
+"""
+
+
+@pytest.fixture
+def env(tmp_path):
+    db_path = str(tmp_path / "solaris.db")
+    notes_dir = str(tmp_path / "notes")
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    conn.close()
+    queue = PendingEmbeddingQueue(db_path)
+    writer = OkfWriter(db_path=db_path, notes_dir=notes_dir, embedding_queue=queue)
+    return writer, db_path, tmp_path
+
+
+def _person(title="Anna", external_id="immich:person/1", **kw) -> ConceptRecord:
+    return ConceptRecord(
+        type="person",
+        title=title,
+        source="immich",
+        external_id=external_id,
+        description="A friend.",
+        body="Met at the climbing gym.",
+        aliases=kw.pop("aliases", []),
+        relationships=kw.pop("relationships", []),
+        **kw,
+    )
+
+
+# --- slug safety -------------------------------------------------------------
+
+
+def test_safe_slug_lowercases_and_dashes():
+    assert safe_slug("Anna Müller") == "anna-mueller"
+
+
+def test_safe_slug_strips_path_traversal():
+    # No `/`, `..`, leading dot or whitespace can survive (§2).
+    assert safe_slug("../../etc/passwd") == "etc-passwd"
+    assert safe_slug("  .hidden file  ") == "hidden-file"
+    assert "/" not in safe_slug("a/b/c") and ".." not in safe_slug("a..b")
+
+
+def test_safe_slug_empty_raises():
+    with pytest.raises(ValueError):
+        safe_slug("...///   ")
+
+
+# --- entity resolution / dedup -----------------------------------------------
+
+
+def test_new_entity_is_created(env):
+    writer, db_path, _ = env
+    res = writer.write_concept(_person(), ingesting_uid="mdopp")
+    assert res.ref_kind == "entity" and not res.skipped
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 1
+    row = conn.execute("SELECT * FROM entities").fetchone()
+    assert row["canonical_name"] == "Anna" and row["resident_uid"] == "mdopp"
+    conn.close()
+
+
+def test_alias_dedup_reuses_entity(env):
+    writer, db_path, _ = env
+    writer.write_concept(_person(aliases=["Anni"]), ingesting_uid="mdopp")
+    # A second source names her by the alias — must resolve to the same entity.
+    second = ConceptRecord(
+        type="person",
+        title="Anni",
+        source="caldav",
+        external_id="caldav:contact/9",
+        body="Birthday in May.",
+    )
+    res = writer.write_concept(second, ingesting_uid="mdopp")
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 1
+    assert res.skipped is False
+    conn.close()
+
+
+def test_dedup_is_per_resident(env):
+    writer, db_path, _ = env
+    writer.write_concept(_person(external_id="a"), ingesting_uid="mdopp")
+    writer.write_concept(_person(external_id="b"), ingesting_uid="lena")
+    conn = projection.open_conn(db_path)
+    # Same name, different residents -> two distinct entities (§6).
+    assert projection.row_count(conn, "entities") == 2
+    conn.close()
+
+
+# --- OKF file shape ----------------------------------------------------------
+
+
+def test_okf_file_written_with_frontmatter_and_relationships(env):
+    writer, _, tmp_path = env
+    rec = _person(
+        relationships=[Relationship("friend-of", "people/lena")],
+    )
+    res = writer.write_concept(rec, ingesting_uid="mdopp")
+    assert res.okf_path == "okf/people/anna.md"
+    path = tmp_path / "notes" / res.okf_path
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("---\n")
+    assert "type: person" in text
+    assert f"id: {res.ref_id}" in text  # id == .db entity id (§3)
+    assert "resident: mdopp" in text
+    assert "source: immich" in text
+    assert "## Relationships" in text
+    assert "- friend-of → [[people/lena]]" in text
+
+
+def test_event_concept_is_date_prefixed_and_event_kind(env):
+    writer, db_path, tmp_path = env
+    rec = ConceptRecord(
+        type="event",
+        title="Climbing trip",
+        source="immich",
+        external_id="immich:album/7",
+        event_ts="2026-05-30T10:00:00",
+        event_kind="trip",
+        # Participants are OKF link paths (§3), resolved back to the entity.
+        relationships=[Relationship("with", "people/anna")],
+    )
+    # Anna must exist for the event->entity edge to resolve.
+    writer.write_concept(_person(), ingesting_uid="mdopp")
+    res = writer.write_concept(rec, ingesting_uid="mdopp")
+    assert res.ref_kind == "event"
+    assert res.okf_path == "okf/events/2026-05-30-climbing-trip.md"
+    assert (tmp_path / "notes" / res.okf_path).is_file()
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "events") == 1
+    assert projection.row_count(conn, "event_entities") == 1
+    edge = conn.execute("SELECT * FROM event_entities").fetchone()
+    assert edge["role"] == "with"
+    conn.close()
+
+
+# --- .db projection ----------------------------------------------------------
+
+
+def test_projection_rows_and_concept_link(env):
+    writer, db_path, _ = env
+    rec = _person(relationships=[Relationship("likes", "songs/x")])
+    res = writer.write_concept(rec, ingesting_uid="mdopp")
+    conn = projection.open_conn(db_path)
+    concept = conn.execute("SELECT * FROM concepts").fetchone()
+    assert concept["ref_id"] == res.ref_id
+    assert concept["ref_kind"] == "entity"
+    assert concept["okf_path"] == res.okf_path
+    assert concept["embedding_id"]  # keyed for the embedding store (§5)
+    assert concept["content_hash"] == res.content_hash
+    fact = conn.execute("SELECT * FROM facts").fetchone()
+    assert fact["predicate"] == "likes" and fact["value"] == "songs/x"
+    conn.close()
+
+
+# --- idempotency -------------------------------------------------------------
+
+
+def test_reingest_unchanged_is_skipped(env):
+    writer, db_path, _ = env
+    rec = _person()
+    first = writer.write_concept(rec, ingesting_uid="mdopp")
+    second = writer.write_concept(_person(), ingesting_uid="mdopp")
+    assert second.skipped is True
+    assert second.embedded is False
+    assert second.content_hash == first.content_hash
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 1
+    assert projection.row_count(conn, "concepts") == 1
+    assert projection.row_count(conn, "ingest_log") == 1
+    conn.close()
+
+
+def test_reingest_changed_reembeds_and_updates_hash(env):
+    writer, db_path, tmp_path = env
+    writer.write_concept(_person(), ingesting_uid="mdopp")
+    changed = _person()
+    changed.description = "An old friend."
+    res = writer.write_concept(changed, ingesting_uid="mdopp")
+    assert res.skipped is False and res.embedded is True
+    conn = projection.open_conn(db_path)
+    log = conn.execute("SELECT content_hash FROM ingest_log").fetchone()
+    assert log["content_hash"] == res.content_hash
+    conn.close()
+    # The pending-embedding sidecar carries the (re-)embedding work, no dup key.
+    queue_file = tmp_path / "okf_embedding_queue.json"
+    pending = json.loads(queue_file.read_text())
+    assert len(pending) == 1
+    (entry,) = pending.values()
+    assert entry["model"] == "nomic-embed-text"
+
+
+def test_default_scope_is_ingesting_resident(env):
+    writer, db_path, _ = env
+    writer.write_concept(_person(), ingesting_uid="lena")
+    conn = projection.open_conn(db_path)
+    assert conn.execute("SELECT resident_uid FROM entities").fetchone()[0] == "lena"
+    conn.close()
+
+
+def test_explicit_household_scope_wins(env):
+    writer, db_path, _ = env
+    rec = _person()
+    rec.resident = "household"
+    writer.write_concept(rec, ingesting_uid="mdopp")
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute("SELECT resident_uid FROM entities").fetchone()[0] == "household"
+    )
+    conn.close()

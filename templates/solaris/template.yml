@@ -213,6 +213,29 @@ spec:
       value: "http://127.0.0.1:10750"
     - name: PUSH_TOKEN
       value: "{{PUSH_TOKEN}}"
+    # The household Immich instance the photo-ingest adapter reads (read-only,
+    # #206) to map assets/faces/EXIF-geo into OKF events/people/places. Empty
+    # IMMICH_BASE_URL disables the adapter; IMMICH_API_KEY is a read-only Immich
+    # API key. Loopback when Immich runs on the same box (hostNetwork pod).
+    - name: IMMICH_BASE_URL
+      value: "{{IMMICH_BASE_URL}}"
+    - name: IMMICH_API_KEY
+      value: "{{IMMICH_API_KEY}}"
+    # The household CalDAV calendar + CardDAV address book the calendar/contacts
+    # ingest adapter reads (read-only, #207) to map events/contacts into OKF
+    # event/person concepts. An empty CALDAV_URL/CARDDAV_URL disables that half.
+    - name: CALDAV_URL
+      value: "{{CALDAV_URL}}"
+    - name: CALDAV_USERNAME
+      value: "{{CALDAV_USERNAME}}"
+    - name: CALDAV_PASSWORD
+      value: "{{CALDAV_PASSWORD}}"
+    - name: CARDDAV_URL
+      value: "{{CARDDAV_URL}}"
+    - name: CARDDAV_USERNAME
+      value: "{{CARDDAV_USERNAME}}"
+    - name: CARDDAV_PASSWORD
+      value: "{{CARDDAV_PASSWORD}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint
