@@ -532,25 +532,33 @@ def build_app(
         if ephemeral or trace_recorder is None:
             return
         try:
-            steps = [
-                {
-                    "model": rec.get("model"),
-                    "profile": rec.get("profile"),
-                    "wall_s": rec.get("wall_s"),
-                    "prompt_tokens": rec.get("prompt_tokens"),
-                    "completion_tokens": rec.get("completion_tokens"),
-                    "context_free": rec.get("context_free"),
-                    "finish_reason": rec.get("finish_reason"),
-                    "n_tools": rec.get("n_tools"),
-                    "detail_id": rec.get("id"),
-                    "step_kind": rec.get("step_kind"),
-                    "tool_name": rec.get("tool_name"),
-                }
-                for rec in trace_recorder.for_session(session_id, t0)
-            ]
+            trace_id = uuid.uuid4().hex
+            steps = []
+            for order, rec in enumerate(trace_recorder.for_session(session_id, t0)):
+                # Persist the detail body WITH the step (#451) under a stable
+                # per-step key, so the modal still resolves after a reload /
+                # engine restart — the recorder's ring id restarts at 0 per
+                # process and would otherwise 404. Tool steps carry no body.
+                detail = trace_recorder.detail(rec["id"]) if "id" in rec else None
+                steps.append(
+                    {
+                        "model": rec.get("model"),
+                        "profile": rec.get("profile"),
+                        "wall_s": rec.get("wall_s"),
+                        "prompt_tokens": rec.get("prompt_tokens"),
+                        "completion_tokens": rec.get("completion_tokens"),
+                        "context_free": rec.get("context_free"),
+                        "finish_reason": rec.get("finish_reason"),
+                        "n_tools": rec.get("n_tools"),
+                        "detail_id": f"{trace_id}:{order}" if detail else None,
+                        "step_kind": rec.get("step_kind"),
+                        "tool_name": rec.get("tool_name"),
+                        "detail_json": json.dumps(detail) if detail else None,
+                    }
+                )
             if steps:
                 trace_store.persist_trace(
-                    solaris_db_path, session_id, uuid.uuid4().hex, uid, steps
+                    solaris_db_path, session_id, trace_id, uid, steps
                 )
         except Exception as e:  # noqa: BLE001 — trace persistence is best-effort
             log.warn("chat.trace.persist_error", session_id=session_id, error=str(e))
@@ -613,9 +621,15 @@ def build_app(
 
     async def trace_detail(request: web.Request) -> web.Response:
         # Exact per-call content for one trace step (#307 panel → #305 detail).
-        # Served in-process from the engine's recorder; the detail store is a
-        # FIFO ring, so an old turn may 404 — the panel degrades to no modal.
+        # A persisted turn carries a stable `<trace_id>:<order>` detail_id whose
+        # body lives in the trace store (#451), so it survives a reload/restart;
+        # the in-flight turn still carries the recorder's bare integer ring id,
+        # served live. Try the persisted body first, then the ring.
+        uid = resolve_uid(request, remote_user_header, default_uid)
         detail_id = request.match_info["detail_id"]
+        body = trace_store.detail_for(solaris_db_path, uid, detail_id)
+        if body is not None:
+            return web.Response(body=body, content_type="application/json")
         detail = (
             trace_recorder.detail(int(detail_id))
             if trace_recorder is not None and detail_id.isdigit()

@@ -201,24 +201,30 @@ def _persist_voice_trace(
     trace-write hiccup never breaks a voice turn that already replied."""
     session_id = store.household_session_id(uid)
     try:
-        steps = [
-            {
-                "model": rec.get("model"),
-                "profile": rec.get("profile"),
-                "wall_s": rec.get("wall_s"),
-                "prompt_tokens": rec.get("prompt_tokens"),
-                "completion_tokens": rec.get("completion_tokens"),
-                "context_free": rec.get("context_free"),
-                "finish_reason": rec.get("finish_reason"),
-                "n_tools": rec.get("n_tools"),
-                "detail_id": rec.get("id"),
-                "step_kind": rec.get("step_kind"),
-                "tool_name": rec.get("tool_name"),
-            }
-            for rec in client.recorder.for_session(session_id, t0)
-        ]
+        trace_id = uuid.uuid4().hex
+        steps = []
+        for order, rec in enumerate(client.recorder.for_session(session_id, t0)):
+            # Persist the detail body with the step under a stable per-step key
+            # so the modal resolves after a reload/restart (#451).
+            detail = client.recorder.detail(rec["id"]) if "id" in rec else None
+            steps.append(
+                {
+                    "model": rec.get("model"),
+                    "profile": rec.get("profile"),
+                    "wall_s": rec.get("wall_s"),
+                    "prompt_tokens": rec.get("prompt_tokens"),
+                    "completion_tokens": rec.get("completion_tokens"),
+                    "context_free": rec.get("context_free"),
+                    "finish_reason": rec.get("finish_reason"),
+                    "n_tools": rec.get("n_tools"),
+                    "detail_id": f"{trace_id}:{order}" if detail else None,
+                    "step_kind": rec.get("step_kind"),
+                    "tool_name": rec.get("tool_name"),
+                    "detail_json": json.dumps(detail) if detail else None,
+                }
+            )
         if steps:
-            trace_store.persist_trace(db_path, session_id, uuid.uuid4().hex, uid, steps)
+            trace_store.persist_trace(db_path, session_id, trace_id, uid, steps)
     except Exception as e:  # noqa: BLE001 — trace persistence is best-effort
         log.warn("engine.facade.trace_persist_error", uid=uid, error=str(e))
 
