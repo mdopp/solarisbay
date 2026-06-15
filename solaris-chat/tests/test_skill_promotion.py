@@ -166,6 +166,75 @@ async def test_check_approval_not_filed(tmp_path, monkeypatch):
     assert calls == []
 
 
+async def test_check_approval_rejects_slug_with_dotdot(tmp_path, monkeypatch):
+    # `..` never reaches the SB poll — the slug regex rejects it up front.
+    calls = _stub_sb(monkeypatch, {})
+    out = json.loads(
+        await _tools(tmp_path)["check_skill_approval"].handler({"slug": "../escape"})
+    )
+    assert out == {"ok": False, "reason": "invalid_slug"}
+    assert calls == []
+
+
+async def test_check_approval_rejects_absolute_slug(tmp_path, monkeypatch):
+    calls = _stub_sb(monkeypatch, {})
+    out = json.loads(
+        await _tools(tmp_path)["check_skill_approval"].handler({"slug": "/etc"})
+    )
+    assert out == {"ok": False, "reason": "invalid_slug"}
+    assert calls == []
+
+
+async def test_check_approval_rejects_symlinked_pending_dir(tmp_path, monkeypatch):
+    # A compromised draft step plants `_pending/evil` as a symlink to a dir
+    # OUTSIDE the skills sandbox (e.g. the solaris-data volume root). The slug
+    # itself is regex-valid, the .request_id resolves through the symlink, and SB
+    # returns "approved" — but the resolved-path containment check must refuse to
+    # move the symlink target into the active pack.
+    outside = tmp_path / "secret_data"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("private", encoding="utf-8")
+    (outside / "SKILL.md").write_text(_SKILL, encoding="utf-8")
+
+    pending_root = tmp_path / "skills" / "_pending"
+    pending_root.mkdir(parents=True)
+    evil = pending_root / "evil"
+    evil.symlink_to(outside, target_is_directory=True)
+    (evil / ".request_id").write_text("req-9", encoding="utf-8")
+
+    skills_dir = tmp_path / "skills"
+    _stub_sb(monkeypatch, {"get_access_request_status": {"status": "approved"}})
+
+    out = json.loads(
+        await _tools(skills_dir)["check_skill_approval"].handler({"slug": "evil"})
+    )
+    assert out == {"ok": False, "reason": "path_escape"}
+    # Nothing was moved out of the sandbox: the symlink target is untouched and
+    # the active pack did not gain the planted dir.
+    assert (outside / "secret.txt").is_file()
+    assert not (skills_dir / "evil").exists()
+
+
+async def test_check_approval_normal_promote_still_works(tmp_path, monkeypatch):
+    # The hardening must not break the legitimate promote path.
+    skills_dir = tmp_path / "skills"
+    pending = _draft(skills_dir, "weather")
+    (pending / ".request_id").write_text("req-9", encoding="utf-8")
+    _stub_sb(monkeypatch, {"get_access_request_status": {"status": "approved"}})
+
+    out = json.loads(
+        await _tools(skills_dir)["check_skill_approval"].handler({"slug": "weather"})
+    )
+    assert out == {
+        "ok": True,
+        "status": "approved",
+        "promoted": True,
+        "slug": "weather",
+    }
+    assert (skills_dir / "weather" / "SKILL.md").is_file()
+    assert not (skills_dir / "_pending" / "weather").exists()
+
+
 def test_skill_promotion_tools_are_admin_only(tmp_path):
     """The promotion tools join only the admin profile — never the
     household/guest toolset (a household/voice turn drafts into pending but can

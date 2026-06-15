@@ -45,6 +45,22 @@ _PENDING_SUBDIR = "_pending"
 _REQUEST_ID_FILE = ".request_id"
 
 
+def _contained(root: Path, child: Path) -> bool:
+    """True only if ``child`` resolves to a path strictly inside ``root``.
+
+    The slug regex already blocks ``/``, ``..``, leading dots and whitespace, but
+    a symlinked pending dir (planted by a compromised draft step) could still make
+    ``pending_root / slug`` resolve outside the skills sandbox. Resolving real
+    paths and re-checking containment closes that escape before any move.
+    """
+    try:
+        resolved = child.resolve(strict=False)
+    except OSError:
+        return False
+    root_resolved = root.resolve(strict=False)
+    return resolved == root_resolved or root_resolved in resolved.parents
+
+
 def build_skill_promotion_tools(
     skills_dir: str,
     sb_mcp_url: str,
@@ -58,6 +74,8 @@ def build_skill_promotion_tools(
         if not _SLUG_RE.match(slug):
             return json.dumps({"ok": False, "reason": "invalid_slug"})
         pending_dir = pending_root / slug
+        if not _contained(pending_root, pending_dir):
+            return json.dumps({"ok": False, "reason": "path_escape"})
         if not (pending_dir / "SKILL.md").is_file():
             return json.dumps({"ok": False, "reason": "no_pending_skill"})
 
@@ -96,6 +114,8 @@ def build_skill_promotion_tools(
         if not _SLUG_RE.match(slug):
             return json.dumps({"ok": False, "reason": "invalid_slug"})
         pending_dir = pending_root / slug
+        if not _contained(pending_root, pending_dir):
+            return json.dumps({"ok": False, "reason": "path_escape"})
         request_file = pending_dir / _REQUEST_ID_FILE
         if not request_file.is_file():
             return json.dumps({"ok": False, "reason": "not_filed"})
@@ -114,6 +134,17 @@ def build_skill_promotion_tools(
         status = polled.get("status")
         if status == "approved":
             active_dir = active_root / slug
+            # Re-confirm containment at the move site: a symlinked pending dir
+            # (or one made symlinked since filing) must never be transplanted
+            # into the active pack, and the destination must stay inside the
+            # active root. pending_dir must be a real directory, not a symlink.
+            if (
+                not _contained(active_root, active_dir)
+                or not _contained(pending_root, pending_dir)
+                or pending_dir.is_symlink()
+                or not pending_dir.is_dir()
+            ):
+                return json.dumps({"ok": False, "reason": "path_escape"})
             if active_dir.exists():
                 # Already promoted (a re-poll after a prior approval) — clean up
                 # the now-stale pending draft so it stops surfacing.
