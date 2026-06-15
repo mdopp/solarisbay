@@ -25,6 +25,7 @@ async def _run() -> None:
         soul_path=settings.soul_path,
         admin_soul_path=settings.admin_soul_path,
         admin_skills_dir=settings.admin_skills_dir,
+        skills_dir=settings.skills_dir,
         sb_mcp_url=settings.sb_mcp_url,
         sb_mcp_token_path=settings.sb_mcp_token_path,
         hass_url=settings.hass_url,

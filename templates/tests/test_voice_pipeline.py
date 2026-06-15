@@ -376,7 +376,7 @@ def test_wire_registers_gatekeeper_stt_when_speaker_id_on(pd, monkeypatch):
     monkeypatch.setattr(
         pd,
         "ensure_assist_pipeline",
-        lambda token, entity, prefer_gatekeeper_stt=False: seen.update(
+        lambda token, entity, prefer_gatekeeper_stt=False, wake_word_id="": seen.update(
             prefer=prefer_gatekeeper_stt
         ),
     )
@@ -412,7 +412,7 @@ def test_wire_waits_for_gatekeeper_port_before_registering(pd, monkeypatch):
     monkeypatch.setattr(
         pd,
         "ensure_assist_pipeline",
-        lambda token, entity, prefer_gatekeeper_stt=False: seen.update(
+        lambda token, entity, prefer_gatekeeper_stt=False, wake_word_id="": seen.update(
             prefer=prefer_gatekeeper_stt
         ),
     )
@@ -443,7 +443,7 @@ def test_wire_skips_gatekeeper_stt_when_port_never_up(pd, monkeypatch):
     monkeypatch.setattr(
         pd,
         "ensure_assist_pipeline",
-        lambda token, entity, prefer_gatekeeper_stt=False: seen.update(
+        lambda token, entity, prefer_gatekeeper_stt=False, wake_word_id="": seen.update(
             prefer=prefer_gatekeeper_stt
         ),
     )
@@ -469,7 +469,7 @@ def test_wire_no_gatekeeper_stt_when_speaker_id_off(pd, monkeypatch):
     monkeypatch.setattr(
         pd,
         "ensure_assist_pipeline",
-        lambda token, entity, prefer_gatekeeper_stt=False: seen.update(
+        lambda token, entity, prefer_gatekeeper_stt=False, wake_word_id="": seen.update(
             prefer=prefer_gatekeeper_stt
         ),
     )
@@ -500,3 +500,171 @@ def test_wire_skips_agent_when_engine_down(pd, monkeypatch):
     )
     pd.wire_voice_pipeline("tok", "8787", "key")
     assert wired == ["whisper", "piper"]
+
+
+# -- #407: custom "Solaris" wake-word install + pipeline wiring ---------------
+
+
+def test_install_wake_word_model_copies_into_custom_dir(pd, tmp_path):
+    src_dir = tmp_path / "solaris" / "wakeword"
+    src_dir.mkdir(parents=True)
+    (src_dir / "solaris.tflite").write_bytes(b"MODEL")
+    custom = tmp_path / "voice" / "custom"
+    assert pd.install_wake_word_model(str(tmp_path), str(custom), "solaris") is True
+    assert (custom / "solaris.tflite").read_bytes() == b"MODEL"
+
+
+def test_install_wake_word_model_idempotent(pd, tmp_path):
+    src_dir = tmp_path / "solaris" / "wakeword"
+    src_dir.mkdir(parents=True)
+    (src_dir / "solaris.tflite").write_bytes(b"MODEL")
+    custom = tmp_path / "voice" / "custom"
+    pd.install_wake_word_model(str(tmp_path), str(custom), "solaris")
+    # Second run is a no-op when bytes already match (still True).
+    assert pd.install_wake_word_model(str(tmp_path), str(custom), "solaris") is True
+
+
+def test_install_wake_word_model_absent_is_failsoft(pd, tmp_path):
+    # No source model anywhere → False (push-to-talk), no crash, nothing written.
+    custom = tmp_path / "voice" / "custom"
+    assert pd.install_wake_word_model(str(tmp_path), str(custom), "solaris") is False
+    assert not custom.exists()
+
+
+def test_pipeline_sets_wake_word_when_entity_present(pd, monkeypatch):
+    _FakeWS.created, _FakeWS.preferred, _FakeWS.pipelines = [], [], []
+
+    def find(token, prefix, needle=""):
+        if prefix == "stt.":
+            return "stt.faster_whisper"
+        if prefix == "tts.":
+            return "tts.piper"
+        if prefix == "wake_word.":
+            return "wake_word.openwakeword"
+        return ""
+
+    monkeypatch.setattr(pd, "_find_entity", find)
+    monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    ok = pd.ensure_assist_pipeline(
+        "tok", "conversation.solaris", wake_word_id="solaris"
+    )
+    assert ok is True
+    create = _FakeWS.created[0]
+    assert create["wake_word_entity"] == "wake_word.openwakeword"
+    assert create["wake_word_id"] == "solaris"
+
+
+def test_pipeline_wake_word_unset_when_entity_missing(pd, monkeypatch):
+    _FakeWS.created, _FakeWS.preferred, _FakeWS.pipelines = [], [], []
+
+    def find(token, prefix, needle=""):
+        if prefix == "stt.":
+            return "stt.faster_whisper"
+        if prefix == "tts.":
+            return "tts.piper"
+        return ""  # no wake_word entity
+
+    monkeypatch.setattr(pd, "_find_entity", find)
+    monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    ok = pd.ensure_assist_pipeline(
+        "tok", "conversation.solaris", wake_word_id="solaris"
+    )
+    assert ok is True
+    create = _FakeWS.created[0]
+    assert create["wake_word_entity"] is None
+    assert create["wake_word_id"] is None
+
+
+def test_existing_pipeline_converges_wake_word(pd, monkeypatch):
+    # A model that lands on a later deploy flips wake_word on an existing
+    # pipeline that previously had none.
+    _FakeWS.created, _FakeWS.preferred, _FakeWS.updated = [], [], []
+    _FakeWS.pipelines = [
+        {
+            "name": "Solaris",
+            "id": "p-old",
+            "tts_engine": "tts.piper",
+            "tts_language": "de_DE",
+            "tts_voice": None,
+            "conversation_engine": "conversation.solaris",
+            "conversation_language": "de",
+            "language": "de",
+            "stt_engine": "stt.faster_whisper",
+            "stt_language": "de",
+            "wake_word_entity": None,
+            "wake_word_id": None,
+        }
+    ]
+
+    def find(token, prefix, needle=""):
+        if prefix == "stt.":
+            return "stt.faster_whisper"
+        if prefix == "tts." and needle == "openai":
+            return ""
+        if prefix == "tts.":
+            return "tts.piper"
+        if prefix == "wake_word.":
+            return "wake_word.openwakeword"
+        return ""
+
+    monkeypatch.setattr(pd, "_find_entity", find)
+    monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    ok = pd.ensure_assist_pipeline(
+        "tok", "conversation.solaris", wake_word_id="solaris"
+    )
+    assert ok is True
+    assert _FakeWS.created == []
+    upd = _FakeWS.updated[0]
+    assert upd["wake_word_entity"] == "wake_word.openwakeword"
+    assert upd["wake_word_id"] == "solaris"
+
+
+def test_wire_installs_model_and_passes_wake_word(pd, monkeypatch):
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: None)
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
+    monkeypatch.setattr(pd, "gatekeeper_container_env", lambda name: "")
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(
+        pd, "ensure_conversation_agent", lambda *a: "conversation.solaris"
+    )
+    monkeypatch.setattr(
+        pd, "install_wake_word_model", lambda data_dir, custom, mid: True
+    )
+    seen = {}
+    monkeypatch.setattr(
+        pd,
+        "ensure_assist_pipeline",
+        lambda token, entity, prefer_gatekeeper_stt=False, wake_word_id="": seen.update(
+            wake=wake_word_id
+        ),
+    )
+    pd.wire_voice_pipeline("tok", "8787", "key", "/mnt/data")
+    assert seen["wake"] == "solaris"
+
+
+def test_wire_no_wake_word_when_model_absent(pd, monkeypatch):
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: None)
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
+    monkeypatch.setattr(pd, "gatekeeper_container_env", lambda name: "")
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(
+        pd, "ensure_conversation_agent", lambda *a: "conversation.solaris"
+    )
+    monkeypatch.setattr(
+        pd, "install_wake_word_model", lambda data_dir, custom, mid: False
+    )
+    seen = {}
+    monkeypatch.setattr(
+        pd,
+        "ensure_assist_pipeline",
+        lambda token, entity, prefer_gatekeeper_stt=False, wake_word_id="": seen.update(
+            wake=wake_word_id
+        ),
+    )
+    pd.wire_voice_pipeline("tok", "8787", "key", "/mnt/data")
+    assert seen["wake"] == ""

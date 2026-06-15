@@ -33,6 +33,7 @@ from solaris_chat.engine.tools.onboarding_approval import (
     build_onboarding_approval_tools,
 )
 from solaris_chat.engine.tools.register import build_register_tools
+from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
 from solaris_chat.engine.tools.web import build_web_tools
 from solaris_chat.engine.trace import TraceRecorder
@@ -71,6 +72,7 @@ def build_engine_clients(
     soul_path: str,
     admin_soul_path: str = "",
     admin_skills_dir: str = "",
+    skills_dir: str = "",
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
     hass_url: str = "",
@@ -170,17 +172,23 @@ def build_engine_clients(
     # side-effect, so it lives in code, not in whatever the model remembers.
     admin_toolbox: Toolbox
     if sb_mcp_url:
+        local_admin_tools = build_onboarding_approval_tools(
+            db_path,
+            sb_mcp_url,
+            sb_mcp_token_path,
+            gatekeeper_url,
+            gatekeeper_token,
+        )
+        # Dynamic-skill promotion (#427) rides the same generic SB approval API:
+        # the admin files/polls the request, and on approval the engine moves the
+        # draft into the active pack itself — no service restart.
+        if skills_dir:
+            local_admin_tools += build_skill_promotion_tools(
+                skills_dir, sb_mcp_url, sb_mcp_token_path
+            )
         admin_toolbox = CombinedToolbox(
             McpToolbox(sb_mcp_url, sb_mcp_token_path),
-            Toolbox(
-                build_onboarding_approval_tools(
-                    db_path,
-                    sb_mcp_url,
-                    sb_mcp_token_path,
-                    gatekeeper_url,
-                    gatekeeper_token,
-                )
-            ),
+            Toolbox(local_admin_tools),
         )
     else:
         admin_toolbox = Toolbox([])
