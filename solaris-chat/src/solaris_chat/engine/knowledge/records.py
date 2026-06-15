@@ -13,6 +13,8 @@ from typing import Any
 
 
 # OKF concept types and the domain subdir each lives under (§2/§3).
+# `note` is the catch-all for a hand-written vault note the Obsidian adapter
+# normalizes when it carries no more specific type (#448).
 _DOMAIN_BY_TYPE = {
     "person": "people",
     "event": "events",
@@ -21,6 +23,7 @@ _DOMAIN_BY_TYPE = {
     "song": "songs",
     "band": "bands",
     "trip": "trips",
+    "note": "notes",
 }
 
 # Types projected to the `events` table; everything else is an `entity` (§4).

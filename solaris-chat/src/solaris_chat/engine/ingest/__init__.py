@@ -11,6 +11,8 @@ from .caldav import DavIngest, DavIngestStats
 from .dav_client import CalEvent, Contact, DavClient
 from .immich import ImmichIngest, ImmichIngestStats
 from .immich_client import ImmichAsset, ImmichClient, ImmichPerson, RestImmichClient
+from .obsidian import ObsidianIngest, ObsidianIngestStats
+from .obsidian_reader import ObsidianReader, VaultNote, VaultObsidianReader
 
 
 __all__ = [
@@ -25,4 +27,9 @@ __all__ = [
     "CalEvent",
     "Contact",
     "DavClient",
+    "ObsidianIngest",
+    "ObsidianIngestStats",
+    "ObsidianReader",
+    "VaultNote",
+    "VaultObsidianReader",
 ]
