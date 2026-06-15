@@ -12,7 +12,7 @@ metadata:
     # gatekeeper's Wyoming listener. ServiceBay can't substitute a variable
     # placeholder inside an annotation block scalar (#136) but DOES substitute in
     # this inline annotation, so the ports stay variable-driven.
-    servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp"
+    servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp,10400/tcp"
     # External dependencies only (#271): ollama (the engine's LLM backend),
     # home-assistant (device control + the Assist pipeline that fronts the
     # Voice PE speaker), voice (Whisper/Piper that HA's pipeline and the
@@ -330,7 +330,35 @@ spec:
     # or pasta networking" — observed during a household-stack install
     # 2026-05-25.
 
+  # openwakeword — wake-word detection via the Wyoming protocol (#456). Solaris
+  # owns its whole voice pipeline; the wake word is literally "Solaris" (#407),
+  # a custom openWakeWord model. This container needs no GPU so it rides the
+  # pod (unlike whisper + the Kokoro TTS, which are GPU companion Quadlets the
+  # post-deploy writes because podman kube play drops CDI devices, #1026). The
+  # custom-models dir is mounted from {{OPENWAKEWORD_CUSTOM_DIR}} (the same host
+  # path the post-deploy drops the trained solaris.tflite into) and scanned via
+  # --custom-model-dir, so the "Solaris" model shows up as a selectable wake
+  # word the Assist pipeline then pins (ensure_assist_pipeline). Listens on the
+  # standard Wyoming wake-word port 10400 (OPENWAKEWORD_URI default).
+  - name: openwakeword
+    image: docker.io/rhasspy/wyoming-openwakeword:latest
+    args:
+    - --uri
+    - tcp://0.0.0.0:10400
+    - --custom-model-dir
+    - /custom_models
+    volumeMounts:
+    - mountPath: /custom_models
+      name: openwakeword-custom-models
+
   volumes:
+  # Custom openWakeWord models (#456 folds in #407): the host dir the
+  # post-deploy drops the trained "Solaris" solaris.tflite into; the
+  # openwakeword container scans it for custom wake words.
+  - name: openwakeword-custom-models
+    hostPath:
+      path: {{OPENWAKEWORD_CUSTOM_DIR}}
+      type: DirectoryOrCreate
   # Household skill pack: shipped by ServiceBay's asset transport from this
   # template's skills/household/ to {{DATA_DIR}}/solaris/skills/household/.
   # Mounted read-write into the chat container (panel edits; the engine
