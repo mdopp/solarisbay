@@ -79,10 +79,21 @@ def ensure_household_session(
     return session_id
 
 
-def delete_session(db_path: str, session_id: str) -> bool:
+def delete_session(db_path: str, session_id: str, uid: str) -> bool:
+    """Owner-scoped delete: a wrong-owner id deletes nothing and returns False,
+    indistinguishable from a missing one (mirrors get_session's scoping)."""
     with _conn(db_path) as conn:
+        owner = conn.execute(
+            "SELECT 1 FROM engine_sessions WHERE id = ? AND owner_uid = ?",
+            (session_id, uid),
+        ).fetchone()
+        if owner is None:
+            return False
         conn.execute("DELETE FROM engine_messages WHERE session_id = ?", (session_id,))
-        cur = conn.execute("DELETE FROM engine_sessions WHERE id = ?", (session_id,))
+        cur = conn.execute(
+            "DELETE FROM engine_sessions WHERE id = ? AND owner_uid = ?",
+            (session_id, uid),
+        )
     return cur.rowcount > 0
 
 

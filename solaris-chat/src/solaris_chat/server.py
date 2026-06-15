@@ -1123,26 +1123,21 @@ def build_app(
         return web.json_response({"ok": True, "session": session})
 
     async def delete_session(request: web.Request) -> web.Response:
-        # No ownership gate (single-resident reality — list-all/open-any until
-        # per-resident isolation, #153). Deleting a session just removes it
-        # from the shared household list.
+        # Owner-scoped (#438): a caller can only delete their own session. A
+        # wrong-owner id is indistinguishable from a missing one (like
+        # get_session), so a cross-resident delete leaks nothing.
+        uid = resolve_uid(request, remote_user_header, default_uid)
         session_id = request.match_info["session_id"]
         try:
-            ok = await hermes.delete_session(session_id)
+            ok = await hermes.delete_session(session_id, uid)
         except EngineError:
             return web.json_response(
                 {"ok": False, "reason": "engine_unavailable"}, status=502
             )
         if not ok:
-            return web.json_response(
-                {"ok": False, "reason": "delete_failed"}, status=502
-            )
+            return web.json_response({"ok": False, "reason": "not_found"}, status=404)
         attachments.delete(session_id)
-        log.info(
-            "chat.session.deleted",
-            uid=resolve_uid(request, remote_user_header, default_uid),
-            session_id=session_id,
-        )
+        log.info("chat.session.deleted", uid=uid, session_id=session_id)
         return web.json_response({"ok": True})
 
     async def list_topics(request: web.Request) -> web.Response:

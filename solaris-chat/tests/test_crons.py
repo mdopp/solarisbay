@@ -45,8 +45,8 @@ class _FakeDeep:
         self.created.append((uid, kw))
         return f"cron-sess-{len(self.created)}"
 
-    async def delete_session(self, session_id):
-        self.deleted.append(session_id)
+    async def delete_session(self, session_id, uid):
+        self.deleted.append((session_id, uid))
         return True
 
     async def chat(self, session_id, text, images=None, reasoning_effort="none"):
@@ -109,7 +109,7 @@ async def test_due_job_fires_once_per_slot(db):
     assert effort == "high"
     # Ephemeral cron session is cleaned up after the run.
     assert deep.created[0][1]["ephemeral"] is True
-    assert deep.deleted == [sid]
+    assert deep.deleted == [(sid, "system")]
 
 
 async def test_restart_after_slot_fires_late_not_skipped(db):

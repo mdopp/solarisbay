@@ -100,9 +100,17 @@ class _FakeHermes:
     async def set_title(self, session_id, uid, title):
         self.titles.append((session_id, uid, title))
 
-    async def delete_session(self, session_id):
-        self.deleted.append(session_id)
-        return True
+    async def delete_session(self, session_id, uid):
+        # Mirror the real store: owner-scoped (#438). A session the caller
+        # doesn't own deletes nothing and returns False (same as missing).
+        for s in self._store:
+            if s["id"] != session_id:
+                continue
+            if not marker.has_marker(uid, s.get("title", "")):
+                return False
+            self.deleted.append(session_id)
+            return True
+        return False
 
     async def list_toolsets(self):
         return [
@@ -1515,6 +1523,22 @@ async def test_delete_session(aiohttp_client):
     assert resp.status == 200
     assert body == {"ok": True}
     assert fake.deleted == ["s-mdopp"]
+
+
+async def test_delete_session_rejects_cross_resident(aiohttp_client):
+    # #438: a resident cannot delete another resident's session. A wrong-owner
+    # id is indistinguishable from a missing one (404) and deletes nothing.
+    fake = _FakeHermes(store=_two_user_store())
+    app = build_app(
+        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.delete("/api/sessions/s-lena", headers={"Remote-User": "mdopp"})
+    body = await resp.json()
+    assert resp.status == 404
+    assert body == {"ok": False, "reason": "not_found"}
+    assert fake.deleted == []
 
 
 async def test_whoami_reports_version(aiohttp_client):

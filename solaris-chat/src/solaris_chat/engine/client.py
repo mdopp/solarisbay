@@ -204,9 +204,8 @@ class EngineClient:
             store.set_overlay(self._db_path, session_id, system_prompt)
         return session_id
 
-    async def delete_session(self, session_id: str) -> bool:
-        store.delete_session(self._db_path, session_id)
-        return True
+    async def delete_session(self, session_id: str, uid: str) -> bool:
+        return store.delete_session(self._db_path, session_id, uid)
 
     async def list_sessions(self, uid: str) -> list[dict[str, Any]]:
         return store.list_sessions(self._db_path, uid)

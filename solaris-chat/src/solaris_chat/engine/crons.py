@@ -202,7 +202,7 @@ class CronRunner:
             reply = await self._deep.chat(session_id, prompt, None, "high")
             log.info("engine.cron.done", job=job.name, reply_len=len(reply))
         finally:
-            await self._deep.delete_session(session_id)
+            await self._deep.delete_session(session_id, _CRON_UID)
 
     async def _compact_stale(self) -> None:
         """The nightly chat-compactor: extract-then-compact stale, long chats
