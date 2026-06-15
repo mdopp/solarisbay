@@ -408,6 +408,44 @@ def test_heartbeat_keepalives_during_silent_gap(monkeypatch):
     assert _events(resp.writes).count("keepalive") >= 1
 
 
+async def _long_prefill_then_answer():
+    """A single long generation (e.g. the 12b 'Gründlich' mode): NO upstream
+    event at all until the first delta — the heartbeat must fire during the bare
+    prefill, not only between events (#452)."""
+    import asyncio
+
+    await asyncio.sleep(0.25)  # the whole prefill is dead air on the wire
+    yield {"type": "message.delta", "data": {"text": "Eine lange Antwort."}}
+    yield {"type": "run.completed", "data": {}}
+
+
+def test_heartbeat_fires_during_single_long_generation(monkeypatch):
+    # #452: a legit long answer (no tool call, just a slow prefill) streams
+    # nothing for seconds. The heartbeat wraps each upstream pull, so a keepalive
+    # is emitted on every silent interval REGARDLESS of model output — keeping a
+    # mobile/NPM connection from idling out before the first token.
+    import asyncio
+
+    monkeypatch.setattr(server_mod, "_HEARTBEAT_S", 0.05)
+    resp = _CaptureResp()
+
+    async def run():
+        async for _ in _heartbeat(_long_prefill_then_answer(), resp):
+            pass
+
+    asyncio.run(run())
+    # 0.25s of pre-first-delta silence at a 0.05s cadence => several keepalives,
+    # not just one between events — proving the cadence is steady mid-generation.
+    assert _events(resp.writes).count("keepalive") >= 2
+
+
+def test_heartbeat_interval_under_proxy_read_timeout():
+    # The keepalive cadence must stay comfortably below a reverse proxy's read
+    # timeout (NPM default proxy_read_timeout = 60s) so the SSE connection never
+    # idles out during a long generation (#452). A generous safety margin.
+    assert server_mod._HEARTBEAT_S <= 20.0
+
+
 def test_completed_answer_surfaces_after_tool_turn():
     # The #258 late-delta logic: a tool turn streams no answer deltas, so the
     # final summary on run.completed is surfaced as a delta. _normalize lifts it
