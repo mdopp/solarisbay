@@ -286,12 +286,32 @@
     .step-row .st-model { flex: 1 1 auto; color: var(--ink); }
     .step-row .st-num { flex: 0 0 auto; color: var(--muted); }
     .step-detail-body {
-      max-height: 60vh; overflow: auto; margin: 0;
-      white-space: pre-wrap; word-break: break-word;
+      max-height: 72vh; overflow: auto; margin: 0;
+      word-break: break-word;
       font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.45;
     }
     .step-detail-body h4 { margin: 14px 0 4px; font-size: 12px; color: var(--muted); }
     .step-detail-body h4:first-child { margin-top: 0; }
+    /* Structured trace sections (#416): each request message / tool-def block /
+       response is a collapsible section with a role chip, instead of one raw
+       text + duplicate JSON dump. */
+    .trace-sec { border: 1px solid var(--line); border-radius: 8px; margin: 8px 0; overflow: hidden; }
+    .trace-sec > summary {
+      cursor: pointer; padding: 7px 10px; list-style: none; display: flex; align-items: center; gap: 8px;
+      background: rgba(127,127,127,0.06); font-family: inherit;
+    }
+    .trace-sec > summary::-webkit-details-marker { display: none; }
+    .trace-sec > summary::before { content: "▸"; color: var(--muted); font-size: 10px; }
+    .trace-sec[open] > summary::before { content: "▾"; }
+    .trace-role {
+      flex: 0 0 auto; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+      background: var(--bubble-sol); border: 1px solid var(--line); color: var(--ink); text-transform: lowercase;
+    }
+    .trace-sec .grow { flex: 1 1 auto; color: var(--muted); font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .trace-sec pre {
+      margin: 0; padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
+      font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.45;
+    }
 
     /* Live activity bubble (#347): the turn's consecutive LLM + tool steps
        grouped into one pale, collapsed-by-default bubble that fills in
@@ -479,6 +499,9 @@
       border: 1px solid var(--line); border-radius: var(--radius-lg);
       box-shadow: var(--shadow-panel); overflow: hidden;
     }
+    /* The LLM-call trace detail (#416) carries a whole prompt + response — give
+       it a roomy window instead of the 480px camera-modal default. */
+    .modal-wide { max-width: 920px; }
     .modal-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
     .modal-head .grow { flex: 1 1 auto; }
     .modal-title { font-weight: 600; }
@@ -652,6 +675,10 @@
       }
       body.rail-open .rail { transform: translateX(0); }
       body.rail-open #backdrop { display: block; position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,0.4); }
+      /* Editing a skill/soul on mobile: use the whole screen (#418). */
+      .settings-card #skill-edit-pane, .settings-card #soul-edit-pane { height: auto; }
+      .settings-card #skill-edit-pane .editor-wrap,
+      .settings-card #soul-edit-pane .editor-wrap { min-height: 75vh; }
     }
     /* ---------- ServiceBay finish: depth, fonts, scrollbar, motion ---------- */
     /* Messages read as lifted cards (rounded + soft depth). */
@@ -738,6 +765,13 @@
     .settings-card .view { display: block; }
     .settings-card .view .pane { max-height: 60vh; padding: 16px; }
     .settings-card .view .pane > * { max-width: 100%; }
+    /* The skill/soul Edit surface needs real height — a card .pane only has a
+       max-height, so the flex-filling textarea otherwise collapses to ~2 rows
+       (#418). Give the edit pane a comfortable working area on desktop; the
+       textarea fills it. */
+    .settings-card #skill-edit-pane, .settings-card #soul-edit-pane { height: 70vh; max-height: none; }
+    .settings-card #skill-edit-pane .editor-wrap,
+    .settings-card #soul-edit-pane .editor-wrap { min-height: 400px; }
     .search-card { max-width: 420px; }
     .search-card .chat-search-wrap { padding: 10px 12px; }
     .settings-index { max-width: 360px; }
@@ -1054,7 +1088,7 @@
   <!-- Trace-step detail modal (#307): the exact request/response content for
        one LLM call, fetched from /__traces__/<id> (the #305 detail endpoint). -->
   <div class="modal-backdrop" id="trace-modal" hidden>
-    <div class="modal" role="dialog" aria-label="LLM-Call-Inhalt">
+    <div class="modal modal-wide" role="dialog" aria-label="LLM-Call-Inhalt">
       <div class="modal-head">
         <span class="modal-title" id="trace-modal-title">LLM call</span>
         <span class="grow"></span>
@@ -1356,28 +1390,51 @@
           .then(function (d) { renderTraceDetail(bodyEl, d); })
           .catch(function () { bodyEl.textContent = "This call's exact content is no longer retained."; });
       }
+      // The detail is the proxy's exact-content record, nested as
+      // {path, request:{model,tools,messages}, response:{final,tool_calls}}.
+      // Render the structure (each message by role, tool defs, response) as
+      // collapsible sections — pretty-printed, never the same content twice
+      // (#416), in place of the old raw-text + duplicate-JSON dump.
       function renderTraceDetail(bodyEl, d) {
         bodyEl.textContent = "";
-        function section(title, text) {
-          var h = document.createElement("h4"); h.textContent = title;
-          var pre = document.createElement("div"); pre.textContent = text;
-          bodyEl.appendChild(h); bodyEl.appendChild(pre);
+        function head(title) { var h = document.createElement("h4"); h.textContent = title; bodyEl.appendChild(h); }
+        function plain(text) { var p = document.createElement("pre"); p.textContent = text; bodyEl.appendChild(p); }
+        // One collapsible section: a role chip, a one-line preview, the body in a
+        // <pre>. `open` decides whether it starts expanded.
+        function sec(role, preview, text, open) {
+          var det = document.createElement("details"); det.className = "trace-sec"; if (open) det.open = true;
+          var sum = document.createElement("summary");
+          var chip = document.createElement("span"); chip.className = "trace-role"; chip.textContent = role;
+          var g = document.createElement("span"); g.className = "grow"; g.textContent = preview || "";
+          sum.appendChild(chip); sum.appendChild(g);
+          var pre = document.createElement("pre"); pre.textContent = text;
+          det.appendChild(sum); det.appendChild(pre);
+          bodyEl.appendChild(det);
         }
-        // The detail is the proxy's exact-content record, nested as
-        // {path, request:{model,tools,messages}, response:{final,tool_calls}}.
-        // System text rides as the first message with role "system".
+        function preview(text) { return (text || "").replace(/\s+/g, " ").slice(0, 80); }
+        function pretty(v) { try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); } }
+
         var req = d.request || {};
         var resp = d.response || {};
         var msgs = req.messages || [];
-        var sys = msgs.filter(function (m) { return m.role === "system"; })
-          .map(function (m) { return m.content || ""; }).join("\n\n");
-        if (req.model) section("model", req.model);
-        if (sys) section("system", sys);
-        if (req.tools && req.tools.length) section("tools[] (" + req.tools.length + ")", JSON.stringify(req.tools, null, 2));
-        if (msgs.length) section("messages[] (" + msgs.length + ")", JSON.stringify(msgs, null, 2));
-        if (resp.final) section("response", resp.final);
-        if (resp.tool_calls && resp.tool_calls.length) section("tool_calls", JSON.stringify(resp.tool_calls, null, 2));
-        if (!bodyEl.childNodes.length) bodyEl.textContent = "(empty)";
+        if (req.model) head("model: " + req.model);
+        if (req.tools && req.tools.length) {
+          var names = req.tools.map(function (t) {
+            return (t.function && t.function.name) || t.name || "";
+          }).filter(Boolean).join(", ");
+          sec("tools[" + req.tools.length + "]", names, pretty(req.tools), false);
+        }
+        msgs.forEach(function (m) {
+          var c = m.content;
+          var text = typeof c === "string" ? c : pretty(c);
+          // System/user/assistant text expands by default; bulky tool results stay
+          // collapsed. Carry tool name/call-id in the preview when present.
+          var meta = m.name ? m.name : (m.tool_call_id ? m.tool_call_id : "");
+          sec(m.role || "message", meta || preview(text), text, m.role !== "tool");
+        });
+        if (resp.final) sec("response", preview(resp.final), resp.final, true);
+        if (resp.tool_calls && resp.tool_calls.length) sec("tool_calls[" + resp.tool_calls.length + "]", "", pretty(resp.tool_calls), true);
+        if (!bodyEl.childNodes.length) plain("(empty)");
       }
       (function () {
         var modal = document.getElementById("trace-modal");
