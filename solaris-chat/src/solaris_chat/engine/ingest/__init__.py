@@ -7,6 +7,8 @@ shared OKF writer (`engine.knowledge.write_concept`). Adapters never read
 
 from __future__ import annotations
 
+from .caldav import DavIngest, DavIngestStats
+from .dav_client import CalEvent, Contact, DavClient
 from .immich import ImmichIngest, ImmichIngestStats
 from .immich_client import ImmichAsset, ImmichClient, ImmichPerson, RestImmichClient
 
@@ -18,4 +20,9 @@ __all__ = [
     "ImmichPerson",
     "ImmichClient",
     "RestImmichClient",
+    "DavIngest",
+    "DavIngestStats",
+    "CalEvent",
+    "Contact",
+    "DavClient",
 ]

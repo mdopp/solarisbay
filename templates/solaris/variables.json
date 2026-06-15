@@ -150,6 +150,36 @@
     "noAutoGenerate": true,
     "description": "Optional: a READ-ONLY Immich API key (Account Settings → API Keys). Pair with IMMICH_BASE_URL to enable the photo-ingest adapter. Leave blank to skip photo ingestion."
   },
+  "CALDAV_URL": {
+    "type": "text",
+    "description": "Optional: CalDAV calendar collection URL. When set, the calendar/contacts-ingest adapter (#207) reads the calendar READ-ONLY and maps each event into an OKF event concept (when/title/participants). Leave blank to disable calendar ingestion.",
+    "default": ""
+  },
+  "CALDAV_USERNAME": {
+    "type": "text",
+    "description": "Optional: CalDAV username. Pair with CALDAV_URL + CALDAV_PASSWORD to enable calendar ingestion.",
+    "default": ""
+  },
+  "CALDAV_PASSWORD": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: CalDAV password or app token (READ-ONLY access is enough). Pair with CALDAV_URL to enable calendar ingestion."
+  },
+  "CARDDAV_URL": {
+    "type": "text",
+    "description": "Optional: CardDAV address-book collection URL. When set, the calendar/contacts-ingest adapter (#207) reads contacts READ-ONLY and maps each contact into an OKF person concept (name/aliases/phone/email). Leave blank to disable contacts ingestion.",
+    "default": ""
+  },
+  "CARDDAV_USERNAME": {
+    "type": "text",
+    "description": "Optional: CardDAV username. Pair with CARDDAV_URL + CARDDAV_PASSWORD to enable contacts ingestion.",
+    "default": ""
+  },
+  "CARDDAV_PASSWORD": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: CardDAV password or app token (READ-ONLY access is enough). Pair with CARDDAV_URL to enable contacts ingestion."
+  },
   "SERVICEBAY_MCP_URL": {
     "type": "text",
     "description": "ServiceBay MCP control surface URL. The admin persona's servicebay_admin toolbox connects here (token minted by the post-deploy, scopes read+lifecycle+mutate). Reached via host loopback.",
