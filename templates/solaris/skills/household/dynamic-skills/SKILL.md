@@ -1,7 +1,7 @@
 ---
 name: solaris-dynamic-skills
 description: Use when the user requests Solaris to learn a new capability, write down a fact/note, configure an agent, or when Solaris needs to self-enhance its knowledge, skills, or peer agent behaviors dynamically. Implements the Phase 4 self-improvement loop.
-version: 2.1.0
+version: 2.2.0
 author: Solaris
 license: MIT
 ---
@@ -12,7 +12,7 @@ license: MIT
 
 This skill defines the operating procedures for **Solaris Phase 4** (the Self-Enhancement Loop). It equips the Solaris Engine with instructions to perform:
 1. **Dynamic Knowledge Writing**: Writing or updating structured facts and markdown notes in `/opt/data/notes/` so the hybrid-retrieval system picks them up.
-2. **Dynamic Skill Drafting**: Authoring new skill specifications into a **pending** directory; an administrator must promote them from the ServiceBay dashboard before they go live. Solaris never auto-activates a skill it wrote, and never executes scratch scripts in a regular shell.
+2. **Dynamic Skill Drafting**: Authoring new skill specifications into a **pending** directory; an administrator must approve them in ServiceBay's central approval list before they go live. Solaris never auto-activates a skill it wrote, and never executes scratch scripts in a regular shell.
 3. **Dynamic Agent Configuration**: Direct conversational feedback rules that update Honcho peer templates and custom instructions.
 
 ---
@@ -87,18 +87,18 @@ media skill's author/genre stubs (#85):
 
 ## 2. Dynamic Skill Drafting (admin-promotion gate)
 
-When a user requests a new automation or capability (e.g., "Learn how to parse local weather warnings from this specific API"), Solaris drafts a brand-new skill **into the pending directory**. The skill does not go live until an administrator promotes it from the ServiceBay dashboard.
+When a user requests a new automation or capability (e.g., "Learn how to parse local weather warnings from this specific API"), Solaris drafts a brand-new skill **into the pending directory**. The skill does not go live until an administrator approves it in ServiceBay's central approval list.
 
 ### Hard rules — do NOT skip these:
 
-- **Write only to `/opt/data/skills-pending/<slug>/SKILL.md`.** Never write to `/opt/data/skills/solaris/...` directly. Hermes auto-discovers skills under `/opt/data/skills/solaris`; auto-writing there would make the new skill live with no human review, which is a prompt-injection risk.
-- **Do not execute the skill's scripts.** No `run_command` against generated Python, JavaScript, or shell. Test scripts may be drafted alongside SKILL.md as *files* (e.g. `<slug>/scratch/test_run.py`) for the admin to inspect, but Solaris never runs them itself in the current Hermes shell. A sandboxed test runtime is a planned follow-up; until it lands, drafted scripts are inert until promotion.
-- **Do not call `restart_service`.** Promotion triggers the restart from the dashboard. Solaris's job ends at "wrote the SKILL.md to pending".
-- **Use a safe `<slug>`.** Lowercase letters, digits, dashes; no `/`, `..`, leading dots, or whitespace. Reject names that would escape `/opt/data/skills-pending/`.
+- **Write only to `/data/skills/_pending/<slug>/SKILL.md`.** Never write to `/data/skills/<slug>/...` (the active pack) directly. The active pack is read live, so auto-writing there would make the new skill live with no human review, which is a prompt-injection risk.
+- **Do not execute the skill's scripts.** No `run_command` against generated Python, JavaScript, or shell. Test scripts may be drafted alongside SKILL.md as *files* (e.g. `<slug>/scratch/test_run.py`) for the admin to inspect, but Solaris never runs them itself. A sandboxed test runtime is a planned follow-up; until it lands, drafted scripts are inert until promotion.
+- **Do not promote the draft yourself.** Filing the approval request and completing the promotion is the admin profile's job (the `file_skill_approval` / `check_skill_approval` tools, admin-only). The household/voice session's job ends at "wrote the SKILL.md to `_pending`".
+- **Use a safe `<slug>`.** Lowercase letters, digits, dashes; no `/`, `..`, leading dots, or whitespace. Reject names that would escape `/data/skills/_pending/`.
 
 ### Operating Sequence:
 
-1. Create `/opt/data/skills-pending/<slug>/` (mkdir is fine; the directory is auto-created on first write).
+1. Create `/data/skills/_pending/<slug>/` (mkdir is fine; the directory is auto-created on first write).
 2. Write the SKILL.md frontmatter and body using `note_write`. Include:
    - `name: solaris-custom-<slug>`
    - `description:` a clear, single-paragraph LLM-router description.
@@ -128,11 +128,11 @@ license: MIT
 3. Parse the warnings JSON and reply with the highest-severity active warning in German.
 ```
 
-### What admin promotion does (for context, not actions you take):
+### What admin promotion does (for context, not actions a household/voice turn takes):
 
-1. The ServiceBay dashboard's *Pending Solaris skills* section lists every directory under `/opt/data/skills-pending/`.
-2. Admin clicks **Promote**: the directory moves to `/opt/data/skills/solaris/<slug>/`, then ServiceBay restarts the `solaris` service so the new skill is loaded.
-3. Admin clicks **Reject**: the directory is deleted from pending. The skill never goes live.
+1. In the **admin** profile, `file_skill_approval(slug)` files a generic approval request onto ServiceBay's central access-request list (the same place the admin already approves resident/SSO access). ServiceBay holds nothing skill-specific — only "a request from `solaris-skills` awaiting approval".
+2. The admin **Approves** it in the ServiceBay dashboard. On the next `check_skill_approval(slug)` poll the **Solaris engine itself** moves `/data/skills/_pending/<slug>/` → `/data/skills/<slug>/`. The active pack is read live (the panel lists it; crons read a skill body by id per run), so the move *is* the reload — no service restart.
+3. The admin **Denies** it (or the request expires): on the next poll the engine deletes the pending draft. The skill never goes live.
 
 ---
 
@@ -149,7 +149,7 @@ Solaris operates with peer agents and templates managed under Honcho. When perfo
 
 ## Failure Paths & Safety Guards
 
-- **Strict Path Sandboxing**: Never write or edit files outside `/opt/data/`. For pending skills, restrict writes to `/opt/data/skills-pending/<slug>/`.
-- **No silent self-activation.** Writing under `/opt/data/skills/solaris/...` from this skill is a bug, not a shortcut. If you find yourself reasoning "I should just put it directly so the user doesn't have to wait", stop — that bypasses the admin gate that exists precisely so a jailbroken or prompt-injected session can't grant itself code execution.
-- **No `run_command` for generated scripts.** Drafted scripts are files for human review; they are not executed in the current Hermes shell. A sandboxed runtime for verifying them is a planned follow-up (see ServiceBay issue #940).
+- **Strict Path Sandboxing**: For pending skills, restrict writes to `/data/skills/_pending/<slug>/`; for notes, to `/opt/data/notes/`.
+- **No silent self-activation.** Writing under `/data/skills/<slug>/` (the active pack) from this skill is a bug, not a shortcut. If you find yourself reasoning "I should just put it directly so the user doesn't have to wait", stop — that bypasses the admin gate that exists precisely so a jailbroken or prompt-injected session can't grant itself code execution.
+- **No `run_command` for generated scripts.** Drafted scripts are files for human review; they are not executed. A sandboxed runtime for verifying them is a planned follow-up (see ServiceBay issue #940).
 - **Error Recovery**: If a write fails, surface the error to the user (not to the dashboard) and stop. Do not retry against the active skills directory as a workaround.
