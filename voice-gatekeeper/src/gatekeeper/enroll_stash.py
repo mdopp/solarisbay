@@ -25,6 +25,7 @@ the STT path keeps working when the init container hasn't migrated yet.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,17 @@ class EnrollRequest:
 # onboarding runs at a time in a household, but a dict keeps concurrent requests
 # isolated rather than cross-contaminating one buffer.
 _pending_embeddings: dict[str, list[bytes]] = {}
+
+# Per-uid lock serialising one candidate's capture critical section
+# (add → increment → target check → take → enrol). Without it two concurrent
+# same-uid turns can both pass the target check, both call take_embeddings, and
+# the loser averages an empty list (ValueError). Different uids stay independent.
+_capture_locks: dict[str, asyncio.Lock] = {}
+
+
+def capture_lock(uid: str) -> asyncio.Lock:
+    """Return the (lazily created) per-uid lock for the capture critical section."""
+    return _capture_locks.setdefault(uid, asyncio.Lock())
 
 
 def add_embedding(uid: str, embedding: bytes) -> int:

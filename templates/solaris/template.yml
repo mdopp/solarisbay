@@ -204,6 +204,15 @@ spec:
       value: "{{ALARM_SOUND_MEDIA_ID}}"
     - name: ALARM_SOUND_PATH
       value: "/data/skills/media/solaris-alarm.ogg"
+    # The gatekeeper's in-pod HTTP listener (push + /enrol), reached over the
+    # host loopback. The onboarding/self-enrol flow (#354, #396) POSTs to
+    # /enrol here; PUSH_TOKEN must match the gatekeeper's PUSH_TOKEN below or
+    # the engine's gatekeeper calls 401. The URL points at the gatekeeper's
+    # PUSH_PORT (10750), not GATEKEEPER_PORT (the Wyoming listener).
+    - name: GATEKEEPER_URL
+      value: "http://127.0.0.1:10750"
+    - name: PUSH_TOKEN
+      value: "{{PUSH_TOKEN}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint

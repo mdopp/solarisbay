@@ -9,6 +9,7 @@ relevant tables replayed) and a stub extractor that returns a fixed 256-d vector
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import sqlite3
 import struct
@@ -212,6 +213,108 @@ async def test_no_enroll_when_speaker_id_off(tmp_path, monkeypatch):
     assert status == "pending"
     assert collected == 0
     assert n_emb == 0
+
+
+def test_capture_lock_is_per_uid_and_stable(tmp_path):
+    """The serialisation primitive: one shared lock per candidate uid (so the two
+    halves of the capture section can't interleave for the same uid), and distinct
+    uids get distinct locks (independent enrolments don't block each other)."""
+    enroll_stash._capture_locks.clear()
+    a1 = enroll_stash.capture_lock("lena")
+    a2 = enroll_stash.capture_lock("lena")
+    b = enroll_stash.capture_lock("max")
+    assert a1 is a2
+    assert a1 is not b
+
+
+async def test_concurrent_same_uid_turns_dont_double_consume(tmp_path, monkeypatch):
+    """Two voice turns racing on the SAME enrolment's final sample must not both
+    pass the target check, both take_embeddings (loser gets []), and crash on
+    average_embeddings([]) (#441).
+
+    Deterministic interleave: a patched take_embeddings holds the FIRST taker until
+    the SECOND turn has also reached take, so without the fix both observe a stale
+    in-process count, both take, and the loser averages []. With the fix the per-uid
+    lock means only one turn is ever inside the add→take section, so the second turn
+    never reaches this gate while the first holds it (no deadlock — the gate has a
+    bounded fallback), and the empty-take guard makes the loser a clean no-op."""
+    db = _db(tmp_path)
+    enroll_stash.take_embeddings("lena")  # isolate the process-global buffer
+    enroll_stash._capture_locks.pop("lena", None)
+    conn = sqlite3.connect(db)
+    # target_samples=1 so each turn alone reaches the target — under the race both
+    # turns add to the one buffer before either takes.
+    conn.execute("INSERT INTO enroll_requests (uid, target_samples) VALUES ('lena', 1)")
+    conn.commit()
+    conn.close()
+
+    # Rendezvous between add_embedding and take_embeddings: each turn, after its
+    # add + DB increment, waits here so both have added before either takes. Under
+    # the race both then see a stale in-process count, both take, loser gets [].
+    # Under the fix only one turn ever reaches this point inside the lock, so the
+    # barrier times out and the (single) turn proceeds — no deadlock.
+    both_added = asyncio.Barrier(2)
+    real_to_thread = handler_mod.asyncio.to_thread
+
+    async def rendezvous_to_thread(func, /, *args, **kwargs):
+        result = await real_to_thread(func, *args, **kwargs)
+        if func is enroll_stash.increment_collected:
+            try:
+                await asyncio.wait_for(both_added.wait(), timeout=0.5)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.BrokenBarrierError):
+                pass
+        return result
+
+    monkeypatch.setattr(handler_mod.asyncio, "to_thread", rendezvous_to_thread)
+
+    h1 = _new_handler(db, monkeypatch, extractor=_StubExtractor())
+    h2 = _new_handler(db, monkeypatch, extractor=_StubExtractor())
+    await asyncio.gather(_turn(h1), _turn(h2))
+
+    conn = sqlite3.connect(db)
+    status, result = conn.execute(
+        "SELECT status, result FROM enroll_requests WHERE uid='lena'"
+    ).fetchone()
+    n_emb = conn.execute("SELECT COUNT(*) FROM voice_embeddings").fetchone()[0]
+    conn.close()
+    # Enrolment succeeded; no turn crashed with the empty-samples ValueError and
+    # the row was not overwritten with a failure result.
+    assert status == "done"
+    assert n_emb == 1
+    assert "need at least one sample" not in (result or "")
+    # The process-global buffer was fully drained — nothing lingers.
+    assert enroll_stash.take_embeddings("lena") == []
+
+
+async def test_drained_buffer_at_target_is_noop_not_crash(tmp_path, monkeypatch):
+    """The serialised loser of a concurrent capture reaches the target check but a
+    prior turn already drained the buffer — take_embeddings returns []. The guard
+    must make this a clean no-op, never average_embeddings([]) → ValueError (#441)."""
+    db = _db(tmp_path)
+    enroll_stash.take_embeddings("lena")
+    enroll_stash._capture_locks.pop("lena", None)
+    conn = sqlite3.connect(db)
+    # collected already at target so this turn's increment pushes it past target,
+    # and a stubbed empty take simulates the buffer the winning turn already took.
+    conn.execute(
+        "INSERT INTO enroll_requests (uid, target_samples, collected) "
+        "VALUES ('lena', 1, 1)"
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(handler_mod, "take_embeddings", lambda uid: [])
+
+    # Must not raise; the row stays as-is (no failure result written).
+    await _turn(_new_handler(db, monkeypatch, extractor=_StubExtractor()))
+
+    conn = sqlite3.connect(db)
+    result = conn.execute(
+        "SELECT result FROM enroll_requests WHERE uid='lena'"
+    ).fetchone()[0]
+    n_emb = conn.execute("SELECT COUNT(*) FROM voice_embeddings").fetchone()[0]
+    conn.close()
+    assert n_emb == 0
+    assert "need at least one sample" not in (result or "")
 
 
 async def test_no_active_request_is_noop(tmp_path, monkeypatch):
