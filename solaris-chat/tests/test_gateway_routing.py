@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 
 from solaris_chat import personalities, settings_store, topics_store
+from solaris_chat.engine import store
 from solaris_chat.server import build_app
 
 from .test_server import _FakeHermes
@@ -20,7 +21,8 @@ ADMIN_HDRS = {"Remote-User": "mdopp", "Remote-Groups": "admins"}
 RESIDENT_HDRS = {"Remote-User": "cdopp", "Remote-Groups": "family"}
 
 # Minimal session_topics schema (migration 0005) so create can persist a primary
-# topic and follow-up routing can read it back.
+# topic and follow-up routing can read it back, plus engine_sessions so the
+# durable household session (#345/#419) can be created on a household first turn.
 _SCHEMA = """
 CREATE TABLE topics (
   slug TEXT PRIMARY KEY,
@@ -37,6 +39,19 @@ CREATE TABLE session_topics (
 );
 CREATE UNIQUE INDEX session_topics_one_primary_idx
   ON session_topics (session_id) WHERE role = 'primary';
+CREATE TABLE engine_sessions (
+  id            TEXT PRIMARY KEY,
+  owner_uid     TEXT NOT NULL,
+  title         TEXT NOT NULL DEFAULT '',
+  profile       TEXT NOT NULL DEFAULT 'household',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  ephemeral     INTEGER NOT NULL DEFAULT 0,
+  maintenance   INTEGER NOT NULL DEFAULT 0,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_activity TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -270,10 +285,98 @@ async def test_household_topic_chat_routes_to_household_even_when_thorough(
         headers=RESIDENT_HDRS,
     )
     assert resp.status == 200
-    assert household.turns and household.turns[0][0] == "sess-1"
+    # A household first turn lands in the resident's ONE durable household session
+    # (#345/#419), not a freshly minted `sess-1` — so it never forks per click.
+    durable = store.household_session_id("cdopp")
+    assert household.turns and household.turns[0][0] == durable
     assert deep.turns == []
     # Household turns are fast-only regardless of any selector.
     assert household.efforts == ["none"]
+
+
+async def test_household_first_turn_lands_in_durable_session_once(
+    aiohttp_client, tmp_path
+):
+    # The pinned "Zuhause" first turn (topic=household) must land in the resident's
+    # ONE durable household session and never mint a fresh row per click (#419):
+    # two separate first turns (e.g. two clicks) reuse the SAME id and leave
+    # exactly one engine_sessions row, stamped with the household primary topic.
+    db = _db(tmp_path)
+    durable = store.household_session_id("cdopp")
+    for _ in range(2):
+        household = _FakeHermes()
+        app = build_app(
+            hermes=household,
+            remote_user_header="Remote-User",
+            default_uid="household",
+            solaris_db_path=db,
+            attachments_dir=str(tmp_path / "att"),
+        )
+        client = await aiohttp_client(app)
+        resp = await client.post(
+            "/api/chat",
+            json={"input": "wie spät ist es?", "topic": "household"},
+            headers=RESIDENT_HDRS,
+        )
+        assert resp.status == 200
+        assert (await resp.json())["session_id"] == durable
+        # The durable session is created in the store, not via the fake gateway.
+        assert household.created == []
+        assert household.turns and household.turns[0][0] == durable
+
+    import sqlite3 as _sqlite3
+
+    conn = _sqlite3.connect(db)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM engine_sessions WHERE owner_uid = ?", ("cdopp",)
+    ).fetchone()[0]
+    conn.close()
+    assert n == 1
+    assert (
+        topics_store.get_session_topics(db, durable, "cdopp").get("primary")
+        == "household"
+    )
+
+
+async def test_durable_household_session_is_never_compacted(aiohttp_client, tmp_path):
+    # Compaction must NOT fork the durable household session into a `Fortsetzung`
+    # continuation (it would surface as a second "Zuhause" row, #419). Even with
+    # an over-threshold session, a follow-up turn into the durable id stays
+    # in-place: the compaction path (get_session/create) is never entered.
+    db = _db(tmp_path)
+    durable = store.household_session_id("cdopp")
+    store.ensure_household_session(db, "cdopp")
+
+    class _CompactingHermes(_FakeHermes):
+        def __init__(self):
+            super().__init__()
+            self.gets: list[str] = []
+
+        async def get_session(self, session_id, uid):
+            self.gets.append(session_id)
+            # Always over the cap, so a non-guarded path WOULD compact.
+            return {"id": session_id, "input_tokens": 10**9, "output_tokens": 0}
+
+    household = _CompactingHermes()
+    app = build_app(
+        hermes=household,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        attachments_dir=str(tmp_path / "att"),
+        context_window=32768,
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat",
+        json={"input": "und weiter", "session_id": durable},
+        headers=RESIDENT_HDRS,
+    )
+    assert resp.status == 200
+    # The household guard short-circuits before the compaction path runs.
+    assert household.gets == []
+    assert household.created == []
+    assert household.turns and household.turns[0][0] == durable
 
 
 async def test_household_followup_reads_persisted_primary_topic(

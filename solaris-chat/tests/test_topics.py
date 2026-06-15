@@ -36,6 +36,19 @@ CREATE TABLE session_topics (
 CREATE UNIQUE INDEX session_topics_one_primary_idx
   ON session_topics (session_id) WHERE role = 'primary';
 CREATE INDEX session_topics_session_idx ON session_topics (session_id);
+CREATE TABLE engine_sessions (
+  id            TEXT PRIMARY KEY,
+  owner_uid     TEXT NOT NULL,
+  title         TEXT NOT NULL DEFAULT '',
+  profile       TEXT NOT NULL DEFAULT 'household',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  ephemeral     INTEGER NOT NULL DEFAULT 0,
+  maintenance   INTEGER NOT NULL DEFAULT 0,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_activity TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -382,11 +395,13 @@ async def test_topic_persists_primary_without_model_or_persona_override(
 
 
 async def test_pinned_household_chat_persists_primary(aiohttp_client, tmp_path):
-    # The pinned household chat (#237) starts a new chat carrying
-    # `topic: household`. #293: the household profile pins the model (e2b) + soul,
-    # so the proxy creates with no model override and no persona overlay even
-    # when the turn carries reasoning='high'; the topic is still persisted as the
-    # session's primary assignment.
+    # The pinned household chat (#237) starts a turn carrying `topic: household`.
+    # #345/#419: it lands in the resident's ONE durable household session (created
+    # in the store, not via the gateway), so there is no per-session model
+    # override and no persona overlay even when the turn carries reasoning='high';
+    # the topic is still persisted as the session's primary assignment.
+    from solaris_chat.engine import store
+
     db = _db(tmp_path)
     _seed_topic_defaults(db, "household", "gemma4:e2b", None)
     fake = _FakeHermes()
@@ -409,9 +424,11 @@ async def test_pinned_household_chat_persists_primary(aiohttp_client, tmp_path):
         headers={"Remote-User": "mdopp"},
     )
     assert resp.status == 200
-    assert fake.models == [""]
-    assert fake.created_prompts == [""]
+    # The durable session is minted in the store, never via the gateway, so the
+    # gateway sees no create (and thus no model override / persona overlay).
+    assert fake.created == []
     sid = (await resp.json())["session_id"]
+    assert sid == store.household_session_id("mdopp")
     assigned = topics_store.get_session_topics(db, sid, "mdopp")
     assert assigned["primary"] == "household"
 

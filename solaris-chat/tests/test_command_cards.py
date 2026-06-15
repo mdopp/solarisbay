@@ -117,6 +117,60 @@ def test_wordmark_i_is_the_brand_glyph():
     assert "em" in rule.group(1)  # sized in em so it sits inline like a glyph
 
 
+def test_help_lists_the_same_skills_as_the_autocomplete():
+    # #421: /help must cover the SAME set as the `/` autocomplete — built-in
+    # commands PLUS the registered skills. Both draw on one shared `skillEntries`
+    # (declared once, populated by the single /api/skills fetch) so they can't
+    # diverge; helpMarkdown appends those entries.
+    assert "var skillEntries = [];" in _HTML
+    fn = re.search(r"function helpMarkdown\(\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "helpMarkdown not found"
+    body = fn.group(1)
+    assert "skillEntries.length" in body
+    assert "skillEntries.forEach" in body
+    # The autocomplete reads the shared list (no private re-declaration shadows it).
+    assert "var pool = COMMANDS.concat(skillEntries);" in _HTML
+    slash = re.search(r"slash = \(function \(\) \{(.*?)return \{ refresh", _HTML, re.S)
+    assert slash, "slash IIFE not found"
+    assert "var skillEntries" not in slash.group(1)
+
+
+def test_skill_slash_command_opens_the_skill_card():
+    # #417: a registered skill `/<skill-id>` offered by the autocomplete must
+    # render — open it in the Skills card — instead of falling through to
+    # "Unknown command", so every suggested slash entry works (household too).
+    fn = re.search(r"function handleCommand\(raw\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "handleCommand not found"
+    body = fn.group(1)
+    assert 'skillEntries.some(function (c) { return c[0] === "/" + cmd; })' in body
+    assert "openSkill(cmd)" in body
+    # The unknown-command fallthrough stays AFTER the skill check.
+    assert body.index("openSkill(cmd)") < body.index('"Unknown command `/"')
+
+
+def test_pinned_household_row_opens_the_durable_session():
+    # #419: the pinned "Zuhause" row opens the resident's ONE durable household
+    # session (from /api/whoami) instead of minting a fresh chat per click; only
+    # the very-first-ever turn (no durable row yet, 404) falls back to the
+    # pre-bind path that the server routes into the durable id.
+    assert "var householdSessionId" in _HTML
+    assert (
+        "if (j && j.household_session_id) householdSessionId = j.household_session_id;"
+        in _HTML
+    )
+    fn = re.search(r"function startHouseholdChat\(\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "startHouseholdChat not found"
+    body = fn.group(1)
+    assert "if (!householdSessionId) { startHouseholdPrebind(); return; }" in body
+    assert "openSession(householdSessionId)" in body
+    assert "startHouseholdPrebind();" in body
+    # The pre-bind fallback still carries the household topic for the first turn.
+    pre = re.search(
+        r"function startHouseholdPrebind\(\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert pre and "pendingTopic = HOUSEHOLD_TOPIC;" in pre.group(1)
+
+
 def test_burger_and_wordmark_are_mobile_only():
     # On desktop the rail provides this chrome, so both are hidden; the mobile
     # media query reveals them.

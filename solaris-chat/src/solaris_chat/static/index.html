@@ -1119,6 +1119,10 @@
       // The built-in household topic slug (#237): the pinned "Zuhause" chat
       // pre-binds it so the new session inherits e2b + the household soul.
       var HOUSEHOLD_TOPIC = "household";
+      // The resident's ONE durable household session id (#345/#419), from
+      // /api/whoami: the pinned "Zuhause" row opens THIS session instead of
+      // minting a fresh chat per click, so household stays one conversation.
+      var householdSessionId = "";
       // Incognito/temporary chat (#246): ephemeral by default — the proxy
       // persists nothing (no compaction, no auto-ingestion) and deletes the
       // session on close.
@@ -1815,6 +1819,10 @@
       }
 
       // ---- Slash commands (handled in the browser, not sent to Solaris) ----
+      // The registered skills as `/<skill-id>` entries, fetched once from
+      // /api/skills (#181). Shared so BOTH the slash autocomplete and /help draw
+      // on the same set — they must not diverge (#421). Each is [cmd, desc].
+      var skillEntries = [];
       var COMMANDS = [
         ["/help", "Show this list of commands"],
         ["/new", "Start a new chat"],
@@ -1831,6 +1839,15 @@
       function helpMarkdown() {
         var lines = ["**Commands** — type these in the message box:", ""];
         COMMANDS.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
+        // The registered skills (#421): /help covers the SAME set the `/`
+        // autocomplete shows — built-in commands PLUS each `/<skill-id>`. The
+        // fetch may still be in flight on the very first /help; the list grows
+        // once it lands.
+        if (skillEntries.length) {
+          lines.push("");
+          lines.push("**Skills** — what Solaris knows:");
+          skillEntries.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
+        }
         lines.push("");
         lines.push("Anything not starting with `/` is sent to Solaris.");
         return lines.join("\n");
@@ -1852,6 +1869,15 @@
           return;
         }
         if (cmd === "context") { showContext(); return; }
+        // A registered skill `/<skill-id>` (offered by the autocomplete, #181)
+        // opens that skill in the Skills card — so every slash entry the menu
+        // suggests actually renders, in the household chat too (#417), instead
+        // of falling through to "Unknown command".
+        if (skillEntries.some(function (c) { return c[0] === "/" + cmd; })) {
+          openSettingCard("skills");
+          openSkill(cmd);
+          return;
+        }
         addInfo("Unknown command `/" + cmd + "`.\n\n" + helpMarkdown());
       }
 
@@ -1862,8 +1888,9 @@
         var menu = document.getElementById("slash-menu");
         var items = [];     // current filtered [{cmd, desc}]
         var active = -1;
-        var skillEntries = [];
 
+        // Populates the SHARED skillEntries (declared above) so /help and the
+        // autocomplete stay in lockstep (#421).
         fetch("/api/skills")
           .then(function (r) { return r.ok ? r.json() : { skills: [] }; })
           .then(function (j) {
@@ -2522,13 +2549,24 @@
         showView("chat");
         input.focus();
       }
-      // Pinned household chat (#237): start a fresh chat pre-bound to the
-      // `household` topic. Reuses the #242 pendingTopic path — the first turn
-      // carries `topic: household`, so the proxy binds the topic's default
-      // model (e2b) + persona (household soul) at session create. The session
-      // stays scoped to the resident via the normal uid resolution (#153).
+      // Pinned household chat (#237/#345/#419): the "Zuhause" row opens the
+      // resident's ONE durable household session — the same row voice turns use —
+      // so clicking it repeatedly always continues that single conversation
+      // instead of minting a fresh chat each time. Until the resident's first
+      // ever household turn the durable row doesn't exist yet (404), so fall back
+      // to the #242 pre-bind path: the first turn carries `topic: household` and
+      // the server routes it INTO the durable id (create_turn_session, #419).
       function startHouseholdChat() {
         if (send.disabled) return;
+        if (!householdSessionId) { startHouseholdPrebind(); return; }
+        fetch("/api/sessions/" + encodeURIComponent(householdSessionId))
+          .then(function (r) {
+            if (r.ok) { openSession(householdSessionId); }
+            else { startHouseholdPrebind(); }
+          })
+          .catch(function () { startHouseholdPrebind(); });
+      }
+      function startHouseholdPrebind() {
         newSession();
         pendingTopic = HOUSEHOLD_TOPIC;
         syncPinnedActive(null);
@@ -2618,6 +2656,7 @@
               lo.href = j.logout_url; lo.hidden = false;
             }
             isAdmin = !!(j && j.is_admin);
+            if (j && j.household_session_id) householdSessionId = j.household_session_id;
             document.getElementById("whoami-sub").textContent = isAdmin ? "Admin" : "Resident";
             if (isAdmin) { adminBadge.hidden = false; }
           })

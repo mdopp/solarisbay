@@ -357,7 +357,14 @@ def build_app(
         No base_system_prompt is passed (#293): the gateway's profile supplies
         the soul, so the continuation session inherits it without a per-session
         overlay (default `base_system_prompt=""`).
+
+        The durable household session (#345) is never forked: a `Fortsetzung`
+        continuation would surface as a second "Zuhause" row, defeating the one
+        durable session (#419). It stays in-place — its history grows; the
+        overnight compactor still extracts learnings without continuation.
         """
+        if session_id == store.household_session_id(uid):
+            return session_id, False
         try:
             new_id = await compaction.compact_session(
                 client,
@@ -427,13 +434,27 @@ def build_app(
             )
             return session_id
         primary = new_session_topic(topic_slug)
+        if primary == HOUSEHOLD_TOPIC:
+            # The pinned "Zuhause" first turn lands in the resident's ONE durable
+            # household session (#345/#419) — the same row voice turns use — so it
+            # never mints a fresh session per click/first-turn. Idempotent.
+            session_id = store.ensure_household_session(solaris_db_path, uid)
+            household_sessions.add(session_id)
+            # Stamp the household primary topic so the list chip + pinned-row
+            # highlight (primary_topic == household) light up for this row (#241).
+            topics_store.set_primary(solaris_db_path, session_id, HOUSEHOLD_TOPIC, uid)
+            log.info(
+                "chat.session.created",
+                uid=uid,
+                session_id=session_id,
+                topic=HOUSEHOLD_TOPIC,
+            )
+            return session_id
         # Born with a unique marker-embedded title (not the bare `[uid:...]`
         # marker), so a first turn can never 400 against an abandoned
         # bare-marker stub already holding it — the same collision #267 fixed
         # for the compaction path, here on the main first-turn path (#277).
         session_id = await client.create_session(uid, title=_title_from(text))
-        if primary == HOUSEHOLD_TOPIC:
-            household_sessions.add(session_id)
         if client is admin_gw and client is not household_gw:
             admin_sessions.add(session_id)
         elif client is deep_gw and client is not household_gw:
@@ -611,14 +632,19 @@ def build_app(
         return web.json_response({"ok": True})
 
     async def whoami(request: web.Request) -> web.Response:
+        uid = resolve_uid(request, remote_user_header, default_uid)
         return web.json_response(
             {
                 "ok": True,
-                "uid": resolve_uid(request, remote_user_header, default_uid),
+                "uid": uid,
                 "is_admin": is_admin(request, remote_groups_header, admin_group),
                 "version": VERSION,
                 "logout_url": logout_url,
                 "context_window": context_window.value,
+                # The resident's ONE durable household session (#345/#419): the
+                # pinned "Zuhause" row opens this id instead of minting a fresh
+                # chat per click, so household stays a single conversation.
+                "household_session_id": store.household_session_id(uid),
             }
         )
 
