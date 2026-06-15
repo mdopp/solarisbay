@@ -60,6 +60,12 @@ ADMIN_MCP_SCOPES = ["read", "lifecycle", "mutate"]
 PIPELINE_NAME = "Solaris"
 CONVERSATION_AGENT_NAME = "Solaris"
 ENGINE_MODEL = "solaris"
+# The single-word wake word (#407), no Hey/Ok prefix. The trained .tflite is
+# produced offline by scripts/train-wake-word.py and installed into the voice
+# service's custom-model dir; the openWakeWord wyoming integration exposes it
+# as a wake_word with this id.
+WAKE_WORD_MODEL = "solaris"
+OPENWAKEWORD_CUSTOM_DIR = "/mnt/data/voice/custom"
 # HA's conversation subentry prompt — folded after the engine's own system
 # block by the facade, so keep it to the voice-delivery essentials.
 VOICE_PROMPT = "Antworte kurz, gesprochen und ohne Markdown."
@@ -787,18 +793,85 @@ class HAWebSocket:
                 return json.loads(message.decode("utf-8"))
 
 
+def install_wake_word_model(data_dir: str, custom_dir: str, model_id: str) -> bool:
+    """Copy the trained `<model_id>.tflite` into the voice service's custom-model
+    dir so wyoming-openwakeword loads it (#407; servicebay#1832 ships the dir).
+
+    The model is a brand asset produced offline by scripts/train-wake-word.py —
+    it is NOT built here. Source path is `<data_dir>/solaris/wakeword/
+    <model_id>.tflite` (committed model transported by ServiceBay, or dropped
+    there by an operator). Fail-soft: a missing source logs an actionable
+    warning and returns False so the pipeline falls back to no wake word
+    (push-to-talk) instead of pointing at a model that doesn't exist. Returns
+    True only when the model is present in the custom dir afterwards."""
+    source = os.path.join(data_dir, "solaris", "wakeword", f"{model_id}.tflite")
+    target = os.path.join(custom_dir, f"{model_id}.tflite")
+    try:
+        with open(source, "rb") as f:
+            model = f.read()
+    except OSError:
+        if os.path.exists(target):
+            jlog("info", "wakeword", "custom model already installed", path=target)
+            return True
+        jlog(
+            "warn",
+            "wakeword",
+            f"no trained '{model_id}' wake-word model — the Assist wake word stays "
+            "unset (push-to-talk). Produce it offline with scripts/train-wake-word.py "
+            "(openWakeWord training pipeline + Piper synthetic samples), then commit "
+            "it to templates/solaris/wakeword/ or drop it on the box, and redeploy.",
+            source=source,
+        )
+        return False
+    try:
+        with open(target, "rb") as f:
+            if f.read() == model:
+                return True
+    except OSError:
+        pass
+    try:
+        os.makedirs(custom_dir, exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(model)
+    except OSError as e:
+        jlog("error", "wakeword", "could not install wake-word model", error=str(e))
+        return False
+    jlog("info", "wakeword", "installed custom wake-word model", path=target)
+    return True
+
+
+def _wake_word_entity(token: str, model_id: str) -> str:
+    """The openWakeWord wyoming `wake_word.*` entity_id, or ''. The wyoming
+    integration registers one wake_word entity per openWakeWord connection; the
+    individual `<model_id>` is selected via wake_word_id on the pipeline."""
+    return (
+        _find_entity(token, "wake_word.", model_id)
+        or _find_entity(token, "wake_word.", "openwakeword")
+        or _find_entity(token, "wake_word.", "")
+    )
+
+
 def ensure_assist_pipeline(
-    token: str, conversation_entity: str, prefer_gatekeeper_stt: bool = False
+    token: str,
+    conversation_entity: str,
+    prefer_gatekeeper_stt: bool = False,
+    wake_word_id: str = "",
 ) -> bool:
-    """Create the "Solaris" Assist pipeline (wake on-device, stt=whisper,
-    conversation=Solaris, tts=piper) and make it the preferred pipeline. Then
-    point the Voice PE's pipeline select at it. Idempotent on the name.
+    """Create the "Solaris" Assist pipeline (stt=whisper, conversation=Solaris,
+    tts=piper) and make it the preferred pipeline. Then point the Voice PE's
+    pipeline select at it. Idempotent on the name.
 
     With `prefer_gatekeeper_stt` (speaker-ID on, #350) the STT engine is the
     gatekeeper's Wyoming STT entity instead of bare whisper, so the pipeline's
     audio flows through the gatekeeper's speaker-ID resolver. It transcribes
     via whisper internally, so STT output is identical — only the resident is
-    additionally resolved and stashed for the engine facade."""
+    additionally resolved and stashed for the engine facade.
+
+    With `wake_word_id` set (#407) the pipeline's server-side wake word is the
+    custom openWakeWord model (single word "Solaris", no prefix); the model
+    file must already be installed in the voice service. When the model's
+    wake_word entity can't be resolved the wake word is left unset (push-to-talk)
+    rather than failing."""
     # Needle-match the wyoming engines: the box already carries other tts
     # entities (e.g. a google cloud one) and the pipeline must ride the
     # local whisper/piper pair. Fresh wyoming entries register their
@@ -869,6 +942,21 @@ def ensure_assist_pipeline(
             # admin-selected voice (#368) converges here; default Martin.
             "tts_voice": selected_tts_voice() if martin else None,
         }
+        # #407: set the custom "Solaris" wake word when its model is installed
+        # and the openWakeWord wyoming entity is resolvable; else leave it unset
+        # (push-to-talk) rather than pointing at a wake word that doesn't exist.
+        wake_entity = _wake_word_entity(token, wake_word_id) if wake_word_id else ""
+        if wake_word_id and not wake_entity:
+            jlog(
+                "warn",
+                "voice",
+                "no openWakeWord wake_word entity — wake word stays unset",
+                wake_word_id=wake_word_id,
+            )
+        wake_fields = {
+            "wake_word_entity": wake_entity or None,
+            "wake_word_id": wake_word_id if wake_entity else None,
+        }
         if existing is None:
             created = ws.cmd(
                 {
@@ -880,8 +968,7 @@ def ensure_assist_pipeline(
                     "stt_engine": stt_entity,
                     "stt_language": "de",
                     **tts_fields,
-                    "wake_word_entity": None,
-                    "wake_word_id": None,
+                    **wake_fields,
                 }
             )
             pipeline_id = created.get("id")
@@ -896,6 +983,7 @@ def ensure_assist_pipeline(
                 existing.get("tts_engine") != tts_entity
                 or existing.get("tts_voice") != tts_fields["tts_voice"]
                 or existing.get("stt_engine") != stt_entity
+                or existing.get("wake_word_entity") != wake_fields["wake_word_entity"]
             ):
                 upd = {
                     k: existing.get(k)
@@ -914,6 +1002,7 @@ def ensure_assist_pipeline(
                     )
                 }
                 upd.update(tts_fields)
+                upd.update(wake_fields)
                 upd["stt_engine"] = stt_entity
                 ws.cmd(
                     {
@@ -982,7 +1071,9 @@ def _assign_pe_pipeline(token: str) -> None:
         )
 
 
-def wire_voice_pipeline(token: str, chat_port: str, api_key: str) -> None:
+def wire_voice_pipeline(
+    token: str, chat_port: str, api_key: str, data_dir: str = "/mnt/data"
+) -> None:
     """The Phase-2 wiring: wyoming STT/TTS + conversation agent + pipeline."""
     if not token:
         jlog("info", "voice", "no HA token — skipping voice pipeline wiring")
@@ -1029,10 +1120,22 @@ def wire_voice_pipeline(token: str, chat_port: str, api_key: str) -> None:
     if not wait_for_chat(chat_port):
         jlog("warn", "voice", "engine facade not up — conversation agent skipped")
         return
+    # #407: install the custom "Solaris" wake-word model and wire it as the
+    # default. Configurable; model file is produced offline (fail-soft if absent).
+    wake_word_id = env("WAKE_WORD_MODEL", WAKE_WORD_MODEL)
+    custom_dir = env("OPENWAKEWORD_CUSTOM_DIR", OPENWAKEWORD_CUSTOM_DIR)
+    wake_word = (
+        wake_word_id
+        if wake_word_id and install_wake_word_model(data_dir, custom_dir, wake_word_id)
+        else ""
+    )
     conversation_entity = ensure_conversation_agent(token, chat_port, api_key)
     if conversation_entity:
         ensure_assist_pipeline(
-            token, conversation_entity, prefer_gatekeeper_stt=speaker_id
+            token,
+            conversation_entity,
+            prefer_gatekeeper_stt=speaker_id,
+            wake_word_id=wake_word,
         )
 
 
@@ -1182,7 +1285,7 @@ def main() -> int:
             env("JELLYFIN_USERNAME"),
             env("JELLYFIN_PASSWORD"),
         )
-        wire_voice_pipeline(ha_token, chat_port, api_key)
+        wire_voice_pipeline(ha_token, chat_port, api_key, data_dir)
 
     # ── 3. admin MCP token ───────────────────────────────────────────────────
     ensure_admin_token_file(data_dir, sb_api, mcp_url)
