@@ -39,6 +39,7 @@ from .config import settings
 from .embeddings_store import list_embeddings, touch_last_seen, upsert_embedding
 from .enroll_stash import (
     add_embedding,
+    capture_lock,
     claim_active_request,
     finish_request,
     increment_collected,
@@ -260,20 +261,25 @@ class GatekeeperHandler(AsyncEventHandler):
             log.info("gatekeeper.enroll.sample_skipped", trace_id=self.trace_id)
             return
 
-        held = add_embedding(request.uid, embedding)
-        await asyncio.to_thread(
-            increment_collected, settings.solaris_db_path, request.uid
-        )
-        log.info(
-            "gatekeeper.enroll.captured",
-            trace_id=self.trace_id,
-            collected=held,
-            target=request.target_samples,
-        )
-        if held < request.target_samples:
-            return
+        async with capture_lock(request.uid):
+            add_embedding(request.uid, embedding)
+            collected = await asyncio.to_thread(
+                increment_collected, settings.solaris_db_path, request.uid
+            )
+            log.info(
+                "gatekeeper.enroll.captured",
+                trace_id=self.trace_id,
+                collected=collected,
+                target=request.target_samples,
+            )
+            if collected < request.target_samples:
+                return
+            embeddings = take_embeddings(request.uid)
 
-        embeddings = take_embeddings(request.uid)
+        if not embeddings:
+            # A concurrent same-uid turn already consumed the buffer and enrolled;
+            # this serialised loser has nothing to average — no-op, not a crash.
+            return
         try:
             averaged = await asyncio.to_thread(average_embeddings, embeddings)
             await asyncio.to_thread(
