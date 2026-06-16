@@ -511,21 +511,26 @@ async def test_registry_prompt_block(monkeypatch):
             },
             {
                 "entity_id": "sensor.waschmaschine_power",
-                "attributes": {"friendly_name": "Waschmaschine", "device_class": "power"},
+                "attributes": {
+                    "friendly_name": "Waschmaschine",
+                    "device_class": "power",
+                },
             },
         ]
 
     monkeypatch.setattr(reg, "_fetch_states", fake_states)
     block = await reg.prompt_block()
     assert "light.buero | Bürolicht | Büro" in block
-    assert "sensor.temp" not in block  # plain sensor, no ambient device_class
-    assert "sensor.waschmaschine_power" not in block  # power sensor stays out
-    # ambient sensors ARE surfaced so "wie warm in der Küche" resolves one-pass
-    assert (
-        "sensor.multisensor_6_air_temperature | Küchensensor Air temperature"
-        " | temperature" in block
-    )
-    # ...but read-only: never advertised as a ha_call_service action
+    # No sensor entity is PACKED into the prompt — they're discovered on demand.
+    assert "sensor.multisensor_6_air_temperature" not in block
+    assert "sensor.waschmaschine_power" not in block
+    assert "sensor.temp" not in block
+    # ...but the discovery legend tells the model which classes/domains it can
+    # fetch with a targeted ha_list_entities query (power + temperature, sorted).
+    assert "ha_list_entities" in block
+    assert "Sensor-device_class: power, temperature" in block
+    assert "read-only domains: sensor" in block
+    # sensors are never advertised as a ha_call_service action
     assert "sensor:" not in block
 
 

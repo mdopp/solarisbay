@@ -111,19 +111,36 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
 
     async def list_entities(args: dict[str, Any]) -> str:
         domain = str(args.get("domain") or "")
+        want_class = str(args.get("device_class") or "").lower()
+        name_q = str(args.get("name") or "").lower()
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
             async with client.get(f"{url}/api/states", headers=headers) as resp:
                 resp.raise_for_status()
                 states = await resp.json()
         out = []
+        truncated = False
         for s in states:
             eid = str(s.get("entity_id") or "")
             if domain and not eid.startswith(f"{domain}."):
                 continue
-            name = (s.get("attributes") or {}).get("friendly_name") or eid
+            attrs = s.get("attributes") or {}
+            if (
+                want_class
+                and str(attrs.get("device_class") or "").lower() != want_class
+            ):
+                continue
+            name = attrs.get("friendly_name") or eid
+            if name_q and name_q not in str(name).lower():
+                continue
             out.append({"entity_id": eid, "state": s.get("state"), "name": name})
-            if len(out) >= 100:
+            # Cap to bound the prompt; the filters keep targeted queries well under it.
+            if len(out) >= 200:
+                truncated = True
                 break
+        if truncated:
+            out.append(
+                {"_note": "gekürzt — mit device_class, domain oder name eingrenzen"}
+            )
         return json.dumps(out, ensure_ascii=False)
 
     async def _resolve_entity_id(ref: str) -> str:
@@ -268,12 +285,20 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
         Tool(
             name="ha_list_entities",
             description=(
-                "Listet Entities mit Live-Zustand, optional nach Domain gefiltert"
-                " — für Zustandsfragen über mehrere Geräte."
+                "Listet Entities mit Live-Zustand — für read-only Geräte, die NICHT"
+                " in der Geräteliste des Prompts stehen (Sensoren etc.). Filter"
+                " kombinierbar: device_class (z.B. 'temperature', 'humidity',"
+                " 'power', 'energy', 'battery'), domain (z.B. 'sensor',"
+                " 'binary_sensor') und name (Teilstring, z.B. 'Küche'). Beispiel:"
+                " device_class='temperature' + name='Küche' für die Küchentemperatur."
             ),
             parameters={
                 "type": "object",
-                "properties": {"domain": {"type": "string"}},
+                "properties": {
+                    "domain": {"type": "string"},
+                    "device_class": {"type": "string"},
+                    "name": {"type": "string"},
+                },
             },
             handler=list_entities,
         ),
