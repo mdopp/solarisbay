@@ -142,7 +142,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--steps", type=int, default=10000)
     args = ap.parse_args(argv)
 
-    cfg = _config(args.positive_samples, args.positive_val_samples, args.steps, args.work)
+    cfg = _config(
+        args.positive_samples, args.positive_val_samples, args.steps, args.work
+    )
     args.config_out.write_text(yaml.safe_dump(cfg, sort_keys=False))
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
