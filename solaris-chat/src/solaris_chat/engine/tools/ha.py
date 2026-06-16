@@ -144,26 +144,48 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
         return json.dumps(out, ensure_ascii=False)
 
     async def _resolve_entity_id(ref: str) -> str:
-        """A literal entity_id passes through; otherwise match a friendly_name
-        (case-insensitive, exact then substring) against /api/states. "" on
-        no match — the caller turns that into a model-readable error."""
+        """Resolve a model-supplied reference to a real entity_id, "" on no match.
+
+        A literal id is honoured ONLY if it actually exists — the model often
+        guesses one from the name (e.g. `light.sofalicht` for "Sofalicht", whose
+        real id is `light.dimmer_2_5`); a phantom id would otherwise sail through
+        and return an empty history, reading as "never happened". So: an existing
+        id wins; otherwise match the readable part against friendly_name
+        (exact, then substring), preferring the guessed domain.
+        """
         ref = ref.strip()
-        if _ENTITY_RE.match(ref):
-            return ref
+        if not ref:
+            return ""
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
             async with client.get(f"{url}/api/states", headers=headers) as resp:
                 resp.raise_for_status()
                 states = await resp.json()
-        wanted = ref.lower()
-        substr = ""
+        ids = {str(s.get("entity_id") or "") for s in states}
+        if ref in ids:
+            return ref
+        # A guessed-but-missing id: search by its slug, biased to its domain.
+        domain = ""
+        term = ref
+        if _ENTITY_RE.match(ref):
+            domain, slug = ref.split(".", 1)
+            term = slug.replace("_", " ")
+        wanted = term.lower()
+        best: tuple[int, str] | None = None
         for s in states:
             eid = str(s.get("entity_id") or "")
-            name = str((s.get("attributes") or {}).get("friendly_name") or "")
-            if name.lower() == wanted:
-                return eid
-            if not substr and wanted and wanted in name.lower():
-                substr = eid
-        return substr
+            name = str((s.get("attributes") or {}).get("friendly_name") or "").lower()
+            in_dom = bool(domain) and eid.startswith(domain + ".")
+            if name == wanted:
+                pri = 0 if (not domain or in_dom) else 2
+            elif wanted and wanted in name:
+                pri = 1 if (not domain or in_dom) else 3
+            else:
+                continue
+            if best is None or pri < best[0]:
+                best = (pri, eid)
+                if pri == 0:
+                    break
+        return best[1] if best else ""
 
     async def get_state_history(args: dict[str, Any]) -> str:
         ref = str(args.get("entity") or args.get("entity_id") or "")

@@ -100,11 +100,33 @@ async def test_history_resolves_name_and_summarizes_transitions(monkeypatch):
     assert on["duration_s"] == 3600
 
 
-async def test_history_passes_through_entity_id_without_lookup(monkeypatch):
-    gets = _stub(monkeypatch, states=[], history=[[]])
-    await _tool("ha_state_history").handler({"entity": "light.kitchen"})
-    # a literal entity_id must not trigger a /api/states resolution
-    assert not any("/api/states" in u for u, _ in gets)
+async def test_history_accepts_existing_entity_id(monkeypatch):
+    states = [{"entity_id": "light.kitchen", "attributes": {"friendly_name": "Küche"}}]
+    _stub(monkeypatch, states=states, history=[[]])
+    out = json.loads(
+        await _tool("ha_state_history").handler({"entity": "light.kitchen"})
+    )
+    assert out["entity_id"] == "light.kitchen"
+
+
+async def test_history_guessed_missing_id_falls_back_to_name(monkeypatch):
+    # The model often guesses an id from the name (light.sofalicht) that doesn't
+    # exist; the real one is light.dimmer_2_5. Resolve by slug + domain instead
+    # of querying a phantom id (which would return an empty "never happened").
+    states = [
+        {"entity_id": "light.dimmer_2_5", "attributes": {"friendly_name": "Sofalicht"}},
+        {
+            "entity_id": "sensor.sofalicht_power",
+            "attributes": {"friendly_name": "Sofalicht"},
+        },
+    ]
+    history = [[{"state": "on", "last_changed": "2026-06-14T19:00:00+00:00"}]]
+    _stub(monkeypatch, states=states, history=history)
+    out = json.loads(
+        await _tool("ha_state_history").handler({"entity": "light.sofalicht"})
+    )
+    # domain bias picks the light, not the same-named sensor
+    assert out["entity_id"] == "light.dimmer_2_5"
 
 
 async def test_history_no_match(monkeypatch):
@@ -181,7 +203,12 @@ async def test_list_runnable_filters_to_domains(monkeypatch):
 )
 async def test_run_runnable_builds_service_call(monkeypatch, entity_id, service):
     calls: list[tuple[str, dict]] = []
-    _stub(monkeypatch, states=[], calls=calls)
+    runnables = [
+        {"entity_id": "scene.movie", "attributes": {}},
+        {"entity_id": "script.bedtime", "attributes": {}},
+        {"entity_id": "automation.morning", "attributes": {}},
+    ]
+    _stub(monkeypatch, states=runnables, calls=calls)
     domain = entity_id.split(".")[0]
     out = json.loads(await _tool("ha_run_scene_script").handler({"entity": entity_id}))
     assert out["success"] is True
@@ -192,7 +219,8 @@ async def test_run_runnable_builds_service_call(monkeypatch, entity_id, service)
 
 async def test_run_runnable_rejects_non_runnable(monkeypatch):
     calls: list[tuple[str, dict]] = []
-    _stub(monkeypatch, states=[], calls=calls)
+    states = [{"entity_id": "light.kitchen", "attributes": {"friendly_name": "Küche"}}]
+    _stub(monkeypatch, states=states, calls=calls)
     out = json.loads(
         await _tool("ha_run_scene_script").handler({"entity": "light.kitchen"})
     )
