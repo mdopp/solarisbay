@@ -20,22 +20,16 @@ import aiohttp
 
 from solaris_chat.logging import log
 
-# Read-only ambient sensors worth surfacing alongside the controllables: "wie
-# warm ist es in der Küche" must resolve in one pass, and the model won't fall
-# back to ha_list_entities for it (box-observed: it guesses a climate.* entity
-# and gives up). Only these device_classes — not the hundreds of power/energy/
-# diagnostic sensors that would bloat the prompt. The room comes from the
-# friendly_name (HA /api/states carries no area), same as the controllables.
-ENV_SENSOR_CLASSES = (
-    "temperature",
-    "humidity",
-    "carbon_dioxide",
-    "pm25",
-)
+# Read-only domains we advertise for ON-DEMAND discovery instead of packing
+# their (often hundreds of) entities into every prompt: the prompt carries the
+# actionable devices in full, plus a legend of which sensor device_classes /
+# read-only domains exist, and the model fetches the specific ones it needs with
+# ha_list_entities(device_class=… / domain=…). Box-observed without this the
+# model guesses a non-existent climate.* and gives up rather than querying.
+QUERYABLE_READONLY_DOMAINS = ("sensor", "binary_sensor")
 
-# Domains a household voice command can act on. Most sensors stay out — they
-# inflate the prompt and are reachable via ha_list_entities when asked; the
-# ambient sensors above are the read-only exception.
+# Domains a household voice command can act on — packed into the prompt in full
+# so actions resolve in one pass. Everything else is discovered via the legend.
 CONTROLLABLE_DOMAINS = (
     "light",
     "switch",
@@ -95,13 +89,22 @@ class EntityRegistry:
         lines = []
         domains: set[str] = set()
         cover_set_position = False
+        # Discovery legend inputs: which read-only domains exist and, for sensors,
+        # which device_classes — so the model knows what it can fetch on demand.
+        readonly_domains: set[str] = set()
+        sensor_classes: set[str] = set()
         for s in states:
             entity_id = str(s.get("entity_id") or "")
             domain = entity_id.split(".", 1)[0]
             attrs = s.get("attributes") or {}
             device_class = str(attrs.get("device_class") or "")
-            is_env_sensor = domain == "sensor" and device_class in ENV_SENSOR_CLASSES
-            if domain not in CONTROLLABLE_DOMAINS and not is_env_sensor:
+            if domain not in CONTROLLABLE_DOMAINS:
+                # Not actionable — keep it out of the prompt, just record that it
+                # exists so the legend can point the model at a targeted query.
+                if domain in QUERYABLE_READONLY_DOMAINS:
+                    readonly_domains.add(domain)
+                    if device_class:
+                        sensor_classes.add(device_class)
                 continue
             name = str(attrs.get("friendly_name") or entity_id)
             area = str(attrs.get("area") or "")
@@ -116,24 +119,41 @@ class EntityRegistry:
                 features = attrs.get("supported_features") or 0
                 if isinstance(features, int) and features & _COVER_SET_POSITION:
                     cover_set_position = True
-            elif is_env_sensor:
-                # Surface the class so the model picks temperature vs humidity.
-                line += f" | {device_class}"
             lines.append(line)
         lines.sort()
-        self._block = (
-            "Geräte (entity_id | Name | Raum[ | Geräteklasse bei cover/sensor]):\n"
-            + "\n".join(lines)
-            + "\n"
-            + self._actions_legend(domains, cover_set_position)
-            + "\nSensoren (temperature/humidity/…) sind nur lesbar:"
-            " mit ha_get_state abfragen, nicht ha_call_service."
-            if lines
-            else ""
-        )
+        parts = [
+            "Steuerbare Geräte (entity_id | Name | Raum[ | Geräteklasse bei cover]):\n"
+            + "\n".join(lines),
+            self._actions_legend(domains, cover_set_position),
+            self._discovery_legend(sorted(readonly_domains), sorted(sensor_classes)),
+        ]
+        self._block = "\n".join(p for p in parts if p) if lines else ""
         self._fetched_at = time.time()
-        log.info("engine.registry.refreshed", entities=len(lines))
+        log.info(
+            "engine.registry.refreshed",
+            entities=len(lines),
+            sensor_classes=len(sensor_classes),
+        )
         return self._block
+
+    @staticmethod
+    def _discovery_legend(domains: list[str], classes: list[str]) -> str:
+        """Tell the model what read-only devices exist beyond the actionable list
+        and how to pull the specific ones it needs — so we don't pack hundreds of
+        sensors into every prompt and the model still answers e.g. room
+        temperature, energy or battery questions in one targeted query."""
+        if not domains and not classes:
+            return ""
+        legend = [
+            "Weitere Geräte sind nur lesbar und NICHT oben gelistet — bei Bedarf",
+            'gezielt abrufen mit ha_list_entities (z.B. device_class="temperature"',
+            "für die Raumtemperatur, oder domain=… / name=…):",
+        ]
+        if classes:
+            legend.append("  Sensor-device_class: " + ", ".join(classes))
+        if domains:
+            legend.append("  read-only domains: " + ", ".join(domains))
+        return "\n".join(legend)
 
     @staticmethod
     def _actions_legend(domains: set[str], cover_set_position: bool) -> str:

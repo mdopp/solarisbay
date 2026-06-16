@@ -113,6 +113,51 @@ async def test_history_no_match(monkeypatch):
     assert "error" in out
 
 
+async def test_list_entities_filters_by_device_class_and_name(monkeypatch):
+    states = [
+        {
+            "entity_id": "sensor.kuche_temp",
+            "state": "21.4",
+            "attributes": {
+                "friendly_name": "Küchensensor Air temperature",
+                "device_class": "temperature",
+            },
+        },
+        {
+            "entity_id": "sensor.bad_temp",
+            "state": "19.0",
+            "attributes": {
+                "friendly_name": "Bad Temperatur",
+                "device_class": "temperature",
+            },
+        },
+        {
+            "entity_id": "sensor.wm_power",
+            "state": "5",
+            "attributes": {"friendly_name": "Waschmaschine", "device_class": "power"},
+        },
+        {
+            "entity_id": "light.kuche",
+            "state": "on",
+            "attributes": {"friendly_name": "Küchenlicht"},
+        },
+    ]
+    _stub(monkeypatch, states=states)
+    # device_class narrows to the temperature sensors only
+    out = json.loads(
+        await _tool("ha_list_entities").handler({"device_class": "temperature"})
+    )
+    assert [e["entity_id"] for e in out] == ["sensor.kuche_temp", "sensor.bad_temp"]
+    # device_class + name substring narrows to the kitchen one
+    out = json.loads(
+        await _tool("ha_list_entities").handler(
+            {"device_class": "temperature", "name": "küche"}
+        )
+    )
+    assert [e["entity_id"] for e in out] == ["sensor.kuche_temp"]
+    assert out[0]["state"] == "21.4"
+
+
 async def test_list_runnable_filters_to_domains(monkeypatch):
     states = [
         {"entity_id": "scene.movie", "attributes": {"friendly_name": "Kino"}},
