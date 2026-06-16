@@ -749,7 +749,7 @@
        into a card it only had a max-height, so a pane whose content relies on
        flex-fill (or before its async content loads) collapsed to a thin line
        (#420). Give the card body a real minimum so the card always has shape. */
-    .settings-card .view .pane { min-height: 240px; max-height: 60vh; padding: 16px; }
+    .settings-card .view .pane { min-height: 240px; padding: 16px; }
     .settings-card .view .pane > * { max-width: 100%; }
     /* The skill/soul Edit surface needs real height — a card .pane only has a
        max-height, so the flex-filling textarea otherwise collapses to ~2 rows
@@ -963,16 +963,6 @@
           <p class="lead model-warn" id="household-model-warn" hidden>⚠️ A larger model on the household ("Zuhause") chat means slower voice/quick answers — the hot path is latency-sensitive. Keep it on the fast model unless you accept the latency.</p>
           <span class="editor-status" id="household-model-status"></span>
 
-          <h3>Voice</h3>
-          <p class="lead">Which Kokoro voice Solaris speaks with — one voice for all spoken output (admin only). Takes effect on the next deploy.</p>
-          <div class="model-row">
-            <label for="voice-select">Spoken voice</label>
-            <select id="voice-select"></select>
-            <button id="voice-apply" class="btn-primary" type="button">Apply</button>
-          </div>
-          <p class="model-current" id="voice-current"></p>
-          <span class="editor-status" id="voice-status"></span>
-
           <h3>Add a model</h3>
           <p class="lead">Pull a model into the local Ollama by tag or URL — a registry tag (<code>gemma4:12b</code>) or a Hugging Face GGUF repo (<code>hf.co/&lt;repo&gt;:&lt;quant&gt;</code>). Once pulled it appears in the pickers above. Admin only.</p>
           <div class="model-row">
@@ -998,6 +988,22 @@
           </div>
           <p class="model-current" id="vram-readout">Loading…</p>
           <p class="lead model-warn" id="vram-warn" hidden>⚠️ The selected models' estimated VRAM exceeds the available VRAM — they likely won't all stay GPU-resident, which means CPU fallback and much slower turns.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-voice" class="view">
+      <div class="pane">
+        <div class="doc">
+          <h2>Voice</h2>
+          <p class="lead">Which Kokoro voice Solaris speaks with — one voice for all spoken output (admin only). Takes effect on the next deploy.</p>
+          <div class="model-row">
+            <label for="voice-select">Spoken voice</label>
+            <select id="voice-select"></select>
+            <button id="voice-apply" class="btn-primary" type="button">Apply</button>
+          </div>
+          <p class="model-current" id="voice-current"></p>
+          <span class="editor-status" id="voice-status"></span>
         </div>
       </div>
     </section>
@@ -1942,7 +1948,7 @@
         if (cmd === "thinking") { openSettingCard("prefs"); return; }
         if (cmd === "model" || cmd === "voice") {
           if (isAdmin) {
-            openSettingCard("model");
+            openSettingCard(cmd);
           } else {
             // A clear card, not a thin grey system line (which read as a broken
             // card). Non-admins / not-signed-in (e.g. an incognito window) land
@@ -2853,11 +2859,12 @@
         soul: document.getElementById("view-soul"),
         tools: document.getElementById("view-tools"),
         prefs: document.getElementById("view-prefs"),
-        model: document.getElementById("view-model")
+        model: document.getElementById("view-model"),
+        voice: document.getElementById("view-voice")
       };
       var settingTitles = {
         skills: "Skills", soul: "Soul", tools: "Tools",
-        prefs: "Chat", model: "Model"
+        prefs: "Chat", model: "Model", voice: "Voice"
       };
       var skillsLoaded = false, soulLoaded = false;
 
@@ -2866,7 +2873,8 @@
         else if (name === "soul") { if (!soulLoaded) { soulLoaded = true; loadSoul(); } }
         else if (name === "tools") { loadTools(); loadMcp(); }
         else if (name === "prefs") { syncThinkingSeg(); }
-        else if (name === "model") { loadModel(); loadVram(); loadVoice(); }
+        else if (name === "model") { loadModel(); loadVram(); }
+        else if (name === "voice") { loadVoice(); }
       }
 
       // Post a setting pane as a card in the log. There's a single live copy of
@@ -2940,8 +2948,10 @@
       // The Settings buttons (rail / mobile / embed) no longer open a panel —
       // they post a small index card whose rows are the setting /commands, so
       // every setting is reachable both by typing the command and by clicking.
+      // 4th element = admin-only (hidden from non-admins, like availableCommands).
       var SETTINGS_ENTRIES = [
-        ["model", "/model", "Model, voice & VRAM (admins)"],
+        ["model", "/model", "Everyday-chat model & VRAM (admins)", true],
+        ["voice", "/voice", "Solaris's spoken voice (admins)", true],
         ["skills", "/skills", "Skills Solaris draws on"],
         ["soul", "/soul", "Solaris's durable identity"],
         ["persona", "/persona", "Persona & speed for the next new chat"],
@@ -2956,7 +2966,9 @@
         var title = document.createElement("span");
         title.className = "settings-card-title"; title.textContent = "Settings";
         head.appendChild(title); card.appendChild(head);
-        var entries = isEmbed ? SETTINGS_ENTRIES.filter(function (e) { return e[0] === "prefs"; }) : SETTINGS_ENTRIES;
+        var entries = isEmbed
+          ? SETTINGS_ENTRIES.filter(function (e) { return e[0] === "prefs"; })
+          : SETTINGS_ENTRIES.filter(function (e) { return !e[3] || isAdmin; });
         entries.forEach(function (e) {
           var row = document.createElement("button");
           row.type = "button"; row.className = "settings-index-row";
