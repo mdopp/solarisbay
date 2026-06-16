@@ -1944,9 +1944,16 @@
         // opens that skill in the Skills card — so every slash entry the menu
         // suggests actually renders, in the household chat too (#417), instead
         // of falling through to "Unknown command".
-        if (skillEntries.some(function (c) { return c[0] === "/" + cmd; })) {
+        // Match case-insensitively (the autocomplete offers skills that way and
+        // `cmd` is already lower-cased) and open the skill by its REAL id, so a
+        // skill whose id carries any uppercase still resolves instead of falling
+        // through to "Unknown command".
+        var skillHit = skillEntries.find(function (c) {
+          return c[0].toLowerCase() === "/" + cmd;
+        });
+        if (skillHit) {
           openSettingCard("skills");
-          openSkill(cmd);
+          openSkill(skillHit[0].slice(1));
           return;
         }
         addInfo("Unknown command `/" + cmd + "`.\n\n" + helpMarkdown());
