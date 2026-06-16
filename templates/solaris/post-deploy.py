@@ -77,13 +77,13 @@ OPENWAKEWORD_CUSTOM_DIR = "/mnt/data/voice/custom"
 # exactly the ollama-fixup pattern. openWakeWord rides the solaris pod
 # (template.yml) because it needs no GPU. ServiceBay provides only the platform
 # capability (GPU/CDI passthrough, HA, the Wyoming runtime/images).
-WHISPER_UNIT = "voice-whisper"
-TTS_UNIT = "voice-tts"
-TTS_BRIDGE_UNIT = "voice-tts-bridge"
-OPENWAKEWORD_UNIT = "voice-openwakeword"
+# GPU voice services are companion Quadlets (CDI is dropped inside kube-play
+# pods, #1026), named solaris-* so they group under the Solaris namespace. The
+# CPU services — openWakeWord + the TTS bridge — ride the solaris pod itself
+# (see template.yml), so they have no constants here.
+WHISPER_UNIT = "solaris-whisper"
+TTS_UNIT = "solaris-tts"
 TTS_IMAGE = "ghcr.io/mdopp/solaris-tts:latest"
-TTS_BRIDGE_IMAGE = "ghcr.io/roryeckel/wyoming_openai:latest"
-OPENWAKEWORD_IMAGE = "docker.io/rhasspy/wyoming-openwakeword:latest"
 
 # The whisper wizard default. On a CDI GPU box the default upgrades to the
 # better model the GPU runs faster than the CPU ran base (box-measured 0.38s vs
@@ -366,78 +366,6 @@ def render_tts_unit() -> str:
     )
 
 
-def render_tts_bridge_unit() -> str:
-    """Render the wyoming_openai bridge `.container` Quadlet (pure). It fronts
-    the Kokoro OpenAI API as a streaming `tts.openai_streaming` HA entity on
-    the Wyoming port :10203 (box-verified entity name)."""
-    return (
-        "[Unit]\n"
-        "Description=Solaris Voice TTS wyoming bridge (Kokoro-Martin -> HA, #456)\n"
-        "Wants=network-online.target\n"
-        f"After=network-online.target {TTS_UNIT}.service\n"
-        "\n"
-        "[Container]\n"
-        f"Image={TTS_BRIDGE_IMAGE}\n"
-        f"ContainerName={TTS_BRIDGE_UNIT}\n"
-        "Network=host\n"
-        "Exec=python3 -m wyoming_openai --uri tcp://0.0.0.0:10203"
-        " --languages de --tts-openai-url http://127.0.0.1:8881/v1"
-        " --tts-models kokoro --tts-streaming-models kokoro"
-        " --tts-backend KOKORO_FASTAPI\n"
-        "AutoUpdate=registry\n"
-        "\n"
-        "[Service]\n"
-        "Restart=on-failure\n"
-        "RestartSec=5\n"
-        "\n"
-        "[Install]\n"
-        "WantedBy=default.target\n"
-    )
-
-
-def render_openwakeword_unit(custom_dir: str) -> str:
-    """Render the openWakeWord `.container` Quadlet (pure). Wyoming wake-word
-    detection on :10400; scans `custom_dir` (mounted /custom_models) for custom
-    .tflite models — install_wake_word_model drops the trained "Solaris" model
-    there. CPU-only service (the model is tiny). This is the Solaris-owned wake
-    engine that supersedes the retired ServiceBay `voice` pod's openwakeword."""
-    return (
-        "[Unit]\n"
-        "Description=Solaris Voice openWakeWord (Wyoming wake word, #456)\n"
-        "Wants=network-online.target\n"
-        "After=network-online.target\n"
-        "\n"
-        "[Container]\n"
-        f"Image={OPENWAKEWORD_IMAGE}\n"
-        f"ContainerName={OPENWAKEWORD_UNIT}\n"
-        "Network=host\n"
-        "Exec=--uri tcp://0.0.0.0:10400 --custom-model-dir /custom_models\n"
-        f"Volume={custom_dir}:/custom_models:Z\n"
-        "AutoUpdate=registry\n"
-        "\n"
-        "[Service]\n"
-        "Restart=on-failure\n"
-        "RestartSec=5\n"
-        "\n"
-        "[Install]\n"
-        "WantedBy=default.target\n"
-    )
-
-
-def install_openwakeword_unit(custom_dir: str) -> bool:
-    """Write + activate the Solaris openWakeWord Quadlet. Creates the custom-
-    models host dir first (Quadlet Volume= does not, unlike kube
-    DirectoryOrCreate) — without it the unit fails statfs."""
-    if not custom_dir:
-        return False
-    try:
-        os.makedirs(custom_dir, exist_ok=True)
-    except OSError as e:
-        jlog("warn", "voice-unit", "openwakeword: custom dir", error=str(e))
-        return False
-    return install_unit(OPENWAKEWORD_UNIT, render_openwakeword_unit(custom_dir))
-
-
 def install_whisper_unit(data_dir: str) -> bool:
     """Write + activate the companion whisper Quadlet (GPU when CDI is
     registered, CPU otherwise). Creates the model-cache host dir first —
@@ -467,16 +395,15 @@ def install_whisper_unit(data_dir: str) -> bool:
 
 
 def install_tts_units() -> bool:
-    """GPU boxes get Solaris's Martin voice: the Kokoro OpenAI TTS on :8881 and
-    the wyoming bridge on :10203. CPU-only boxes have no Kokoro TTS (the bundled
-    image needs CUDA); the Assist wiring then keeps piper. Returns True only
-    when both GPU units are up."""
+    """GPU boxes get Solaris's Martin voice: the Kokoro OpenAI TTS on :8881, a
+    GPU companion Quadlet. The wyoming bridge that fronts it as an HA TTS entity
+    (:10203) is a CPU container in the solaris pod (template.yml), not here.
+    CPU-only boxes have no Kokoro TTS (the bundled image needs CUDA); the Assist
+    wiring then keeps piper. Returns True when the GPU TTS unit is up."""
     if not cdi_available():
-        jlog("info", "voice-unit", "tts: no CDI GPU — skipping Kokoro-Martin units")
+        jlog("info", "voice-unit", "tts: no CDI GPU — skipping Kokoro-Martin unit")
         return False
-    ok_tts = install_unit(TTS_UNIT, render_tts_unit())
-    ok_bridge = install_unit(TTS_BRIDGE_UNIT, render_tts_bridge_unit())
-    return ok_tts and ok_bridge
+    return install_unit(TTS_UNIT, render_tts_unit())
 
 
 def setup_custom_models_dir(custom_dir: str) -> None:
@@ -502,10 +429,13 @@ def setup_custom_models_dir(custom_dir: str) -> None:
 
 
 def install_voice_pipeline(data_dir: str) -> None:
-    """Stand up the Solaris-owned voice pipeline containers (#456): whisper STT
-    (GPU/CPU), the Kokoro-Martin TTS + wyoming bridge (GPU boxes), and the
-    openWakeWord custom-models dir. The Assist-pipeline wiring (later, in
-    wire_voice_pipeline) points HA at these same Wyoming endpoints.
+    """Stand up the Solaris-owned voice pipeline (#456). The GPU services are
+    companion Quadlets (CDI is dropped in kube-play pods, #1026): whisper STT
+    and the Kokoro-Martin TTS. The CPU services — openWakeWord and the TTS
+    bridge — ride the solaris pod itself (template.yml). Here we install the
+    GPU Quadlets and drop the trained wake-word model into the custom-models
+    dir the pod's openWakeWord container mounts. The Assist-pipeline wiring
+    (later, in wire_voice_pipeline) points HA at these Wyoming endpoints.
 
     The whisper model cache lives at the same host path
     (<data_dir>/voice/whisper{-gpu}) the ServiceBay voice template wrote, so
@@ -513,16 +443,12 @@ def install_voice_pipeline(data_dir: str) -> None:
     data migration."""
     custom_dir = env("OPENWAKEWORD_CUSTOM_DIR", OPENWAKEWORD_CUSTOM_DIR)
     setup_custom_models_dir(custom_dir)
-    # Drop the trained model into the custom dir BEFORE the wake engine starts
-    # so it boots with "Solaris" already loaded (wire_voice_pipeline re-runs the
-    # install idempotently). The HA-side wiring (integration + pipeline) is done
-    # later in wire_voice_pipeline once the engine is up.
+    # Drop the trained model into the custom dir the pod's openWakeWord mounts.
     install_wake_word_model(
         data_dir, custom_dir, env("WAKE_WORD_MODEL", WAKE_WORD_MODEL)
     )
     install_whisper_unit(data_dir)
     install_tts_units()
-    install_openwakeword_unit(custom_dir)
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -12,7 +12,7 @@ metadata:
     # gatekeeper's Wyoming listener. ServiceBay can't substitute a variable
     # placeholder inside an annotation block scalar (#136) but DOES substitute in
     # this inline annotation, so the ports stay variable-driven.
-    servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp,10400/tcp"
+    servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp,10400/tcp,10203/tcp"
     # External dependencies only (#271): ollama (the engine's LLM backend),
     # home-assistant (device control + the Assist pipeline that fronts the
     # Voice PE speaker), nginx (NPM proxies the chat), auth (Authelia
@@ -352,6 +352,31 @@ spec:
     volumeMounts:
     - mountPath: /custom_models
       name: openwakeword-custom-models
+
+  # tts-bridge — the wyoming_openai bridge that fronts the Kokoro-Martin TTS as
+  # a streaming `tts.openai_streaming` HA entity on Wyoming :10203 (#456). A CPU
+  # shim, so it rides the pod (unlike the Kokoro TTS itself, a GPU companion
+  # Quadlet). It reaches the Kokoro OpenAI API over host loopback (:8881); the
+  # bare module command mirrors the standalone container's entrypoint.
+  - name: tts-bridge
+    image: ghcr.io/roryeckel/wyoming_openai:latest
+    command:
+    - python3
+    - -m
+    - wyoming_openai
+    args:
+    - --uri
+    - tcp://0.0.0.0:10203
+    - --languages
+    - de
+    - --tts-openai-url
+    - http://127.0.0.1:8881/v1
+    - --tts-models
+    - kokoro
+    - --tts-streaming-models
+    - kokoro
+    - --tts-backend
+    - KOKORO_FASTAPI
 
   volumes:
   # Custom openWakeWord models (#456 folds in #407): the host dir the
