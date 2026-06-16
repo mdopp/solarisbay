@@ -1900,12 +1900,17 @@
         ["/persona", "Persona & speed for the next new chat"],
         ["/tools", "What Solaris can do — toolsets & MCP servers"],
         ["/thinking", "Show, collapse, or hide thinking blocks"],
-        ["/voice", "Solaris's spoken voice (admins)"],
-        ["/model", "Everyday-chat model — Schnell/Gründlich (admins)"]
+        ["/voice", "Solaris's spoken voice (admins)", true],
+        ["/model", "Everyday-chat model — Schnell/Gründlich (admins)", true]
       ];
+      // Admin-only commands (3rd element) are hidden from non-admins so the
+      // autocomplete and /help only ever offer what actually works for them.
+      function availableCommands() {
+        return COMMANDS.filter(function (c) { return !c[2] || isAdmin; });
+      }
       function helpMarkdown() {
         var lines = ["**Commands** — type these in the message box:", ""];
-        COMMANDS.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
+        availableCommands().forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
         // The registered skills (#421): /help covers the SAME set the `/`
         // autocomplete shows — built-in commands PLUS each `/<skill-id>`. The
         // fetch may still be in flight on the very first /help; the list grows
@@ -1936,7 +1941,18 @@
         }
         if (cmd === "thinking") { openSettingCard("prefs"); return; }
         if (cmd === "model" || cmd === "voice") {
-          if (isAdmin) { openSettingCard("model"); } else { addText("system", "These settings are for admins."); }
+          if (isAdmin) {
+            openSettingCard("model");
+          } else {
+            // A clear card, not a thin grey system line (which read as a broken
+            // card). Non-admins / not-signed-in (e.g. an incognito window) land
+            // here because model & voice are admin-only.
+            addInfo(
+              "**Nur für Admins**\n\nModell- und Stimmen-Einstellungen sind"
+              + " Admins vorbehalten. Melde dich in deiner normalen (nicht"
+              + " inkognito) Sitzung an, um sie zu öffnen."
+            );
+          }
           return;
         }
         if (cmd === "context") { showContext(); return; }
@@ -1982,7 +1998,7 @@
 
         function render(token) {
           var q = token.slice(1).toLowerCase(); // text after "/"
-          var pool = COMMANDS.concat(skillEntries);
+          var pool = availableCommands().concat(skillEntries);
           items = pool.filter(function (c) { return c[0].slice(1).toLowerCase().indexOf(q) === 0; });
           if (!items.length) { close(); return; }
           active = 0;
