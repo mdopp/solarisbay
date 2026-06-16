@@ -20,8 +20,22 @@ import aiohttp
 
 from solaris_chat.logging import log
 
-# Domains a household voice command can act on. Sensors etc. stay out — they
-# inflate the prompt and are reachable via ha_list_entities when asked.
+# Read-only ambient sensors worth surfacing alongside the controllables: "wie
+# warm ist es in der Küche" must resolve in one pass, and the model won't fall
+# back to ha_list_entities for it (box-observed: it guesses a climate.* entity
+# and gives up). Only these device_classes — not the hundreds of power/energy/
+# diagnostic sensors that would bloat the prompt. The room comes from the
+# friendly_name (HA /api/states carries no area), same as the controllables.
+ENV_SENSOR_CLASSES = (
+    "temperature",
+    "humidity",
+    "carbon_dioxide",
+    "pm25",
+)
+
+# Domains a household voice command can act on. Most sensors stay out — they
+# inflate the prompt and are reachable via ha_list_entities when asked; the
+# ambient sensors above are the read-only exception.
 CONTROLLABLE_DOMAINS = (
     "light",
     "switch",
@@ -84,9 +98,11 @@ class EntityRegistry:
         for s in states:
             entity_id = str(s.get("entity_id") or "")
             domain = entity_id.split(".", 1)[0]
-            if domain not in CONTROLLABLE_DOMAINS:
-                continue
             attrs = s.get("attributes") or {}
+            device_class = str(attrs.get("device_class") or "")
+            is_env_sensor = domain == "sensor" and device_class in ENV_SENSOR_CLASSES
+            if domain not in CONTROLLABLE_DOMAINS and not is_env_sensor:
+                continue
             name = str(attrs.get("friendly_name") or entity_id)
             area = str(attrs.get("area") or "")
             line = f"{entity_id} | {name} | {area}".rstrip(" |")
@@ -95,19 +111,23 @@ class EntityRegistry:
                 # device_class distinguishes a garage cover (confirm-first) from
                 # an ordinary blind/shade (act) — both are domain=cover, so the
                 # safety rule can only key on it if it's surfaced per entity.
-                device_class = str(attrs.get("device_class") or "")
                 if device_class:
                     line += f" | {device_class}"
                 features = attrs.get("supported_features") or 0
                 if isinstance(features, int) and features & _COVER_SET_POSITION:
                     cover_set_position = True
+            elif is_env_sensor:
+                # Surface the class so the model picks temperature vs humidity.
+                line += f" | {device_class}"
             lines.append(line)
         lines.sort()
         self._block = (
-            "Geräte (entity_id | Name | Raum[ | Geräteklasse bei cover]):\n"
+            "Geräte (entity_id | Name | Raum[ | Geräteklasse bei cover/sensor]):\n"
             + "\n".join(lines)
             + "\n"
             + self._actions_legend(domains, cover_set_position)
+            + "\nSensoren (temperature/humidity/…) sind nur lesbar:"
+            " mit ha_get_state abfragen, nicht ha_call_service."
             if lines
             else ""
         )
