@@ -67,6 +67,16 @@ CREATE TABLE voice_uid_stash (
   uid        TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE session_traces (
+  session_id  TEXT NOT NULL,
+  trace_id    TEXT NOT NULL,
+  step_order  INTEGER NOT NULL,
+  owner_uid   TEXT NOT NULL,
+  detail_id   TEXT,
+  detail_json TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (session_id, trace_id, step_order)
+);
 """
 
 
@@ -185,6 +195,54 @@ def test_truncate_session_head_noop_when_within_budget(db):
     store.append_message(db, sid, "assistant", "ok")
     assert store.truncate_session_head(db, sid, 32768) == 0
     assert len(store.get_session(db, sid, "anna")["messages"]) == 2
+
+
+def _add_trace(db, sid, trace_id, created_at, uid="anna"):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO session_traces"
+        " (session_id, trace_id, step_order, owner_uid, created_at)"
+        " VALUES (?, ?, 0, ?, ?)",
+        (sid, trace_id, uid, created_at),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _trace_ids(db, sid):
+    conn = sqlite3.connect(db)
+    ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT trace_id FROM session_traces WHERE session_id = ?", (sid,)
+        )
+    ]
+    conn.close()
+    return set(ids)
+
+
+def test_truncate_session_head_prunes_traces_of_cut_turns(db):
+    sid = store.create_session(db, "anna")
+    for i in range(6):
+        store.append_message(db, sid, "user", f"frage {i} " + "x" * 160)
+        store.append_message(db, sid, "assistant", f"antwort {i} " + "y" * 160)
+    # A trace from a long-gone turn (before the kept window) and one from "now".
+    _add_trace(db, sid, "old", "2000-01-01 00:00:00")
+    _add_trace(db, sid, "fresh", "2999-01-01 00:00:00")
+    assert store.truncate_session_head(db, sid, 120) > 0
+    ids = _trace_ids(db, sid)
+    assert "old" not in ids  # trace of a cut turn is pruned
+    assert "fresh" in ids  # trace of a kept turn survives
+
+
+def test_delete_session_purges_its_traces(db):
+    sid = store.create_session(db, "anna")
+    other = store.create_session(db, "anna")
+    _add_trace(db, sid, "t1", "2026-01-01 00:00:00")
+    _add_trace(db, other, "t2", "2026-01-01 00:00:00")
+    assert store.delete_session(db, sid, "anna") is True
+    assert _trace_ids(db, sid) == set()  # deleted chat's traces are gone
+    assert _trace_ids(db, other) == {"t2"}  # another chat's traces untouched
 
 
 # -- agent loop ----------------------------------------------------------
