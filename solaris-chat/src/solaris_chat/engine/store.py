@@ -79,6 +79,45 @@ def ensure_household_session(
     return session_id
 
 
+def truncate_session_head(db_path: str, session_id: str, keep_token_budget: int) -> int:
+    """Drop the OLDEST messages of a session in place, keeping the most recent
+    turns within ~`keep_token_budget` tokens (~4 chars/token). Returns the count
+    deleted; a no-op (0) when the history already fits.
+
+    Bounds the durable household chat, which is never forked (#419): when it
+    outgrows the window the oldest turns are simply cut. The kept window is
+    advanced to start at a `user` message so no orphan tool result / assistant
+    tool_calls leads the history. The soul + device registry are NOT stored here
+    (they are the per-turn system prompt, rebuilt each turn), so only chat turns
+    are dropped — exactly the "cut long conversations at the front" behaviour.
+    """
+    budget_chars = max(0, keep_token_budget) * 4
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT seq, role, length(content) AS clen FROM engine_messages"
+            " WHERE session_id = ? ORDER BY seq",
+            (session_id,),
+        ).fetchall()
+        if not rows or sum((r["clen"] or 0) for r in rows) <= budget_chars:
+            return 0
+        acc = 0
+        start = 0
+        for i in range(len(rows) - 1, -1, -1):
+            acc += rows[i]["clen"] or 0
+            if acc > budget_chars:
+                start = i + 1
+                break
+        while start < len(rows) and rows[start]["role"] != "user":
+            start += 1
+        if start >= len(rows):
+            return 0  # newest turn alone exceeds budget — keep it rather than nuke
+        cur = conn.execute(
+            "DELETE FROM engine_messages WHERE session_id = ? AND seq < ?",
+            (session_id, rows[start]["seq"]),
+        )
+        return cur.rowcount
+
+
 def delete_session(db_path: str, session_id: str, uid: str) -> bool:
     """Owner-scoped delete: a wrong-owner id deletes nothing and returns False,
     indistinguishable from a missing one (mirrors get_session's scoping)."""
