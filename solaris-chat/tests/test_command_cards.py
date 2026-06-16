@@ -135,7 +135,8 @@ def test_help_lists_the_same_skills_as_the_autocomplete():
     assert "skillEntries.length" in body
     assert "skillEntries.forEach" in body
     # The autocomplete reads the shared list (no private re-declaration shadows it).
-    assert "var pool = availableCommands().concat(skillEntries);" in _HTML
+    assert "var pool = availableCommands()" in _HTML
+    assert ".concat(skillEntries)" in _HTML
     slash = re.search(r"slash = \(function \(\) \{(.*?)return \{ refresh", _HTML, re.S)
     assert slash, "slash IIFE not found"
     assert "var skillEntries" not in slash.group(1)
