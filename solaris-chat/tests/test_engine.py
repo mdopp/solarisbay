@@ -164,6 +164,29 @@ def test_store_overlay_and_usage(db):
     assert session["output_tokens"] == 30
 
 
+def test_truncate_session_head_keeps_recent_at_user_boundary(db):
+    sid = store.create_session(db, "anna")
+    # 6 turns; each "user"(~40 tok) -> "assistant"(~40 tok). ~80 tok/turn.
+    for i in range(6):
+        store.append_message(db, sid, "user", f"frage {i} " + "x" * 160)
+        store.append_message(db, sid, "assistant", f"antwort {i} " + "y" * 160)
+    # Budget ~120 tokens -> keep ~last 1-2 turns, dropping the older ones.
+    dropped = store.truncate_session_head(db, sid, 120)
+    assert dropped > 0
+    msgs = store.get_session(db, sid, "anna")["messages"]
+    assert msgs[0]["role"] == "user"  # window starts cleanly at a user turn
+    assert "frage 0" not in msgs[0]["content"]  # oldest turns are gone
+    assert any("frage 5" in m["content"] for m in msgs)  # newest turn survives
+
+
+def test_truncate_session_head_noop_when_within_budget(db):
+    sid = store.create_session(db, "anna")
+    store.append_message(db, sid, "user", "kurz")
+    store.append_message(db, sid, "assistant", "ok")
+    assert store.truncate_session_head(db, sid, 32768) == 0
+    assert len(store.get_session(db, sid, "anna")["messages"]) == 2
+
+
 # -- agent loop ----------------------------------------------------------
 
 

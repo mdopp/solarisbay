@@ -284,6 +284,16 @@ class EngineClient:
         store.append_message(
             self._db_path, session_id, "user", text, images=images or None
         )
+        # Bound the durable household chat in place: it is never forked (#419),
+        # so when its history outgrows the window the oldest turns are dropped
+        # (#420). Soul + device registry are the per-turn system prompt below —
+        # never touched; only chat turns are cut. Other sessions are bounded by
+        # continuation-compaction (server.maybe_compact), not here.
+        owner = store.session_owner(self._db_path, session_id)
+        if owner and session_id == store.household_session_id(owner):
+            store.truncate_session_head(
+                self._db_path, session_id, int((self._context_window or 32768) * 0.4)
+            )
         system = await self._system_prompt(session_id)
         messages = [{"role": "system", "content": system}]
         messages += store.history(self._db_path, session_id)
