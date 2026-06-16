@@ -60,15 +60,16 @@ def _mounts(block: str) -> list[str]:
     return re.findall(r"name: ([\w-]+)", vm[1])
 
 
-def test_app_containers_are_chat_gatekeeper_and_openwakeword(raw_template):
-    # #456: Solaris owns its whole voice pipeline. openWakeWord (the custom
-    # "Solaris" wake word, no GPU) rides the pod; whisper STT + the Kokoro TTS
-    # are GPU companion Quadlets the post-deploy writes (podman kube play drops
-    # CDI devices, #1026).
+def test_app_containers_are_chat_gatekeeper_and_cpu_voice(raw_template):
+    # #456: Solaris owns its whole voice pipeline. The CPU voice services —
+    # openWakeWord (the custom "Solaris" wake word) and the wyoming TTS bridge —
+    # ride the pod; whisper STT + the Kokoro TTS are GPU companion Quadlets the
+    # post-deploy writes (podman kube play drops CDI devices, #1026).
     assert _names(_section(raw_template, "containers")) == [
         "chat",
         "gatekeeper",
         "openwakeword",
+        "tts-bridge",
     ]
 
 
@@ -125,13 +126,14 @@ def test_gatekeeper_has_no_admin_access(raw_template):
     assert "ADMIN" not in gk.replace("GATEKEEPER_MCP_TOKEN", "")
 
 
-def test_ports_annotation_lists_chat_gatekeeper_and_wakeword(raw_template):
-    # #456: openWakeWord's Wyoming port (10400) is bound on the host by the
-    # pod (hostNetwork) so it joins the annotation; whisper/TTS/bridge bind via
-    # their own Quadlets, not the pod.
+def test_ports_annotation_lists_chat_gatekeeper_and_cpu_voice(raw_template):
+    # #456: the CPU voice containers bind their Wyoming ports on the host via
+    # the pod (hostNetwork) — openWakeWord :10400 and the TTS bridge :10203 —
+    # so both join the annotation; whisper/Kokoro-TTS bind via their own
+    # Quadlets, not the pod.
     assert (
-        'servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp,10400/tcp"'
-        in raw_template
+        'servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp,'
+        '10400/tcp,10203/tcp"' in raw_template
     )
 
 
