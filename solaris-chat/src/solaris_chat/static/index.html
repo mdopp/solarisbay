@@ -733,7 +733,11 @@
 
     /* Settings + search inline cards (#410/#411): a setting pane or the search
        box rendered as a card in the conversation instead of a side panel. */
-    .settings-card { width: 100%; max-width: 100%; padding: 0; overflow: hidden; }
+    /* flex-shrink:0 is load-bearing: #log is a flex column, and `overflow:hidden`
+       turns a flex item's automatic min-size from content into 0 — so without
+       this the card SHRINKS below its content (and overflow then clips it). That
+       was the "cards shrink" bug; addInfo cards (no overflow:hidden) never did. */
+    .settings-card { width: 100%; max-width: 100%; padding: 0; overflow: hidden; flex-shrink: 0; }
     .settings-card-head {
       display: flex; align-items: center; gap: 8px;
       padding: 8px 12px; border-bottom: 1px solid var(--line);
@@ -1916,7 +1920,10 @@
       }
       function helpMarkdown() {
         var lines = ["**Commands** — type these in the message box:", ""];
-        availableCommands().forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
+        availableCommands()
+          .slice()
+          .sort(function (a, b) { return a[0].localeCompare(b[0]); })
+          .forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
         // The registered skills (#421): /help covers the SAME set the `/`
         // autocomplete shows — built-in commands PLUS each `/<skill-id>`. The
         // fetch may still be in flight on the very first /help; the list grows
@@ -2006,7 +2013,11 @@
 
         function render(token) {
           var q = token.slice(1).toLowerCase(); // text after "/"
-          var pool = availableCommands().concat(skillEntries);
+          // Built-ins + skills, merged and sorted alphabetically by command so
+          // the dropdown is in a predictable order (not COMMANDS-then-skills).
+          var pool = availableCommands()
+            .concat(skillEntries)
+            .sort(function (a, b) { return a[0].localeCompare(b[0]); });
           items = pool.filter(function (c) { return c[0].slice(1).toLowerCase().indexOf(q) === 0; });
           if (!items.length) { close(); return; }
           active = 0;
