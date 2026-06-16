@@ -36,7 +36,10 @@ def test_setting_commands_open_inline_cards():
     )
     assert 'if (cmd === "thinking") { openSettingCard("prefs"); return; }' in _HTML
     assert 'if (cmd === "model" || cmd === "voice") {' in _HTML
-    assert 'if (isAdmin) { openSettingCard("model"); }' in _HTML
+    # Admin opens the matching card (/model -> model, /voice -> voice); a
+    # non-admin gets a clear "admins only" card, not a thin system line.
+    assert "openSettingCard(cmd);" in _HTML
+    assert "Nur für Admins" in _HTML
     # Registered in the slash-menu command list.
     for cmd in (
         "/model",
@@ -56,9 +59,12 @@ def test_model_card_keeps_the_picker_and_vram_loaders():
     pane = re.search(r"function loadSettingPane\(name\) \{(.*?)\n      \}", _HTML, re.S)
     assert pane, "loadSettingPane not found"
     body = pane.group(1)
-    assert "loadModel(); loadVram(); loadVoice();" in body
-    # The model pane (picker + VRAM bar) still exists to be moved into the card.
+    # Model card runs the model + VRAM loaders; Voice is its own card now.
+    assert "loadModel(); loadVram();" in body
+    assert "loadVoice();" in body
+    # The model + voice panes still exist to be moved into their cards.
     assert 'id="view-model"' in _HTML
+    assert 'id="view-voice"' in _HTML
     assert 'id="model-select"' in _HTML
     assert 'id="vram-bar"' in _HTML
 
@@ -129,7 +135,7 @@ def test_help_lists_the_same_skills_as_the_autocomplete():
     assert "skillEntries.length" in body
     assert "skillEntries.forEach" in body
     # The autocomplete reads the shared list (no private re-declaration shadows it).
-    assert "var pool = COMMANDS.concat(skillEntries);" in _HTML
+    assert "var pool = availableCommands().concat(skillEntries);" in _HTML
     slash = re.search(r"slash = \(function \(\) \{(.*?)return \{ refresh", _HTML, re.S)
     assert slash, "slash IIFE not found"
     assert "var skillEntries" not in slash.group(1)
@@ -142,10 +148,12 @@ def test_skill_slash_command_opens_the_skill_card():
     fn = re.search(r"function handleCommand\(raw\) \{(.*?)\n      \}", _HTML, re.S)
     assert fn, "handleCommand not found"
     body = fn.group(1)
-    assert 'skillEntries.some(function (c) { return c[0] === "/" + cmd; })' in body
-    assert "openSkill(cmd)" in body
+    # Case-insensitive skill lookup (#469): a skill id with any uppercase still
+    # resolves instead of falling through to "Unknown command".
+    assert 'c[0].toLowerCase() === "/" + cmd' in body
+    assert "openSkill(skillHit[0].slice(1))" in body
     # The unknown-command fallthrough stays AFTER the skill check.
-    assert body.index("openSkill(cmd)") < body.index('"Unknown command `/"')
+    assert body.index("skillHit") < body.index('"Unknown command `/"')
 
 
 def test_pinned_household_row_opens_the_durable_session():
