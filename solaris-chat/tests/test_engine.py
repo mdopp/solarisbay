@@ -502,12 +502,31 @@ async def test_registry_prompt_block(monkeypatch):
                 "attributes": {"friendly_name": "Bürolicht", "area": "Büro"},
             },
             {"entity_id": "sensor.temp", "attributes": {"friendly_name": "Temp"}},
+            {
+                "entity_id": "sensor.multisensor_6_air_temperature",
+                "attributes": {
+                    "friendly_name": "Küchensensor Air temperature",
+                    "device_class": "temperature",
+                },
+            },
+            {
+                "entity_id": "sensor.waschmaschine_power",
+                "attributes": {"friendly_name": "Waschmaschine", "device_class": "power"},
+            },
         ]
 
     monkeypatch.setattr(reg, "_fetch_states", fake_states)
     block = await reg.prompt_block()
     assert "light.buero | Bürolicht | Büro" in block
-    assert "sensor.temp" not in block  # not a controllable domain
+    assert "sensor.temp" not in block  # plain sensor, no ambient device_class
+    assert "sensor.waschmaschine_power" not in block  # power sensor stays out
+    # ambient sensors ARE surfaced so "wie warm in der Küche" resolves one-pass
+    assert (
+        "sensor.multisensor_6_air_temperature | Küchensensor Air temperature"
+        " | temperature" in block
+    )
+    # ...but read-only: never advertised as a ha_call_service action
+    assert "sensor:" not in block
 
 
 async def test_registry_actions_legend(monkeypatch):
