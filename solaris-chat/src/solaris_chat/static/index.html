@@ -1442,12 +1442,19 @@
               if (!g || g.trace_id !== s.trace_id) { g = { trace_id: s.trace_id, steps: [] }; groups.push(g); }
               g.steps.push(s);
             });
+            // One trace group per answered turn ↔ one .msg.sol bubble. Empty
+            // tool-call bubbles are no longer rendered (see openSession), so the
+            // two line up. Anchor at the END so any leading untraced bubble
+            // (e.g. a pre-trace greeting) can't shift the recent turns (#406).
             var bubbles = log.querySelectorAll(".msg.sol");
+            var offset = Math.max(0, bubbles.length - groups.length);
             groups.forEach(function (g, i) {
-              var bubble = bubbles[i];
+              var bubble = bubbles[offset + i];
               if (!bubble) return;
               var meta = bubble.querySelector(".meta");
-              if (!meta || meta.querySelector("details.steptrace")) return;
+              if (!meta) return;
+              var old = meta.querySelector("details.steptrace");
+              if (old) old.remove(); // re-attach cleanly on reload/refresh
               var panel = renderStepTrace(g.steps);
               if (panel) meta.appendChild(panel);
             });
@@ -2594,6 +2601,11 @@
                 } else { addText("me", m.content, ts); }
               }
               else if (m.role === "assistant") {
+                // Tool-call turns persist an empty assistant message (the
+                // tool_calls carrier) before the final answer. Rendering it as a
+                // bubble adds a phantom .msg.sol that has no trace group, which
+                // shifts the per-turn step-trace mapping (#406). Skip empties.
+                if (!(m.content && m.content.trim())) return;
                 var el = document.createElement("div");
                 el.className = "msg sol";
                 var body = document.createElement("div");
