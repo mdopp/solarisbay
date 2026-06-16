@@ -80,8 +80,10 @@ OPENWAKEWORD_CUSTOM_DIR = "/mnt/data/voice/custom"
 WHISPER_UNIT = "voice-whisper"
 TTS_UNIT = "voice-tts"
 TTS_BRIDGE_UNIT = "voice-tts-bridge"
+OPENWAKEWORD_UNIT = "voice-openwakeword"
 TTS_IMAGE = "ghcr.io/mdopp/solaris-tts:latest"
 TTS_BRIDGE_IMAGE = "ghcr.io/roryeckel/wyoming_openai:latest"
+OPENWAKEWORD_IMAGE = "docker.io/rhasspy/wyoming-openwakeword:latest"
 
 # The whisper wizard default. On a CDI GPU box the default upgrades to the
 # better model the GPU runs faster than the CPU ran base (box-measured 0.38s vs
@@ -393,6 +395,49 @@ def render_tts_bridge_unit() -> str:
     )
 
 
+def render_openwakeword_unit(custom_dir: str) -> str:
+    """Render the openWakeWord `.container` Quadlet (pure). Wyoming wake-word
+    detection on :10400; scans `custom_dir` (mounted /custom_models) for custom
+    .tflite models — install_wake_word_model drops the trained "Solaris" model
+    there. CPU-only service (the model is tiny). This is the Solaris-owned wake
+    engine that supersedes the retired ServiceBay `voice` pod's openwakeword."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Voice openWakeWord (Wyoming wake word, #456)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Container]\n"
+        f"Image={OPENWAKEWORD_IMAGE}\n"
+        f"ContainerName={OPENWAKEWORD_UNIT}\n"
+        "Network=host\n"
+        "Exec=--uri tcp://0.0.0.0:10400 --custom-model-dir /custom_models\n"
+        f"Volume={custom_dir}:/custom_models:Z\n"
+        "AutoUpdate=registry\n"
+        "\n"
+        "[Service]\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def install_openwakeword_unit(custom_dir: str) -> bool:
+    """Write + activate the Solaris openWakeWord Quadlet. Creates the custom-
+    models host dir first (Quadlet Volume= does not, unlike kube
+    DirectoryOrCreate) — without it the unit fails statfs."""
+    if not custom_dir:
+        return False
+    try:
+        os.makedirs(custom_dir, exist_ok=True)
+    except OSError as e:
+        jlog("warn", "voice-unit", "openwakeword: custom dir", error=str(e))
+        return False
+    return install_unit(OPENWAKEWORD_UNIT, render_openwakeword_unit(custom_dir))
+
+
 def install_whisper_unit(data_dir: str) -> bool:
     """Write + activate the companion whisper Quadlet (GPU when CDI is
     registered, CPU otherwise). Creates the model-cache host dir first —
@@ -466,9 +511,18 @@ def install_voice_pipeline(data_dir: str) -> None:
     (<data_dir>/voice/whisper{-gpu}) the ServiceBay voice template wrote, so
     the multi-gigabyte cache is reused in place across the ownership move — no
     data migration."""
-    setup_custom_models_dir(env("OPENWAKEWORD_CUSTOM_DIR", OPENWAKEWORD_CUSTOM_DIR))
+    custom_dir = env("OPENWAKEWORD_CUSTOM_DIR", OPENWAKEWORD_CUSTOM_DIR)
+    setup_custom_models_dir(custom_dir)
+    # Drop the trained model into the custom dir BEFORE the wake engine starts
+    # so it boots with "Solaris" already loaded (wire_voice_pipeline re-runs the
+    # install idempotently). The HA-side wiring (integration + pipeline) is done
+    # later in wire_voice_pipeline once the engine is up.
+    install_wake_word_model(
+        data_dir, custom_dir, env("WAKE_WORD_MODEL", WAKE_WORD_MODEL)
+    )
     install_whisper_unit(data_dir)
     install_tts_units()
+    install_openwakeword_unit(custom_dir)
 
 
 # ════════════════════════════════════════════════════════════════════════════

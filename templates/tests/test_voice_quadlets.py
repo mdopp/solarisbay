@@ -2,7 +2,7 @@
 
 Solaris owns its whole voice pipeline: whisper STT, the Kokoro-Martin TTS and
 the wyoming bridge run as companion `.container` Quadlets the post-deploy
-writes (GPU via CDI, #1026), and openWakeWord rides the solaris pod. The
+writes (GPU via CDI, #1026), and the openWakeWord wake engine. The
 render_* functions are pure, so they're unit-tested directly (mirroring the
 ServiceBay voice template's own quadlet-render tests)."""
 
@@ -124,6 +124,35 @@ def test_tts_bridge_unit_fronts_kokoro_on_wyoming_port(pd):
     assert f"After=network-online.target {pd.TTS_UNIT}.service" in unit
     # The bridge is a CPU shim — never claim the GPU on it.
     assert "AddDevice" not in unit
+
+
+# -- openWakeWord ------------------------------------------------------------
+
+
+def test_openwakeword_unit_scans_custom_dir_on_wyoming_port(pd):
+    unit = pd.render_openwakeword_unit("/mnt/data/voice/custom")
+    assert "Image=docker.io/rhasspy/wyoming-openwakeword:latest" in unit
+    assert f"ContainerName={pd.OPENWAKEWORD_UNIT}" in unit
+    assert "--uri tcp://0.0.0.0:10400" in unit
+    assert "--custom-model-dir /custom_models" in unit
+    assert "Volume=/mnt/data/voice/custom:/custom_models:Z" in unit
+    assert "Network=host" in unit
+    # CPU service — the model is tiny, never claim the GPU.
+    assert "AddDevice" not in unit
+
+
+def test_install_openwakeword_creates_dir_and_writes_unit(pd, monkeypatch, tmp_path):
+    custom = tmp_path / "voice" / "custom"
+    wrote = {}
+
+    def _install(name, content):
+        wrote["n"] = name
+        return True
+
+    monkeypatch.setattr(pd, "install_unit", _install)
+    assert pd.install_openwakeword_unit(str(custom)) is True
+    assert custom.is_dir()
+    assert wrote["n"] == pd.OPENWAKEWORD_UNIT
 
 
 def test_install_tts_units_skips_without_cdi(pd, monkeypatch):
