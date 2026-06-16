@@ -1994,9 +1994,11 @@
         fetch("/api/skills")
           .then(function (r) { return r.ok ? r.json() : { skills: [] }; })
           .then(function (j) {
-            skillEntries = ((j && j.skills) || []).map(function (s) {
-              return ["/" + s.id, s.description || s.name || ""];
-            });
+            skillEntries = ((j && j.skills) || [])
+              .map(function (s) {
+                return ["/" + s.id, s.description || s.name || ""];
+              })
+              .sort(function (a, b) { return a[0].localeCompare(b[0]); });
           })
           .catch(function () {});
 
@@ -2904,7 +2906,10 @@
         card.appendChild(section);
         log.appendChild(card);
         loadSettingPane(name);
-        scrollDown(true);
+        // Scroll the card's HEAD into view, not the log bottom: a tall card
+        // (e.g. Model) should read from its top like normal stream content,
+        // instead of jumping to its lowest section.
+        card.scrollIntoView({ block: "start" });
         closeRail();
       }
 
@@ -3202,7 +3207,9 @@
         return fetch("/api/skills")
           .then(function (r) { return r.ok ? r.json() : { skills: [] }; })
           .then(function (j) {
-            var list = (j && j.skills) || [];
+            var list = ((j && j.skills) || []).slice().sort(function (a, b) {
+              return String(a.name || a.id).localeCompare(String(b.name || b.id));
+            });
             skillsCards.textContent = "";
             if (!list.length) {
               var note = document.createElement("div"); note.className = "empty-note"; note.textContent = "No skills found.";
