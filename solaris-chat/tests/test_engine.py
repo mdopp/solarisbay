@@ -68,13 +68,23 @@ CREATE TABLE voice_uid_stash (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE session_traces (
-  session_id  TEXT NOT NULL,
-  trace_id    TEXT NOT NULL,
-  step_order  INTEGER NOT NULL,
-  owner_uid   TEXT NOT NULL,
-  detail_id   TEXT,
-  detail_json TEXT,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  session_id        TEXT NOT NULL,
+  trace_id          TEXT NOT NULL,
+  step_order        INTEGER NOT NULL,
+  owner_uid         TEXT NOT NULL,
+  model             TEXT,
+  profile           TEXT,
+  wall_s            REAL,
+  prompt_tokens     INTEGER,
+  completion_tokens INTEGER,
+  context_free      INTEGER,
+  finish_reason     TEXT,
+  n_tools           INTEGER,
+  detail_id         INTEGER,
+  step_kind         TEXT,
+  tool_name         TEXT,
+  detail_json       TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (session_id, trace_id, step_order)
 );
 """
