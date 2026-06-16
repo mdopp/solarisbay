@@ -15,10 +15,12 @@ metadata:
     servicebay.ports: "{{CHAT_PORT}}/tcp,{{GATEKEEPER_PORT}}/tcp,10400/tcp"
     # External dependencies only (#271): ollama (the engine's LLM backend),
     # home-assistant (device control + the Assist pipeline that fronts the
-    # Voice PE speaker), voice (Whisper/Piper that HA's pipeline and the
-    # gatekeeper reach over loopback), nginx (NPM proxies the chat), auth
-    # (Authelia forward-auth gates it).
-    servicebay.dependencies: "ollama,home-assistant,voice,nginx,auth"
+    # Voice PE speaker), nginx (NPM proxies the chat), auth (Authelia
+    # forward-auth gates it). Solaris now owns its whole voice pipeline —
+    # Whisper STT, Kokoro-Martin TTS + bridge and the openWakeWord wake engine
+    # are companion Quadlets written by post-deploy, so the ServiceBay `voice`
+    # stack is no longer a dependency (#456).
+    servicebay.dependencies: "ollama,home-assistant,nginx,auth"
     # One health probe for the service: the chat server serves /health (200,
     # no auth) once up. ServiceBay can't substitute a variable placeholder
     # inside an annotation block scalar (#136), so the port is the literal
