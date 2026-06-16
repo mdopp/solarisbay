@@ -405,38 +405,11 @@ async def test_voice_session_lists_and_is_idempotent(aiohttp_client, db, soul):
 # -- #405: a voice turn persists its trace into the household session --------
 
 
-_TRACE_TABLE = """
-CREATE TABLE session_traces (
-  session_id        TEXT NOT NULL,
-  trace_id          TEXT NOT NULL,
-  step_order        INTEGER NOT NULL,
-  owner_uid         TEXT NOT NULL,
-  model             TEXT,
-  profile           TEXT,
-  wall_s            REAL,
-  prompt_tokens     INTEGER,
-  completion_tokens INTEGER,
-  context_free      INTEGER,
-  finish_reason     TEXT,
-  n_tools           INTEGER,
-  detail_id         INTEGER,
-  step_kind         TEXT,
-  tool_name         TEXT,
-  detail_json       TEXT,
-  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (session_id, trace_id, step_order)
-);
-"""
-
-
 async def test_voice_turn_persists_session_trace_row(aiohttp_client, db, soul):
     # A durable voice turn now writes a session_traces row into the SAME
     # household session as its messages (#405) — so the "Zuhause" chat reopens
-    # with the per-turn trace, not just message history.
-    conn = sqlite3.connect(db)
-    conn.executescript(_TRACE_TABLE)
-    conn.commit()
-    conn.close()
+    # with the per-turn trace, not just message history. session_traces is part
+    # of the shared `_SCHEMA` (test_engine), so no local CREATE is needed.
     app, _ = _app(
         db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
     )
@@ -464,11 +437,7 @@ async def test_voice_turn_persists_session_trace_row(aiohttp_client, db, soul):
 
 async def test_guest_voice_turn_persists_no_trace(aiohttp_client, db, soul):
     # The ephemeral guest path must persist nothing — neither messages nor a
-    # session_traces row.
-    conn = sqlite3.connect(db)
-    conn.executescript(_TRACE_TABLE)
-    conn.commit()
-    conn.close()
+    # session_traces row. session_traces comes from the shared `_SCHEMA`.
     app, _ = _app_with_guest(
         db, soul, [ChatResult(content="Gast.", prompt_tokens=5, completion_tokens=1)]
     )

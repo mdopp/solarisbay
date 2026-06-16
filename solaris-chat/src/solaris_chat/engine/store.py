@@ -94,8 +94,8 @@ def truncate_session_head(db_path: str, session_id: str, keep_token_budget: int)
     budget_chars = max(0, keep_token_budget) * 4
     with _conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT seq, role, length(content) AS clen FROM engine_messages"
-            " WHERE session_id = ? ORDER BY seq",
+            "SELECT seq, role, created_at, length(content) AS clen"
+            " FROM engine_messages WHERE session_id = ? ORDER BY seq",
             (session_id,),
         ).fetchall()
         if not rows or sum((r["clen"] or 0) for r in rows) <= budget_chars:
@@ -115,6 +115,17 @@ def truncate_session_head(db_path: str, session_id: str, keep_token_budget: int)
             "DELETE FROM engine_messages WHERE session_id = ? AND seq < ?",
             (session_id, rows[start]["seq"]),
         )
+        # Drop the LLM traces of the cut turns too, so the trace panel never
+        # outlives the messages it describes (else old, now-truncated turns
+        # mis-align onto the kept bubbles). Best-effort: a pre-migration db
+        # without the table just keeps the messages trimmed.
+        try:
+            conn.execute(
+                "DELETE FROM session_traces WHERE session_id = ? AND created_at < ?",
+                (session_id, rows[start]["created_at"]),
+            )
+        except sqlite3.OperationalError:
+            pass
         return cur.rowcount
 
 
@@ -129,6 +140,16 @@ def delete_session(db_path: str, session_id: str, uid: str) -> bool:
         if owner is None:
             return False
         conn.execute("DELETE FROM engine_messages WHERE session_id = ?", (session_id,))
+        # Purge the chat's persisted LLM traces too — otherwise they outlive the
+        # session and, because the household chat's id is deterministic (#419),
+        # resurface in the next same-id chat as steps from old conversations.
+        # Best-effort: a pre-migration db without the table just skips this.
+        try:
+            conn.execute(
+                "DELETE FROM session_traces WHERE session_id = ?", (session_id,)
+            )
+        except sqlite3.OperationalError:
+            pass
         cur = conn.execute(
             "DELETE FROM engine_sessions WHERE id = ? AND owner_uid = ?",
             (session_id, uid),
