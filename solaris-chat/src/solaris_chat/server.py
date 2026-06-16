@@ -640,7 +640,13 @@ def build_app(
         return web.json_response(detail)
 
     async def index(_request: web.Request) -> web.Response:
-        return web.FileResponse(STATIC_DIR / "index.html")
+        # `no-cache` = the browser may cache but MUST revalidate (ETag/
+        # Last-Modified, set by FileResponse) before serving. Without it the
+        # HTML shell — which carries all the inline JS/CSS — is heuristically
+        # cached, so mobile keeps showing a stale UI and deploys don't land.
+        return web.FileResponse(
+            STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+        )
 
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
