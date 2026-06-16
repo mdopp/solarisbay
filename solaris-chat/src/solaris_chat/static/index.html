@@ -745,7 +745,11 @@
     /* A setting pane moved into a card sizes to its content (it was a full-height
        flex view); cap the height so a long editor/skill list stays scrollable. */
     .settings-card .view { display: block; }
-    .settings-card .view .pane { max-height: 60vh; padding: 16px; }
+    /* The pane is `flex: 1 1 auto; min-height: 0` for the full-page view; moved
+       into a card it only had a max-height, so a pane whose content relies on
+       flex-fill (or before its async content loads) collapsed to a thin line
+       (#420). Give the card body a real minimum so the card always has shape. */
+    .settings-card .view .pane { min-height: 240px; max-height: 60vh; padding: 16px; }
     .settings-card .view .pane > * { max-width: 100%; }
     /* The skill/soul Edit surface needs real height — a card .pane only has a
        max-height, so the flex-filling textarea otherwise collapses to ~2 rows
