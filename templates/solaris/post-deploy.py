@@ -1443,6 +1443,13 @@ def wire_voice_pipeline(
         if wake_word_id and install_wake_word_model(data_dir, custom_dir, wake_word_id)
         else ""
     )
+    # The model alone is inert: HA only exposes a `wake_word.*` entity (which
+    # ensure_assist_pipeline needs to pin the wake word) once the openWakeWord
+    # wyoming service is registered as an integration. Register it after the
+    # model is in the custom dir so HA enumerates "solaris" on connect. Gated on
+    # the port like the TTS bridge — the openWakeWord container may be absent.
+    if wake_word and _port_open("127.0.0.1", 10400):
+        ensure_wyoming_entry(token, "openwakeword", "127.0.0.1", 10400)
     conversation_entity = ensure_conversation_agent(token, chat_port, api_key)
     if conversation_entity:
         ensure_assist_pipeline(

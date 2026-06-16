@@ -668,3 +668,43 @@ def test_wire_no_wake_word_when_model_absent(pd, monkeypatch):
     )
     pd.wire_voice_pipeline("tok", "8787", "key", "/mnt/data")
     assert seen["wake"] == ""
+
+
+def test_wire_registers_openwakeword_integration_when_model_present(pd, monkeypatch):
+    # With the model installed and :10400 answering, the openWakeWord wyoming
+    # integration must be registered so HA exposes the wake_word entity that
+    # ensure_assist_pipeline pins (else the model is inert / push-to-talk).
+    wired = []
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: True)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
+    monkeypatch.setattr(pd, "gatekeeper_container_env", lambda name: "")
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(
+        pd, "ensure_conversation_agent", lambda *a: "conversation.solaris"
+    )
+    monkeypatch.setattr(
+        pd, "install_wake_word_model", lambda data_dir, custom, mid: True
+    )
+    monkeypatch.setattr(pd, "ensure_assist_pipeline", lambda *a, **k: None)
+    pd.wire_voice_pipeline("tok", "8787", "key", "/mnt/data")
+    assert "openwakeword" in wired
+
+
+def test_wire_skips_openwakeword_integration_without_model(pd, monkeypatch):
+    # No model -> no point registering the wake-word integration.
+    wired = []
+    monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: True)
+    monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: True)
+    monkeypatch.setattr(pd, "gatekeeper_container_env", lambda name: "")
+    monkeypatch.setattr(pd, "env", lambda key, default="": default)
+    monkeypatch.setattr(
+        pd, "ensure_conversation_agent", lambda *a: "conversation.solaris"
+    )
+    monkeypatch.setattr(
+        pd, "install_wake_word_model", lambda data_dir, custom, mid: False
+    )
+    monkeypatch.setattr(pd, "ensure_assist_pipeline", lambda *a, **k: None)
+    pd.wire_voice_pipeline("tok", "8787", "key", "/mnt/data")
+    assert "openwakeword" not in wired
