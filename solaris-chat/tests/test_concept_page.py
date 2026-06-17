@@ -282,6 +282,63 @@ async def test_concept_api_adds_live_ha_card(aiohttp_client, tmp_path, monkeypat
     assert c["title"] == "Sofalicht"
 
 
+async def test_anchors_resolve_links_known_entity(aiohttp_client, tmp_path):
+    # #506: anchors that match an OKF entity (by name/alias) resolve to its id
+    # so the chip can link to #/c/<id>; unknown anchors are absent (stay chips).
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/anchors/resolve",
+        json={"anchors": ["@Anna", "@Anni", "#nichts"]},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    resolved = (await resp.json())["resolved"]
+    assert resolved == {"@Anna": "ent-anna", "@Anni": "ent-anna"}
+
+
+async def test_anchors_resolve_per_resident(aiohttp_client, tmp_path):
+    # lena's "Anna" never resolves to mdopp's entity (resolver is owner-scoped).
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/anchors/resolve",
+        json={"anchors": ["@Anna"]},
+        headers={"Remote-User": "lena"},
+    )
+    assert (await resp.json())["resolved"] == {"@Anna": "ent-anna-lena"}
+
+
+async def test_anchors_resolve_degrades_when_db_missing(aiohttp_client, tmp_path):
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=str(tmp_path / "nope.db"),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/anchors/resolve",
+        json={"anchors": ["@Anna"]},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    assert (await resp.json())["resolved"] == {}
+
+
 async def test_concept_shell_serves_spa(aiohttp_client, tmp_path):
     app = build_app(
         hermes=object(),
@@ -308,6 +365,9 @@ async def test_concept_shell_serves_spa(aiohttp_client, tmp_path):
         "#\\/c\\/",  # the hash-route pattern
         '"/api/concept/"',  # the aggregator the page fetches
         "renderHaCard(c.ha_card",  # reuses the chat's HA card renderer
+        "function resolveAnchors(",  # #506: anchor -> entity resolution
+        '"/api/anchors/resolve"',  # the resolver endpoint the chips call
+        'window.location.hash = "#/c/" + encodeURIComponent(id)',  # resolved link
     ],
 )
 def test_index_html_concept_view_contract(sentinel):

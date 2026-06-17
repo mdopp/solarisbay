@@ -367,6 +367,12 @@
       border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px;
     }
     .anchor-chip:hover { border-color: var(--accent); }
+    /* A resolved anchor (#506) becomes a [[ ]] cross-link into its concept page
+       instead of a filter chip: solid accent, no chip border. */
+    .anchor-chip.resolved {
+      border-color: transparent; text-decoration: underline;
+      text-decoration-style: dotted;
+    }
     .ha-card {
       flex: 0 1 auto; min-width: 120px; max-width: 240px;
       border: 1px solid var(--line); border-radius: 10px;
@@ -1632,10 +1638,14 @@
       // Auto-surfaced #/@ anchor chips (#501): each chip filters the chat to its
       // anchor by reusing the /search highlight path (openSearchCard prefilled
       // with the anchor text). Reusable across the live stream, mirror, reload.
+      // Phase 2 (#506): anchors that resolve to a known OKF entity upgrade into
+      // a [[ ]] cross-link to that entity's concept page (#/c/<id>); unresolved
+      // ones stay the phase-1 filter chip.
       function renderAnchors(anchors) {
         if (!anchors || !anchors.length) return null;
         var wrap = document.createElement("div");
         wrap.className = "anchor-chips";
+        var chips = {};
         anchors.slice(0, 3).forEach(function (a) {
           var text = String(a == null ? "" : a).trim();
           if (text[0] !== "#" && text[0] !== "@") return;
@@ -1644,10 +1654,42 @@
           b.className = "anchor-chip";
           b.textContent = text;
           b.title = "Chat nach " + text + " filtern";
-          b.addEventListener("click", function () { openSearchCard(text); });
+          b._filter = function () { openSearchCard(text); };
+          b.addEventListener("click", b._filter);
           wrap.appendChild(b);
+          chips[text] = b;
         });
-        return wrap.children.length ? wrap : null;
+        if (!wrap.children.length) return null;
+        resolveAnchors(Object.keys(chips), chips);
+        return wrap;
+      }
+
+      // Resolve the rendered anchors against the OKF entity graph and turn the
+      // resolved ones into concept-page links (#506). One call per chip-set;
+      // failure leaves the phase-1 filter chips untouched.
+      function resolveAnchors(anchors, chips) {
+        if (!anchors.length) return;
+        fetch("/api/anchors/resolve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ anchors: anchors }),
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok || !j.resolved) return;
+            Object.keys(j.resolved).forEach(function (text) {
+              var b = chips[text];
+              var id = j.resolved[text];
+              if (!b || !id) return;
+              b.classList.add("resolved");
+              b.title = text + " öffnen";
+              b.removeEventListener("click", b._filter);
+              b.addEventListener("click", function () {
+                window.location.hash = "#/c/" + encodeURIComponent(id);
+              });
+            });
+          })
+          .catch(function () {});
       }
 
       // One entity's card. `row` renders it as a compact group row (no card

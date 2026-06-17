@@ -1519,6 +1519,35 @@ def build_app(
             STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
         )
 
+    async def anchors_resolve(request: web.Request) -> web.Response:
+        """Resolve auto-anchors (#501) to OKF entity ids (#506).
+
+        Owner-scoped: each `#`/`@` anchor's bare value is matched against
+        `entity_aliases`/`entities` (migration 0016) via the same resolver the
+        concept aggregator uses. Returns `{resolved: {anchor: entity_id}}` for
+        the ones that hit a known entity; unresolved anchors are absent so the
+        client keeps phase 1's `/search` filter chip for them.
+        """
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        body = await request.json()
+        anchors = [str(a) for a in (body.get("anchors") or [])]
+        resolved: dict[str, str] = {}
+        if anchors and Path(solaris_db_path).exists():
+            conn = projection.open_conn(solaris_db_path)
+            try:
+                for anchor in anchors:
+                    value = anchor[1:].strip() if anchor[:1] in ("#", "@") else ""
+                    if not value:
+                        continue
+                    entity_id = projection.resolve_entity_id(conn, value, uid)
+                    if entity_id is not None:
+                        resolved[anchor] = entity_id
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        return web.json_response({"ok": True, "resolved": resolved})
+
     async def mentions_tags(request: web.Request) -> web.Response:
         # Autosuggest for `#tag` (#279): the resident's already-used tags,
         # prefix-filtered. Per-resident scope (owner_uid = resolve_uid).
@@ -1847,6 +1876,7 @@ def build_app(
     app.router.add_get("/api/topics/{slug:.+}/items", topic_items)
     app.router.add_get("/api/concept/{id}", concept_view)
     app.router.add_get("/c/{id}", concept_page)
+    app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/mentions/tags", mentions_tags)
     app.router.add_get("/api/mentions/persons", mentions_persons)
     app.router.add_get("/api/sessions/{session_id}/mentions", session_mentions)
