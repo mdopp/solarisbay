@@ -1,155 +1,94 @@
 ---
 name: solaris-dynamic-skills
-description: Use when the user requests Solaris to learn a new capability, write down a fact/note, configure an agent, or when Solaris needs to self-enhance its knowledge, skills, or peer agent behaviors dynamically. Implements the Phase 4 self-improvement loop.
-version: 2.2.0
+description: Use when a resident asks Solaris to learn a new capability or write down a fact/note — the self-enhancement loop. Writes facts to the vault and drafts new skills into a pending directory for admin approval.
+kind: skill
+scope: household
+version: 3.0.0
 author: Solaris
 license: MIT
 ---
 
-# Solaris — Dynamic Skills, Agents, and Knowledge Self-Enhancement
+# Solaris — Dynamic Skills & Knowledge Self-Enhancement
 
-## Overview
-
-This skill defines the operating procedures for **Solaris Phase 4** (the Self-Enhancement Loop). It equips the Solaris Engine with instructions to perform:
-1. **Dynamic Knowledge Writing**: Writing or updating structured facts and markdown notes in `/opt/data/notes/` so the hybrid-retrieval system picks them up.
-2. **Dynamic Skill Drafting**: Authoring new skill specifications into a **pending** directory; an administrator must approve them in ServiceBay's central approval list before they go live. Solaris never auto-activates a skill it wrote, and never executes scratch scripts in a regular shell.
-3. **Dynamic Agent Configuration**: Direct conversational feedback rules that update Honcho peer templates and custom instructions.
-
----
-
-## 1. Dynamic Knowledge Writing
-
-When the user shares household facts, preferences, or notes (e.g., "Remember that the garden key is under the blue pot"), Solaris must write them down so they are permanently indexed.
-
-### Rules:
-- **Global Notes File**: Write general household facts and memory states into `/opt/data/notes/SOUL.md`.
-- **Domain-Specific Notes**: Write topic-specific notes into structured files under `/opt/data/notes/fact_<topic>.md` (e.g., `/opt/data/notes/fact_garden.md` or `/opt/data/notes/fact_server_network.md`).
-- **Instant Retrieval**: The native `qmd` hybrid-retrieval engine automatically scans `/opt/data/notes/` and will retrieve these files for contextual prompt injection.
-
-### Operating Sequence:
-1. Formulate a clean Markdown block summarizing the new facts, including tags and date updated. **Topic tag (conditional)**: if the turn context carries an active-topic line `[Active topic: <name> #topic/<slug>]`, add that exact `#topic/<slug>` tag to the fact block's `#tags` so the fact is retrievable by topic. The slug may be hierarchical (e.g. `#topic/projekt/wintergarten`). Omit it entirely when no active topic is present.
-2. Read the existing note file using `notes_read` if it exists.
-3. **Wiki-link the named entities** (see "Wiki-linking facts" below) so the note joins the Obsidian graph instead of sitting isolated.
-4. Append or rewrite the file using `note_write` (new file) or `note_write` with `append=true` (for edits) under `/opt/data/notes/`.
-5. **Create stub notes** for any new people/places you linked that the vault doesn't have yet (see below).
-6. Inform the user: *"Ich habe mir das notiert in <filename>."*
-
-### Wiki-linking facts
-
-Same idea as the `media-ingestion-multimodal` skill's linking step, applied to
-free-form facts — but **conservative**, because facts are unstructured and
-over-linking turns the graph to noise.
-
-- **Only link clear named entities** a fact is *about*: **people**
-  ("der Schlüssel von [[Oma Erna]]"), **places/rooms** ("[[Garten]]",
-  "[[Gartenhaus]]"), and **named topics that already have a note**
-  (e.g. an existing `fact_network.md` → `[[fact_network]]`). Do **not**
-  link common nouns, verbs, dates, or one-off descriptive words.
-- **Vault existence check first.** Before linking a topic, look for an
-  existing note (`grep -ril "<Entity>" /opt/data/notes/`); link to it if it
-  exists. People/places get linked even when new (the stub step below
-  creates them).
-- **Render links inline in the note body**, not in the YAML frontmatter
-  (keep frontmatter values plain strings).
-- **When in doubt, don't link.** A fact note with one good `[[person]]` link
-  beats one peppered with speculative links.
-
-#### Stub notes for new people and places
-
-When you wiki-link a **person** or **place** that has no note yet, create a
-minimal stub so the link resolves to a real graph node — mirroring the
-media skill's author/genre stubs (#85):
-
-- People → `/opt/data/notes/people/<Name>.md`, places →
-  `/opt/data/notes/places/<Name>.md` (create the folder if missing).
-- **Idempotent**: never overwrite; only write when the existence check
-  found nothing.
-- **Minimal, no fabrication** — name + type only:
-
-  ```markdown
-  ---
-  type: <person|place>
-  tags:
-    - solaris/stub
-    - type/<person|place>
-  created_at: {{timestamp}}
-  ---
-
-  # {{Entity}}
-
-  > Automatisch angelegter Knoten. Wird ergänzt, sobald mehr darüber bekannt ist.
-  ```
-
-- Do **not** stub abstract topics — a `fact_<topic>.md` *is* the topic's
-  note; linking to it is enough.
-
----
-
-## 2. Dynamic Skill Drafting (admin-promotion gate)
-
-When a user requests a new automation or capability (e.g., "Learn how to parse local weather warnings from this specific API"), Solaris drafts a brand-new skill **into the pending directory**. The skill does not go live until an administrator approves it in ServiceBay's central approval list.
-
-### Hard rules — do NOT skip these:
-
-- **Write only to `/data/skills/_pending/<slug>/SKILL.md`.** Never write to `/data/skills/<slug>/...` (the active pack) directly. The active pack is read live, so auto-writing there would make the new skill live with no human review, which is a prompt-injection risk.
-- **Do not execute the skill's scripts.** No `run_command` against generated Python, JavaScript, or shell. Test scripts may be drafted alongside SKILL.md as *files* (e.g. `<slug>/scratch/test_run.py`) for the admin to inspect, but Solaris never runs them itself. A sandboxed test runtime is a planned follow-up; until it lands, drafted scripts are inert until promotion.
-- **Do not promote the draft yourself.** Filing the approval request and completing the promotion is the admin profile's job (the `file_skill_approval` / `check_skill_approval` tools, admin-only). The household/voice session's job ends at "wrote the SKILL.md to `_pending`".
-- **Use a safe `<slug>`.** Lowercase letters, digits, dashes; no `/`, `..`, leading dots, or whitespace. Reject names that would escape `/data/skills/_pending/`.
-
-### Operating Sequence:
-
-1. Create `/data/skills/_pending/<slug>/` (mkdir is fine; the directory is auto-created on first write).
-2. Write the SKILL.md frontmatter and body using `note_write`. Include:
-   - `name: solaris-custom-<slug>`
-   - `description:` a clear, single-paragraph LLM-router description.
-   - `version: 1.0.0`, `author: Solaris Dynamic Compiler`, `license: MIT`.
-3. If the skill needs a scratch script, write it to `<slug>/scratch/<file>` as a normal file. Do **not** execute it.
-4. Tell the user *exactly* this shape: *"Ich habe einen Entwurf für die neue Skill `<slug>` unter den ausstehenden Skills abgelegt. Sobald ein Admin sie im ServiceBay-Dashboard freigibt, lerne ich sie."*
-
-### Example SKILL.md to generate:
-
-```markdown
----
-name: solaris-custom-weather-warnings
-description: When the user asks about local weather warnings, fetch the DWD warning feed for the configured WARNCELLID and summarize active warnings.
-version: 1.0.0
-author: Solaris Dynamic Compiler
-license: MIT
----
-
-# Solaris — Custom Skill: Weather Warnings
+Two jobs: write durable facts into the notes vault, and draft a brand-new skill
+into the **pending** directory for an admin to approve. Solaris never
+auto-activates a skill it wrote and never runs generated scripts.
 
 ## When to use
-- The user asks about active local weather warnings, storms, or hazards.
 
-## Operating sequence
-1. Read `/opt/data/notes/fact_address.md` for the WARNCELLID.
-2. GET https://maps.dwd.de/geoserver/dwd/ows?... (the feed URL).
-3. Parse the warnings JSON and reply with the highest-severity active warning in German.
-```
+- "Merk dir, dass der Gartenschlüssel unter dem blauen Topf liegt."
+- "Remember that …" / "Schreib dir auf, dass …"
+- "Kannst du lernen, X zu tun?" / "Learn how to …" (drafts a new skill).
 
-### What admin promotion does (for context, not actions a household/voice turn takes):
+Out of scope: searching notes (`solaris-notes-search`), the dated journal
+(`solaris-daily-chronicle`), media ingestion (`media-ingestion-multimodal`).
 
-1. In the **admin** profile, `file_skill_approval(slug)` files a generic approval request onto ServiceBay's central access-request list (the same place the admin already approves resident/SSO access). ServiceBay holds nothing skill-specific — only "a request from `solaris-skills` awaiting approval".
-2. The admin **Approves** it in the ServiceBay dashboard. On the next `check_skill_approval(slug)` poll the **Solaris engine itself** moves `/data/skills/_pending/<slug>/` → `/data/skills/<slug>/`. The active pack is read live (the panel lists it; crons read a skill body by id per run), so the move *is* the reload — no service restart.
-3. The admin **Denies** it (or the request expires): on the next poll the engine deletes the pending draft. The skill never goes live.
+## 1. Writing facts
 
----
+When a resident shares a household fact/preference, write it down so it is indexed:
 
-## 3. Dynamic Agent Configuration
+1. Compose a clean Markdown block (tags + date). If the turn carries
+   `[Active topic: <name> #topic/<slug>]`, add that `#topic/<slug>` to the block's
+   tags (slug may be hierarchical); omit otherwise.
+2. Read the existing file with `notes_read` if present.
+3. **Wiki-link only clear named entities** the fact is *about* — people
+   (`[[Oma Erna]]`), places (`[[Garten]]`), and named topics that already have a
+   note. Do not link common nouns/verbs/dates. Check the vault first
+   (`grep -ril "<Entity>" /opt/data/notes/`); render links inline in the body, not
+   in frontmatter. When in doubt, don't link.
+4. Write with `note_write` (or `append=true` for edits): general facts →
+   `/opt/data/notes/SOUL.md`; topic facts → `/opt/data/notes/fact_<topic>.md`.
+   Write only under `/opt/data/notes/`.
+5. For a newly linked **person/place** with no note yet, create a minimal stub
+   (`people/<Name>.md` / `places/<Name>.md`, idempotent, name+type only):
+   ```markdown
+   ---
+   type: <person|place>
+   tags:
+     - solaris/stub
+     - type/<person|place>
+   created_at: {{timestamp}}
+   ---
 
-Solaris operates with peer agents and templates managed under Honcho. When performance gaps or stylistic desires are noted, Solaris can modify the instructions of its peer agents.
+   # {{Entity}}
 
-### Rules:
-- **Honcho Peer Templates**: Read and update agent prompt templates in `/opt/data/agents/` or via Honcho configuration tables in `solaris.db`.
-- **Peer Coordination**: When a peer's prompt is modified, trigger a refresh of the Honcho agent cache.
-- **Verification**: Always review peer instruction changes to ensure they remain safe, ethical, and do not introduce loops or rule conflicts.
+   > Automatisch angelegter Knoten. Wird ergänzt, sobald mehr bekannt ist.
+   ```
+   Don't stub abstract topics — a `fact_<topic>.md` *is* the topic's note.
+6. Confirm: *"Ich habe mir das notiert in <filename>."*
 
----
+## 2. Drafting a new skill (admin-promotion gate)
 
-## Failure Paths & Safety Guards
+When a resident asks for a new capability, draft the skill **into the pending
+directory only**. Hard rules — do not skip:
 
-- **Strict Path Sandboxing**: For pending skills, restrict writes to `/data/skills/_pending/<slug>/`; for notes, to `/opt/data/notes/`.
-- **No silent self-activation.** Writing under `/data/skills/<slug>/` (the active pack) from this skill is a bug, not a shortcut. If you find yourself reasoning "I should just put it directly so the user doesn't have to wait", stop — that bypasses the admin gate that exists precisely so a jailbroken or prompt-injected session can't grant itself code execution.
-- **No `run_command` for generated scripts.** Drafted scripts are files for human review; they are not executed. A sandboxed runtime for verifying them is a planned follow-up (see ServiceBay issue #940).
-- **Error Recovery**: If a write fails, surface the error to the user (not to the dashboard) and stop. Do not retry against the active skills directory as a workaround.
+- **Write only to `/data/skills/_pending/<slug>/SKILL.md`.** Never write to the
+  active pack `/data/skills/<slug>/…` — that would make the skill live with no
+  human review (a prompt-injection risk).
+- **Do not execute the skill's scripts.** A scratch script may be drafted as a
+  *file* (`<slug>/scratch/<file>`) for the admin to inspect, never run.
+- **Do not promote the draft yourself** — filing the approval and the promotion is
+  the admin profile's job (`file_skill_approval` / `check_skill_approval`). This
+  session's job ends at "wrote the SKILL.md to `_pending`".
+- **Use a safe `<slug>`** — lowercase letters/digits/dashes; no `/`, `..`, leading
+  dots, or whitespace.
+
+Sequence: create `/data/skills/_pending/<slug>/`, write the SKILL.md with
+`note_write` (`name: solaris-custom-<slug>`, a clear router `description`,
+`version: 1.0.0`), draft any scratch script as an inert file, then tell the
+resident: *"Ich habe einen Entwurf für die Skill `<slug>` unter den ausstehenden
+Skills abgelegt. Sobald ein Admin sie freigibt, lerne ich sie."*
+
+On admin approval the **engine** moves `_pending/<slug>/` → `<slug>/` (the active
+pack is read live, so the move *is* the reload — no restart); on denial/expiry the
+engine deletes the draft.
+
+## Guards
+
+- **Strict path sandbox**: pending skills → `/data/skills/_pending/<slug>/`; notes
+  → `/opt/data/notes/`.
+- **No silent self-activation**: writing under the active pack from here is a bug,
+  never a shortcut — it bypasses the admin gate.
+- **No `run_command` for generated scripts**: drafted scripts are files for review.
+- **Error recovery**: surface a failed write to the resident and stop; never retry
+  against the active skills directory.

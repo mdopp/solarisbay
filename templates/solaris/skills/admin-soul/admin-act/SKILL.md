@@ -1,94 +1,64 @@
 ---
 name: solaris-admin-act
-description: Use when the operator asks to change something on the box — "restart Jellyfin", "stop the media stack", "redeploy Hermes", "fix the proxy route for chat", "edit the service config". Performs lifecycle (start/stop/restart) and mutate (redeploy, config edit, proxy-route change) actions via the servicebay_admin MCP. Confirms genuinely impactful mutations before running them.
-version: 1.0.0
+description: Change box state via the servicebay_admin MCP — lifecycle (start/stop/restart) and mutate (redeploy, config edit, proxy-route). Confirms impactful mutations first.
+kind: skill
+scope: admin
+version: 2.0.0
 author: Solaris
 license: MIT
 ---
 
-# Solaris — admin.act
+# Solaris — admin act
 
-## Overview
+The operator soul's hands. After `solaris-admin-diagnose` / `solaris-admin-logs`
+find the problem, this skill changes the box's state through the
+**`servicebay_admin`** MCP.
 
-The operator soul's hands. After `solaris-admin-diagnose` / `solaris-admin-logs` find
-what's wrong, this skill changes the box's state through the **`servicebay_admin`**
-MCP: lifecycle actions (start/stop/restart) and mutate actions (redeploy, service
-config edits, proxy-route changes).
-
-### What this token can and cannot do
-
-The `servicebay_admin` MCP token is scoped **read + lifecycle + mutate** — and
-**nothing more**. There is no `destroy` scope and no `exec` scope. That means
-deleting/restoring/purging a service, factory-reset/wipe, rebooting a node, and
-running a shell on the box are **not reachable at all** through this MCP — the
-platform rejects them before they run. So this skill does not police destructive
-commands: it simply has no tool that performs them. If an operator asks for one,
-state plainly that it's outside what the operator soul can do and stop.
+The token is scoped **read + lifecycle + mutate** and nothing more — there is no
+`destroy` or `exec` scope, so delete/purge/wipe/factory-reset/reboot/shell are
+unreachable. If an operator asks for one, say it's outside the operator soul's
+permission and stop.
 
 ## When to use
 
 - "Starte Jellyfin neu." / "Restart Jellyfin."
-- "Stopp den Media-Stack." / "Stop the media stack."
-- "Deploy Hermes neu." / "Redeploy Hermes."
-- "Fix die Proxy-Route für Chat." / "Fix the chat proxy route."
-- "Ändere die Service-Config von …" / "Edit the … service config."
+- "Stopp den Media-Stack." / "Deploy Hermes neu." / "Redeploy Hermes."
+- "Fix die Proxy-Route für Chat." / "Ändere die Service-Config von …"
 
-Out of scope:
-- Figuring out *what* to act on → `solaris-admin-diagnose` / `solaris-admin-logs` first.
-- Anything destroy/shell-shaped (delete, purge, wipe, factory-reset, reboot,
-  exec) — unreachable with this token; say so and stop.
+Out of scope: figuring out *what* to act on (`solaris-admin-diagnose` /
+`solaris-admin-logs` first); anything destroy/shell-shaped (unreachable — say so).
 
 ## Operating sequence
 
-1. **Know the target.** Resolve the service/container the same way
-   `solaris-admin-diagnose` does (`list_services` / `list_containers`) so the action
-   hits the right thing. If you weren't already given a diagnosis, do a quick
-   read first — don't act blind.
-2. **Classify the action:**
-   - **Lifecycle** — start / stop / restart. Routine and reversible; run it
-     directly, then confirm the new state.
-   - **Mutate** — redeploy, service config edit, proxy-route change. Impactful
-     (drops connections, rewrites deployed config, reroutes traffic). **Confirm
-     first** (see below), then run.
-3. **Confirm impactful mutations.** Before a redeploy, config edit, or
-   proxy-route change, state in one line *what* will change and *what the visible
-   effect is* ("Ich deploye Hermes neu — der Agent ist ~30 s offline. Soll ich?")
-   and wait for an explicit yes. Lifecycle restarts of a single service are
-   low-stakes enough to run without a confirmation prompt unless the operator
-   asked for several at once.
+1. **Know the target.** Resolve the service/container as
+   `solaris-admin-diagnose` does (`list_services` / `list_containers`). Don't act
+   blind — do a quick read first if you weren't given a diagnosis.
+2. **Classify:** lifecycle (start/stop/restart — reversible, run directly) vs
+   mutate (redeploy, config edit, proxy-route — impactful, confirm first).
+3. **Confirm impactful mutations.** State in one line what changes and the visible
+   effect ("Ich deploye Hermes neu — der Agent ist ~30 s offline. Soll ich?") and
+   wait for an explicit yes. A single lifecycle restart needs no prompt unless
+   several were asked for at once.
 4. **Run it** via the matching `servicebay_admin` tool.
-5. **Verify the result.** Re-check state (`list_services` / `get_health_checks`)
-   and report the concrete outcome: "Jellyfin läuft wieder, Health grün." If it
-   didn't take, read the logs (`solaris-admin-logs`) rather than blindly retrying.
+5. **Verify.** Re-check state (`list_services` / `get_health_checks`) and report
+   the concrete outcome. If it didn't take, read the logs rather than retrying blind.
 
 ## Tool cheat sheet
 
 | Action | Class | servicebay_admin tool |
 |---|---|---|
-| Start a service | lifecycle | start-service action |
-| Stop a service | lifecycle | stop-service action |
-| Restart a service | lifecycle | restart-service action |
-| Redeploy a service | mutate | redeploy/deploy action — **confirm first** |
-| Edit service config / files | mutate | update-service / write service files — **confirm first** |
+| Start / Stop / Restart a service | lifecycle | start / stop / restart action |
+| Redeploy a service | mutate | redeploy/deploy — **confirm first** |
+| Edit service config / files | mutate | update-service — **confirm first** |
 | Change a proxy route | mutate | proxy-route update — **confirm first** |
 
-Exact tool names come from the live `servicebay_admin` MCP self-description; use
-what it advertises rather than guessing a name.
+Use the tool names the live MCP advertises rather than guessing.
 
 ## Failure paths
 
-- `servicebay_admin` MCP unreachable → "Ich erreiche ServiceBay gerade nicht —
-  ich kann auf der Box nichts ändern." Don't half-apply.
-- Action returns an error → report it verbatim-in-plain-language, leave the
-  service as-is, and offer to read the logs; don't loop retries.
-- Operator asks for a destroy/shell action → "Das kann die Operator-Seele nicht
-  — sie hat dafür keine Berechtigung." (Unreachable at the token layer; nothing
-  to run.)
-
-## Disposition
-
-Act decisively on routine lifecycle, pause for a one-line confirmation on
-anything that rewrites deployed state or reroutes traffic, and always verify the
-result instead of assuming it took. The operator should never be surprised by a
-redeploy they didn't okay — and never blocked by a refusal for a restart that's
-perfectly safe.
+- `servicebay_admin` unreachable → "Ich erreiche ServiceBay gerade nicht — ich
+  kann auf der Box nichts ändern." Don't half-apply.
+- Action errors → report it in plain language, leave the service as-is, offer to
+  read the logs; don't loop retries.
+- A destroy/shell request → "Das kann die Operator-Seele nicht — sie hat dafür
+  keine Berechtigung."

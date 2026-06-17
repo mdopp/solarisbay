@@ -1834,6 +1834,45 @@ def test_list_defs_filters_by_kind_default_is_skill(tmp_path):
     assert skill["kind"] == "skill" and skill["scope"] == "household"
 
 
+def test_shipped_pack_groups_into_the_four_kinds():
+    # The #484 reorg sorts the household pack by frontmatter kind; admin-soul
+    # (admin-act/diagnose/logs) is a sibling pack, so it isn't walked here.
+    from pathlib import Path
+
+    pack = (
+        Path(__file__).resolve().parents[2]
+        / "templates"
+        / "solaris"
+        / "skills"
+        / "household"
+    )
+    by_kind = {
+        kind: {d["id"] for d in skills.list_defs(pack, kind)} for kind in skills.KINDS
+    }
+    assert by_kind["scheduler"] == {
+        "chat-compactor",
+        "daily-chronicle",
+        "problem-summarizer",
+    }
+    assert by_kind["hook"] == {
+        "media-ingestion-multimodal",
+        "guest-onboarding",
+        "topic-suggester",
+        "room-enrollment",
+        "resident-registration",
+        "self-enrollment",
+    }
+    assert by_kind["skill"] == {
+        "status",
+        "notes-search",
+        "audit-query",
+        "dynamic-skills",
+    }
+    assert by_kind["command"] == {"debug-set"}
+    # list_skills stays the skill-kind view — no scheduler/hook/command leaks in.
+    assert {d["id"] for d in skills.list_skills(pack)} == by_kind["skill"]
+
+
 def test_read_def_404s_on_wrong_kind(tmp_path):
     _write_def(tmp_path, "status", name="solaris-status")  # skill
     assert skills.read_def(tmp_path, "skill", "status") is not None

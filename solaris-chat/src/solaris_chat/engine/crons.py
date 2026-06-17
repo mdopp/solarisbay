@@ -134,7 +134,12 @@ def load_jobs(skills_dir: str) -> tuple[CronJob, ...]:
     from solaris_chat import skills
 
     jobs: list[CronJob] = list(_CODE_JOBS)
+    code_job_names = {j.name for j in _CODE_JOBS}
     for entry in skills.list_defs(skills_dir, "scheduler"):
+        # The compactor is a scheduler-kind def for the editor/registry, but it
+        # runs as the code job above — its body is not a prompt to feed an agent.
+        if entry["id"] in code_job_names:
+            continue
         one = skills.read_def(skills_dir, "scheduler", entry["id"])
         if one is None:
             continue
