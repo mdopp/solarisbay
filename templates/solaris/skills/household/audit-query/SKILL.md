@@ -1,71 +1,54 @@
 ---
 name: solaris-audit-query
-description: Use when the user asks "what happened today?", "show me errors in the last hour", "what did the cloud connector cost yesterday?". Reads from Solaris's SQLite tables (cloud_audit, system_settings) in solaris.db. Read-only — never mutates state.
-version: 0.3.0
+description: Read-only filter over Solaris's audit tables in solaris.db (cloud_audit — cloud-LLM calls). Use for "what happened / what did it cost / show errors" questions.
+kind: skill
+scope: household
+command: /audit
+version: 1.0.0
 author: Solaris
 license: MIT
 ---
 
-# Solaris — audit.query
+# Solaris — audit query
 
-## Overview
+Generic filter over Solaris's domain-audit tables in `solaris.db`. One query
+returns a JSON page of rows; summarise in natural language. Read-only — never
+mutates state. Also runnable on demand as `/audit`.
 
-Generic filter over Solaris's domain-audit tables in `solaris.db`. One query returns a JSON page of rows; the agent summarises in natural language for the user.
-
-Currently one stream:
-- `cloud_audit` — every cloud-LLM call (timestamp, uid, trace_id, vendor, lengths, latency, cost-estimate, router score + reason; prompt/response fulltext only when debug-mode is on)
-
-More streams plug into the same dispatch as Phase 3+ tables land (book/record/document collections, ingestion_classifications, etc.).
+Currently one stream: `cloud_audit` — every cloud-LLM call (timestamp, uid,
+trace_id, vendor, lengths, latency, cost-estimate, router score/reason;
+prompt/response fulltext only when debug-mode is on).
 
 ## When to use
 
-- "What did Solaris send to the cloud today?"
-- "Wieviel hat das gestern gekostet?"
+- "What did Solaris send to the cloud today?" / "Wieviel hat das gestern gekostet?"
 - "Show me errors in the last hour."
 - "Find every event tied to trace_id <X>."
 
-Out of scope:
-- Anything that mutates state (use `solaris-debug-set` for the debug-mode flag).
-- Reading **operational** logs (stdout-JSON). Those go through ServiceBay-MCP `get_container_logs` — different mechanism entirely.
-- Conversation history / messaging gateway state — Hermes owns those (SQLite + its own admin commands).
+Out of scope: mutating state (use `solaris-debug-set` for the debug flag);
+operational stdout logs (ServiceBay-MCP `get_container_logs`); conversation history.
 
 ## Operating sequence
 
-1. Parse the user request into:
-   - `stream` (which table): currently always `cloud_audit`.
-   - `since` / `until`: parse natural-language time. "today" → `today`. "last hour" → `1h`. "yesterday evening" → ISO timestamp.
-   - filter fields (`uid`, `vendor`, `trace_id`, `min_cost_micro_usd`) as they apply.
-2. Open `solaris.db` (path from `SOLARIS_DB_PATH`, default `/var/lib/solaris/solaris.db`) and run a parameterised SELECT against `cloud_audit` with the filters above. Apply `LIMIT` (default 50, max 200).
-3. Shape the result as:
-   ```
-   {"ok": true, "stream": "cloud_audit", "count": 7, "rows": [...]}
-   ```
-4. Summarise verbally in 1–3 sentences. **Don't read UUIDs or hashes aloud.** Aggregate when sensible: "Heute 7 Cloud-Anfragen, alle Claude Sonnet, Gesamt ~12 Cent, längste 2.3 s."
-
-## Filter cheat sheet
-
-| Stream | Useful filters |
-|---|---|
-| `cloud_audit` | `--since`, `--uid`, `--vendor`, `--trace-id`, `--min-cost-micro-usd` |
-
-`--limit` defaults to 50; bump to 200 for trends but don't read all rows back, summarise.
-
-## Failure paths
-
-- `solaris.db` missing or unreadable → brief: "Ich kann das Audit-Log gerade nicht lesen."
-- Unknown stream → "Den Audit-Stream gibt's nicht." (Should never happen with proper parsing.)
-- Empty result → "Heute hat Solaris nichts an die Cloud geschickt."
+1. Parse the request into `stream` (always `cloud_audit` for now), `since`/`until`
+   (natural-language time → `today` / `1h` / ISO), and filter fields (`uid`,
+   `vendor`, `trace_id`, `min_cost_micro_usd`).
+2. Open `solaris.db` (path from `SOLARIS_DB_PATH`, default
+   `/var/lib/solaris/solaris.db`) and run a parameterised SELECT against
+   `cloud_audit` with `LIMIT` (default 50, max 200).
+3. Summarise in 1–3 sentences; aggregate when sensible ("Heute 7 Cloud-Anfragen,
+   alle Claude Sonnet, ~12 Cent gesamt, längste 2.3 s."). Don't read UUIDs/hashes
+   aloud.
 
 ## PII
 
-`cloud_audit.prompt_fulltext` / `response_fulltext` are returned only when `system_settings.debug_mode.active = true` (read live from `solaris.db`). Otherwise the rows return the metadata (lengths, hash, latency, cost) and the fulltext columns are nulled out — make the masking explicit in the summary if it matters. **Don't try to reconstruct prompts from hashes.**
+`prompt_fulltext` / `response_fulltext` are returned only when
+`system_settings.debug_mode.active = true` (read live); otherwise the fulltext is
+nulled and only metadata (lengths, hash, latency, cost) comes back. For deep
+debugging, flip debug-mode for a short window via `solaris-debug-set`, re-run, then
+turn it off. Don't reconstruct prompts from hashes.
 
-For deep debugging of a specific failure: instruct the user to flip debug-mode for a short window via `solaris-debug-set`, re-run the failing query, then turn debug-mode off.
+## Failure paths
 
-## Phase mapping
-
-| Phase | Streams |
-|---|---|
-| **0 (now)** | cloud_audit |
-| **2** | + gatekeeper_decisions (speaker-ID confidence, harness chosen, embedding distance) |
-| **3a** | + ingestion_classifications (Gemma vision class, confidence, final domain) |
+- `solaris.db` missing/unreadable → "Ich kann das Audit-Log gerade nicht lesen."
+- Empty result → "Heute hat Solaris nichts an die Cloud geschickt."

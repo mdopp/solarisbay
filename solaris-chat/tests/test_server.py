@@ -1834,6 +1834,45 @@ def test_list_defs_filters_by_kind_default_is_skill(tmp_path):
     assert skill["kind"] == "skill" and skill["scope"] == "household"
 
 
+def test_shipped_pack_groups_into_the_four_kinds():
+    # The #484 reorg sorts the household pack by frontmatter kind; admin-soul
+    # (admin-act/diagnose/logs) is a sibling pack, so it isn't walked here.
+    from pathlib import Path
+
+    pack = (
+        Path(__file__).resolve().parents[2]
+        / "templates"
+        / "solaris"
+        / "skills"
+        / "household"
+    )
+    by_kind = {
+        kind: {d["id"] for d in skills.list_defs(pack, kind)} for kind in skills.KINDS
+    }
+    assert by_kind["scheduler"] == {
+        "chat-compactor",
+        "daily-chronicle",
+        "problem-summarizer",
+    }
+    assert by_kind["hook"] == {
+        "media-ingestion-multimodal",
+        "guest-onboarding",
+        "topic-suggester",
+        "room-enrollment",
+        "resident-registration",
+        "self-enrollment",
+    }
+    assert by_kind["skill"] == {
+        "status",
+        "notes-search",
+        "audit-query",
+        "dynamic-skills",
+    }
+    assert by_kind["command"] == {"debug-set"}
+    # list_skills stays the skill-kind view — no scheduler/hook/command leaks in.
+    assert {d["id"] for d in skills.list_skills(pack)} == by_kind["skill"]
+
+
 def test_read_def_404s_on_wrong_kind(tmp_path):
     _write_def(tmp_path, "status", name="solaris-status")  # skill
     assert skills.read_def(tmp_path, "skill", "status") is not None
@@ -2900,3 +2939,84 @@ async def test_csp_header_uses_configured_frame_ancestors(aiohttp_client):
         resp.headers["Content-Security-Policy"]
         == "frame-ancestors 'self' https://admin.dopp.cloud"
     )
+
+
+async def test_ha_call_runs_scoped_service_and_returns_state(
+    aiohttp_client, monkeypatch
+):
+    seen = {}
+
+    async def _fake_call(hass_url, hass_token, entity_id, service, data=None):
+        seen.update(
+            url=hass_url, token=hass_token, entity=entity_id, service=service, data=data
+        )
+        return {"ok": True, "state": "on"}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": "light.kitchen", "service": "light.toggle"},
+    )
+    assert resp.status == 200
+    assert (await resp.json()) == {"ok": True, "state": "on"}
+    # the configured household HA creds are used, never a client-supplied token
+    assert seen == {
+        "url": "http://ha",
+        "token": "tok",
+        "entity": "light.kitchen",
+        "service": "light.toggle",
+        "data": None,
+    }
+
+
+async def test_ha_call_rejects_unsupported_domain(aiohttp_client, monkeypatch):
+    called = False
+
+    async def _fake_call(*a, **k):
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    # phase 2 = light/switch only; a climate/cover/shell domain is refused
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": "climate.living", "service": "climate.toggle"},
+    )
+    assert resp.status == 400
+    assert (await resp.json())["error"] == "unsupported_domain"
+    assert called is False  # never reaches the HA helper
+
+
+async def test_ha_call_503_when_ha_not_configured(aiohttp_client):
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": "light.kitchen", "service": "light.toggle"},
+    )
+    assert resp.status == 503
+    assert (await resp.json())["error"] == "ha_not_configured"

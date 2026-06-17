@@ -420,3 +420,73 @@ async def test_no_sink_is_noop(monkeypatch):
 
     out = await _tool("ha_get_state").handler({"entity_id": "sensor.x"})
     assert '"state": "21"' in out
+
+
+def _stub_call(monkeypatch, *, new_state="on", post_status=200):
+    """Stub aiohttp for call_service_scoped: record POSTs, GET returns new state."""
+    posts: list[tuple[str, dict]] = []
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, posturl, *, json, **k):
+            posts.append((posturl, json))
+            return _Resp({}, status=post_status)
+
+        def get(self, geturl, **k):
+            return _Resp({"state": new_state})
+
+    monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
+    return posts
+
+
+async def test_call_service_scoped_toggles_and_returns_new_state(monkeypatch):
+    posts = _stub_call(monkeypatch, new_state="on")
+    res = await ha_mod.call_service_scoped(
+        "http://ha", "tok", "light.kitchen", "light.toggle"
+    )
+    assert res == {"ok": True, "state": "on"}
+    assert posts[0][0] == "http://ha/api/services/light/toggle"
+    assert posts[0][1] == {"entity_id": "light.kitchen"}
+
+
+async def test_call_service_scoped_blocks_unsafe_domain(monkeypatch):
+    posts = _stub_call(monkeypatch)
+    res = await ha_mod.call_service_scoped(
+        "http://ha", "tok", "shell_command.evil", "shell_command.run"
+    )
+    assert res["ok"] is False
+    assert not posts  # never reaches HA
+
+
+@pytest.mark.parametrize(
+    "entity_id,service",
+    [
+        ("light.kitchen", "switch.toggle"),  # service domain != entity domain
+        ("light.kitchen", "../etc/passwd"),  # no dot / path traversal
+        ("not_an_entity", "light.toggle"),  # invalid entity_id
+    ],
+)
+async def test_call_service_scoped_rejects_mismatch_and_garbage(
+    monkeypatch, entity_id, service
+):
+    posts = _stub_call(monkeypatch)
+    res = await ha_mod.call_service_scoped("http://ha", "tok", entity_id, service)
+    assert res["ok"] is False
+    assert not posts
+
+
+async def test_call_service_scoped_surfaces_ha_error(monkeypatch):
+    _stub_call(monkeypatch, post_status=500)
+    res = await ha_mod.call_service_scoped(
+        "http://ha", "tok", "switch.fan", "switch.toggle"
+    )
+    assert res["ok"] is False
+    assert "HA 500" in res["error"]

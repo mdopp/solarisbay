@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -102,6 +103,31 @@ def test_load_jobs_from_scheduler_defs(tmp_path):
     assert (chron.hour, chron.minute, chron.weekday) == (23, 59, None)
     assert chron.prompt == "Schreibe die Chronik."
     assert by_name["weekly-x"].weekday == 0
+
+
+def test_load_jobs_from_shipped_pack_builds_the_three_jobs():
+    # The #484 reorg gives the three cron defs scheduler-kind frontmatter, so the
+    # registry — not the hardcoded JOBS fallback — must build them. The compactor
+    # stays the code job (empty prompt) even though it is now a scheduler def.
+    pack = (
+        Path(__file__).resolve().parents[2]
+        / "templates"
+        / "solaris"
+        / "skills"
+        / "household"
+    )
+    jobs = crons.load_jobs(str(pack))
+    assert jobs != crons.JOBS  # built from the registry, not the fallback
+    by_name = {j.name: j for j in jobs}
+    assert set(by_name) == {"chat-compactor", "daily-chronicle", "problem-summarizer"}
+    compactor = by_name["chat-compactor"]
+    assert (compactor.hour, compactor.minute, compactor.prompt) == (4, 15, "")
+    chron = by_name["daily-chronicle"]
+    assert (chron.hour, chron.minute, chron.weekday) == (23, 59, None)
+    assert chron.prompt  # body-as-prompt, non-empty
+    summ = by_name["problem-summarizer"]
+    assert (summ.hour, summ.minute, summ.weekday) == (4, 30, 0)  # Monday
+    assert summ.prompt
 
 
 def test_load_jobs_falls_back_to_hardcoded_when_no_scheduler_def(tmp_path):

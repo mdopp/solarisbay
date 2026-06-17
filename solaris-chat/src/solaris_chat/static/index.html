@@ -352,6 +352,9 @@
     }
     .ha-card.on .hc-badge { background: rgba(34,197,94,0.18); color: #22c55e; }
     .ha-card.off .hc-badge { background: rgba(127,127,127,0.18); }
+    .ha-card.hc-toggle { cursor: pointer; user-select: none; }
+    .ha-card.hc-toggle:hover { border-color: var(--accent); }
+    .ha-card.busy { opacity: 0.6; pointer-events: none; }
 
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
@@ -927,6 +930,7 @@
       <div id="skills-list" class="pane">
         <h2>Skills</h2>
         <p class="lead">The standard set Solaris draws on. Everyone can read them; editing is for admins.</p>
+        <button id="skill-add" class="btn-primary" type="button" hidden>New skill</button>
         <div id="skills-cards"></div>
       </div>
       <div id="skill-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
@@ -934,6 +938,7 @@
           <button class="back" id="skill-back" type="button"><svg class="ic"><use href="#i-back"></use></svg> Skills</button>
           <span class="name" id="skill-name"></span>
           <span class="grow"></span>
+          <button class="edit-btn" id="skill-delete" type="button" hidden>Delete</button>
           <button class="edit-btn" id="skill-edit" type="button" hidden>Edit</button>
         </div>
         <div class="pane" id="skill-view"><div class="doc"><div class="md" id="skill-body"></div></div></div>
@@ -944,6 +949,35 @@
               <button id="skill-save" class="btn-primary" type="button">Save</button>
               <button id="skill-cancel" class="secondary" type="button">Cancel</button>
               <span id="skill-status" class="editor-status"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-commands" class="view">
+      <div id="commands-list" class="pane">
+        <h2>Commands</h2>
+        <p class="lead">Your own <code>/</code>-commands — prompt templates that expand into a turn when you type them. Built-in inline commands are listed too; editing is for admins.</p>
+        <button id="command-add" class="btn-primary" type="button" hidden>New command</button>
+        <div id="commands-cards"></div>
+      </div>
+      <div id="command-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
+        <div class="reader-bar">
+          <button class="back" id="command-back" type="button"><svg class="ic"><use href="#i-back"></use></svg> Commands</button>
+          <span class="name" id="command-name"></span>
+          <span class="grow"></span>
+          <button class="edit-btn" id="command-delete" type="button" hidden>Delete</button>
+          <button class="edit-btn" id="command-edit" type="button" hidden>Edit</button>
+        </div>
+        <div class="pane" id="command-view"><div class="doc"><div class="md" id="command-body"></div></div></div>
+        <div class="pane" id="command-edit-pane" style="display:none;">
+          <div class="editor-wrap">
+            <textarea id="command-editor" class="code-editor" spellcheck="false" aria-label="Command source"></textarea>
+            <div class="editor-bar">
+              <button id="command-save" class="btn-primary" type="button">Save</button>
+              <button id="command-cancel" class="secondary" type="button">Cancel</button>
+              <span id="command-status" class="editor-status"></span>
             </div>
           </div>
         </div>
@@ -1396,6 +1430,17 @@
             badge.className = "hc-badge";
             badge.textContent = haStateLabel(c.domain, st);
             card.appendChild(badge);
+            // Phase 2 (#476): light/switch badge becomes an on/off toggle.
+            if (c.domain === "light" || c.domain === "switch") {
+              card.classList.add("hc-toggle");
+              card.setAttribute("role", "button");
+              card.tabIndex = 0;
+              var act = function () { haToggle(card, badge, c); };
+              card.addEventListener("click", act);
+              card.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
+              });
+            }
           }
           wrap.appendChild(card);
         });
@@ -1413,6 +1458,36 @@
           if (state === "off") return "aus";
         }
         return state || "—";
+      }
+
+      // Toggle a light/switch card via the scoped /api/ha/call endpoint (#476):
+      // optimistic flip, then confirm/revert from the returned state.
+      function haToggle(card, badge, c) {
+        if (card.classList.contains("busy")) return;
+        var was = card.classList.contains("on");
+        var apply = function (on) {
+          card.classList.toggle("on", on);
+          card.classList.toggle("off", !on);
+          c.state = on ? "on" : "off";
+          badge.textContent = haStateLabel(c.domain, c.state);
+        };
+        apply(!was);
+        card.classList.add("busy");
+        fetch("/api/ha/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entity_id: c.entity_id,
+            service: c.domain + ".toggle",
+          }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (res) {
+            if (res && res.ok && res.state != null) apply(res.state === "on");
+            else apply(was);
+          })
+          .catch(function () { apply(was); })
+          .finally(function () { card.classList.remove("busy"); });
       }
 
       function renderStepTrace(steps) {
@@ -2029,10 +2104,16 @@
       }
 
       // ---- Slash commands (handled in the browser, not sent to Solaris) ----
-      // The registered skills as `/<skill-id>` entries, fetched once from
-      // /api/skills (#181). Shared so BOTH the slash autocomplete and /help draw
-      // on the same set — they must not diverge (#421). Each is [cmd, desc].
+      // The skill-kind defs as `/<skill-id>` entries, fetched once from
+      // /api/defs/skill. Still feeds the /skills editor — but NOT the `/` menu:
+      // skills are model-picked, not typeable (#482). Each is [cmd, desc].
       var skillEntries = [];
+      // The typeable commands (#482): user-authored command-kind templates +
+      // the built-in inline dual aliases (debug/status/notes/audit). These are
+      // the ONLY non-built-in entries the `/` autocomplete + /help draw on.
+      // Each is [cmd, desc]; commandDefs holds the routing detail by trigger.
+      var commandEntries = [];
+      var commandDefs = {}; // "/foo" -> {id, command, hint}
       var COMMANDS = [
         ["/help", "Show this list of commands"],
         ["/new", "Start a new chat"],
@@ -2040,6 +2121,7 @@
         ["/context", "Show this chat's token usage"],
         ["/search", "Search this chat — /search <text>"],
         ["/skills", "Skills Solaris draws on"],
+        ["/commands", "Your own /-command prompt templates"],
         ["/soul", "Solaris's durable identity"],
         ["/persona", "Persona & speed for the next new chat"],
         ["/tools", "What Solaris can do — toolsets & MCP servers"],
@@ -2058,14 +2140,15 @@
           .slice()
           .sort(function (a, b) { return a[0].localeCompare(b[0]); })
           .forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
-        // The registered skills (#421): /help covers the SAME set the `/`
-        // autocomplete shows — built-in commands PLUS each `/<skill-id>`. The
-        // fetch may still be in flight on the very first /help; the list grows
-        // once it lands.
-        if (skillEntries.length) {
+        // /help covers the SAME set the `/` autocomplete shows — built-in
+        // commands PLUS each typeable command (#482): user-authored templates +
+        // the inline dual aliases. Skills/hooks are NOT here (not typeable). The
+        // fetch may still be in flight on the first /help; the list grows once
+        // it lands.
+        if (commandEntries.length) {
           lines.push("");
-          lines.push("**Skills** — what Solaris knows:");
-          skillEntries.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
+          lines.push("**Your commands** — typeable templates:");
+          commandEntries.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
         }
         lines.push("");
         lines.push("Anything not starting with `/` is sent to Solaris.");
@@ -2082,6 +2165,7 @@
         }
         if (cmd === "search") { openSearchCard(rest.trim()); return; }
         if (cmd === "skills" || cmd === "soul" || cmd === "tools") { openSettingCard(cmd); return; }
+        if (cmd === "commands") { openSettingCard("commands"); return; }
         if (cmd === "persona") {
           if (rest.trim()) { applyPersonaArg(rest.trim()); } else { openPersonaCard(); }
           return;
@@ -2103,54 +2187,88 @@
           return;
         }
         if (cmd === "context") { showContext(); return; }
-        // A registered skill `/<skill-id>` (offered by the autocomplete, #181)
-        // opens that skill in the Skills card — so every slash entry the menu
-        // suggests actually renders, in the household chat too (#417), instead
-        // of falling through to "Unknown command".
-        // Match case-insensitively (the autocomplete offers skills that way and
-        // `cmd` is already lower-cased) and open the skill by its REAL id, so a
-        // skill whose id carries any uppercase still resolves instead of falling
+        // A typeable command (#482): user-authored command-kind template or a
+        // built-in inline dual alias (/debug /status /notes /audit). Its body
+        // expands into the turn prompt (followed by any args typed after it);
+        // the inline dual aliases carry no editable body, so they send their own
+        // trigger plus the args. Skills/hooks are NOT typeable — they fall
         // through to "Unknown command".
-        var skillHit = skillEntries.find(function (c) {
-          return c[0].toLowerCase() === "/" + cmd;
-        });
-        if (skillHit) {
-          openSettingCard("skills");
-          openSkill(skillHit[0].slice(1));
+        var def = commandDefs["/" + cmd];
+        if (def) {
+          runCommandTemplate(def, rest.trim());
           return;
         }
         addInfo("Unknown command `/" + cmd + "`.\n\n" + helpMarkdown());
       }
 
+      // Expand a typeable command into a turn (#482). A command-kind template
+      // (editable, `kind: command`) fetches its body and sends that; a built-in
+      // inline dual alias (a skill-kind def, no own command body) sends its
+      // `/trigger` plus the typed args so the engine routes it as today. Arg
+      // substitution into the body is a follow-up (the issue defers it).
+      function runCommandTemplate(def, args) {
+        function dispatch(body) {
+          var prompt = (body || "").trim() || (def.command || "").trim();
+          if (args) { prompt = (prompt + " " + args).trim(); }
+          if (!prompt) { addText("system", "This command has no prompt yet."); return; }
+          addUserTurn(prompt, []);
+          runTurn(prompt, []);
+        }
+        // A dual alias has no editable command-kind pack — send the trigger.
+        fetch("/api/defs/command/" + encodeURIComponent(def.id))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) { dispatch(j && j.def ? j.def.body : ""); })
+          .catch(function () { dispatch(""); });
+      }
+
+      // Populate the typeable-command pool (#482): user-authored command-kind
+      // templates PLUS the built-in inline dual aliases (skill-kind defs that
+      // carry a `command:` field — /status //notes //audit). The `/` menu +
+      // /help draw ONLY on this; skills/hooks aren't typeable. Also refreshes
+      // skillEntries for the /skills editor (no longer in the `/` menu).
+      function loadCommandPool() {
+        return Promise.all([
+          fetch("/api/defs/command").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; }),
+          fetch("/api/defs/skill").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; })
+        ]).then(function (res) {
+          var cmdDefs = (res[0] && res[0].defs) || [];
+          var skillDefs = (res[1] && res[1].defs) || [];
+          skillEntries = skillDefs
+            .map(function (s) { return ["/" + s.id, s.description || s.name || ""]; })
+            .sort(function (a, b) { return a[0].localeCompare(b[0]); });
+          // A command's trigger is its `command:` field if set (the built-in
+          // aliases pin /debug //status etc.), else `/<id>` for a user template.
+          var typeable = cmdDefs.concat(skillDefs.filter(function (s) { return s.command; }));
+          commandEntries = []; commandDefs = {};
+          typeable.forEach(function (d) {
+            var trig = (d.command || "/" + d.id).toLowerCase();
+            var hint = d["argument-hint"] || "";
+            var desc = (d.description || d.name || "") + (hint ? " — " + trig.slice(1) + " " + hint : "");
+            commandEntries.push([trig, desc]);
+            commandDefs[trig] = { id: d.id, command: d.command || trig, hint: hint };
+          });
+          commandEntries.sort(function (a, b) { return a[0].localeCompare(b[0]); });
+        });
+      }
+      loadCommandPool();
+
       // ---- Slash-command autocomplete (#181) ----
-      // Built-in browser commands plus the registered skills (/api/skills), so
-      // typing "/" surfaces both what the panel can do and what Solaris knows.
+      // Built-in browser commands plus the typeable user/inline commands
+      // (#482), so typing "/" surfaces what the panel can do plus the templates
+      // — never the model-picked skills or event-fired hooks.
       slash = (function () {
         var menu = document.getElementById("slash-menu");
         var items = [];     // current filtered [{cmd, desc}]
         var active = -1;
 
-        // Populates the SHARED skillEntries (declared above) so /help and the
-        // autocomplete stay in lockstep (#421).
-        fetch("/api/skills")
-          .then(function (r) { return r.ok ? r.json() : { skills: [] }; })
-          .then(function (j) {
-            skillEntries = ((j && j.skills) || [])
-              .map(function (s) {
-                return ["/" + s.id, s.description || s.name || ""];
-              })
-              .sort(function (a, b) { return a[0].localeCompare(b[0]); });
-          })
-          .catch(function () {});
-
         function close() { menu.hidden = true; menu.textContent = ""; items = []; active = -1; }
 
         function render(token) {
           var q = token.slice(1).toLowerCase(); // text after "/"
-          // Built-ins + skills, merged and sorted alphabetically by command so
-          // the dropdown is in a predictable order (not COMMANDS-then-skills).
+          // Built-ins + typeable commands, merged and sorted alphabetically so
+          // the dropdown is predictable (#482 — no skills/hooks in the pool).
           var pool = availableCommands()
-            .concat(skillEntries)
+            .concat(commandEntries)
             .sort(function (a, b) { return a[0].localeCompare(b[0]); });
           items = pool.filter(function (c) { return c[0].slice(1).toLowerCase().indexOf(q) === 0; });
           if (!items.length) { close(); return; }
@@ -3004,6 +3122,7 @@
       // so the model picker / VRAM bar / skill editor keep working unchanged.
       var settingViews = {
         skills: document.getElementById("view-skills"),
+        commands: document.getElementById("view-commands"),
         soul: document.getElementById("view-soul"),
         tools: document.getElementById("view-tools"),
         prefs: document.getElementById("view-prefs"),
@@ -3011,13 +3130,14 @@
         voice: document.getElementById("view-voice")
       };
       var settingTitles = {
-        skills: "Skills", soul: "Soul", tools: "Tools",
+        skills: "Skills", commands: "Commands", soul: "Soul", tools: "Tools",
         prefs: "Chat", model: "Model", voice: "Voice"
       };
       var skillsLoaded = false, soulLoaded = false;
 
       function loadSettingPane(name) {
         if (name === "skills") { if (!skillsLoaded) { skillsLoaded = true; loadSkills(); } }
+        else if (name === "commands") { loadCommands(); }
         else if (name === "soul") { if (!soulLoaded) { soulLoaded = true; loadSoul(); } }
         else if (name === "tools") { loadTools(); loadMcp(); }
         else if (name === "prefs") { syncThinkingSeg(); }
@@ -3336,24 +3456,31 @@
       var skillView = document.getElementById("skill-view");
       var skillEditPane = document.getElementById("skill-edit-pane");
       var skillEditBtn = document.getElementById("skill-edit");
+      var skillDeleteBtn = document.getElementById("skill-delete");
+      var skillAddBtn = document.getElementById("skill-add");
       var skillEditor = document.getElementById("skill-editor");
       var skillSave = document.getElementById("skill-save");
       var skillCancel = document.getElementById("skill-cancel");
       var skillStatus = document.getElementById("skill-status");
-      var currentSkillId = null, currentSkillRaw = "";
+      var currentSkillId = null, currentSkillRaw = "", skillIsNew = false;
+      // A blank skill the editor seeds when adding one (the SKILL.md frontmatter
+      // contract: name/description/kind=skill, an empty body to fill in).
+      var SKILL_TEMPLATE = "---\nname: \ndescription: \nkind: skill\nscope: household\n---\n\n";
 
       function skillViewMode() {
         skillEditPane.style.display = "none";
         skillView.style.display = "block";
         skillEditBtn.hidden = !isAdmin;
+        skillDeleteBtn.hidden = !isAdmin || skillIsNew;
       }
       function setStatus(msg, kind) { skillStatus.className = "editor-status" + (kind ? " " + kind : ""); skillStatus.textContent = msg || ""; }
 
       function loadSkills() {
-        return fetch("/api/skills")
-          .then(function (r) { return r.ok ? r.json() : { skills: [] }; })
+        skillAddBtn.hidden = !isAdmin;
+        return fetch("/api/defs/skill")
+          .then(function (r) { return r.ok ? r.json() : { defs: [] }; })
           .then(function (j) {
-            var list = ((j && j.skills) || []).slice().sort(function (a, b) {
+            var list = ((j && j.defs) || []).slice().sort(function (a, b) {
               return String(a.name || a.id).localeCompare(String(b.name || b.id));
             });
             skillsCards.textContent = "";
@@ -3373,12 +3500,13 @@
       }
 
       function openSkill(id) {
-        return fetch("/api/skills/" + encodeURIComponent(id))
+        return fetch("/api/defs/skill/" + encodeURIComponent(id))
           .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
           .then(function (j) {
-            var s = (j && j.skill) || {};
+            var s = (j && j.def) || {};
             currentSkillId = s.id || id;
             currentSkillRaw = s.raw || "";
+            skillIsNew = false;
             skillName.textContent = s.name || id;
             skillBody.innerHTML = window.renderMarkdown(s.body || "");
             setStatus("");
@@ -3394,31 +3522,191 @@
         skillViewMode();
       });
 
+      skillAddBtn.addEventListener("click", function () {
+        var id = (window.prompt("New skill id (folder name, e.g. my-skill):") || "").trim();
+        if (!id) return;
+        currentSkillId = id; currentSkillRaw = SKILL_TEMPLATE; skillIsNew = true;
+        skillName.textContent = id;
+        skillBody.innerHTML = "";
+        skillsList.style.display = "none";
+        skillReader.style.display = "flex";
+        skillEditBtn.click();
+      });
       skillEditBtn.addEventListener("click", function () {
         skillEditor.value = currentSkillRaw;
         setStatus("");
         skillView.style.display = "none";
         skillEditBtn.hidden = true;
+        skillDeleteBtn.hidden = true;
         skillEditPane.style.display = "block";
         skillEditor.focus();
       });
       skillCancel.addEventListener("click", skillViewMode);
+      skillDeleteBtn.addEventListener("click", function () {
+        if (!window.confirm("Delete skill `" + currentSkillId + "`?")) return;
+        fetch("/api/defs/skill/" + encodeURIComponent(currentSkillId), { method: "DELETE" })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("delete failed"); })
+          .then(function () { loadSkills(); document.getElementById("skill-back").click(); loadCommandPool(); })
+          .catch(function (e) { setStatus(e.message === "forbidden" ? "Only admins can delete skills." : "Could not delete. Please try again.", "err"); });
+      });
       skillSave.addEventListener("click", function () {
         var content = skillEditor.value;
         if (!content.trim()) { setStatus("Can't save an empty skill.", "err"); return; }
         skillSave.disabled = true;
         setStatus("Saving…");
-        fetch("/api/skills/" + encodeURIComponent(currentSkillId), {
+        fetch("/api/defs/skill/" + encodeURIComponent(currentSkillId), {
           method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: content })
         })
-          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("save failed"); return r.json(); })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (r.status === 400) throw new Error("kind_mismatch"); if (!r.ok) throw new Error("save failed"); return r.json(); })
           .then(function (j) {
+            loadSkills(); loadCommandPool();
             return openSkill(currentSkillId).then(function () {
-              setStatus(j.restart_needed ? "Saved. Frontmatter changed — restart Hermes to re-register this skill." : "Saved.", j.restart_needed ? "warn" : "ok");
+              setStatus(j.restart_needed ? "Saved. Frontmatter changed — restart Solaris to re-register this skill." : "Saved.", j.restart_needed ? "warn" : "ok");
             });
           })
-          .catch(function (e) { setStatus(e.message === "forbidden" ? "Only admins can edit skills." : "Could not save. Please try again.", "err"); })
+          .catch(function (e) {
+            if (e.message === "forbidden") { setStatus("Only admins can edit skills.", "err"); }
+            else if (e.message === "kind_mismatch") { setStatus("Keep `kind: skill` in the frontmatter.", "err"); }
+            else { setStatus("Could not save. Please try again.", "err"); }
+          })
           .finally(function () { skillSave.disabled = false; });
+      });
+
+      // ---- Commands (#482) — user-authored /-command prompt templates ----
+      // Mirrors the Skills editor but writes the command-kind registry, and the
+      // list also shows the built-in inline dual aliases (read-only) so they're
+      // discoverable in one place. A saved command joins the `/` autocomplete.
+      var commandsCards = document.getElementById("commands-cards");
+      var commandsList = document.getElementById("commands-list");
+      var commandReader = document.getElementById("command-reader");
+      var commandName = document.getElementById("command-name");
+      var commandBodyEl = document.getElementById("command-body");
+      var commandViewEl = document.getElementById("command-view");
+      var commandEditPane = document.getElementById("command-edit-pane");
+      var commandEditBtn = document.getElementById("command-edit");
+      var commandDeleteBtn = document.getElementById("command-delete");
+      var commandAddBtn = document.getElementById("command-add");
+      var commandEditor = document.getElementById("command-editor");
+      var commandSave = document.getElementById("command-save");
+      var commandCancel = document.getElementById("command-cancel");
+      var commandStatus = document.getElementById("command-status");
+      var currentCommandId = null, currentCommandRaw = "", commandIsNew = false;
+      var COMMAND_TEMPLATE = "---\nname: \ndescription: \nkind: command\ncommand: /\nargument-hint: \n---\n\n";
+
+      function commandViewMode() {
+        commandEditPane.style.display = "none";
+        commandViewEl.style.display = "block";
+        commandEditBtn.hidden = !isAdmin;
+        commandDeleteBtn.hidden = !isAdmin || commandIsNew;
+      }
+      function setCommandStatus(msg, kind) { commandStatus.className = "editor-status" + (kind ? " " + kind : ""); commandStatus.textContent = msg || ""; }
+
+      function loadCommands() {
+        commandAddBtn.hidden = !isAdmin;
+        return Promise.all([
+          fetch("/api/defs/command").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; }),
+          fetch("/api/defs/skill").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; })
+        ]).then(function (res) {
+          var own = (res[0] && res[0].defs) || [];
+          // The dual aliases: skill-kind defs that also carry a `command:`.
+          var dual = ((res[1] && res[1].defs) || []).filter(function (s) { return s.command; });
+          commandsCards.textContent = "";
+          own.slice().sort(function (a, b) { return String(a.name || a.id).localeCompare(String(b.name || b.id)); })
+            .forEach(function (c) { commandsCards.appendChild(commandCard(c, true)); });
+          if (dual.length) {
+            var h = document.createElement("div"); h.className = "empty-note"; h.style.marginTop = "14px";
+            h.textContent = "Built-in inline commands (read-only):";
+            commandsCards.appendChild(h);
+            dual.forEach(function (c) { commandsCards.appendChild(commandCard(c, false)); });
+          }
+          if (!own.length && !dual.length) {
+            var note = document.createElement("div"); note.className = "empty-note"; note.textContent = "No commands yet.";
+            commandsCards.appendChild(note);
+          }
+        });
+      }
+
+      function commandCard(c, editable) {
+        var card = document.createElement("div"); card.className = "skill-card";
+        var trig = c.command || "/" + c.id;
+        var name = document.createElement("div"); name.className = "name";
+        name.textContent = trig + (c["argument-hint"] ? " " + c["argument-hint"] : "");
+        card.appendChild(name);
+        if (c.description) { var desc = document.createElement("div"); desc.className = "desc"; desc.textContent = c.description; card.appendChild(desc); }
+        if (editable) { card.addEventListener("click", function () { openCommand(c.id); }); }
+        else { card.style.opacity = "0.7"; }
+        return card;
+      }
+
+      function openCommand(id) {
+        return fetch("/api/defs/command/" + encodeURIComponent(id))
+          .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
+          .then(function (j) {
+            var c = (j && j.def) || {};
+            currentCommandId = c.id || id;
+            currentCommandRaw = c.raw || "";
+            commandIsNew = false;
+            commandName.textContent = (c.command || "/" + (c.id || id));
+            commandBodyEl.innerHTML = window.renderMarkdown(c.body || "");
+            setCommandStatus("");
+            commandViewMode();
+            commandsList.style.display = "none";
+            commandReader.style.display = "flex";
+          })
+          .catch(function () {});
+      }
+      document.getElementById("command-back").addEventListener("click", function () {
+        commandReader.style.display = "none";
+        commandsList.style.display = "block";
+        commandViewMode();
+      });
+
+      commandAddBtn.addEventListener("click", function () {
+        var id = (window.prompt("New command id (folder name, e.g. standup):") || "").trim();
+        if (!id) return;
+        currentCommandId = id; currentCommandRaw = COMMAND_TEMPLATE; commandIsNew = true;
+        commandName.textContent = "/" + id;
+        commandBodyEl.innerHTML = "";
+        commandsList.style.display = "none";
+        commandReader.style.display = "flex";
+        commandEditBtn.click();
+      });
+      commandEditBtn.addEventListener("click", function () {
+        commandEditor.value = currentCommandRaw;
+        setCommandStatus("");
+        commandViewEl.style.display = "none";
+        commandEditBtn.hidden = true;
+        commandDeleteBtn.hidden = true;
+        commandEditPane.style.display = "block";
+        commandEditor.focus();
+      });
+      commandCancel.addEventListener("click", commandViewMode);
+      commandDeleteBtn.addEventListener("click", function () {
+        if (!window.confirm("Delete command `" + currentCommandId + "`?")) return;
+        fetch("/api/defs/command/" + encodeURIComponent(currentCommandId), { method: "DELETE" })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("delete failed"); })
+          .then(function () { loadCommands(); document.getElementById("command-back").click(); loadCommandPool(); })
+          .catch(function (e) { setCommandStatus(e.message === "forbidden" ? "Only admins can delete commands." : "Could not delete. Please try again.", "err"); });
+      });
+      commandSave.addEventListener("click", function () {
+        var content = commandEditor.value;
+        if (!content.trim()) { setCommandStatus("Can't save an empty command.", "err"); return; }
+        commandSave.disabled = true;
+        setCommandStatus("Saving…");
+        fetch("/api/defs/command/" + encodeURIComponent(currentCommandId), {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: content })
+        })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (r.status === 400) throw new Error("kind_mismatch"); if (!r.ok) throw new Error("save failed"); return r.json(); })
+          .then(function () {
+            loadCommands(); loadCommandPool();
+            return openCommand(currentCommandId).then(function () { setCommandStatus("Saved.", "ok"); });
+          })
+          .catch(function (e) {
+            if (e.message === "forbidden") { setCommandStatus("Only admins can edit commands.", "err"); }
+            else if (e.message === "kind_mismatch") { setCommandStatus("Keep `kind: command` in the frontmatter.", "err"); }
+            else { setCommandStatus("Could not save. Please try again.", "err"); }
+          })
+          .finally(function () { commandSave.disabled = false; });
       });
 
       // ---- Soul ----

@@ -1,177 +1,93 @@
 ---
 name: solaris-resident-registration
-description: Use when a guest (uid `guest`) has chosen to register as a resident — the registration flow the guest-onboarding greeting (#375) hands off to once the speaker picks "anmelden". Collects the data an account needs (a display name and a derived uid), drives the spoken voice-enrollment (prompts the speaker to say their name across a few sample turns so the gatekeeper can capture and enrol the voice, #386), files a pending resident request via `register_pending_resident` (#376), and confirms the request is in — voice captured, now awaiting admin approval. It files a *request*; it does NOT grant resident access (an admin approves, #355). The speaker stays a guest until then.
-version: 1.0.0
+description: On the onboarding hand-off (a guest chose to register), collect name+uid, drive spoken voice enrolment, and file a pending resident request for admin approval.
+kind: hook
+scope: household
+event: registration-handoff
+version: 2.0.0
 author: Solaris
 license: MIT
 ---
 
 # Solaris — Resident Registration (the onboarding hand-off)
 
-## Overview
+**Binds:** `registration-handoff` (a guest who heard the register/guest fork in
+`guest-onboarding` chose "anmelden")
 
-This is the registration flow that `solaris-guest-onboarding` (#375) hands off to: a
-guest who heard the register/guest fork chose **"anmelden"**, and now Solaris walks
-them through becoming a *candidate* resident. It does three things, in order:
-collect the account data (a name and a uid), drive the spoken **voice
-enrolment**, and file a **pending resident request** for an admin to approve.
+Walk the guest through becoming a *candidate* resident: collect the account data,
+drive the spoken voice enrolment, and file a **pending request** for an admin to
+approve. It files a *request* — it does **not** create an account or grant
+resident access (#355). The speaker stays a guest until an admin approves.
 
-It is the conversational layer over two onboarding-only tools (#376/#386):
-
-- **`start_voice_enrollment(uid)`** — opens the enrolment capture for the chosen
-  uid. After this call, each turn where the speaker says their name is captured
-  by the gatekeeper (it is HA's voice/STT provider) and embedded in-process; the
-  engine never sees the audio.
-- **`register_pending_resident(uid, display_name)`** — reads the enrolment
-  result and, **only on a successful enrol**, files the `pending_residents` row
-  for the admin step (#355). A timeout (speaker-ID off) or a failed enrol is
-  surfaced honestly: no pending row, no false success.
-
-It does **not** create an account, grant any resident capability, or approve the
-request — that is the admin-side provisioning (#355). The flow ends at *"filed,
-awaiting approval"*; the speaker remains a guest until an admin says yes.
-
-## When to use
-
-Trigger when **both** hold:
-
-1. The turn's uid is `guest` — the speaker is heard-but-unknown (#353). A turn
-   from a recognised resident or an already-identified chat session is **not**
-   this flow.
-2. The guest has **chosen to register** — they answered the #375 fork with
-   "anmelden" / "ja, anmelden" / "ich will mich registrieren", or directly asked
-   to become a resident.
-
-**Do not** trigger:
-
-- Before the guest has chosen to register — that is `solaris-guest-onboarding`'s
-  greeting and fork. This skill picks up *after* the choice.
-- For a recognised resident, or to re-enrol an existing one (that is an admin
-  re-enrol, not self-registration).
-- To approve a request or grant access — this flow only *files* the request.
+It is the conversational layer over two onboarding-only tools:
+- **`start_voice_enrollment(uid)`** — opens the capture; each subsequent turn where
+  the speaker says their name is captured and embedded by the gatekeeper in-process
+  (the engine never sees audio). Returns `samples_needed` (3).
+- **`register_pending_resident(uid, display_name)`** — files the `pending_residents`
+  row **only on a successful enrol**; a timeout / failed enrol is surfaced honestly.
 
 ## Consent first — this captures biometrics + a name
 
-Before opening the enrolment, name what you are about to collect and why. Voice
-samples are a biometric identifier and the name is PII; the speaker should know
-that before the first sample. Keep it to a sentence, in the household language:
+Before opening enrolment, name what you collect and why, and get a yes:
 
-> *"Alles klar — dafür brauche ich deinen Namen, und ich nehme dazu ein paar
-> kurze Stimmproben auf, damit ich dich beim nächsten Mal wiedererkenne. Am Ende
-> geht die Anfrage zur Freigabe an die Verwaltung — bis dahin bleibst du Gast und
-> ich lege noch kein Konto an. Ist das okay für dich?"*
+> *"Alles klar — dafür brauche ich deinen Namen, und ich nehme ein paar kurze
+> Stimmproben auf, damit ich dich wiedererkenne. Am Ende geht die Anfrage zur
+> Freigabe an die Verwaltung — bis dahin bleibst du Gast. Ist das okay?"*
 
-If they decline the recording, don't open the enrolment. You can still note that
-registration needs a voice profile and leave them as a guest (the no-commitment
-path) — never file a request without the consented capture.
+If they decline the recording, don't open enrolment and file nothing.
 
-## Operating sequence
+## What to do on the event
 
-### 1. Collect the name and derive a uid
+### 1. Collect the name, derive a uid
+Ask for the name. Derive a uid (lowercase ASCII letters/digits with `.`/`_`/`-`,
+matching `^[a-z0-9][a-z0-9._-]{0,63}$`; "Anna Müller" → `anna` or `anna.mueller`
+if `anna` would collide). Confirm warmly (*"Schön, dich kennenzulernen, Anna."*);
+don't read the uid out as a token. Honour a uid the speaker offers after
+normalising it.
 
-Ask for the name they want to be known by:
-
-> *"Wie heißt du — also welchen Namen soll ich verwenden?"*
-
-From the spoken name, derive a **uid**: lowercase, ASCII letters/digits with
-`.`, `_` or `-` (e.g. *"Anna Müller"* → `anna`, or `anna.mueller` if a plainer
-`anna` is likely to collide). The uid must match `^[a-z0-9][a-z0-9._-]{0,63}$` —
-the tool validates it and returns `invalid_uid` if it doesn't. Don't read the
-uid out as a technical token; just confirm the name back warmly:
-
-> *"Schön, dich kennenzulernen, Anna."*
-
-(If the speaker offers a uid/handle themselves, honour it after normalising it to
-that shape.)
-
-### 2. Open the enrolment and drive the sample turns
-
-Call **`start_voice_enrollment`** with the uid. On `ok` it returns
-`samples_needed` (currently 3) — the number of times the speaker should say their
-name so the gatekeeper can average a stable voice profile. Then prompt for each
-sample as a **separate turn** (each spoken reply is one captured sample):
+### 2. Open enrolment + drive the sample turns
+Call **`start_voice_enrollment`** with the uid; it returns `samples_needed` (3).
+Prompt for each sample as a **separate turn** (each reply = one captured sample):
 
 > 1. *"Sag bitte einmal deinen Namen."*
 > 2. *"Danke — noch einmal, bitte."*
 > 3. *"Und ein letztes Mal."*
 
-Each of those turns is a normal voice turn that the gatekeeper captures and
-embeds in-process; nothing about the audio is read back or echoed. Keep the
-prompts short and friendly; don't explain the embedding mechanics.
-
-If `start_voice_enrollment` returns `invalid_uid`, re-derive the uid (or ask the
-speaker for a simpler name) and try once more. If it returns
-`enroll_store_unavailable`, the capture backend isn't ready — tell the speaker
-honestly that voice registration isn't available right now and leave them as a
-guest; don't file a request.
+Nothing about the audio is read back. On `invalid_uid`, re-derive and retry once.
+On `enroll_store_unavailable`, say voice registration isn't available right now,
+leave them a guest, file nothing.
 
 ### 3. File the pending request
+Call **`register_pending_resident`** with the uid + display name:
+- **`ok: true`** (status `pending`) → enrolled and filed; confirm (step 4).
+- **`enroll_incomplete`** → gather one more utterance and call again.
+- **`speaker_id_disabled`** → speaker recognition is off; the request timed out and
+  **nothing** was filed — say so honestly (see below).
+- **`missing_display_name` / `invalid_uid` / `no_enroll_request`** → re-collect the
+  missing piece and restart from there; don't claim a registration that didn't go.
 
-After the samples, call **`register_pending_resident`** with the uid and the
-display name. Handle the result:
-
-- **`ok: true`** (status `pending`) → the voice enrolled and the request is
-  filed. Confirm (step 4).
-- **`reason: enroll_incomplete`** → fewer than `needed` samples landed; gather
-  one more utterance (*"Einmal noch — sag bitte deinen Namen."*) and call
-  `register_pending_resident` again.
-- **`reason: speaker_id_disabled`** → the gatekeeper never picked up the capture
-  because speaker recognition is off (the request timed out). Be honest: voice
-  enrolment can't run right now, so the request was **not** filed. See below.
-- **`reason: missing_display_name` / `invalid_uid` / `no_enroll_request`** →
-  re-collect the missing piece (name or uid) and restart from the step that
-  produced it; don't claim a registration that didn't go through.
-
-### 4. Confirm — request filed, awaiting approval
-
-On `ok: true`, close warmly and set the right expectation. Make all three things
-explicit: the voice was captured, the request is filed, and approval is still
-pending — they are **not yet a resident**:
+### 4. Confirm — filed, awaiting approval
+On `ok: true`, make all three explicit: voice captured, request filed, approval
+still pending — they are **not yet a resident**:
 
 > *"Super — ich habe deine Stimme aufgenommen und deine Anfrage an die Verwaltung
 > geschickt. Sobald sie freigegeben ist, erkenne ich dich als Bewohner:in. Bis
-> dahin bist du noch Gast, also merke ich mir noch nichts dauerhaft. Frag mich
-> gern weiter, was du möchtest."*
+> dahin bist du noch Gast."*
 
-Never imply an account now exists or that they are "now a resident".
+## Speaker-ID off — file nothing, say so
 
-## Speaker-ID off — file nothing, say so honestly
+If `register_pending_resident` returns `speaker_id_disabled`, nothing was filed.
+Don't pretend it worked or hang waiting:
 
-Voice enrolment only runs when speaker recognition is active (the gatekeeper
-captures the samples). If it's off, `register_pending_resident` returns
-`speaker_id_disabled` and files **nothing**. Don't pretend it worked and don't
-hang waiting:
-
-> *"Im Moment ist die Sprechererkennung nicht aktiv, deshalb kann ich deine
-> Stimme noch nicht aufnehmen — und ohne die Stimmprobe lege ich auch keine
-> Anfrage an. Sag der Verwaltung Bescheid, dass du dich anmelden möchtest; sobald
-> die Sprechererkennung läuft, machen wir die Anmeldung zusammen fertig."*
-
-Stay a guest turn; keep serving guest-tier requests.
+> *"Im Moment ist die Sprechererkennung nicht aktiv, deshalb kann ich deine Stimme
+> noch nicht aufnehmen — und ohne Stimmprobe lege ich keine Anfrage an. Sag der
+> Verwaltung Bescheid; sobald die Sprechererkennung läuft, machen wir es fertig."*
 
 ## Guards
 
-- **Files a request, not an account.** Registration is gated on admin approval
-  (#355). Never imply the speaker is a resident, or that an account/profile
-  exists, before approval.
-- **Consent before capture.** Name the biometric + PII collection and get a yes
-  before `start_voice_enrollment`. A declined recording means no enrolment and no
-  request.
-- **No false success.** A timeout (`speaker_id_disabled`) or a failed/incomplete
-  enrol files **nothing** — report it honestly and don't claim a filed request.
-- **Voice is biometric.** Never read enrolment audio, embeddings, the uid, or any
-  uid list aloud. The tools own the samples and never echo them.
-- **Stay in the guest tier until approved.** Through the whole flow the speaker
-  is still a guest (#353): no notes, memory, timers, or resident data. This flow
-  doesn't change that — admin approval does.
-
-## Related
-
-- `#375` / `solaris-guest-onboarding` — the greeting + register/guest fork that hands
-  off to this flow.
-- `#376` / `#386` — the `start_voice_enrollment` + `register_pending_resident`
-  tools and the reverse enroll-stash (gatekeeper captures PCM across the sample
-  turns and enrols in-process).
-- `#355` — admin approval + provisioning that turns a filed request into a
-  resident account.
-- `#343` — the conversational-onboarding epic this flow completes.
+- **Files a request, not an account**: never imply the speaker is a resident before
+  approval.
+- **Consent before capture**: a declined recording means no enrolment, no request.
+- **No false success**: a timeout/failed/incomplete enrol files nothing.
+- **Voice is biometric**: never read enrolment audio, embeddings, or the uid aloud.
+- **Stay in the guest tier until approved** (no notes/memory/timers/resident data).
