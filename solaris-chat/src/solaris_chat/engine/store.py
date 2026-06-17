@@ -188,13 +188,16 @@ def get_session(db_path: str, session_id: str, uid: str) -> dict[str, Any] | Non
         if row is None:
             return None
         msgs = conn.execute(
-            "SELECT role, content, reasoning, tool_calls, images"
+            "SELECT role, content, reasoning, tool_calls, images, created_at"
             " FROM engine_messages WHERE session_id = ? ORDER BY seq",
             (session_id,),
         ).fetchall()
     summary = _summary(row)
+    # created_at rides each message so the reopened bubble gets its .meta line —
+    # the per-turn step-trace panel attaches there, so without it persisted
+    # traces never render on a cold reload (the meta is the only anchor).
     summary["messages"] = [
-        {"role": m["role"], "content": m["content"]}
+        {"role": m["role"], "content": m["content"], "created_at": m["created_at"]}
         for m in msgs
         if m["role"] in ("user", "assistant") and m["content"]
     ]
