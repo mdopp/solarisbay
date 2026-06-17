@@ -42,7 +42,7 @@ from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.knowledge import okf, projection
-from solaris_chat.engine.tools.ha import call_service_scoped, fetch_card
+from solaris_chat.engine.tools.ha import call_service_scoped, fetch_card, fetch_energy
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
 from solaris_chat.logging import log
 
@@ -1519,6 +1519,31 @@ def build_app(
             STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
         )
 
+    async def portal_energy(_request: web.Request) -> web.Response:
+        """Aggregate the home-energy picture for the `#/p/energy` page (#503).
+
+        Same pattern as `/api/concept/<id>`: a read-only `/api` aggregator behind
+        the existing Authelia gate, rendered by an SPA view. 503 when HA is not
+        configured for this household.
+        """
+        if not hass_url or not hass_token:
+            return web.json_response(
+                {"ok": False, "error": "ha_unconfigured"}, status=503
+            )
+        energy = await fetch_energy(hass_url, hass_token)
+        if energy is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unavailable"}, status=502
+            )
+        return web.json_response({"ok": True, "energy": energy})
+
+    async def portal_page(_request: web.Request) -> web.Response:
+        # Bookmarkable deep-link to a household page: serve the SPA shell; the
+        # client router reads the `/p/<type>` path and renders from the API.
+        return web.FileResponse(
+            STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+        )
+
     async def anchors_resolve(request: web.Request) -> web.Response:
         """Resolve auto-anchors (#501) to OKF entity ids (#506).
 
@@ -1882,6 +1907,8 @@ def build_app(
     app.router.add_get("/api/topics/{slug:.+}/items", topic_items)
     app.router.add_get("/api/concept/{id}", concept_view)
     app.router.add_get("/c/{id}", concept_page)
+    app.router.add_get("/api/portal/energy", portal_energy)
+    app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/mentions/tags", mentions_tags)
     app.router.add_get("/api/mentions/persons", mentions_persons)

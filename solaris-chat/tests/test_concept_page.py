@@ -373,6 +373,76 @@ async def test_concept_shell_serves_spa(aiohttp_client, tmp_path):
     assert resp.headers.get("Content-Type", "").startswith("text/html")
 
 
+# ---- household pages (#503) --------------------------------------------------
+
+
+async def test_portal_energy_aggregates(aiohttp_client, tmp_path, monkeypatch):
+    async def _fake_energy(url, token):
+        return {
+            "headlines": [
+                {
+                    "entity_id": "sensor.haus",
+                    "label": "Hausverbrauch",
+                    "state": "1200",
+                    "unit": "W",
+                }
+            ],
+            "circuits": [
+                {
+                    "entity_id": "sensor.bad",
+                    "name": "Bad",
+                    "domain": "sensor",
+                    "state": "40",
+                    "unit": "W",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("solaris_chat.server.fetch_energy", _fake_energy)
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/portal/energy", headers={"Remote-User": "mdopp"})
+    assert resp.status == 200
+    e = (await resp.json())["energy"]
+    assert e["headlines"][0]["label"] == "Hausverbrauch"
+    assert e["circuits"][0]["name"] == "Bad"
+
+
+async def test_portal_energy_503_without_ha(aiohttp_client, tmp_path):
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/portal/energy", headers={"Remote-User": "mdopp"})
+    assert resp.status == 503
+
+
+async def test_portal_shell_serves_spa(aiohttp_client, tmp_path):
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/p/energy")
+    assert resp.status == 200
+    assert resp.headers.get("Content-Type", "").startswith("text/html")
+
+
 # ---- static view contract the client router depends on -----------------------
 
 
@@ -391,6 +461,10 @@ async def test_concept_shell_serves_spa(aiohttp_client, tmp_path):
         "function linkifyWikiLinks(",  # #504: [[X]] parse + resolve in chat text
         "var WIKILINK_RE = ",  # #504: the [[X]] / [[X|label]] token pattern
         'a.href = "#/c/" + encodeURIComponent(id)',  # #504: resolved wiki-link target
+        "function openPortal(",  # #503: household page route handler
+        "function renderEnergyPage(",  # #503: the energy SPA view
+        '"/api/portal/energy"',  # #503: the energy aggregator the page fetches
+        "#\\/p\\/",  # #503: the household-page hash-route pattern
     ],
 )
 def test_index_html_concept_view_contract(sentinel):

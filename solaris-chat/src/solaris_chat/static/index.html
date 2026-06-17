@@ -988,6 +988,7 @@
         <span class="admin-badge" id="admin-badge" hidden>Admin</span>
       </div>
       <div class="rail-links">
+        <a id="energy-link" href="#/p/energy">Energie</a>
         <a id="release-link" href="https://github.com/mdopp/solarisbay/releases" target="_blank" rel="noopener">Release news</a>
         <a href="https://github.com/mdopp/solarisbay" target="_blank" rel="noopener">GitHub</a>
         <a id="logout-link" href="#" hidden>Log out</a>
@@ -3892,15 +3893,77 @@
         return h;
       }
 
+      // Household pages (#503): the same SPA-view + `/api` aggregator pattern as
+      // the concept page, on a `#/p/<type>` hash route. The energy page composes
+      // the home-energy picture (the data the "Energieverbrauch" answer used to
+      // dump into chat belongs here).
+      function openPortal(type) {
+        if (type !== "energy") { showView("chat"); return; }
+        closeRail();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card";
+        card.textContent = "Lade…";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+        fetch("/api/portal/energy")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) { card.textContent = "Energiedaten nicht verfügbar."; return; }
+            renderEnergyPage(card, j.energy);
+          })
+          .catch(function () { card.textContent = "Konnte die Energiedaten nicht laden."; });
+      }
+
+      function renderEnergyPage(card, e) {
+        card.textContent = "";
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = "Energie";
+        head.appendChild(title);
+        card.appendChild(head);
+        if (e.headlines && e.headlines.length) {
+          var hl = document.createElement("ul");
+          hl.className = "concept-facts";
+          e.headlines.forEach(function (h) {
+            var li = document.createElement("li");
+            li.textContent = h.label + ": " + (h.state == null ? "?" : h.state) +
+              (h.unit ? " " + h.unit : "");
+            hl.appendChild(li);
+          });
+          card.appendChild(hl);
+        }
+        if (e.circuits && e.circuits.length) {
+          card.appendChild(conceptSectionTitle("Stromkreise"));
+          var wrap = document.createElement("div");
+          wrap.className = "ha-cards";
+          var group = document.createElement("div");
+          group.className = "ha-card hc-group";
+          e.circuits.forEach(function (c) { group.appendChild(renderHaCard(c, true)); });
+          wrap.appendChild(group);
+          card.appendChild(wrap);
+        }
+        if (!(e.headlines && e.headlines.length) && !(e.circuits && e.circuits.length)) {
+          var none = document.createElement("p");
+          none.className = "concept-desc";
+          none.textContent = "Keine Energie-Sensoren gefunden.";
+          card.appendChild(none);
+        }
+      }
+
       // Dispatch the current hash/path route. `#/c/<id>` (and the `/c/<id>`
-      // bookmarkable shell, rewritten to the hash form) open the concept page.
+      // bookmarkable shell) open the concept page; `#/p/<type>` (and `/p/<type>`)
+      // open a household page.
       function routeFromLocation() {
         var hash = window.location.hash || "";
+        var path = window.location.pathname;
         var m = hash.match(/^#\/c\/(.+)$/);
-        if (!m && window.location.pathname.indexOf("/c/") === 0) {
-          m = ["", window.location.pathname.slice(3)];
-        }
-        if (m) openConcept(decodeURIComponent(m[1]));
+        if (!m && path.indexOf("/c/") === 0) m = ["", path.slice(3)];
+        if (m) { openConcept(decodeURIComponent(m[1])); return; }
+        var p = hash.match(/^#\/p\/(.+)$/);
+        if (!p && path.indexOf("/p/") === 0) p = ["", path.slice(3)];
+        if (p) openPortal(decodeURIComponent(p[1]));
       }
       window.addEventListener("hashchange", routeFromLocation);
 
