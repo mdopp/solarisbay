@@ -14,6 +14,7 @@ on:
       - '.pre-commit-config.yaml'
       - 'scripts/**'
       - '.github/workflows/ci.yml'
+      - 'solaris-chat/**/static/**'
   push:
     branches: [main]
     paths:
@@ -23,6 +24,7 @@ on:
       - '.pre-commit-config.yaml'
       - 'scripts/**'
       - '.github/workflows/ci.yml'
+      - 'solaris-chat/**/static/**'
 
 permissions:
   contents: read
