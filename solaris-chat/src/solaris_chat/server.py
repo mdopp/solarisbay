@@ -40,6 +40,7 @@ from solaris_chat.engine.client import EngineClient, EngineError
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
+from solaris_chat.engine.tools.ha import call_service_scoped
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
 from solaris_chat.logging import log
 
@@ -249,6 +250,8 @@ def build_app(
     bus: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
+    hass_url: str = "",
+    hass_token: str = "",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -666,6 +669,38 @@ def build_app(
 
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
+
+    async def ha_call(request: web.Request) -> web.Response:
+        """Card-action endpoint (#476): run a scoped HA service on one entity.
+
+        Phase 2 surfaces toggles on light/switch cards only; the helper applies
+        the same allowlist as the `ha_call_service` tool (blocked domains, name
+        regex, domain==entity). Owner-scoped: any authenticated resident, no
+        client-side HA token. Returns the new state so the card can confirm.
+        """
+        if not hass_url or not hass_token:
+            return web.json_response(
+                {"ok": False, "error": "ha_not_configured"}, status=503
+            )
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        entity_id = str(body.get("entity_id") or "")
+        service = str(body.get("service") or "")
+        if entity_id.split(".", 1)[0] not in ("light", "switch"):
+            return web.json_response(
+                {"ok": False, "error": "unsupported_domain"}, status=400
+            )
+        data = body.get("data")
+        result = await call_service_scoped(
+            hass_url,
+            hass_token,
+            entity_id,
+            service,
+            data if isinstance(data, dict) else None,
+        )
+        return web.json_response(result, status=200 if result.get("ok") else 400)
 
     async def whoami(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
@@ -1622,6 +1657,7 @@ def build_app(
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", whoami)
+    app.router.add_post("/api/ha/call", ha_call)
     app.router.add_get("/api/toolsets", list_toolsets)
     app.router.add_get("/api/mcp", list_mcp)
     app.router.add_post("/api/mcp/{server}/test", test_mcp)
@@ -1923,6 +1959,8 @@ async def serve(
     bus: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
+    hass_url: str = "",
+    hass_token: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -1953,6 +1991,8 @@ async def serve(
         bus=bus,
         sb_mcp_url=sb_mcp_url,
         sb_mcp_token_path=sb_mcp_token_path,
+        hass_url=hass_url,
+        hass_token=hass_token,
     )
     runner = web.AppRunner(app)
     await runner.setup()

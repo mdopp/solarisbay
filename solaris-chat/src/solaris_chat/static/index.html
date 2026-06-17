@@ -352,6 +352,9 @@
     }
     .ha-card.on .hc-badge { background: rgba(34,197,94,0.18); color: #22c55e; }
     .ha-card.off .hc-badge { background: rgba(127,127,127,0.18); }
+    .ha-card.hc-toggle { cursor: pointer; user-select: none; }
+    .ha-card.hc-toggle:hover { border-color: var(--accent); }
+    .ha-card.busy { opacity: 0.6; pointer-events: none; }
 
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
@@ -1427,6 +1430,17 @@
             badge.className = "hc-badge";
             badge.textContent = haStateLabel(c.domain, st);
             card.appendChild(badge);
+            // Phase 2 (#476): light/switch badge becomes an on/off toggle.
+            if (c.domain === "light" || c.domain === "switch") {
+              card.classList.add("hc-toggle");
+              card.setAttribute("role", "button");
+              card.tabIndex = 0;
+              var act = function () { haToggle(card, badge, c); };
+              card.addEventListener("click", act);
+              card.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
+              });
+            }
           }
           wrap.appendChild(card);
         });
@@ -1444,6 +1458,36 @@
           if (state === "off") return "aus";
         }
         return state || "—";
+      }
+
+      // Toggle a light/switch card via the scoped /api/ha/call endpoint (#476):
+      // optimistic flip, then confirm/revert from the returned state.
+      function haToggle(card, badge, c) {
+        if (card.classList.contains("busy")) return;
+        var was = card.classList.contains("on");
+        var apply = function (on) {
+          card.classList.toggle("on", on);
+          card.classList.toggle("off", !on);
+          c.state = on ? "on" : "off";
+          badge.textContent = haStateLabel(c.domain, c.state);
+        };
+        apply(!was);
+        card.classList.add("busy");
+        fetch("/api/ha/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entity_id: c.entity_id,
+            service: c.domain + ".toggle",
+          }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (res) {
+            if (res && res.ok && res.state != null) apply(res.state === "on");
+            else apply(was);
+          })
+          .catch(function () { apply(was); })
+          .finally(function () { card.classList.remove("busy"); });
       }
 
       function renderStepTrace(steps) {

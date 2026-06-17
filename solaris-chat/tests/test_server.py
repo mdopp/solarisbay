@@ -2939,3 +2939,84 @@ async def test_csp_header_uses_configured_frame_ancestors(aiohttp_client):
         resp.headers["Content-Security-Policy"]
         == "frame-ancestors 'self' https://admin.dopp.cloud"
     )
+
+
+async def test_ha_call_runs_scoped_service_and_returns_state(
+    aiohttp_client, monkeypatch
+):
+    seen = {}
+
+    async def _fake_call(hass_url, hass_token, entity_id, service, data=None):
+        seen.update(
+            url=hass_url, token=hass_token, entity=entity_id, service=service, data=data
+        )
+        return {"ok": True, "state": "on"}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": "light.kitchen", "service": "light.toggle"},
+    )
+    assert resp.status == 200
+    assert (await resp.json()) == {"ok": True, "state": "on"}
+    # the configured household HA creds are used, never a client-supplied token
+    assert seen == {
+        "url": "http://ha",
+        "token": "tok",
+        "entity": "light.kitchen",
+        "service": "light.toggle",
+        "data": None,
+    }
+
+
+async def test_ha_call_rejects_unsupported_domain(aiohttp_client, monkeypatch):
+    called = False
+
+    async def _fake_call(*a, **k):
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    # phase 2 = light/switch only; a climate/cover/shell domain is refused
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": "climate.living", "service": "climate.toggle"},
+    )
+    assert resp.status == 400
+    assert (await resp.json())["error"] == "unsupported_domain"
+    assert called is False  # never reaches the HA helper
+
+
+async def test_ha_call_503_when_ha_not_configured(aiohttp_client):
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": "light.kitchen", "service": "light.toggle"},
+    )
+    assert resp.status == 503
+    assert (await resp.json())["error"] == "ha_not_configured"

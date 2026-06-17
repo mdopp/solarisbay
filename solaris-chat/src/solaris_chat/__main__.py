@@ -81,6 +81,8 @@ async def _run() -> None:
         bus=bus,
         sb_mcp_url=settings.sb_mcp_url,
         sb_mcp_token_path=settings.sb_mcp_token_path,
+        hass_url=settings.hass_url,
+        hass_token=settings.hass_token,
     )
 
 

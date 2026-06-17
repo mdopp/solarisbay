@@ -82,6 +82,52 @@ def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+async def call_service_scoped(
+    hass_url: str,
+    hass_token: str,
+    entity_id: str,
+    service: str,
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run a single `domain.service` on one entity and return its new state.
+
+    The card-action path (#476): same domain/service allowlist as the
+    `ha_call_service` tool — the names go into `/api/services/{domain}/{service}`
+    so the regex blocks path traversal and `_BLOCKED_DOMAINS` keeps
+    arbitrary-code domains unreachable. `service` is dotted (`light.toggle`); its
+    domain must match the entity's so a card can only act on its own entity.
+    """
+    if not _ENTITY_RE.match(entity_id):
+        return {"ok": False, "error": "invalid entity_id"}
+    domain, _, action = service.partition(".")
+    if not action or not _NAME_RE.match(domain) or not _NAME_RE.match(action):
+        return {"ok": False, "error": "invalid service"}
+    if domain in _BLOCKED_DOMAINS:
+        return {"ok": False, "error": f"domain {domain} is not allowed"}
+    if domain != entity_id.split(".", 1)[0]:
+        return {"ok": False, "error": "service domain does not match entity"}
+    headers = {
+        "Authorization": f"Bearer {hass_token}",
+        "Content-Type": "application/json",
+    }
+    payload: dict[str, Any] = {"entity_id": entity_id}
+    if isinstance(data, dict):
+        payload.update(data)
+    url = hass_url.rstrip("/")
+    async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+        async with client.post(
+            f"{url}/api/services/{domain}/{action}", json=payload, headers=headers
+        ) as resp:
+            if resp.status >= 400:
+                detail = (await resp.text())[:200]
+                return {"ok": False, "error": f"HA {resp.status}: {detail}"}
+        async with client.get(f"{url}/api/states/{entity_id}", headers=headers) as resp:
+            if resp.status >= 400:
+                return {"ok": True, "state": None}
+            body = await resp.json()
+    return {"ok": True, "state": body.get("state")}
+
+
 def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
     url = hass_url.rstrip("/")
     headers = {
