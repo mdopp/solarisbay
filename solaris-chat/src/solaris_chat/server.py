@@ -42,7 +42,7 @@ from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.knowledge import okf, projection
-from solaris_chat.engine.tools.ha import call_service_scoped, fetch_card
+from solaris_chat.engine.tools.ha import call_service_scoped, fetch_card, fetch_energy
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
 from solaris_chat.logging import log
 
@@ -1519,6 +1519,66 @@ def build_app(
             STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
         )
 
+    async def portal_energy(_request: web.Request) -> web.Response:
+        """Aggregate the home-energy picture for the `#/p/energy` page (#503).
+
+        Same pattern as `/api/concept/<id>`: a read-only `/api` aggregator behind
+        the existing Authelia gate, rendered by an SPA view. 503 when HA is not
+        configured for this household.
+        """
+        if not hass_url or not hass_token:
+            return web.json_response(
+                {"ok": False, "error": "ha_unconfigured"}, status=503
+            )
+        energy = await fetch_energy(hass_url, hass_token)
+        if energy is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unavailable"}, status=502
+            )
+        return web.json_response({"ok": True, "energy": energy})
+
+    async def portal_page(_request: web.Request) -> web.Response:
+        # Bookmarkable deep-link to a household page: serve the SPA shell; the
+        # client router reads the `/p/<type>` path and renders from the API.
+        return web.FileResponse(
+            STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+        )
+
+    async def anchors_resolve(request: web.Request) -> web.Response:
+        """Resolve auto-anchors (#501) to OKF entity ids (#506).
+
+        Owner-scoped: each `#`/`@` anchor's bare value is matched against
+        `entity_aliases`/`entities` (migration 0016) via the same resolver the
+        concept aggregator uses. A token without a `#`/`@` prefix is resolved
+        whole — this is the `[[X]]` cross-link path (#504), which shares this
+        resolver. Returns `{resolved: {token: entity_id}}` for the ones that hit
+        a known entity; unresolved tokens are absent so the client keeps phase
+        1's `/search` filter chip (anchors) or plain text (`[[ ]]`).
+        """
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        body = await request.json()
+        anchors = [str(a) for a in (body.get("anchors") or [])]
+        resolved: dict[str, str] = {}
+        if anchors and Path(solaris_db_path).exists():
+            conn = projection.open_conn(solaris_db_path)
+            try:
+                for anchor in anchors:
+                    value = (
+                        anchor[1:].strip()
+                        if anchor[:1] in ("#", "@")
+                        else anchor.strip()
+                    )
+                    if not value:
+                        continue
+                    entity_id = projection.resolve_entity_id(conn, value, uid)
+                    if entity_id is not None:
+                        resolved[anchor] = entity_id
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        return web.json_response({"ok": True, "resolved": resolved})
+
     async def mentions_tags(request: web.Request) -> web.Response:
         # Autosuggest for `#tag` (#279): the resident's already-used tags,
         # prefix-filtered. Per-resident scope (owner_uid = resolve_uid).
@@ -1847,6 +1907,9 @@ def build_app(
     app.router.add_get("/api/topics/{slug:.+}/items", topic_items)
     app.router.add_get("/api/concept/{id}", concept_view)
     app.router.add_get("/c/{id}", concept_page)
+    app.router.add_get("/api/portal/energy", portal_energy)
+    app.router.add_get("/p/{type}", portal_page)
+    app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/mentions/tags", mentions_tags)
     app.router.add_get("/api/mentions/persons", mentions_persons)
     app.router.add_get("/api/sessions/{session_id}/mentions", session_mentions)

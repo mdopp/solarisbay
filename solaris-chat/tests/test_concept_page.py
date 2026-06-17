@@ -282,6 +282,83 @@ async def test_concept_api_adds_live_ha_card(aiohttp_client, tmp_path, monkeypat
     assert c["title"] == "Sofalicht"
 
 
+async def test_anchors_resolve_links_known_entity(aiohttp_client, tmp_path):
+    # #506: anchors that match an OKF entity (by name/alias) resolve to its id
+    # so the chip can link to #/c/<id>; unknown anchors are absent (stay chips).
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/anchors/resolve",
+        json={"anchors": ["@Anna", "@Anni", "#nichts"]},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    resolved = (await resp.json())["resolved"]
+    assert resolved == {"@Anna": "ent-anna", "@Anni": "ent-anna"}
+
+
+async def test_anchors_resolve_per_resident(aiohttp_client, tmp_path):
+    # lena's "Anna" never resolves to mdopp's entity (resolver is owner-scoped).
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/anchors/resolve",
+        json={"anchors": ["@Anna"]},
+        headers={"Remote-User": "lena"},
+    )
+    assert (await resp.json())["resolved"] == {"@Anna": "ent-anna-lena"}
+
+
+async def test_anchors_resolve_handles_bare_wikilink_token(aiohttp_client, tmp_path):
+    # #504: a [[X]] target arrives without a #/@ prefix and is resolved whole
+    # by the same endpoint; an unknown bare token is absent (renders plain text).
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/anchors/resolve",
+        json={"anchors": ["Anna", "Anni", "Foo"]},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    assert (await resp.json())["resolved"] == {"Anna": "ent-anna", "Anni": "ent-anna"}
+
+
+async def test_anchors_resolve_degrades_when_db_missing(aiohttp_client, tmp_path):
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=str(tmp_path / "nope.db"),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/anchors/resolve",
+        json={"anchors": ["@Anna"]},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    assert (await resp.json())["resolved"] == {}
+
+
 async def test_concept_shell_serves_spa(aiohttp_client, tmp_path):
     app = build_app(
         hermes=object(),
@@ -292,6 +369,76 @@ async def test_concept_shell_serves_spa(aiohttp_client, tmp_path):
     )
     client = await aiohttp_client(app)
     resp = await client.get("/c/ent-anna")
+    assert resp.status == 200
+    assert resp.headers.get("Content-Type", "").startswith("text/html")
+
+
+# ---- household pages (#503) --------------------------------------------------
+
+
+async def test_portal_energy_aggregates(aiohttp_client, tmp_path, monkeypatch):
+    async def _fake_energy(url, token):
+        return {
+            "headlines": [
+                {
+                    "entity_id": "sensor.haus",
+                    "label": "Hausverbrauch",
+                    "state": "1200",
+                    "unit": "W",
+                }
+            ],
+            "circuits": [
+                {
+                    "entity_id": "sensor.bad",
+                    "name": "Bad",
+                    "domain": "sensor",
+                    "state": "40",
+                    "unit": "W",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("solaris_chat.server.fetch_energy", _fake_energy)
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/portal/energy", headers={"Remote-User": "mdopp"})
+    assert resp.status == 200
+    e = (await resp.json())["energy"]
+    assert e["headlines"][0]["label"] == "Hausverbrauch"
+    assert e["circuits"][0]["name"] == "Bad"
+
+
+async def test_portal_energy_503_without_ha(aiohttp_client, tmp_path):
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/portal/energy", headers={"Remote-User": "mdopp"})
+    assert resp.status == 503
+
+
+async def test_portal_shell_serves_spa(aiohttp_client, tmp_path):
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/p/energy")
     assert resp.status == 200
     assert resp.headers.get("Content-Type", "").startswith("text/html")
 
@@ -308,6 +455,16 @@ async def test_concept_shell_serves_spa(aiohttp_client, tmp_path):
         "#\\/c\\/",  # the hash-route pattern
         '"/api/concept/"',  # the aggregator the page fetches
         "renderHaCard(c.ha_card",  # reuses the chat's HA card renderer
+        "function resolveAnchors(",  # #506: anchor -> entity resolution
+        '"/api/anchors/resolve"',  # the resolver endpoint the chips call
+        'window.location.hash = "#/c/" + encodeURIComponent(id)',  # resolved link
+        "function linkifyWikiLinks(",  # #504: [[X]] parse + resolve in chat text
+        "var WIKILINK_RE = ",  # #504: the [[X]] / [[X|label]] token pattern
+        'a.href = "#/c/" + encodeURIComponent(id)',  # #504: resolved wiki-link target
+        "function openPortal(",  # #503: household page route handler
+        "function renderEnergyPage(",  # #503: the energy SPA view
+        '"/api/portal/energy"',  # #503: the energy aggregator the page fetches
+        "#\\/p\\/",  # #503: the household-page hash-route pattern
     ],
 )
 def test_index_html_concept_view_contract(sentinel):

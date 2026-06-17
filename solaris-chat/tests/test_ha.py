@@ -549,3 +549,88 @@ async def test_call_service_scoped_surfaces_ha_error(monkeypatch):
     )
     assert res["ok"] is False
     assert "HA 500" in res["error"]
+
+
+async def test_fetch_energy_buckets_headlines_and_circuits(monkeypatch):
+    states = [
+        {
+            "entity_id": "sensor.hausverbrauch",
+            "state": "1200",
+            "attributes": {
+                "friendly_name": "Hausverbrauch",
+                "device_class": "power",
+                "unit_of_measurement": "W",
+            },
+        },
+        {
+            "entity_id": "sensor.pv_leistung",
+            "state": "3400",
+            "attributes": {
+                "friendly_name": "PV Erzeugung",
+                "device_class": "power",
+                "unit_of_measurement": "W",
+            },
+        },
+        {
+            "entity_id": "sensor.akku_soc",
+            "state": "87",
+            "attributes": {
+                "friendly_name": "Akku Ladung",
+                "device_class": "power",
+                "unit_of_measurement": "W",
+            },
+        },
+        {
+            "entity_id": "sensor.kueche_strom",
+            "state": "150",
+            "attributes": {
+                "friendly_name": "Küche",
+                "device_class": "power",
+                "unit_of_measurement": "W",
+            },
+        },
+        {
+            "entity_id": "sensor.bad_strom",
+            "state": "40",
+            "attributes": {
+                "friendly_name": "Bad",
+                "device_class": "power",
+                "unit_of_measurement": "W",
+            },
+        },
+        # non-energy sensor + a light are ignored
+        {
+            "entity_id": "sensor.temp",
+            "state": "21",
+            "attributes": {"device_class": "temperature"},
+        },
+        {"entity_id": "light.kitchen", "state": "on", "attributes": {}},
+    ]
+    gets = _stub(monkeypatch, states=states)
+    energy = await ha_mod.fetch_energy("http://ha", "tok")
+    assert gets[0][0] == "http://ha/api/states"
+    labels = {h["label"]: h for h in energy["headlines"]}
+    assert labels["Hausverbrauch"]["state"] == "1200"
+    assert labels["PV-Erzeugung"]["entity_id"] == "sensor.pv_leistung"
+    assert labels["Akku"]["entity_id"] == "sensor.akku_soc"
+    # leftover power sensors fall through to the per-circuit list, sorted by name
+    circuit_names = [c["name"] for c in energy["circuits"]]
+    assert circuit_names == ["Bad", "Küche"]
+
+
+async def test_fetch_energy_returns_none_on_ha_error(monkeypatch):
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            return _Resp(None, status=500)
+
+    monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
+    assert await ha_mod.fetch_energy("http://ha", "tok") is None

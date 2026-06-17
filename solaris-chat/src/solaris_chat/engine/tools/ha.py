@@ -127,6 +127,78 @@ async def fetch_card(
     return card_spec(entity_id, body.get("state"), body.get("attributes") or {})
 
 
+# Headline buckets for the home-energy picture (#503). Each matches a sensor by
+# substrings in its friendly_name (lower-cased); the first matching bucket wins,
+# so leftover power sensors fall through to the per-circuit list. German + a few
+# English/SENEC terms cover the common naming.
+_ENERGY_HEADLINES = (
+    (
+        "house",
+        "Hausverbrauch",
+        ("hausverbrauch", "house consumption", "verbrauch haus"),
+    ),
+    ("pv", "PV-Erzeugung", ("pv", "solar", "erzeugung", "production")),
+    ("grid_import", "Netzbezug", ("netzbezug", "import", "bezug")),
+    ("grid_export", "Einspeisung", ("einspeisung", "export")),
+    ("battery", "Akku", ("akku", "battery", "speicher")),
+)
+
+
+async def fetch_energy(hass_url: str, hass_token: str) -> dict[str, Any] | None:
+    """Compose the home-energy picture from live HA state (read-only, #503).
+
+    One `/api/states` read; power/energy `device_class` sensors are sorted into
+    the headline buckets (Hausverbrauch/PV/Netzbezug/Einspeisung/Akku) plus a
+    per-circuit power list (the data the "Energieverbrauch" answer dumped as ~30
+    chat cards belongs on this page). Returns None on any HA error.
+    """
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                if resp.status >= 400:
+                    return None
+                states = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    headlines: dict[str, dict[str, Any]] = {}
+    circuits: list[dict[str, Any]] = []
+    for s in states:
+        eid = str(s.get("entity_id") or "")
+        if not eid.startswith("sensor."):
+            continue
+        attrs = s.get("attributes") or {}
+        dclass = str(attrs.get("device_class") or "").lower()
+        if dclass not in ("power", "energy"):
+            continue
+        name = str(attrs.get("friendly_name") or eid)
+        spec = {
+            "entity_id": eid,
+            "name": name,
+            "state": None if s.get("state") is None else str(s.get("state")),
+            "unit": attrs.get("unit_of_measurement"),
+            "device_class": dclass,
+        }
+        lname = name.lower()
+        for key, _, needles in _ENERGY_HEADLINES:
+            if key not in headlines and any(n in lname for n in needles):
+                headlines[key] = spec
+                break
+        else:
+            if dclass == "power":
+                circuits.append(spec)
+    circuits.sort(key=lambda c: c["name"].lower())
+    return {
+        "headlines": [
+            {**headlines[key], "label": label}
+            for key, label, _ in _ENERGY_HEADLINES
+            if key in headlines
+        ],
+        "circuits": circuits,
+    }
+
+
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 _BLOCKED_DOMAINS = frozenset(

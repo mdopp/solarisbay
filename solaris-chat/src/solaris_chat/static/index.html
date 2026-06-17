@@ -367,6 +367,12 @@
       border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px;
     }
     .anchor-chip:hover { border-color: var(--accent); }
+    /* A resolved anchor (#506) becomes a [[ ]] cross-link into its concept page
+       instead of a filter chip: solid accent, no chip border. */
+    .anchor-chip.resolved {
+      border-color: transparent; text-decoration: underline;
+      text-decoration-style: dotted;
+    }
     .ha-card {
       flex: 0 1 auto; min-width: 120px; max-width: 240px;
       border: 1px solid var(--line); border-radius: 10px;
@@ -545,6 +551,11 @@
       background: var(--accent-soft); color: var(--accent);
     }
     .mention.person { background: var(--bubble-sol); color: var(--ink); }
+
+    /* [[X]] cross-links (#504): an unresolved target stays plain inline text; a
+       resolved one links to its concept page. */
+    a.wikilink.resolved { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); cursor: pointer; }
+    a.wikilink.resolved:hover { border-bottom-color: var(--accent); }
 
     /* Tag-cloud (#279c): the active chat's #tags / @persons as jump-to-message
        chips. Responsive — a right-side gutter panel when the viewport is wide
@@ -977,6 +988,7 @@
         <span class="admin-badge" id="admin-badge" hidden>Admin</span>
       </div>
       <div class="rail-links">
+        <a id="energy-link" href="#/p/energy">Energie</a>
         <a id="release-link" href="https://github.com/mdopp/solarisbay/releases" target="_blank" rel="noopener">Release news</a>
         <a href="https://github.com/mdopp/solarisbay" target="_blank" rel="noopener">GitHub</a>
         <a id="logout-link" href="#" hidden>Log out</a>
@@ -1632,10 +1644,14 @@
       // Auto-surfaced #/@ anchor chips (#501): each chip filters the chat to its
       // anchor by reusing the /search highlight path (openSearchCard prefilled
       // with the anchor text). Reusable across the live stream, mirror, reload.
+      // Phase 2 (#506): anchors that resolve to a known OKF entity upgrade into
+      // a [[ ]] cross-link to that entity's concept page (#/c/<id>); unresolved
+      // ones stay the phase-1 filter chip.
       function renderAnchors(anchors) {
         if (!anchors || !anchors.length) return null;
         var wrap = document.createElement("div");
         wrap.className = "anchor-chips";
+        var chips = {};
         anchors.slice(0, 3).forEach(function (a) {
           var text = String(a == null ? "" : a).trim();
           if (text[0] !== "#" && text[0] !== "@") return;
@@ -1644,10 +1660,103 @@
           b.className = "anchor-chip";
           b.textContent = text;
           b.title = "Chat nach " + text + " filtern";
-          b.addEventListener("click", function () { openSearchCard(text); });
+          b._filter = function () { openSearchCard(text); };
+          b.addEventListener("click", b._filter);
           wrap.appendChild(b);
+          chips[text] = b;
         });
-        return wrap.children.length ? wrap : null;
+        if (!wrap.children.length) return null;
+        resolveAnchors(Object.keys(chips), chips);
+        return wrap;
+      }
+
+      // Resolve the rendered anchors against the OKF entity graph and turn the
+      // resolved ones into concept-page links (#506). One call per chip-set;
+      // failure leaves the phase-1 filter chips untouched.
+      function resolveAnchors(anchors, chips) {
+        if (!anchors.length) return;
+        fetch("/api/anchors/resolve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ anchors: anchors }),
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok || !j.resolved) return;
+            Object.keys(j.resolved).forEach(function (text) {
+              var b = chips[text];
+              var id = j.resolved[text];
+              if (!b || !id) return;
+              b.classList.add("resolved");
+              b.title = text + " öffnen";
+              b.removeEventListener("click", b._filter);
+              b.addEventListener("click", function () {
+                window.location.hash = "#/c/" + encodeURIComponent(id);
+              });
+            });
+          })
+          .catch(function () {});
+      }
+
+      // `[[X]]` / `[[X|label]]` cross-links in chat text (#504). Walk the
+      // rendered text nodes of a message body, replace each `[[ ]]` run with a
+      // placeholder span (label shown), collect the targets, and resolve them
+      // against the OKF entity graph via the same /api/anchors/resolve endpoint
+      // the auto-anchors use (a bare token, no #/@, resolves whole). A resolved
+      // target upgrades into a tappable link to its concept page (#/c/<id>); an
+      // unresolved one stays plain text. Targets in code/pre stay literal.
+      var WIKILINK_RE = /\[\[([^\[\]|]+?)(?:\|([^\[\]]+?))?\]\]/g;
+      function linkifyWikiLinks(rootEl) {
+        if (!rootEl) return;
+        var walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, null);
+        var targets = [], nodes = [], node;
+        while ((node = walker.nextNode())) {
+          if (node.nodeValue.indexOf("[[") === -1) continue;
+          var p = node.parentNode;
+          if (p && (p.closest("code") || p.closest("pre") || p.closest("a"))) continue;
+          nodes.push(node);
+        }
+        var spansByTarget = {};
+        nodes.forEach(function (textNode) {
+          var text = textNode.nodeValue, last = 0, m, frag = document.createDocumentFragment();
+          WIKILINK_RE.lastIndex = 0;
+          while ((m = WIKILINK_RE.exec(text))) {
+            if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+            var target = m[1].trim(), label = (m[2] || m[1]).trim();
+            var span = document.createElement("span");
+            span.className = "wikilink";
+            span.textContent = label;
+            frag.appendChild(span);
+            (spansByTarget[target] = spansByTarget[target] || []).push(span);
+            if (targets.indexOf(target) === -1) targets.push(target);
+            last = m.index + m[0].length;
+          }
+          if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+          textNode.parentNode.replaceChild(frag, textNode);
+        });
+        if (!targets.length) return;
+        fetch("/api/anchors/resolve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ anchors: targets }),
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok || !j.resolved) return;
+            Object.keys(j.resolved).forEach(function (target) {
+              var id = j.resolved[target];
+              (spansByTarget[target] || []).forEach(function (span) {
+                if (!id) return;
+                var a = document.createElement("a");
+                a.className = "wikilink resolved";
+                a.href = "#/c/" + encodeURIComponent(id);
+                a.textContent = span.textContent;
+                a.title = target + " öffnen";
+                span.parentNode.replaceChild(a, span);
+              });
+            });
+          })
+          .catch(function () {});
       }
 
       // One entity's card. `row` renders it as a compact group row (no card
@@ -2212,7 +2321,7 @@
       function addText(role, text, when) {
         var el = document.createElement("div");
         el.className = "msg " + role;
-        if (role === "me") tagUserBubble(el, appendMentionText(el, text) > 0);
+        if (role === "me") { tagUserBubble(el, appendMentionText(el, text) > 0); linkifyWikiLinks(el); }
         else el.appendChild(document.createTextNode(text));
         if (role === "me" || role === "sol") {
           var meta = metaLine(when);
@@ -2368,6 +2477,7 @@
             if (!buffer) body.textContent = "(no reply)";
             else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
+            linkifyWikiLinks(body);
             el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
           },
@@ -2378,7 +2488,7 @@
             // Mirror finish() (#406): drop the live bubble so the persisted step
             // list stays the single trace surface, with no ghost on a stopped turn.
             if (bubble && bubble.parentNode) el.removeChild(bubble);
-            if (buffer) { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); renderMermaidIn(body); }
+            if (buffer) { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); renderMermaidIn(body); linkifyWikiLinks(body); }
             else { body.textContent = "(stopped)"; }
             var note = document.createElement("span");
             note.className = "stopped-note"; note.textContent = "stopped";
@@ -2403,6 +2513,7 @@
             if (!buffer) body.textContent = "(no reply)";
             else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
+            linkifyWikiLinks(body);
             el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
           }
@@ -3233,7 +3344,7 @@
           });
           el.appendChild(strip);
         }
-        if (text) tagUserBubble(el, appendMentionText(el, text) > 0);
+        if (text) { tagUserBubble(el, appendMentionText(el, text) > 0); linkifyWikiLinks(el); }
         var meta = metaLine(when || new Date());
         addRerunAction(meta, text);
         el.appendChild(meta);
@@ -3382,6 +3493,7 @@
                 body.setAttribute("data-raw", m.content);
                 body.innerHTML = renderReply(m.content);
                 renderMermaidIn(body);
+                linkifyWikiLinks(body);
                 el.appendChild(body);
                 if (ts) el.appendChild(metaLine(ts));
                 log.appendChild(el);
@@ -3781,15 +3893,77 @@
         return h;
       }
 
+      // Household pages (#503): the same SPA-view + `/api` aggregator pattern as
+      // the concept page, on a `#/p/<type>` hash route. The energy page composes
+      // the home-energy picture (the data the "Energieverbrauch" answer used to
+      // dump into chat belongs here).
+      function openPortal(type) {
+        if (type !== "energy") { showView("chat"); return; }
+        closeRail();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card";
+        card.textContent = "Lade…";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+        fetch("/api/portal/energy")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) { card.textContent = "Energiedaten nicht verfügbar."; return; }
+            renderEnergyPage(card, j.energy);
+          })
+          .catch(function () { card.textContent = "Konnte die Energiedaten nicht laden."; });
+      }
+
+      function renderEnergyPage(card, e) {
+        card.textContent = "";
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = "Energie";
+        head.appendChild(title);
+        card.appendChild(head);
+        if (e.headlines && e.headlines.length) {
+          var hl = document.createElement("ul");
+          hl.className = "concept-facts";
+          e.headlines.forEach(function (h) {
+            var li = document.createElement("li");
+            li.textContent = h.label + ": " + (h.state == null ? "?" : h.state) +
+              (h.unit ? " " + h.unit : "");
+            hl.appendChild(li);
+          });
+          card.appendChild(hl);
+        }
+        if (e.circuits && e.circuits.length) {
+          card.appendChild(conceptSectionTitle("Stromkreise"));
+          var wrap = document.createElement("div");
+          wrap.className = "ha-cards";
+          var group = document.createElement("div");
+          group.className = "ha-card hc-group";
+          e.circuits.forEach(function (c) { group.appendChild(renderHaCard(c, true)); });
+          wrap.appendChild(group);
+          card.appendChild(wrap);
+        }
+        if (!(e.headlines && e.headlines.length) && !(e.circuits && e.circuits.length)) {
+          var none = document.createElement("p");
+          none.className = "concept-desc";
+          none.textContent = "Keine Energie-Sensoren gefunden.";
+          card.appendChild(none);
+        }
+      }
+
       // Dispatch the current hash/path route. `#/c/<id>` (and the `/c/<id>`
-      // bookmarkable shell, rewritten to the hash form) open the concept page.
+      // bookmarkable shell) open the concept page; `#/p/<type>` (and `/p/<type>`)
+      // open a household page.
       function routeFromLocation() {
         var hash = window.location.hash || "";
+        var path = window.location.pathname;
         var m = hash.match(/^#\/c\/(.+)$/);
-        if (!m && window.location.pathname.indexOf("/c/") === 0) {
-          m = ["", window.location.pathname.slice(3)];
-        }
-        if (m) openConcept(decodeURIComponent(m[1]));
+        if (!m && path.indexOf("/c/") === 0) m = ["", path.slice(3)];
+        if (m) { openConcept(decodeURIComponent(m[1])); return; }
+        var p = hash.match(/^#\/p\/(.+)$/);
+        if (!p && path.indexOf("/p/") === 0) p = ["", path.slice(3)];
+        if (p) openPortal(decodeURIComponent(p[1]));
       }
       window.addEventListener("hashchange", routeFromLocation);
 
@@ -3810,6 +3984,7 @@
         Array.prototype.forEach.call(bodies, function (body) {
           body.innerHTML = renderReply(body.getAttribute("data-raw"));
           renderMermaidIn(body);
+          linkifyWikiLinks(body);
         });
       }
       thinkBtns.forEach(function (b) {
