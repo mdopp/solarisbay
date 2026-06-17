@@ -230,6 +230,39 @@ def test_scheduler_entry_surfaces_a_run_now_command():
     assert tpl and '"/api/defs/" + (def.kind || "command") + "/"' in tpl.group(1)
 
 
+def test_hooks_card_is_a_setting_card_on_the_defs_api():
+    # #483: /hooks is a card-command; its editor lists + edits the hook-kind
+    # registry via /api/defs/hook with add/edit/delete.
+    assert '["/hooks"' in _HTML
+    assert 'if (cmd === "hooks") { openSettingCard("hooks"); return; }' in _HTML
+    assert 'hooks: document.getElementById("view-hooks")' in _HTML
+    assert '/api/defs/hook"' in _HTML  # loadHooks GET list
+    assert '/api/defs/hook/" + encodeURIComponent(currentHookId)' in _HTML
+
+
+def test_hooks_event_selector_drives_the_event_field_from_known_bind_points():
+    # #483: the event selector is the source of truth for the binding — save folds
+    # the chosen event into the `event:` frontmatter the server flow points resolve
+    # by (skills.hooks_for_event), and it's chosen from the KNOWN bind points only.
+    assert 'id="hook-event"' in _HTML
+    for ev in (
+        "image-upload",
+        "guest-session-start",
+        "topic-circling",
+        "missing-room",
+        "registration-handoff",
+        "self-enroll-request",
+    ):
+        assert ev in _HTML
+    fn = re.search(
+        r'hooksSave\.addEventListener\("click", function \(\) \{(.*?)\n      \}\);',
+        _HTML,
+        re.S,
+    )
+    assert fn, "hooks save handler not found"
+    assert "applyEventToRaw(hooksEditor.value, hookEventSel.value)" in fn.group(1)
+
+
 def test_pinned_household_row_opens_the_durable_session():
     # #419: the pinned "Zuhause" row opens the resident's ONE durable household
     # session (from /api/whoami) instead of minting a fresh chat per click; only

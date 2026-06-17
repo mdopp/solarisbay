@@ -1035,6 +1035,39 @@
       </div>
     </section>
 
+    <section id="view-hooks" class="view">
+      <div id="hooks-list" class="pane">
+        <h2>Hooks</h2>
+        <p class="lead">Definitions Solaris runs automatically when a lifecycle event fires (an image upload, a guest session, …). Each is wired to one event; editing is for admins.</p>
+        <button id="hooks-add" class="btn-primary" type="button" hidden>New hook</button>
+        <div id="hooks-cards"></div>
+      </div>
+      <div id="hooks-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
+        <div class="reader-bar">
+          <button class="back" id="hooks-back" type="button"><svg class="ic"><use href="#i-back"></use></svg> Hooks</button>
+          <span class="name" id="hooks-name"></span>
+          <span class="grow"></span>
+          <button class="edit-btn" id="hooks-delete" type="button" hidden>Delete</button>
+          <button class="edit-btn" id="hooks-edit" type="button" hidden>Edit</button>
+        </div>
+        <div class="pane" id="hooks-view"><div class="doc"><div class="md" id="hooks-body"></div></div></div>
+        <div class="pane" id="hooks-edit-pane" style="display:none;">
+          <div class="editor-wrap">
+            <div class="cron-picker" id="hook-event-picker">
+              <label>On event:</label>
+              <select id="hook-event" aria-label="Bound event"></select>
+            </div>
+            <textarea id="hooks-editor" class="code-editor" spellcheck="false" aria-label="Hook source"></textarea>
+            <div class="editor-bar">
+              <button id="hooks-save" class="btn-primary" type="button">Save</button>
+              <button id="hooks-cancel" class="secondary" type="button">Cancel</button>
+              <span id="hooks-status" class="editor-status"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section id="view-soul" class="view">
       <div class="reader-bar">
         <span class="name">Soul</span>
@@ -2174,6 +2207,7 @@
         ["/skills", "Skills Solaris draws on"],
         ["/commands", "Your own /-command prompt templates"],
         ["/scheduler", "Time-fired jobs Solaris runs unattended"],
+        ["/hooks", "Event-fired definitions (uploads, guests, …)"],
         ["/soul", "Solaris's durable identity"],
         ["/persona", "Persona & speed for the next new chat"],
         ["/tools", "What Solaris can do — toolsets & MCP servers"],
@@ -2219,6 +2253,7 @@
         if (cmd === "skills" || cmd === "soul" || cmd === "tools") { openSettingCard(cmd); return; }
         if (cmd === "commands") { openSettingCard("commands"); return; }
         if (cmd === "scheduler") { openSettingCard("scheduler"); return; }
+        if (cmd === "hooks") { openSettingCard("hooks"); return; }
         if (cmd === "persona") {
           if (rest.trim()) { applyPersonaArg(rest.trim()); } else { openPersonaCard(); }
           return;
@@ -3187,6 +3222,7 @@
         skills: document.getElementById("view-skills"),
         commands: document.getElementById("view-commands"),
         scheduler: document.getElementById("view-scheduler"),
+        hooks: document.getElementById("view-hooks"),
         soul: document.getElementById("view-soul"),
         tools: document.getElementById("view-tools"),
         prefs: document.getElementById("view-prefs"),
@@ -3194,7 +3230,7 @@
         voice: document.getElementById("view-voice")
       };
       var settingTitles = {
-        skills: "Skills", commands: "Commands", scheduler: "Scheduler", soul: "Soul", tools: "Tools",
+        skills: "Skills", commands: "Commands", scheduler: "Scheduler", hooks: "Hooks", soul: "Soul", tools: "Tools",
         prefs: "Chat", model: "Model", voice: "Voice"
       };
       var skillsLoaded = false, soulLoaded = false;
@@ -3203,6 +3239,7 @@
         if (name === "skills") { if (!skillsLoaded) { skillsLoaded = true; loadSkills(); } }
         else if (name === "commands") { loadCommands(); }
         else if (name === "scheduler") { loadScheduler(); }
+        else if (name === "hooks") { loadHooks(); }
         else if (name === "soul") { if (!soulLoaded) { soulLoaded = true; loadSoul(); } }
         else if (name === "tools") { loadTools(); loadMcp(); }
         else if (name === "prefs") { syncThinkingSeg(); }
@@ -3971,6 +4008,180 @@
             else { setSchedulerStatus("Could not save. Please try again.", "err"); }
           })
           .finally(function () { schedulerSave.disabled = false; });
+      });
+
+      // ---- Hooks (#483) — event-fired definitions with an event selector ----
+      // Mirrors the Scheduler editor but binds to a lifecycle EVENT (not a clock)
+      // chosen from the known server bind points, so a hook is always wired to a
+      // real trigger rather than free text. Server flow points resolve the hook
+      // for an event from this registry (skills.hooks_for_event), so a rebind
+      // here changes which definition fires on that event.
+      var HOOK_EVENTS = [
+        ["image-upload", "Image upload"],
+        ["guest-session-start", "Guest session starts"],
+        ["topic-circling", "Chat circles one topic"],
+        ["missing-room", "Voice command with no known room"],
+        ["registration-handoff", "Guest chose to register"],
+        ["self-enroll-request", "Resident asks to self-enrol"]
+      ];
+      var hooksCards = document.getElementById("hooks-cards");
+      var hooksList = document.getElementById("hooks-list");
+      var hooksReader = document.getElementById("hooks-reader");
+      var hooksName = document.getElementById("hooks-name");
+      var hooksBodyEl = document.getElementById("hooks-body");
+      var hooksViewEl = document.getElementById("hooks-view");
+      var hooksEditPane = document.getElementById("hooks-edit-pane");
+      var hooksEditBtn = document.getElementById("hooks-edit");
+      var hooksDeleteBtn = document.getElementById("hooks-delete");
+      var hooksAddBtn = document.getElementById("hooks-add");
+      var hooksEditor = document.getElementById("hooks-editor");
+      var hooksSave = document.getElementById("hooks-save");
+      var hooksCancel = document.getElementById("hooks-cancel");
+      var hooksStatus = document.getElementById("hooks-status");
+      var hookEventSel = document.getElementById("hook-event");
+      var currentHookId = null, currentHookRaw = "", hookIsNew = false;
+      var HOOK_TEMPLATE = "---\nname: \ndescription: \nkind: hook\nscope: household\nevent: image-upload\n---\n\n";
+
+      (function fillHookEvents() {
+        HOOK_EVENTS.forEach(function (e) {
+          var o = document.createElement("option"); o.value = e[0]; o.textContent = e[1] + " (" + e[0] + ")"; hookEventSel.appendChild(o);
+        });
+      })();
+      function eventLabel(ev) {
+        for (var i = 0; i < HOOK_EVENTS.length; i++) { if (HOOK_EVENTS[i][0] === ev) return HOOK_EVENTS[i][1]; }
+        return ev || "no event set";
+      }
+      // Rewrite (or insert) the `event:` frontmatter line so the selector is the
+      // single source of truth for the binding, even when the raw is hand-edited.
+      function applyEventToRaw(raw, ev) {
+        if (/^event:.*$/m.test(raw)) return raw.replace(/^event:.*$/m, "event: " + ev);
+        if (raw.indexOf("---") === 0) {
+          var end = raw.indexOf("\n---", 3);
+          if (end !== -1) return raw.slice(0, end) + "\nevent: " + ev + raw.slice(end);
+        }
+        return raw;
+      }
+      function eventFromRaw(raw) {
+        var m = /^event:(.*)$/m.exec(raw || "");
+        return m ? m[1].trim() : "";
+      }
+      function setHookEvent(ev) {
+        // An unknown event (legacy/hand-edited) falls back to the first known
+        // bind point so the selector never shows a binding the flow points
+        // can't resolve.
+        hookEventSel.value = HOOK_EVENTS.some(function (e) { return e[0] === ev; }) ? ev : HOOK_EVENTS[0][0];
+      }
+
+      function hooksViewMode() {
+        hooksEditPane.style.display = "none";
+        hooksViewEl.style.display = "block";
+        hooksEditBtn.hidden = !isAdmin;
+        hooksDeleteBtn.hidden = !isAdmin || hookIsNew;
+      }
+      function setHooksStatus(msg, kind) { hooksStatus.className = "editor-status" + (kind ? " " + kind : ""); hooksStatus.textContent = msg || ""; }
+
+      function loadHooks() {
+        hooksAddBtn.hidden = !isAdmin;
+        return fetch("/api/defs/hook")
+          .then(function (r) { return r.ok ? r.json() : { defs: [] }; })
+          .catch(function () { return { defs: [] }; })
+          .then(function (res) {
+            var defs = (res && res.defs) || [];
+            hooksCards.textContent = "";
+            defs.slice().sort(function (a, b) { return String(a.name || a.id).localeCompare(String(b.name || b.id)); })
+              .forEach(function (d) { hooksCards.appendChild(hookCard(d)); });
+            if (!defs.length) {
+              var note = document.createElement("div"); note.className = "empty-note"; note.textContent = "No hooks yet.";
+              hooksCards.appendChild(note);
+            }
+          });
+      }
+
+      function hookCard(d) {
+        var card = document.createElement("div"); card.className = "skill-card";
+        var name = document.createElement("div"); name.className = "name"; name.textContent = d.name || d.id;
+        card.appendChild(name);
+        var ev = document.createElement("div"); ev.className = "desc";
+        ev.textContent = d.event ? "on " + eventLabel(d.event) : "no event set";
+        card.appendChild(ev);
+        if (d.description) { var desc = document.createElement("div"); desc.className = "desc"; desc.textContent = d.description; card.appendChild(desc); }
+        card.addEventListener("click", function () { openHook(d.id); });
+        return card;
+      }
+
+      function openHook(id) {
+        return fetch("/api/defs/hook/" + encodeURIComponent(id))
+          .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
+          .then(function (j) {
+            var d = (j && j.def) || {};
+            currentHookId = d.id || id;
+            currentHookRaw = d.raw || "";
+            hookIsNew = false;
+            hooksName.textContent = d.name || d.id || id;
+            hooksBodyEl.innerHTML = window.renderMarkdown(d.body || "");
+            setHooksStatus("");
+            hooksViewMode();
+            hooksList.style.display = "none";
+            hooksReader.style.display = "flex";
+          })
+          .catch(function () {});
+      }
+      document.getElementById("hooks-back").addEventListener("click", function () {
+        hooksReader.style.display = "none";
+        hooksList.style.display = "block";
+        hooksViewMode();
+      });
+
+      hooksAddBtn.addEventListener("click", function () {
+        var id = (window.prompt("New hook id (folder name, e.g. doorbell-snapshot):") || "").trim();
+        if (!id) return;
+        currentHookId = id; currentHookRaw = HOOK_TEMPLATE; hookIsNew = true;
+        hooksName.textContent = id;
+        hooksBodyEl.innerHTML = "";
+        hooksList.style.display = "none";
+        hooksReader.style.display = "flex";
+        hooksEditBtn.click();
+      });
+      hooksEditBtn.addEventListener("click", function () {
+        hooksEditor.value = currentHookRaw;
+        setHookEvent(eventFromRaw(currentHookRaw));
+        setHooksStatus("");
+        hooksViewEl.style.display = "none";
+        hooksEditBtn.hidden = true;
+        hooksDeleteBtn.hidden = true;
+        hooksEditPane.style.display = "block";
+        hooksEditor.focus();
+      });
+      hooksCancel.addEventListener("click", hooksViewMode);
+      hooksDeleteBtn.addEventListener("click", function () {
+        if (!window.confirm("Delete hook `" + currentHookId + "`?")) return;
+        fetch("/api/defs/hook/" + encodeURIComponent(currentHookId), { method: "DELETE" })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("delete failed"); })
+          .then(function () { loadHooks(); document.getElementById("hooks-back").click(); })
+          .catch(function (e) { setHooksStatus(e.message === "forbidden" ? "Only admins can delete hooks." : "Could not delete. Please try again.", "err"); });
+      });
+      hooksSave.addEventListener("click", function () {
+        // The selector is authoritative for the binding: fold its event into the
+        // raw frontmatter before saving so the flow point can resolve this hook.
+        var content = applyEventToRaw(hooksEditor.value, hookEventSel.value);
+        hooksEditor.value = content;
+        if (!content.trim()) { setHooksStatus("Can't save an empty hook.", "err"); return; }
+        hooksSave.disabled = true;
+        setHooksStatus("Saving…");
+        fetch("/api/defs/hook/" + encodeURIComponent(currentHookId), {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: content })
+        })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (r.status === 400) throw new Error("kind_mismatch"); if (!r.ok) throw new Error("save failed"); return r.json(); })
+          .then(function () {
+            loadHooks();
+            return openHook(currentHookId).then(function () { setHooksStatus("Saved. Fires on the next " + eventLabel(hookEventSel.value) + ".", "ok"); });
+          })
+          .catch(function (e) {
+            if (e.message === "forbidden") { setHooksStatus("Only admins can edit hooks.", "err"); }
+            else if (e.message === "kind_mismatch") { setHooksStatus("Keep `kind: hook` in the frontmatter.", "err"); }
+            else { setHooksStatus("Could not save. Please try again.", "err"); }
+          })
+          .finally(function () { hooksSave.disabled = false; });
       });
 
       // ---- Soul ----

@@ -532,6 +532,38 @@ async def test_chat_image_only_uses_default_prompt(aiohttp_client, tmp_path):
     assert fake.images == [["QQ"]]
 
 
+async def test_chat_image_only_resolves_the_hook_from_the_registry(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # #483: an image-only turn fires the `image-upload` event; the flow point
+    # resolves which hook acts on it from the registry (skills.hooks_for_event)
+    # instead of a hardcoded id, so rebinding in the /hooks editor changes the
+    # handler. We assert the flow point queries the registry for that event.
+    calls: list[str] = []
+    monkeypatch.setattr(
+        server_mod.skills,
+        "hooks_for_event",
+        lambda skills_dir, event: calls.append(event) or [],
+    )
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post("/api/chat", json={"images": ["QQ"]})
+    assert resp.status == 200
+    assert calls == ["image-upload"]
+    # A typed turn (text present) is not an image-upload event — no resolution.
+    calls.clear()
+    resp = await client.post("/api/chat", json={"input": "hallo"})
+    assert resp.status == 200
+    assert calls == []
+
+
 async def test_chat_defaults_to_fast_reasoning(aiohttp_client, tmp_path):
     fake = _FakeHermes()
     app = build_app(
@@ -1848,6 +1880,22 @@ def test_list_defs_surfaces_the_scheduler_schedule(tmp_path):
     sched = skills.list_defs(tmp_path, "scheduler")[0]
     assert sched["schedule"] == "59 23 * * *"
     assert skills.list_defs(tmp_path, "skill")[0]["schedule"] == ""
+
+
+def test_list_defs_surfaces_the_hook_event(tmp_path):
+    # #483: the /hooks card's event selector needs each entry's bound `event:`
+    # on the registry row to render the binding + prefill the selector.
+    _write_def(
+        tmp_path,
+        "media",
+        name="media",
+        kind="hook",
+        extra="event: image-upload",
+    )
+    _write_def(tmp_path, "status", name="solaris-status")  # skill: no event
+    hook = skills.list_defs(tmp_path, "hook")[0]
+    assert hook["event"] == "image-upload"
+    assert skills.list_defs(tmp_path, "skill")[0]["event"] == ""
 
 
 def test_shipped_pack_groups_into_the_four_kinds():
