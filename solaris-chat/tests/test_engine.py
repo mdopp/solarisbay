@@ -161,6 +161,9 @@ def test_store_session_roundtrip(db):
     fetched = store.get_session(db, sid, "anna")
     assert fetched["title"] == "Einkauf"
     assert [m["role"] for m in fetched["messages"]] == ["user", "assistant"]
+    # created_at rides each message so a reopened bubble gets its .meta line
+    # (the anchor the persisted step-trace attaches to).
+    assert all(m["created_at"] for m in fetched["messages"])
     # owner scope: a wrong uid sees nothing
     assert store.get_session(db, sid, "bert") is None
     listed = store.list_sessions(db, "anna")
