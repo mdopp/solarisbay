@@ -519,7 +519,12 @@ def build_app(
         mentions_store.record_mentions(solaris_db_path, session_id, uid, tags, persons)
 
     async def persist_turn_trace(
-        uid: str, session_id: str, t0: float, *, ephemeral: bool
+        uid: str,
+        session_id: str,
+        t0: float,
+        *,
+        ephemeral: bool,
+        ha_cards: list[dict[str, Any]] | None = None,
     ) -> None:
         """Persist this turn's engine trace steps under a fresh trace_id.
 
@@ -554,6 +559,17 @@ def build_app(
                         "step_kind": rec.get("step_kind"),
                         "tool_name": rec.get("tool_name"),
                         "detail_json": json.dumps(detail) if detail else None,
+                    }
+                )
+            # The turn's read-only HA cards (#475) ride the same trace_id as a
+            # synthetic step, so the frontend re-attaches them to this turn's
+            # bubble on reload alongside the step trace. detail_json carries the
+            # card-specs; step_kind tags it so reload can pick it out.
+            if ha_cards:
+                steps.append(
+                    {
+                        "step_kind": "ha_cards",
+                        "detail_json": json.dumps(ha_cards),
                     }
                 )
             if steps:
@@ -1507,6 +1523,7 @@ def build_app(
         tool_ms = 0.0
         t_tool: float | None = None  # open tool round-trip
         answer_buf = ""
+        ha_cards: list[dict[str, Any]] = []
         cancelled = False
         try:
             compacted = False
@@ -1573,6 +1590,8 @@ def build_app(
                     if not answer_buf.strip() and completed_answer:
                         await _send_event(resp, "delta", {"text": completed_answer})
                         answer_buf += completed_answer
+                elif name == "ha_cards":
+                    ha_cards = data.get("cards") or []
                 await _send_event(resp, name, data)
             if not cancelled:
                 t_end = clock() * 1000.0
@@ -1581,7 +1600,9 @@ def build_app(
                     t_end - t_start,
                 )
                 await _send_event(resp, "trace", trace)
-                await persist_turn_trace(uid, session_id, wall_t0, ephemeral=ephemeral)
+                await persist_turn_trace(
+                    uid, session_id, wall_t0, ephemeral=ephemeral, ha_cards=ha_cards
+                )
         except EngineError:
             await _send_event(resp, "error", {"reason": "engine_unavailable"})
         finally:
@@ -1816,6 +1837,8 @@ def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         if etype == "tool.completed" and payload.get("wall_s") is not None:
             out["wall_s"] = payload["wall_s"]
         return "tool", out
+    if etype == "ha_cards":
+        return "ha_cards", {"cards": payload.get("cards") or []}
     if etype == "run.completed":
         return "completed", {
             "reasoning": _reasoning_from_completed(payload),

@@ -115,7 +115,7 @@ def list_session_trace(
                 SELECT trace_id, step_order, model, profile, wall_s,
                        prompt_tokens, completion_tokens, context_free,
                        finish_reason, n_tools, detail_id,
-                       step_kind, tool_name
+                       step_kind, tool_name, detail_json
                   FROM session_traces
                  WHERE session_id = ? AND owner_uid = ?
                  ORDER BY rowid
@@ -124,7 +124,16 @@ def list_session_trace(
             ).fetchall()
     except sqlite3.OperationalError:
         return []
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        # detail_json is the on-demand LLM request/response body (fetched via the
+        # detail modal); the list endpoint only inlines it for ha_cards steps
+        # (#475), where it IS the small card payload, never the LLM bodies.
+        if d.get("step_kind") != "ha_cards":
+            d.pop("detail_json", None)
+        out.append(d)
+    return out
 
 
 def detail_for(db_path: str, owner_uid: str, detail_id: str) -> str | None:

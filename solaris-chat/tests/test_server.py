@@ -309,6 +309,17 @@ def test_normalize_completed_and_unknown():
     assert _normalize({"type": "ping", "data": {}}) == ("keepalive", {})
 
 
+def test_normalize_ha_cards_passes_through():
+    # The read-only HA cards event (#475) forwards its card list verbatim.
+    cards = [{"entity_id": "sensor.x", "domain": "sensor", "state": "21"}]
+    assert _normalize({"type": "ha_cards", "data": {"cards": cards}}) == (
+        "ha_cards",
+        {"cards": cards},
+    )
+    # Missing cards key degrades to an empty list, never None.
+    assert _normalize({"type": "ha_cards", "data": {}}) == ("ha_cards", {"cards": []})
+
+
 def test_normalize_completed_surfaces_reasoning():
     # gemma4 puts the thinking text on the final message's reasoning_content
     # field of run.completed — NOT a literal <thinking> tag in the answer (#231).

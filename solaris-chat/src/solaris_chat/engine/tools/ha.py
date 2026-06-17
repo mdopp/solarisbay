@@ -12,6 +12,7 @@ regex blocks path traversal and the blocklist keeps arbitrary-code domains
 
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 from datetime import UTC, datetime, timedelta
@@ -20,6 +21,42 @@ from typing import Any
 import aiohttp
 
 from solaris_chat.engine.tools import Tool
+
+# Per-turn sink for the read-only state cards a turn surfaces (#475). Each HA
+# state read appends a card-spec here; the engine loop drains it at turn end and
+# emits a `ha_cards` event. A contextvar so the tools (built once per profile)
+# attribute cards to the turn that is actually running.
+card_sink: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar(
+    "ha_card_sink", default=None
+)
+
+# Domains that get a read-only state card in phase 1. Sensors render a value
+# card (state + unit); binary_sensor/cover.garage an open/closed status; the
+# actionable light/switch a current-state badge (controls are later phases).
+_CARD_DOMAINS = frozenset({"sensor", "binary_sensor", "cover", "light", "switch"})
+
+
+def _emit_card(entity_id: str, name: str, state: Any, attrs: dict[str, Any]) -> None:
+    """Append a read-only card-spec for one entity to the turn's sink (#475)."""
+    sink = card_sink.get()
+    if sink is None:
+        return
+    domain = entity_id.split(".", 1)[0]
+    if domain not in _CARD_DOMAINS:
+        return
+    if any(c["entity_id"] == entity_id for c in sink):
+        return
+    sink.append(
+        {
+            "entity_id": entity_id,
+            "name": name,
+            "domain": domain,
+            "device_class": attrs.get("device_class"),
+            "state": None if state is None else str(state),
+            "unit": attrs.get("unit_of_measurement"),
+        }
+    )
+
 
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
@@ -88,6 +125,13 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                     return json.dumps({"error": f"unknown entity: {entity_id}"})
                 resp.raise_for_status()
                 body = await resp.json()
+        raw_attrs = body.get("attributes") or {}
+        _emit_card(
+            entity_id,
+            raw_attrs.get("friendly_name") or entity_id,
+            body.get("state"),
+            raw_attrs,
+        )
         return json.dumps(
             {
                 "entity_id": entity_id,
@@ -132,6 +176,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
             name = attrs.get("friendly_name") or eid
             if name_q and name_q not in str(name).lower():
                 continue
+            _emit_card(eid, name, s.get("state"), attrs)
             out.append({"entity_id": eid, "state": s.get("state"), "name": name})
             # Cap to bound the prompt; the filters keep targeted queries well under it.
             if len(out) >= 200:

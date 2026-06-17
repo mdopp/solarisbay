@@ -339,3 +339,84 @@ async def test_household_has_self_enrollment_tools():
         assert name in deep_names
         # the guest path keeps them too (the heard-but-below-threshold flow)
         assert name in guest_names
+
+
+async def test_get_state_emits_read_only_card(monkeypatch):
+    states = {
+        "state": "21.4",
+        "attributes": {
+            "friendly_name": "Küche Temperatur",
+            "unit_of_measurement": "°C",
+            "device_class": "temperature",
+        },
+    }
+    _stub(monkeypatch, states=states)
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+
+    await _tool("ha_get_state").handler({"entity_id": "sensor.kueche_temp"})
+
+    assert sink == [
+        {
+            "entity_id": "sensor.kueche_temp",
+            "name": "Küche Temperatur",
+            "domain": "sensor",
+            "device_class": "temperature",
+            "state": "21.4",
+            "unit": "°C",
+        }
+    ]
+
+
+async def test_list_entities_emits_one_card_per_match(monkeypatch):
+    states = [
+        {
+            "entity_id": "light.sofa",
+            "state": "on",
+            "attributes": {"friendly_name": "Sofalicht"},
+        },
+        {
+            "entity_id": "binary_sensor.garage",
+            "state": "off",
+            "attributes": {"friendly_name": "Garage", "device_class": "garage"},
+        },
+        # automation has no read-only card in phase 1 -> not emitted.
+        {
+            "entity_id": "automation.night",
+            "state": "on",
+            "attributes": {"friendly_name": "Nacht"},
+        },
+    ]
+    _stub(monkeypatch, states=states)
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+
+    await _tool("ha_list_entities").handler({})
+
+    ids = [c["entity_id"] for c in sink]
+    assert ids == ["light.sofa", "binary_sensor.garage"]
+    assert sink[0]["state"] == "on" and sink[0]["domain"] == "light"
+    assert sink[1]["device_class"] == "garage"
+
+
+async def test_card_sink_dedupes_same_entity(monkeypatch):
+    states = {"state": "on", "attributes": {"friendly_name": "Sofalicht"}}
+    _stub(monkeypatch, states=states)
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+
+    await _tool("ha_get_state").handler({"entity_id": "light.sofa"})
+    await _tool("ha_get_state").handler({"entity_id": "light.sofa"})
+
+    assert len(sink) == 1
+
+
+async def test_no_sink_is_noop(monkeypatch):
+    # A turn without a sink set (the facade path may not collect cards) must not
+    # raise when a state tool runs.
+    states = {"state": "21", "attributes": {}}
+    _stub(monkeypatch, states=states)
+    ha_mod.card_sink.set(None)
+
+    out = await _tool("ha_get_state").handler({"entity_id": "sensor.x"})
+    assert '"state": "21"' in out

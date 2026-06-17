@@ -121,6 +121,24 @@ def test_interleaved_llm_and_tool_steps_round_trip(tmp_path):
     assert got[0]["tool_name"] is None
 
 
+def test_list_inlines_ha_cards_detail_only(tmp_path):
+    # The read-only HA cards (#475) ride the trace as an ha_cards step; its
+    # detail_json IS the card payload, so the list endpoint inlines it — but an
+    # LLM step's detail_json (the request/response body) must NOT leak into the
+    # list (it's fetched on demand via detail_for).
+    db = _db(tmp_path)
+    cards = '[{"entity_id": "sensor.x", "domain": "sensor", "state": "21"}]'
+    steps = [
+        _step(detail_id="tr-a:0", detail_json='{"request": {"model": "m"}}'),
+        {"step_kind": "ha_cards", "detail_json": cards},
+    ]
+    trace_store.persist_trace(db, "sess-1", "tr-a", "mdopp", steps)
+    got = trace_store.list_session_trace(db, "sess-1", "mdopp")
+    assert "detail_json" not in got[0]
+    assert got[1]["step_kind"] == "ha_cards"
+    assert got[1]["detail_json"] == cards
+
+
 def test_detail_for_round_trips_persisted_body(tmp_path):
     # The detail body is stored next to the step and read back by detail_id,
     # per-resident scoped (#451). A step without a body returns None.
