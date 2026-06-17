@@ -34,6 +34,7 @@ from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.residents import identity_block
 from solaris_chat.engine.tools import Toolbox
+from solaris_chat.engine.tools import ha as ha_tools
 from solaris_chat.engine.trace import TraceRecorder
 from solaris_chat.logging import log
 
@@ -404,6 +405,10 @@ class EngineClient:
         """
         await self._profile.toolbox.prepare()
         tools = self._profile.toolbox.definitions()
+        # Per-turn sink the HA state tools fill with read-only card-specs (#475);
+        # drained into a `ha_cards` event at turn end.
+        ha_cards: list[dict[str, Any]] = []
+        ha_tools.card_sink.set(ha_cards)
         options = (
             {"temperature": self._profile.temperature}
             if self._profile.temperature is not None
@@ -504,6 +509,10 @@ class EngineClient:
                 # pass 2 on (timers/facts written ownerless).
                 if uid:
                     current_uid.set(uid)
+                # Re-pin the sink too: the heartbeat task may not inherit the
+                # _loop set() (same reason as current_uid above), so a card read
+                # during dispatch would otherwise land nowhere (#475).
+                ha_tools.card_sink.set(ha_cards)
                 t0 = time.monotonic()
                 output = await self._profile.toolbox.dispatch(name, args)
                 tool_wall_s = time.monotonic() - t0
@@ -535,6 +544,8 @@ class EngineClient:
                 final_content,
                 reasoning=final_thinking,
             )
+        if ha_cards:
+            yield {"type": "ha_cards", "data": {"cards": ha_cards}}
         yield {
             "type": "run.completed",
             "data": {

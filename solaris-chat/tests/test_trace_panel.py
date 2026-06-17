@@ -102,13 +102,13 @@ def test_tool_step_renders_as_tool_name_not_model_row(_HTML=_HTML):
     assert '" tok"' not in tool_branch
 
 
-def test_steps_panel_shown_expanded_by_default(_HTML=_HTML):
-    # #371: the per-step trace is folded into the steps and shown expanded when
-    # the trace opens, matching the live #347 activity bubble.
+def test_steps_panel_shown_collapsed_by_default(_HTML=_HTML):
+    # #492: the per-step trace is collapsed by default. Users click to expand and
+    # view individual LLM step details, with each step opening its own detail modal.
     panel = _HTML.split("function renderStepTrace(steps)", 1)[1].split(
         "return det;", 1
     )[0]
-    assert "det.open = true;" in panel
+    assert "det.open = false;" in panel
 
 
 def test_fmt_tokens_sums_in_and_out(_HTML=_HTML):

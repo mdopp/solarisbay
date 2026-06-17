@@ -335,6 +335,24 @@
     .ab-row .ab-num { flex: 0 0 auto; }
     .ab-row.running .ab-num { opacity: 0.5; }
 
+    /* Read-only HA state cards under an answer (#475). */
+    .ha-cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+    .ha-card {
+      flex: 0 1 auto; min-width: 120px; max-width: 240px;
+      border: 1px solid var(--line); border-radius: 10px;
+      padding: 8px 12px; background: rgba(127,127,127,0.05);
+    }
+    .ha-card .hc-name { font-size: 12px; color: var(--muted); }
+    .ha-card .hc-state { font-size: 18px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
+    .ha-card .hc-unit { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 3px; }
+    .ha-card .hc-badge {
+      display: inline-block; font-size: 13px; font-weight: 600;
+      padding: 1px 8px; border-radius: 999px; margin-top: 2px;
+      background: rgba(127,127,127,0.18);
+    }
+    .ha-card.on .hc-badge { background: rgba(34,197,94,0.18); color: #22c55e; }
+    .ha-card.off .hc-badge { background: rgba(127,127,127,0.18); }
+
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
     .md p { margin: 0 0 8px; }
@@ -395,6 +413,16 @@
     .btn-primary { border-radius: var(--radius); padding: 0 18px; background: var(--accent-grad); color: var(--accent-ink); font-weight: 600; box-shadow: 0 6px 16px -4px rgba(249, 115, 22, 0.4); transition: transform .25s var(--ease), box-shadow .25s var(--ease), opacity .2s; }
     .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 22px -6px rgba(249, 115, 22, 0.5); }
     .btn-primary:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
+
+    /* Always-on context-window fill ring around the send button (#488): the
+       conic-gradient sweeps --ctx-fill (0..1) of the perimeter in --ctx-colour,
+       the rest stays a faint track; a 3px inset mask leaves the button face. */
+    .send-wrap {
+      position: relative; display: inline-flex; padding: 3px; border-radius: calc(var(--radius) + 3px);
+      background: conic-gradient(var(--ctx-colour, #22c55e) calc(var(--ctx-fill, 0) * 360deg), var(--line) 0);
+      transition: background .3s var(--ease);
+    }
+    .send-wrap > .btn-primary { display: inline-flex; align-items: center; }
 
     /* Slash-command autocomplete overlay (anchored above the composer). */
     #composer { position: relative; }
@@ -888,7 +916,7 @@
             <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
           </div>
           <textarea id="input" rows="1" placeholder="type message or /help" autofocus></textarea>
-          <button id="send" class="btn-primary" type="submit" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
+          <span class="send-wrap" id="send-wrap" title="Context window fill"><button id="send" class="btn-primary" type="submit" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button></span>
           <button id="stop" class="composer-icon stop" type="button" title="Antwort stoppen" aria-label="Antwort stoppen" hidden><svg class="ic"><use href="#i-stop"></use></svg></button>
           <input id="file-input" type="file" accept="image/*" hidden />
         </form>
@@ -1310,6 +1338,20 @@
         return total + " tok";
       }
 
+      // Context-window fill ring around the send button (#488): fill = the last
+      // turn's prompt_tokens ÷ context_window (how full the window is going into
+      // the next turn), using the REAL Ollama tokens already on the trace steps.
+      // Colour ramps green → amber → red toward 100%.
+      function setContextRing(promptTokens) {
+        var wrap = document.getElementById("send-wrap");
+        if (!wrap) return;
+        var fill = contextWindow ? Math.min(1, (promptTokens || 0) / contextWindow) : 0;
+        var colour = fill < 0.6 ? "#22c55e" : fill < 0.85 ? "#f59e0b" : "#ef4444";
+        wrap.style.setProperty("--ctx-fill", fill.toFixed(3));
+        wrap.style.setProperty("--ctx-colour", colour);
+        wrap.title = "Context window " + Math.round(fill * 100) + "% full";
+      }
+
       // One unified per-turn step list (#406). `steps` is the ordered list of a
       // turn's steps (one trace_id), interleaving LLM calls and tool runs; this
       // is now the SINGLE trace surface — the redundant bottom waterfall (#225)
@@ -1321,6 +1363,58 @@
       // tok`, #371). Collapsed by default — just the "▸ steps" line; the per-turn
       // step list (model calls, tool runs) unfolds on click of the summary, and
       // an LLM step then opens its exact request/response on click.
+      // Read-only HA state cards under an answer (#475): one card per entity the
+      // turn read (sensor value, binary_sensor/cover open-closed, light/switch
+      // on/off badge). Read-only here; controls arrive in later phases.
+      function renderHaCards(cards) {
+        if (!cards || !cards.length) return null;
+        var wrap = document.createElement("div");
+        wrap.className = "ha-cards";
+        cards.forEach(function (c) {
+          var card = document.createElement("div");
+          card.className = "ha-card";
+          var name = document.createElement("div");
+          name.className = "hc-name";
+          name.textContent = c.name || c.entity_id || "";
+          card.appendChild(name);
+          var st = String(c.state == null ? "" : c.state);
+          if (c.domain === "sensor") {
+            var val = document.createElement("div");
+            val.className = "hc-state";
+            val.textContent = st || "—";
+            if (c.unit) {
+              var u = document.createElement("span");
+              u.className = "hc-unit"; u.textContent = c.unit;
+              val.appendChild(u);
+            }
+            card.appendChild(val);
+          } else {
+            // binary_sensor / cover / light / switch -> on/off-style badge.
+            var onish = st === "on" || st === "open";
+            card.classList.add(onish ? "on" : "off");
+            var badge = document.createElement("span");
+            badge.className = "hc-badge";
+            badge.textContent = haStateLabel(c.domain, st);
+            card.appendChild(badge);
+          }
+          wrap.appendChild(card);
+        });
+        return wrap;
+      }
+
+      // German status label for a read-only badge card, keyed off domain + state.
+      function haStateLabel(domain, state) {
+        if (domain === "binary_sensor" || domain === "cover") {
+          if (state === "on" || state === "open") return "offen";
+          if (state === "off" || state === "closed") return "geschlossen";
+        }
+        if (domain === "light" || domain === "switch") {
+          if (state === "on") return "an";
+          if (state === "off") return "aus";
+        }
+        return state || "—";
+      }
+
       function renderStepTrace(steps) {
         if (!steps || !steps.length) return null;
         var det = document.createElement("details");
@@ -1332,6 +1426,7 @@
         var rows = document.createElement("div");
         rows.className = "step-rows";
         steps.forEach(function (s) {
+          if (s.step_kind === "ha_cards") return; // rendered separately, not a step row
           var row = document.createElement("div");
           row.className = "step-row";
           var secs = s.wall_s != null ? Number(s.wall_s).toFixed(2) + "s" : "—";
@@ -1473,7 +1568,29 @@
               if (old) old.remove(); // re-attach cleanly on reload/refresh
               var panel = renderStepTrace(g.steps);
               if (panel) meta.appendChild(panel);
+              // Re-attach the turn's read-only HA cards (#475) under the answer
+              // body, cleanly on every reload/refresh.
+              var oldCards = bubble.querySelector(".ha-cards");
+              if (oldCards) oldCards.remove();
+              var cardStep = g.steps.filter(function (s) { return s.step_kind === "ha_cards"; })[0];
+              if (cardStep && cardStep.detail_json) {
+                var cards = null;
+                try { cards = JSON.parse(cardStep.detail_json); } catch (e) {}
+                var cardsEl = renderHaCards(cards);
+                if (cardsEl) {
+                  var body = bubble.querySelector(".md:not(.reasoning)");
+                  if (body && body.parentNode) body.parentNode.insertBefore(cardsEl, body.nextSibling);
+                  else bubble.insertBefore(cardsEl, meta);
+                }
+              }
             });
+            // The ring reflects the most recent turn's prompt size: scan all
+            // steps and keep the last one that reported real prompt_tokens.
+            var lastPrompt = 0;
+            (j.steps || []).forEach(function (s) {
+              if (s.prompt_tokens != null) lastPrompt = s.prompt_tokens;
+            });
+            setContextRing(lastPrompt);
           })
           .catch(function () {});
       }
@@ -1691,6 +1808,15 @@
             openRow.querySelector(".ab-num").textContent = fmtSecs(wallS);
             openRow = null;
           },
+          // Read-only HA cards for the turn (#475), rendered under the answer
+          // body as the cards event arrives near turn-end.
+          addCards: function (cards) {
+            var old = el.querySelector(".ha-cards");
+            if (old) old.remove();
+            var cardsEl = renderHaCards(cards);
+            if (cardsEl) el.insertBefore(cardsEl, body.nextSibling);
+            scrollDown(atBottom());
+          },
           setReasoning: function (text) {
             // Honor the display preference (#185): "hide" => no block at all.
             var src = String(text == null ? "" : text).trim();
@@ -1811,6 +1937,7 @@
             else if (event === "delta") { if (d.text) msg.append(d.text); }
             else if (event === "reasoning") { if (d.text) msg.setReasoning(d.text); }
             else if (event === "step") { msg.addStep(d.label || "llm", d.wall_s); }
+            else if (event === "ha_cards") { if (d.cards && d.cards.length) msg.addCards(d.cards); }
             else if (event === "tool") {
               if (d.phase === "started") { msg.setActivity("using " + (d.name || "tool") + "…"); msg.startStep(d.name || "tool"); }
               else { msg.setActivity("thinking…"); msg.endStep(d.wall_s); }
@@ -1889,6 +2016,11 @@
           if (d.phase === "started") { mirrorMsg.setActivity("using " + (d.name || "tool") + "…"); mirrorMsg.startStep(d.name || "tool"); }
           else { mirrorMsg.setActivity("thinking…"); mirrorMsg.endStep(d.wall_s); }
         });
+        es.addEventListener("ha_cards", function (e) {
+          if (id !== sessionId || activeTurn || !mirrorMsg) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.cards && d.cards.length) mirrorMsg.addCards(d.cards);
+        });
         es.addEventListener("completed", function () {
           if (id !== sessionId || activeTurn || !mirrorMsg) return;
           mirrorMsg.finish(); mirrorMsg = null;
@@ -1904,7 +2036,7 @@
       var COMMANDS = [
         ["/help", "Show this list of commands"],
         ["/new", "Start a new chat"],
-        ["/delete", "Delete the current chat"],
+        ["/clear", "Delete the current chat"],
         ["/context", "Show this chat's token usage"],
         ["/search", "Search this chat — /search <text>"],
         ["/skills", "Skills Solaris draws on"],
@@ -1944,7 +2076,7 @@
         var cmd = raw.slice(1).split(/\s+/)[0].toLowerCase();
         if (cmd === "help" || cmd === "") { addInfo(helpMarkdown()); return; }
         if (cmd === "new") { newSession(); addText("system", "Started a new chat."); return; }
-        if (cmd === "delete") {
+        if (cmd === "clear") {
           if (!sessionId) { addText("system", "No chat to delete yet."); return; }
           deleteSession(sessionId); return;
         }
@@ -2374,7 +2506,7 @@
             if (s.message_count != null) lines.push("- Messages: " + fmt(s.message_count));
             if (s.estimated_cost_usd != null) lines.push("- Est. cost: $" + Number(s.estimated_cost_usd).toFixed(4));
             lines.push("");
-            lines.push("_Hermes reports per-session totals, not a live window-fill figure — treat this as an approximation._");
+            lines.push("_These are the engine's per-session token totals. The ring around the send button shows the live context-window fill (last turn's prompt ÷ window)._");
             addInfo(lines.join("\n"));
           })
           .catch(function () { addText("system", "Couldn't read context info."); });
@@ -2700,6 +2832,7 @@
         sessionId = null;
         pendingTopic = "";
         clearLog();
+        setContextRing(0);
         loadSessions();
         loadTagCloud();
         closeRail();

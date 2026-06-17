@@ -364,6 +364,95 @@ async def test_tool_chain_turn(db, soul):
     assert steps[2]["finish_reason"] == "stop"
 
 
+async def test_turn_emits_ha_cards_for_state_read(db, soul, monkeypatch):
+    # A turn that reads HA state (#475) drains the per-turn card sink into a
+    # single `ha_cards` event, emitted once just before run.completed.
+    from solaris_chat.engine.tools import ha as ha_mod
+
+    class _Resp:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return {
+                "state": "21.4",
+                "attributes": {
+                    "friendly_name": "Küche",
+                    "unit_of_measurement": "°C",
+                    "device_class": "temperature",
+                },
+            }
+
+        def raise_for_status(self):
+            pass
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
+    state_tool = next(
+        t for t in build_ha_tools("http://ha", "tok") if t.name == "ha_get_state"
+    )
+    results = [
+        ChatResult(
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "ha_get_state",
+                        "arguments": {"entity_id": "sensor.kueche"},
+                    }
+                }
+            ],
+            prompt_tokens=60,
+            completion_tokens=8,
+        ),
+        ChatResult(content="21,4 °C.", prompt_tokens=70, completion_tokens=6),
+    ]
+    client, _ = _client(db, soul, results, tools=[state_tool])
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Wie warm ist die Küche?")]
+
+    card_events = [e for e in events if e["type"] == "ha_cards"]
+    assert len(card_events) == 1
+    cards = card_events[0]["data"]["cards"]
+    assert cards == [
+        {
+            "entity_id": "sensor.kueche",
+            "name": "Küche",
+            "domain": "sensor",
+            "device_class": "temperature",
+            "state": "21.4",
+            "unit": "°C",
+        }
+    ]
+    # the cards event precedes run.completed
+    kinds = [e["type"] for e in events]
+    assert kinds.index("ha_cards") < kinds.index("run.completed")
+
+
+async def test_turn_without_state_read_emits_no_ha_cards(db, soul):
+    # A plain turn with no HA state read emits no ha_cards event (#475).
+    client, _ = _client(db, soul, [ChatResult(content="Hallo!", prompt_tokens=10)])
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Hi")]
+    assert not any(e["type"] == "ha_cards" for e in events)
+
+
 async def test_fabricated_device_claim_forces_tool_call(db, soul):
     """#356: clarify -> 'Ja.' -> model claims 'ist an' with empty tool_calls.
 
