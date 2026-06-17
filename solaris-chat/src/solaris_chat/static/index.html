@@ -1318,12 +1318,14 @@
       //   tool  step: tool_name · wall_s
       // A tool step (`step_kind === "tool"`) carries no model/tokens, so it must
       // not be rendered as an LLM row (that produced the broken `(model?) · —
-      // tok`, #371). Shown expanded by default.
+      // tok`, #371). Collapsed by default — just the "▸ steps" line; the per-turn
+      // step list (model calls, tool runs) unfolds on click of the summary, and
+      // an LLM step then opens its exact request/response on click.
       function renderStepTrace(steps) {
         if (!steps || !steps.length) return null;
         var det = document.createElement("details");
         det.className = "steptrace";
-        det.open = true;
+        det.open = false;
         var sum = document.createElement("summary");
         sum.title = "Steps for this turn — click an LLM step for its exact content";
         det.appendChild(sum);
