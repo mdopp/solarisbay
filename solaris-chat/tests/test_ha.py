@@ -368,6 +368,69 @@ async def test_get_state_emits_read_only_card(monkeypatch):
     ]
 
 
+async def test_get_state_card_surfaces_control_attrs(monkeypatch):
+    # Phase 3 (#477): a dimmable colour light's card carries the attrs the
+    # frontend feature-gates the brightness slider + colour picker on.
+    states = {
+        "state": "on",
+        "attributes": {
+            "friendly_name": "Sofalicht",
+            "brightness": 128,
+            "rgb_color": [255, 0, 0],
+            "supported_color_modes": ["rgb"],
+            "supported_features": 0,
+        },
+    }
+    _stub(monkeypatch, states=states)
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+
+    await _tool("ha_get_state").handler({"entity_id": "light.sofa"})
+
+    assert sink[0]["brightness"] == 128
+    assert sink[0]["rgb_color"] == [255, 0, 0]
+    assert sink[0]["supported_color_modes"] == ["rgb"]
+
+
+async def test_climate_card_is_emitted_with_setpoint_attrs(monkeypatch):
+    states = {
+        "state": "heat",
+        "attributes": {
+            "friendly_name": "Wohnzimmer",
+            "current_temperature": 20.5,
+            "temperature": 22,
+            "supported_features": 1,
+            "hvac_modes": ["off", "heat"],
+        },
+    }
+    _stub(monkeypatch, states=states)
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+
+    await _tool("ha_get_state").handler({"entity_id": "climate.living"})
+
+    assert sink[0]["domain"] == "climate"
+    assert sink[0]["current_temperature"] == 20.5
+    assert sink[0]["temperature"] == 22
+    assert sink[0]["hvac_modes"] == ["off", "heat"]
+
+
+async def test_card_omits_absent_control_attrs(monkeypatch):
+    # A plain temperature sensor must not gain phase-3 control keys.
+    states = {
+        "state": "21.4",
+        "attributes": {"friendly_name": "Küche", "unit_of_measurement": "°C"},
+    }
+    _stub(monkeypatch, states=states)
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+
+    await _tool("ha_get_state").handler({"entity_id": "sensor.kueche"})
+
+    assert "supported_features" not in sink[0]
+    assert "brightness" not in sink[0]
+
+
 async def test_list_entities_emits_one_card_per_match(monkeypatch):
     states = [
         {

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from importlib.metadata import version
 
+import pytest
+
 from solaris_chat import compaction, marker, personalities, skills, topics_store
 from solaris_chat.engine.tools import Toolbox
 from solaris_chat.engine.tools.mcp_tools import CombinedToolbox, McpToolbox
@@ -530,6 +532,38 @@ async def test_chat_image_only_uses_default_prompt(aiohttp_client, tmp_path):
     assert resp.status == 200
     _assert_turns(fake.turns, [("sess-1", _IMAGE_PROMPT)])
     assert fake.images == [["QQ"]]
+
+
+async def test_chat_image_only_resolves_the_hook_from_the_registry(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # #483: an image-only turn fires the `image-upload` event; the flow point
+    # resolves which hook acts on it from the registry (skills.hooks_for_event)
+    # instead of a hardcoded id, so rebinding in the /hooks editor changes the
+    # handler. We assert the flow point queries the registry for that event.
+    calls: list[str] = []
+    monkeypatch.setattr(
+        server_mod.skills,
+        "hooks_for_event",
+        lambda skills_dir, event: calls.append(event) or [],
+    )
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        attachments_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post("/api/chat", json={"images": ["QQ"]})
+    assert resp.status == 200
+    assert calls == ["image-upload"]
+    # A typed turn (text present) is not an image-upload event — no resolution.
+    calls.clear()
+    resp = await client.post("/api/chat", json={"input": "hallo"})
+    assert resp.status == 200
+    assert calls == []
 
 
 async def test_chat_defaults_to_fast_reasoning(aiohttp_client, tmp_path):
@@ -1834,6 +1868,38 @@ def test_list_defs_filters_by_kind_default_is_skill(tmp_path):
     assert skill["kind"] == "skill" and skill["scope"] == "household"
 
 
+def test_list_defs_surfaces_the_scheduler_schedule(tmp_path):
+    # #485: the /scheduler card's cron-time picker needs each entry's `schedule:`
+    # cron on the registry row to render + prefill the picker.
+    _write_def(
+        tmp_path,
+        "chronicle",
+        name="chronicle",
+        kind="scheduler",
+        extra="schedule: 59 23 * * *",
+    )
+    _write_def(tmp_path, "status", name="solaris-status")  # skill: no schedule
+    sched = skills.list_defs(tmp_path, "scheduler")[0]
+    assert sched["schedule"] == "59 23 * * *"
+    assert skills.list_defs(tmp_path, "skill")[0]["schedule"] == ""
+
+
+def test_list_defs_surfaces_the_hook_event(tmp_path):
+    # #483: the /hooks card's event selector needs each entry's bound `event:`
+    # on the registry row to render the binding + prefill the selector.
+    _write_def(
+        tmp_path,
+        "media",
+        name="media",
+        kind="hook",
+        extra="event: image-upload",
+    )
+    _write_def(tmp_path, "status", name="solaris-status")  # skill: no event
+    hook = skills.list_defs(tmp_path, "hook")[0]
+    assert hook["event"] == "image-upload"
+    assert skills.list_defs(tmp_path, "skill")[0]["event"] == ""
+
+
 def test_shipped_pack_groups_into_the_four_kinds():
     # The #484 reorg sorts the household pack by frontmatter kind; admin-soul
     # (admin-act/diagnose/logs) is a sibling pack, so it isn't walked here.
@@ -2996,14 +3062,50 @@ async def test_ha_call_rejects_unsupported_domain(aiohttp_client, monkeypatch):
     )
     client = await aiohttp_client(app)
 
-    # phase 2 = light/switch only; a climate/cover/shell domain is refused
+    # phases 2+3 cover light/switch/cover/climate; a media_player/shell domain is refused
     resp = await client.post(
         "/api/ha/call",
-        json={"entity_id": "climate.living", "service": "climate.toggle"},
+        json={"entity_id": "media_player.tv", "service": "media_player.toggle"},
     )
     assert resp.status == 400
     assert (await resp.json())["error"] == "unsupported_domain"
     assert called is False  # never reaches the HA helper
+
+
+@pytest.mark.parametrize(
+    "entity_id,service,data",
+    [
+        ("cover.blind", "cover.set_cover_position", {"position": 40}),
+        ("climate.living", "climate.set_temperature", {"temperature": 22}),
+    ],
+)
+async def test_ha_call_allows_cover_and_climate_controls(
+    aiohttp_client, monkeypatch, entity_id, service, data
+):
+    # Phase 3 (#477): the cover-position and climate-setpoint controls reach the
+    # scoped helper with the configured creds (mocked HA — never a real device).
+    seen = {}
+
+    async def _fake_call(hass_url, hass_token, eid, svc, d=None):
+        seen.update(entity=eid, service=svc, data=d)
+        return {"ok": True, "state": "ok"}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": entity_id, "service": service, "data": data},
+    )
+    assert resp.status == 200
+    assert seen == {"entity": entity_id, "service": service, "data": data}
 
 
 async def test_ha_call_503_when_ha_not_configured(aiohttp_client):

@@ -180,6 +180,89 @@ def test_skills_card_uses_the_defs_api():
     )  # PUT/DELETE
 
 
+def test_scheduler_card_is_a_setting_card_on_the_defs_api():
+    # #485: /scheduler is a card-command; its editor lists + edits the
+    # scheduler-kind registry via /api/defs/scheduler with add/edit/delete.
+    assert '["/scheduler"' in _HTML
+    assert 'if (cmd === "scheduler") { openSettingCard("scheduler"); return; }' in _HTML
+    assert 'scheduler: document.getElementById("view-scheduler")' in _HTML
+    assert '/api/defs/scheduler"' in _HTML  # loadScheduler GET list
+    assert (
+        '/api/defs/scheduler/" + encodeURIComponent(currentSchedulerId)' in _HTML
+    )  # PUT/DELETE
+
+
+def test_scheduler_cron_picker_drives_the_schedule_field():
+    # #485: the cron-time picker (minute/hour/weekday) is the source of truth for
+    # the schedule — save folds the picker's cron into the `schedule:` frontmatter
+    # the engine cron loop reads, instead of free-text cron.
+    assert 'id="cron-minute"' in _HTML
+    assert 'id="cron-hour"' in _HTML
+    assert 'id="cron-weekday"' in _HTML
+    pick = re.search(r"function pickerToCron\(\) \{(.*?)\n      \}", _HTML, re.S)
+    assert pick, "pickerToCron not found"
+    assert "cronMinute.value" in pick.group(1) and "cronHour.value" in pick.group(1)
+    # Save rewrites the frontmatter schedule line from the picker before PUT.
+    fn = re.search(
+        r'schedulerSave\.addEventListener\("click", function \(\) \{(.*?)\n      \}\);',
+        _HTML,
+        re.S,
+    )
+    assert fn, "scheduler save handler not found"
+    assert "applyScheduleToRaw(schedulerEditor.value, pickerToCron())" in fn.group(1)
+    # An edit takes effect on the next cron tick (registry-driven, no redeploy).
+    assert "Takes effect on the next cron tick" in _HTML
+
+
+def test_scheduler_entry_surfaces_a_run_now_command():
+    # #485: a scheduler entry carrying a `command:` joins the typeable `/` pool as
+    # a manual run-now trigger; runCommandTemplate runs its body once on demand.
+    fn = re.search(r"function loadCommandPool\(\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "loadCommandPool not found"
+    body = fn.group(1)
+    assert "/api/defs/scheduler" in body  # scheduler defs join the pool
+    assert 'kind: "scheduler"' in body
+    # runCommandTemplate fetches the body from the def's own kind (scheduler too),
+    # not always /api/defs/command.
+    tpl = re.search(
+        r"function runCommandTemplate\(def, args\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert tpl and '"/api/defs/" + (def.kind || "command") + "/"' in tpl.group(1)
+
+
+def test_hooks_card_is_a_setting_card_on_the_defs_api():
+    # #483: /hooks is a card-command; its editor lists + edits the hook-kind
+    # registry via /api/defs/hook with add/edit/delete.
+    assert '["/hooks"' in _HTML
+    assert 'if (cmd === "hooks") { openSettingCard("hooks"); return; }' in _HTML
+    assert 'hooks: document.getElementById("view-hooks")' in _HTML
+    assert '/api/defs/hook"' in _HTML  # loadHooks GET list
+    assert '/api/defs/hook/" + encodeURIComponent(currentHookId)' in _HTML
+
+
+def test_hooks_event_selector_drives_the_event_field_from_known_bind_points():
+    # #483: the event selector is the source of truth for the binding — save folds
+    # the chosen event into the `event:` frontmatter the server flow points resolve
+    # by (skills.hooks_for_event), and it's chosen from the KNOWN bind points only.
+    assert 'id="hook-event"' in _HTML
+    for ev in (
+        "image-upload",
+        "guest-session-start",
+        "topic-circling",
+        "missing-room",
+        "registration-handoff",
+        "self-enroll-request",
+    ):
+        assert ev in _HTML
+    fn = re.search(
+        r'hooksSave\.addEventListener\("click", function \(\) \{(.*?)\n      \}\);',
+        _HTML,
+        re.S,
+    )
+    assert fn, "hooks save handler not found"
+    assert "applyEventToRaw(hooksEditor.value, hookEventSel.value)" in fn.group(1)
+
+
 def test_pinned_household_row_opens_the_durable_session():
     # #419: the pinned "Zuhause" row opens the resident's ONE durable household
     # session (from /api/whoami) instead of minting a fresh chat per click; only
@@ -214,3 +297,28 @@ def test_burger_and_wordmark_are_mobile_only():
         re.S,
     )
     assert mobile, "mobile reveal of the merged header missing"
+
+
+def test_ha_card_phase3_controls_act_via_the_scoped_endpoint():
+    # Phase 3 (#477): light brightness + colour, cover position + open/close/stop,
+    # climate setpoint + hvac mode — all routed through /api/ha/call (no client
+    # HA token), feature-gated by supported_features / colour modes.
+    assert "function renderLightControls(card, c)" in _HTML
+    assert "function renderCoverControls(card, c)" in _HTML
+    assert "function renderClimateCard(card, c, st)" in _HTML
+    assert "function haCall(card, c, service, data)" in _HTML
+    # light: brightness_pct slider + rgb_color picker, gated on colour modes.
+    assert 'haCall(card, c, "light.turn_on", { brightness_pct: v })' in _HTML
+    assert (
+        'haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(picker.value) })'
+        in _HTML
+    )
+    # cover: position slider (SET_POSITION bit) + verb services; garage confirm-first.
+    assert "COVER_SET_POSITION" in _HTML
+    assert 'haCall(card, c, "cover.set_cover_position", { position: v })' in _HTML
+    assert "Garagentor wirklich bewegen?" in _HTML
+    # climate: setpoint stepper + hvac mode select.
+    assert 'haCall(card, c, "climate.set_temperature", { temperature: next })' in _HTML
+    assert 'haCall(card, c, "climate.set_hvac_mode", { hvac_mode: sel.value })' in _HTML
+    # the action goes through the scoped server endpoint, never a client HA token.
+    assert '"/api/ha/call"' in _HTML

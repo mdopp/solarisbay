@@ -355,6 +355,27 @@
     .ha-card.hc-toggle { cursor: pointer; user-select: none; }
     .ha-card.hc-toggle:hover { border-color: var(--accent); }
     .ha-card.busy { opacity: 0.6; pointer-events: none; }
+    /* Phase 3 (#477): slider / colour / climate controls on a card. */
+    .ha-card .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .ha-card .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 80px; }
+    .ha-card .hc-ctrl input[type="color"] {
+      flex: 0 0 auto; width: 28px; height: 24px; padding: 0;
+      border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer;
+    }
+    .ha-card .hc-ctrl .hc-val { font-size: 12px; color: var(--muted); min-width: 34px; text-align: right; }
+    .ha-card .hc-btns { display: flex; gap: 6px; margin-top: 6px; }
+    .ha-card .hc-btns button, .ha-card select.hc-mode {
+      font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer;
+      border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08);
+      color: inherit;
+    }
+    .ha-card .hc-btns button:hover { border-color: var(--accent); }
+    .ha-card .hc-set { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+    .ha-card .hc-set button {
+      font: inherit; width: 26px; height: 26px; cursor: pointer; line-height: 1;
+      border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08); color: inherit;
+    }
+    .ha-card .hc-set .hc-target { font-size: 16px; font-weight: 600; min-width: 52px; text-align: center; }
 
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
@@ -590,6 +611,10 @@
       border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: var(--bg); color: var(--ink);
     }
     .code-editor:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    .cron-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 14px; }
+    .cron-picker label { font-weight: 600; }
+    .cron-picker select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+    .cron-picker .cron-preview { color: var(--muted); margin-left: 6px; }
     .editor-bar { display: flex; align-items: center; gap: 10px; }
     .editor-bar .btn-primary { padding: 7px 16px; }
     .editor-bar .secondary { color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 14px; }
@@ -978,6 +1003,86 @@
               <button id="command-save" class="btn-primary" type="button">Save</button>
               <button id="command-cancel" class="secondary" type="button">Cancel</button>
               <span id="command-status" class="editor-status"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-scheduler" class="view">
+      <div id="scheduler-list" class="pane">
+        <h2>Scheduler</h2>
+        <p class="lead">Time-fired jobs Solaris runs unattended (cron). Each can also be run on demand by its <code>/</code>-command; editing is for admins.</p>
+        <button id="scheduler-add" class="btn-primary" type="button" hidden>New scheduler entry</button>
+        <div id="scheduler-cards"></div>
+      </div>
+      <div id="scheduler-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
+        <div class="reader-bar">
+          <button class="back" id="scheduler-back" type="button"><svg class="ic"><use href="#i-back"></use></svg> Scheduler</button>
+          <span class="name" id="scheduler-name"></span>
+          <span class="grow"></span>
+          <button class="edit-btn" id="scheduler-delete" type="button" hidden>Delete</button>
+          <button class="edit-btn" id="scheduler-edit" type="button" hidden>Edit</button>
+        </div>
+        <div class="pane" id="scheduler-view"><div class="doc"><div class="md" id="scheduler-body"></div></div></div>
+        <div class="pane" id="scheduler-edit-pane" style="display:none;">
+          <div class="editor-wrap">
+            <div class="cron-picker" id="cron-picker">
+              <label>When:</label>
+              <select id="cron-weekday" aria-label="Weekday">
+                <option value="*">every day</option>
+                <option value="mon">Monday</option>
+                <option value="tue">Tuesday</option>
+                <option value="wed">Wednesday</option>
+                <option value="thu">Thursday</option>
+                <option value="fri">Friday</option>
+                <option value="sat">Saturday</option>
+                <option value="sun">Sunday</option>
+              </select>
+              <span>at</span>
+              <select id="cron-hour" aria-label="Hour"></select>
+              <span>:</span>
+              <select id="cron-minute" aria-label="Minute"></select>
+              <span class="cron-preview" id="cron-preview"></span>
+            </div>
+            <textarea id="scheduler-editor" class="code-editor" spellcheck="false" aria-label="Scheduler source"></textarea>
+            <div class="editor-bar">
+              <button id="scheduler-save" class="btn-primary" type="button">Save</button>
+              <button id="scheduler-cancel" class="secondary" type="button">Cancel</button>
+              <span id="scheduler-status" class="editor-status"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-hooks" class="view">
+      <div id="hooks-list" class="pane">
+        <h2>Hooks</h2>
+        <p class="lead">Definitions Solaris runs automatically when a lifecycle event fires (an image upload, a guest session, …). Each is wired to one event; editing is for admins.</p>
+        <button id="hooks-add" class="btn-primary" type="button" hidden>New hook</button>
+        <div id="hooks-cards"></div>
+      </div>
+      <div id="hooks-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
+        <div class="reader-bar">
+          <button class="back" id="hooks-back" type="button"><svg class="ic"><use href="#i-back"></use></svg> Hooks</button>
+          <span class="name" id="hooks-name"></span>
+          <span class="grow"></span>
+          <button class="edit-btn" id="hooks-delete" type="button" hidden>Delete</button>
+          <button class="edit-btn" id="hooks-edit" type="button" hidden>Edit</button>
+        </div>
+        <div class="pane" id="hooks-view"><div class="doc"><div class="md" id="hooks-body"></div></div></div>
+        <div class="pane" id="hooks-edit-pane" style="display:none;">
+          <div class="editor-wrap">
+            <div class="cron-picker" id="hook-event-picker">
+              <label>On event:</label>
+              <select id="hook-event" aria-label="Bound event"></select>
+            </div>
+            <textarea id="hooks-editor" class="code-editor" spellcheck="false" aria-label="Hook source"></textarea>
+            <div class="editor-bar">
+              <button id="hooks-save" class="btn-primary" type="button">Save</button>
+              <button id="hooks-cancel" class="secondary" type="button">Cancel</button>
+              <span id="hooks-status" class="editor-status"></span>
             </div>
           </div>
         </div>
@@ -1422,6 +1527,8 @@
               val.appendChild(u);
             }
             card.appendChild(val);
+          } else if (c.domain === "climate") {
+            renderClimateCard(card, c, st);
           } else {
             // binary_sensor / cover / light / switch -> on/off-style badge.
             var onish = st === "on" || st === "open";
@@ -1441,10 +1548,169 @@
                 if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
               });
             }
+            // Phase 3 (#477): richer controls under the badge, feature-gated.
+            if (c.domain === "light") renderLightControls(card, c);
+            else if (c.domain === "cover") renderCoverControls(card, c);
           }
           wrap.appendChild(card);
         });
         return wrap;
+      }
+
+      // HA supported_features bits (only the ones the cards act on).
+      var COVER_SET_POSITION = 4, CLIMATE_TARGET_TEMP = 1;
+      var COLOUR_MODES = ["rgb", "hs", "xy", "rgbw", "rgbww", "color_temp"];
+
+      // Brightness slider (when the light is dimmable) + colour picker (when it
+      // supports a colour mode). Acts via light.turn_on {brightness_pct|rgb_color}.
+      function renderLightControls(card, c) {
+        var dimmable = c.brightness != null ||
+          (c.supported_color_modes || []).some(function (m) { return m !== "onoff"; });
+        if (dimmable) {
+          var pct = c.brightness != null ? Math.round(c.brightness / 255 * 100) : 100;
+          var slider = makeSlider(card, pct, "%", function (v) {
+            haCall(card, c, "light.turn_on", { brightness_pct: v });
+          });
+          card.hcBrightness = slider;
+        }
+        var hasColour = (c.supported_color_modes || []).some(function (m) {
+          return COLOUR_MODES.indexOf(m) !== -1;
+        });
+        if (hasColour) {
+          var row = document.createElement("div");
+          row.className = "hc-ctrl";
+          var picker = document.createElement("input");
+          picker.type = "color";
+          picker.value = rgbToHex(c.rgb_color);
+          picker.title = "Farbe";
+          picker.addEventListener("change", function () {
+            haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(picker.value) });
+          });
+          row.appendChild(picker);
+          card.appendChild(row);
+        }
+      }
+
+      // Position slider + open/close/stop. A garage cover is confirm-first.
+      function renderCoverControls(card, c) {
+        var feat = Number(c.supported_features || 0);
+        if (feat & COVER_SET_POSITION) {
+          var pos = c.current_position != null ? Number(c.current_position) : 0;
+          makeSlider(card, pos, "%", function (v) {
+            haCall(card, c, "cover.set_cover_position", { position: v });
+          });
+        }
+        var btns = document.createElement("div");
+        btns.className = "hc-btns";
+        var garage = c.device_class === "garage";
+        [["▲", "open_cover", "Öffnen"], ["■", "stop_cover", "Stopp"],
+         ["▼", "close_cover", "Schließen"]].forEach(function (b) {
+          var btn = document.createElement("button");
+          btn.textContent = b[0];
+          btn.title = b[2];
+          btn.addEventListener("click", function () {
+            if (garage && b[1] !== "stop_cover" &&
+                !window.confirm(b[2] + " — Garagentor wirklich bewegen?")) return;
+            haCall(card, c, "cover." + b[1], {});
+          });
+          btns.appendChild(btn);
+        });
+        card.appendChild(btns);
+      }
+
+      // Climate: current temp + a setpoint stepper and an hvac-mode select.
+      function renderClimateCard(card, c, st) {
+        var cur = document.createElement("div");
+        cur.className = "hc-state";
+        cur.textContent = c.current_temperature != null
+          ? c.current_temperature + "°C" : (st || "—");
+        card.appendChild(cur);
+        var feat = Number(c.supported_features || 0);
+        if (feat & CLIMATE_TARGET_TEMP || c.temperature != null) {
+          var step = Number(c.target_temp_step) || 0.5;
+          var min = c.min_temp != null ? Number(c.min_temp) : 7;
+          var max = c.max_temp != null ? Number(c.max_temp) : 35;
+          var target = c.temperature != null ? Number(c.temperature) : min;
+          var set = document.createElement("div");
+          set.className = "hc-set";
+          var label = document.createElement("span");
+          label.className = "hc-target";
+          label.textContent = target + "°";
+          var apply = function (next) {
+            next = Math.min(max, Math.max(min, Math.round(next / step) * step));
+            label.textContent = next + "°";
+            haCall(card, c, "climate.set_temperature", { temperature: next });
+          };
+          var minus = document.createElement("button");
+          minus.textContent = "−";
+          minus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) - step); });
+          var plus = document.createElement("button");
+          plus.textContent = "+";
+          plus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) + step); });
+          set.appendChild(minus); set.appendChild(label); set.appendChild(plus);
+          card.appendChild(set);
+        }
+        var modes = c.hvac_modes || [];
+        if (modes.length) {
+          var sel = document.createElement("select");
+          sel.className = "hc-mode";
+          modes.forEach(function (m) {
+            var opt = document.createElement("option");
+            opt.value = m; opt.textContent = m;
+            if (m === st) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          sel.addEventListener("change", function () {
+            haCall(card, c, "climate.set_hvac_mode", { hvac_mode: sel.value });
+          });
+          card.appendChild(sel);
+        }
+      }
+
+      // A labelled range row whose committed value (on change) fires onset(int).
+      function makeSlider(card, value, unit, onset) {
+        var row = document.createElement("div");
+        row.className = "hc-ctrl";
+        var slider = document.createElement("input");
+        slider.type = "range";
+        slider.min = "0"; slider.max = "100"; slider.value = String(value);
+        var val = document.createElement("span");
+        val.className = "hc-val";
+        val.textContent = value + unit;
+        slider.addEventListener("input", function () { val.textContent = slider.value + unit; });
+        slider.addEventListener("change", function () { onset(Number(slider.value)); });
+        row.appendChild(slider); row.appendChild(val);
+        card.appendChild(row);
+        return slider;
+      }
+
+      function rgbToHex(rgb) {
+        if (!Array.isArray(rgb) || rgb.length < 3) return "#ffffff";
+        return "#" + rgb.slice(0, 3).map(function (n) {
+          return ("0" + (Number(n) & 255).toString(16)).slice(-2);
+        }).join("");
+      }
+      function hexToRgb(hex) {
+        var m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+        if (!m) return [255, 255, 255];
+        var n = parseInt(m[1], 16);
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+      }
+
+      // Generic card action (#477): POST a scoped service, mark busy, no revert
+      // (sliders/setpoints have no single prior boolean to flip back to).
+      function haCall(card, c, service, data) {
+        if (card.classList.contains("busy")) return;
+        card.classList.add("busy");
+        fetch("/api/ha/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entity_id: c.entity_id, service: service, data: data }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (res) { if (res && res.ok && res.state != null) c.state = res.state; })
+          .catch(function () {})
+          .finally(function () { card.classList.remove("busy"); });
       }
 
       // German status label for a read-only badge card, keyed off domain + state.
@@ -2122,6 +2388,8 @@
         ["/search", "Search this chat — /search <text>"],
         ["/skills", "Skills Solaris draws on"],
         ["/commands", "Your own /-command prompt templates"],
+        ["/scheduler", "Time-fired jobs Solaris runs unattended"],
+        ["/hooks", "Event-fired definitions (uploads, guests, …)"],
         ["/soul", "Solaris's durable identity"],
         ["/persona", "Persona & speed for the next new chat"],
         ["/tools", "What Solaris can do — toolsets & MCP servers"],
@@ -2166,6 +2434,8 @@
         if (cmd === "search") { openSearchCard(rest.trim()); return; }
         if (cmd === "skills" || cmd === "soul" || cmd === "tools") { openSettingCard(cmd); return; }
         if (cmd === "commands") { openSettingCard("commands"); return; }
+        if (cmd === "scheduler") { openSettingCard("scheduler"); return; }
+        if (cmd === "hooks") { openSettingCard("hooks"); return; }
         if (cmd === "persona") {
           if (rest.trim()) { applyPersonaArg(rest.trim()); } else { openPersonaCard(); }
           return;
@@ -2201,9 +2471,10 @@
         addInfo("Unknown command `/" + cmd + "`.\n\n" + helpMarkdown());
       }
 
-      // Expand a typeable command into a turn (#482). A command-kind template
-      // (editable, `kind: command`) fetches its body and sends that; a built-in
-      // inline dual alias (a skill-kind def, no own command body) sends its
+      // Expand a typeable command into a turn (#482, #485). A command- or
+      // scheduler-kind def (editable body) fetches its body and sends that — a
+      // scheduler entry's run-now command runs its job body once on demand; a
+      // built-in inline dual alias (a skill-kind def, no own body) sends its
       // `/trigger` plus the typed args so the engine routes it as today. Arg
       // substitution into the body is a follow-up (the issue defers it).
       function runCommandTemplate(def, args) {
@@ -2214,8 +2485,10 @@
           addUserTurn(prompt, []);
           runTurn(prompt, []);
         }
-        // A dual alias has no editable command-kind pack — send the trigger.
-        fetch("/api/defs/command/" + encodeURIComponent(def.id))
+        // A dual skill alias has no editable body — send the trigger; a command
+        // or scheduler def runs its own markdown body.
+        if (def.kind === "skill") { dispatch(""); return; }
+        fetch("/api/defs/" + (def.kind || "command") + "/" + encodeURIComponent(def.id))
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) { dispatch(j && j.def ? j.def.body : ""); })
           .catch(function () { dispatch(""); });
@@ -2229,23 +2502,30 @@
       function loadCommandPool() {
         return Promise.all([
           fetch("/api/defs/command").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; }),
-          fetch("/api/defs/skill").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; })
+          fetch("/api/defs/skill").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; }),
+          fetch("/api/defs/scheduler").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; })
         ]).then(function (res) {
           var cmdDefs = (res[0] && res[0].defs) || [];
           var skillDefs = (res[1] && res[1].defs) || [];
+          var schedDefs = (res[2] && res[2].defs) || [];
           skillEntries = skillDefs
             .map(function (s) { return ["/" + s.id, s.description || s.name || ""]; })
             .sort(function (a, b) { return a[0].localeCompare(b[0]); });
           // A command's trigger is its `command:` field if set (the built-in
           // aliases pin /debug //status etc.), else `/<id>` for a user template.
-          var typeable = cmdDefs.concat(skillDefs.filter(function (s) { return s.command; }));
+          // Scheduler entries that carry a `command:` join as a manual run-now
+          // trigger (#485) — their body runs once on demand alongside the cron.
+          var typeable = cmdDefs.map(function (d) { return { d: d, kind: "command" }; })
+            .concat(skillDefs.filter(function (s) { return s.command; }).map(function (d) { return { d: d, kind: "skill" }; }))
+            .concat(schedDefs.filter(function (s) { return s.command; }).map(function (d) { return { d: d, kind: "scheduler" }; }));
           commandEntries = []; commandDefs = {};
-          typeable.forEach(function (d) {
+          typeable.forEach(function (e) {
+            var d = e.d;
             var trig = (d.command || "/" + d.id).toLowerCase();
             var hint = d["argument-hint"] || "";
             var desc = (d.description || d.name || "") + (hint ? " — " + trig.slice(1) + " " + hint : "");
             commandEntries.push([trig, desc]);
-            commandDefs[trig] = { id: d.id, command: d.command || trig, hint: hint };
+            commandDefs[trig] = { id: d.id, command: d.command || trig, hint: hint, kind: e.kind };
           });
           commandEntries.sort(function (a, b) { return a[0].localeCompare(b[0]); });
         });
@@ -3123,6 +3403,8 @@
       var settingViews = {
         skills: document.getElementById("view-skills"),
         commands: document.getElementById("view-commands"),
+        scheduler: document.getElementById("view-scheduler"),
+        hooks: document.getElementById("view-hooks"),
         soul: document.getElementById("view-soul"),
         tools: document.getElementById("view-tools"),
         prefs: document.getElementById("view-prefs"),
@@ -3130,7 +3412,7 @@
         voice: document.getElementById("view-voice")
       };
       var settingTitles = {
-        skills: "Skills", commands: "Commands", soul: "Soul", tools: "Tools",
+        skills: "Skills", commands: "Commands", scheduler: "Scheduler", hooks: "Hooks", soul: "Soul", tools: "Tools",
         prefs: "Chat", model: "Model", voice: "Voice"
       };
       var skillsLoaded = false, soulLoaded = false;
@@ -3138,6 +3420,8 @@
       function loadSettingPane(name) {
         if (name === "skills") { if (!skillsLoaded) { skillsLoaded = true; loadSkills(); } }
         else if (name === "commands") { loadCommands(); }
+        else if (name === "scheduler") { loadScheduler(); }
+        else if (name === "hooks") { loadHooks(); }
         else if (name === "soul") { if (!soulLoaded) { soulLoaded = true; loadSoul(); } }
         else if (name === "tools") { loadTools(); loadMcp(); }
         else if (name === "prefs") { syncThinkingSeg(); }
@@ -3707,6 +3991,379 @@
             else { setCommandStatus("Could not save. Please try again.", "err"); }
           })
           .finally(function () { commandSave.disabled = false; });
+      });
+
+      // ---- Scheduler (#485) — time-fired (cron) jobs with a cron-time picker ----
+      // Mirrors the Commands editor but writes the scheduler-kind registry and
+      // wires the schedule through a guided minute/hour/weekday picker instead of
+      // free-text cron. The engine cron loop (crons.load_jobs) re-reads the pack
+      // on the next tick, so an edit takes effect with no redeploy. Each entry
+      // also surfaces as a run-now /-command (handled by loadCommandPool above).
+      var schedulerCards = document.getElementById("scheduler-cards");
+      var schedulerList = document.getElementById("scheduler-list");
+      var schedulerReader = document.getElementById("scheduler-reader");
+      var schedulerName = document.getElementById("scheduler-name");
+      var schedulerBodyEl = document.getElementById("scheduler-body");
+      var schedulerViewEl = document.getElementById("scheduler-view");
+      var schedulerEditPane = document.getElementById("scheduler-edit-pane");
+      var schedulerEditBtn = document.getElementById("scheduler-edit");
+      var schedulerDeleteBtn = document.getElementById("scheduler-delete");
+      var schedulerAddBtn = document.getElementById("scheduler-add");
+      var schedulerEditor = document.getElementById("scheduler-editor");
+      var schedulerSave = document.getElementById("scheduler-save");
+      var schedulerCancel = document.getElementById("scheduler-cancel");
+      var schedulerStatus = document.getElementById("scheduler-status");
+      var cronWeekday = document.getElementById("cron-weekday");
+      var cronHour = document.getElementById("cron-hour");
+      var cronMinute = document.getElementById("cron-minute");
+      var cronPreview = document.getElementById("cron-preview");
+      var currentSchedulerId = null, currentSchedulerRaw = "", schedulerIsNew = false;
+      var SCHEDULER_TEMPLATE = "---\nname: \ndescription: \nkind: scheduler\nscope: household\ncommand: /\nschedule: 0 9 * * *\n---\n\n";
+      var CRON_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+      (function fillCronSelects() {
+        for (var h = 0; h < 24; h++) { var o = document.createElement("option"); o.value = String(h); o.textContent = (h < 10 ? "0" : "") + h; cronHour.appendChild(o); }
+        for (var m = 0; m < 60; m++) { var p = document.createElement("option"); p.value = String(m); p.textContent = (m < 10 ? "0" : "") + m; cronMinute.appendChild(p); }
+      })();
+
+      // Parse a `min hour dom mon dow` cron into the picker's three fields; the
+      // engine only fires the single-minute/hour (+ optional weekday) shape, so
+      // anything else falls back to a sensible default rather than mis-rendering.
+      function cronToPicker(spec) {
+        var parts = (spec || "").trim().split(/\s+/);
+        var minute = 0, hour = 9, dow = "*";
+        if (parts.length === 5) {
+          var m = parseInt(parts[0], 10), h = parseInt(parts[1], 10);
+          if (!isNaN(m) && m >= 0 && m < 60) minute = m;
+          if (!isNaN(h) && h >= 0 && h < 24) hour = h;
+          if (parts[4] !== "*") {
+            var d = parts[4].toLowerCase();
+            if (CRON_WEEKDAYS.indexOf(d) !== -1) dow = d;
+            else { var di = parseInt(d, 10); if (!isNaN(di)) dow = CRON_WEEKDAYS[((di % 7) + 7) % 7]; }
+          }
+        }
+        return { minute: minute, hour: hour, dow: dow };
+      }
+      function pickerToCron() {
+        return cronMinute.value + " " + cronHour.value + " * * " + cronWeekday.value;
+      }
+      function cronToText(spec) {
+        var p = cronToPicker(spec);
+        var when = p.dow === "*" ? "every day" : p.dow.charAt(0).toUpperCase() + p.dow.slice(1);
+        var hh = (p.hour < 10 ? "0" : "") + p.hour, mm = (p.minute < 10 ? "0" : "") + p.minute;
+        return when + " at " + hh + ":" + mm;
+      }
+      function syncCronPreview() { cronPreview.textContent = cronToText(pickerToCron()); }
+      cronWeekday.addEventListener("change", syncCronPreview);
+      cronHour.addEventListener("change", syncCronPreview);
+      cronMinute.addEventListener("change", syncCronPreview);
+
+      function setCronPicker(spec) {
+        var p = cronToPicker(spec);
+        cronMinute.value = String(p.minute); cronHour.value = String(p.hour); cronWeekday.value = p.dow;
+        syncCronPreview();
+      }
+      // Rewrite (or insert) the `schedule:` frontmatter line so the picker is the
+      // single source of truth for the time, even when the user also edits the
+      // raw markdown by hand.
+      function applyScheduleToRaw(raw, spec) {
+        if (/^schedule:.*$/m.test(raw)) return raw.replace(/^schedule:.*$/m, "schedule: " + spec);
+        if (raw.indexOf("---") === 0) {
+          var end = raw.indexOf("\n---", 3);
+          if (end !== -1) return raw.slice(0, end) + "\nschedule: " + spec + raw.slice(end);
+        }
+        return raw;
+      }
+      function scheduleFromRaw(raw) {
+        var m = /^schedule:(.*)$/m.exec(raw || "");
+        return m ? m[1].trim() : "";
+      }
+
+      function schedulerViewMode() {
+        schedulerEditPane.style.display = "none";
+        schedulerViewEl.style.display = "block";
+        schedulerEditBtn.hidden = !isAdmin;
+        schedulerDeleteBtn.hidden = !isAdmin || schedulerIsNew;
+      }
+      function setSchedulerStatus(msg, kind) { schedulerStatus.className = "editor-status" + (kind ? " " + kind : ""); schedulerStatus.textContent = msg || ""; }
+
+      function loadScheduler() {
+        schedulerAddBtn.hidden = !isAdmin;
+        return fetch("/api/defs/scheduler")
+          .then(function (r) { return r.ok ? r.json() : { defs: [] }; })
+          .catch(function () { return { defs: [] }; })
+          .then(function (res) {
+            var defs = (res && res.defs) || [];
+            schedulerCards.textContent = "";
+            defs.slice().sort(function (a, b) { return String(a.name || a.id).localeCompare(String(b.name || b.id)); })
+              .forEach(function (d) { schedulerCards.appendChild(schedulerCard(d)); });
+            if (!defs.length) {
+              var note = document.createElement("div"); note.className = "empty-note"; note.textContent = "No scheduler entries yet.";
+              schedulerCards.appendChild(note);
+            }
+          });
+      }
+
+      function schedulerCard(d) {
+        var card = document.createElement("div"); card.className = "skill-card";
+        var name = document.createElement("div"); name.className = "name"; name.textContent = d.name || d.id;
+        card.appendChild(name);
+        var sched = document.createElement("div"); sched.className = "desc";
+        sched.textContent = d.schedule ? cronToText(d.schedule) : "no schedule set";
+        if (d.command) sched.textContent += " · run now: " + d.command;
+        card.appendChild(sched);
+        if (d.description) { var desc = document.createElement("div"); desc.className = "desc"; desc.textContent = d.description; card.appendChild(desc); }
+        card.addEventListener("click", function () { openScheduler(d.id); });
+        return card;
+      }
+
+      function openScheduler(id) {
+        return fetch("/api/defs/scheduler/" + encodeURIComponent(id))
+          .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
+          .then(function (j) {
+            var d = (j && j.def) || {};
+            currentSchedulerId = d.id || id;
+            currentSchedulerRaw = d.raw || "";
+            schedulerIsNew = false;
+            schedulerName.textContent = d.name || d.id || id;
+            schedulerBodyEl.innerHTML = window.renderMarkdown(d.body || "");
+            setSchedulerStatus("");
+            schedulerViewMode();
+            schedulerList.style.display = "none";
+            schedulerReader.style.display = "flex";
+          })
+          .catch(function () {});
+      }
+      document.getElementById("scheduler-back").addEventListener("click", function () {
+        schedulerReader.style.display = "none";
+        schedulerList.style.display = "block";
+        schedulerViewMode();
+      });
+
+      schedulerAddBtn.addEventListener("click", function () {
+        var id = (window.prompt("New scheduler id (folder name, e.g. weekly-digest):") || "").trim();
+        if (!id) return;
+        currentSchedulerId = id; currentSchedulerRaw = SCHEDULER_TEMPLATE; schedulerIsNew = true;
+        schedulerName.textContent = id;
+        schedulerBodyEl.innerHTML = "";
+        schedulerList.style.display = "none";
+        schedulerReader.style.display = "flex";
+        schedulerEditBtn.click();
+      });
+      schedulerEditBtn.addEventListener("click", function () {
+        schedulerEditor.value = currentSchedulerRaw;
+        setCronPicker(scheduleFromRaw(currentSchedulerRaw));
+        setSchedulerStatus("");
+        schedulerViewEl.style.display = "none";
+        schedulerEditBtn.hidden = true;
+        schedulerDeleteBtn.hidden = true;
+        schedulerEditPane.style.display = "block";
+        schedulerEditor.focus();
+      });
+      schedulerCancel.addEventListener("click", schedulerViewMode);
+      schedulerDeleteBtn.addEventListener("click", function () {
+        if (!window.confirm("Delete scheduler entry `" + currentSchedulerId + "`?")) return;
+        fetch("/api/defs/scheduler/" + encodeURIComponent(currentSchedulerId), { method: "DELETE" })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("delete failed"); })
+          .then(function () { loadScheduler(); document.getElementById("scheduler-back").click(); loadCommandPool(); })
+          .catch(function (e) { setSchedulerStatus(e.message === "forbidden" ? "Only admins can delete scheduler entries." : "Could not delete. Please try again.", "err"); });
+      });
+      schedulerSave.addEventListener("click", function () {
+        // The picker is authoritative for the schedule: fold its cron into the
+        // raw frontmatter before saving so the time can't drift from the body.
+        var content = applyScheduleToRaw(schedulerEditor.value, pickerToCron());
+        schedulerEditor.value = content;
+        if (!content.trim()) { setSchedulerStatus("Can't save an empty entry.", "err"); return; }
+        schedulerSave.disabled = true;
+        setSchedulerStatus("Saving…");
+        fetch("/api/defs/scheduler/" + encodeURIComponent(currentSchedulerId), {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: content })
+        })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (r.status === 400) throw new Error("kind_mismatch"); if (!r.ok) throw new Error("save failed"); return r.json(); })
+          .then(function () {
+            loadScheduler(); loadCommandPool();
+            return openScheduler(currentSchedulerId).then(function () { setSchedulerStatus("Saved. Takes effect on the next cron tick.", "ok"); });
+          })
+          .catch(function (e) {
+            if (e.message === "forbidden") { setSchedulerStatus("Only admins can edit scheduler entries.", "err"); }
+            else if (e.message === "kind_mismatch") { setSchedulerStatus("Keep `kind: scheduler` in the frontmatter.", "err"); }
+            else { setSchedulerStatus("Could not save. Please try again.", "err"); }
+          })
+          .finally(function () { schedulerSave.disabled = false; });
+      });
+
+      // ---- Hooks (#483) — event-fired definitions with an event selector ----
+      // Mirrors the Scheduler editor but binds to a lifecycle EVENT (not a clock)
+      // chosen from the known server bind points, so a hook is always wired to a
+      // real trigger rather than free text. Server flow points resolve the hook
+      // for an event from this registry (skills.hooks_for_event), so a rebind
+      // here changes which definition fires on that event.
+      var HOOK_EVENTS = [
+        ["image-upload", "Image upload"],
+        ["guest-session-start", "Guest session starts"],
+        ["topic-circling", "Chat circles one topic"],
+        ["missing-room", "Voice command with no known room"],
+        ["registration-handoff", "Guest chose to register"],
+        ["self-enroll-request", "Resident asks to self-enrol"]
+      ];
+      var hooksCards = document.getElementById("hooks-cards");
+      var hooksList = document.getElementById("hooks-list");
+      var hooksReader = document.getElementById("hooks-reader");
+      var hooksName = document.getElementById("hooks-name");
+      var hooksBodyEl = document.getElementById("hooks-body");
+      var hooksViewEl = document.getElementById("hooks-view");
+      var hooksEditPane = document.getElementById("hooks-edit-pane");
+      var hooksEditBtn = document.getElementById("hooks-edit");
+      var hooksDeleteBtn = document.getElementById("hooks-delete");
+      var hooksAddBtn = document.getElementById("hooks-add");
+      var hooksEditor = document.getElementById("hooks-editor");
+      var hooksSave = document.getElementById("hooks-save");
+      var hooksCancel = document.getElementById("hooks-cancel");
+      var hooksStatus = document.getElementById("hooks-status");
+      var hookEventSel = document.getElementById("hook-event");
+      var currentHookId = null, currentHookRaw = "", hookIsNew = false;
+      var HOOK_TEMPLATE = "---\nname: \ndescription: \nkind: hook\nscope: household\nevent: image-upload\n---\n\n";
+
+      (function fillHookEvents() {
+        HOOK_EVENTS.forEach(function (e) {
+          var o = document.createElement("option"); o.value = e[0]; o.textContent = e[1] + " (" + e[0] + ")"; hookEventSel.appendChild(o);
+        });
+      })();
+      function eventLabel(ev) {
+        for (var i = 0; i < HOOK_EVENTS.length; i++) { if (HOOK_EVENTS[i][0] === ev) return HOOK_EVENTS[i][1]; }
+        return ev || "no event set";
+      }
+      // Rewrite (or insert) the `event:` frontmatter line so the selector is the
+      // single source of truth for the binding, even when the raw is hand-edited.
+      function applyEventToRaw(raw, ev) {
+        if (/^event:.*$/m.test(raw)) return raw.replace(/^event:.*$/m, "event: " + ev);
+        if (raw.indexOf("---") === 0) {
+          var end = raw.indexOf("\n---", 3);
+          if (end !== -1) return raw.slice(0, end) + "\nevent: " + ev + raw.slice(end);
+        }
+        return raw;
+      }
+      function eventFromRaw(raw) {
+        var m = /^event:(.*)$/m.exec(raw || "");
+        return m ? m[1].trim() : "";
+      }
+      function setHookEvent(ev) {
+        // An unknown event (legacy/hand-edited) falls back to the first known
+        // bind point so the selector never shows a binding the flow points
+        // can't resolve.
+        hookEventSel.value = HOOK_EVENTS.some(function (e) { return e[0] === ev; }) ? ev : HOOK_EVENTS[0][0];
+      }
+
+      function hooksViewMode() {
+        hooksEditPane.style.display = "none";
+        hooksViewEl.style.display = "block";
+        hooksEditBtn.hidden = !isAdmin;
+        hooksDeleteBtn.hidden = !isAdmin || hookIsNew;
+      }
+      function setHooksStatus(msg, kind) { hooksStatus.className = "editor-status" + (kind ? " " + kind : ""); hooksStatus.textContent = msg || ""; }
+
+      function loadHooks() {
+        hooksAddBtn.hidden = !isAdmin;
+        return fetch("/api/defs/hook")
+          .then(function (r) { return r.ok ? r.json() : { defs: [] }; })
+          .catch(function () { return { defs: [] }; })
+          .then(function (res) {
+            var defs = (res && res.defs) || [];
+            hooksCards.textContent = "";
+            defs.slice().sort(function (a, b) { return String(a.name || a.id).localeCompare(String(b.name || b.id)); })
+              .forEach(function (d) { hooksCards.appendChild(hookCard(d)); });
+            if (!defs.length) {
+              var note = document.createElement("div"); note.className = "empty-note"; note.textContent = "No hooks yet.";
+              hooksCards.appendChild(note);
+            }
+          });
+      }
+
+      function hookCard(d) {
+        var card = document.createElement("div"); card.className = "skill-card";
+        var name = document.createElement("div"); name.className = "name"; name.textContent = d.name || d.id;
+        card.appendChild(name);
+        var ev = document.createElement("div"); ev.className = "desc";
+        ev.textContent = d.event ? "on " + eventLabel(d.event) : "no event set";
+        card.appendChild(ev);
+        if (d.description) { var desc = document.createElement("div"); desc.className = "desc"; desc.textContent = d.description; card.appendChild(desc); }
+        card.addEventListener("click", function () { openHook(d.id); });
+        return card;
+      }
+
+      function openHook(id) {
+        return fetch("/api/defs/hook/" + encodeURIComponent(id))
+          .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
+          .then(function (j) {
+            var d = (j && j.def) || {};
+            currentHookId = d.id || id;
+            currentHookRaw = d.raw || "";
+            hookIsNew = false;
+            hooksName.textContent = d.name || d.id || id;
+            hooksBodyEl.innerHTML = window.renderMarkdown(d.body || "");
+            setHooksStatus("");
+            hooksViewMode();
+            hooksList.style.display = "none";
+            hooksReader.style.display = "flex";
+          })
+          .catch(function () {});
+      }
+      document.getElementById("hooks-back").addEventListener("click", function () {
+        hooksReader.style.display = "none";
+        hooksList.style.display = "block";
+        hooksViewMode();
+      });
+
+      hooksAddBtn.addEventListener("click", function () {
+        var id = (window.prompt("New hook id (folder name, e.g. doorbell-snapshot):") || "").trim();
+        if (!id) return;
+        currentHookId = id; currentHookRaw = HOOK_TEMPLATE; hookIsNew = true;
+        hooksName.textContent = id;
+        hooksBodyEl.innerHTML = "";
+        hooksList.style.display = "none";
+        hooksReader.style.display = "flex";
+        hooksEditBtn.click();
+      });
+      hooksEditBtn.addEventListener("click", function () {
+        hooksEditor.value = currentHookRaw;
+        setHookEvent(eventFromRaw(currentHookRaw));
+        setHooksStatus("");
+        hooksViewEl.style.display = "none";
+        hooksEditBtn.hidden = true;
+        hooksDeleteBtn.hidden = true;
+        hooksEditPane.style.display = "block";
+        hooksEditor.focus();
+      });
+      hooksCancel.addEventListener("click", hooksViewMode);
+      hooksDeleteBtn.addEventListener("click", function () {
+        if (!window.confirm("Delete hook `" + currentHookId + "`?")) return;
+        fetch("/api/defs/hook/" + encodeURIComponent(currentHookId), { method: "DELETE" })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("delete failed"); })
+          .then(function () { loadHooks(); document.getElementById("hooks-back").click(); })
+          .catch(function (e) { setHooksStatus(e.message === "forbidden" ? "Only admins can delete hooks." : "Could not delete. Please try again.", "err"); });
+      });
+      hooksSave.addEventListener("click", function () {
+        // The selector is authoritative for the binding: fold its event into the
+        // raw frontmatter before saving so the flow point can resolve this hook.
+        var content = applyEventToRaw(hooksEditor.value, hookEventSel.value);
+        hooksEditor.value = content;
+        if (!content.trim()) { setHooksStatus("Can't save an empty hook.", "err"); return; }
+        hooksSave.disabled = true;
+        setHooksStatus("Saving…");
+        fetch("/api/defs/hook/" + encodeURIComponent(currentHookId), {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: content })
+        })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (r.status === 400) throw new Error("kind_mismatch"); if (!r.ok) throw new Error("save failed"); return r.json(); })
+          .then(function () {
+            loadHooks();
+            return openHook(currentHookId).then(function () { setHooksStatus("Saved. Fires on the next " + eventLabel(hookEventSel.value) + ".", "ok"); });
+          })
+          .catch(function (e) {
+            if (e.message === "forbidden") { setHooksStatus("Only admins can edit hooks.", "err"); }
+            else if (e.message === "kind_mismatch") { setHooksStatus("Keep `kind: hook` in the frontmatter.", "err"); }
+            else { setHooksStatus("Could not save. Please try again.", "err"); }
+          })
+          .finally(function () { hooksSave.disabled = false; });
       });
 
       // ---- Soul ----

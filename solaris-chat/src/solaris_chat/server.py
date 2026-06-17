@@ -47,9 +47,13 @@ from solaris_chat.logging import log
 STATIC_DIR = Path(__file__).parent / "static"
 
 # Default prompt for an image-only turn (attachment with no typed text), so the
-# media-ingestion skill has a turn to trigger on. Mirrors the German tone the
-# skill itself uses with residents.
+# media-ingestion hook has a turn to trigger on. Mirrors the German tone the
+# hook itself uses with residents.
 _IMAGE_PROMPT = "Bitte sieh dir dieses Bild an und verarbeite es."
+# The lifecycle event an image-only turn fires; the hook that acts on it is
+# resolved from the registry (not a hardcoded id) so rebinding it in the
+# `/hooks` editor changes which definition handles the upload.
+_IMAGE_UPLOAD_EVENT = "image-upload"
 # Cap attachments per turn — a small guard against an oversized payload, not a
 # product limit (the panel sends at most a couple of camera/upload images).
 _MAX_IMAGES = 4
@@ -673,10 +677,11 @@ def build_app(
     async def ha_call(request: web.Request) -> web.Response:
         """Card-action endpoint (#476): run a scoped HA service on one entity.
 
-        Phase 2 surfaces toggles on light/switch cards only; the helper applies
-        the same allowlist as the `ha_call_service` tool (blocked domains, name
-        regex, domain==entity). Owner-scoped: any authenticated resident, no
-        client-side HA token. Returns the new state so the card can confirm.
+        Phase 2 surfaced toggles on light/switch; phase 3 (#477) adds the slider/
+        colour/climate controls, so cover and climate cards may act too. The
+        helper applies the same allowlist as the `ha_call_service` tool (blocked
+        domains, name regex, domain==entity). Owner-scoped: any authenticated
+        resident, no client-side HA token. Returns the new state to confirm.
         """
         if not hass_url or not hass_token:
             return web.json_response(
@@ -688,7 +693,7 @@ def build_app(
             return web.json_response({"ok": False, "error": "bad_json"}, status=400)
         entity_id = str(body.get("entity_id") or "")
         service = str(body.get("service") or "")
-        if entity_id.split(".", 1)[0] not in ("light", "switch"):
+        if entity_id.split(".", 1)[0] not in ("light", "switch", "cover", "climate"):
             return web.json_response(
                 {"ok": False, "error": "unsupported_domain"}, status=400
             )
@@ -1417,6 +1422,13 @@ def build_app(
         items = mentions_store.list_session_mentions(solaris_db_path, session_id, uid)
         return web.json_response({"ok": True, "mentions": items})
 
+    def _resolve_image_hook() -> None:
+        # An image-only turn fires the `image-upload` event; the hook that acts
+        # on it is resolved from the registry so a rebind in the `/hooks` editor
+        # changes which definition handles it (no hardcoded id).
+        bound = skills.hooks_for_event(skills_dir, _IMAGE_UPLOAD_EVENT)
+        log.info("chat.hook.event", event=_IMAGE_UPLOAD_EVENT, hooks=bound)
+
     async def chat(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
@@ -1432,6 +1444,7 @@ def build_app(
             return web.json_response({"ok": False, "reason": "empty_input"}, status=400)
         if not text:
             text = _IMAGE_PROMPT
+            _resolve_image_hook()
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral = bool(body.get("ephemeral"))
@@ -1515,6 +1528,7 @@ def build_app(
             return web.json_response({"ok": False, "reason": "empty_input"}, status=400)
         if not text:
             text = _IMAGE_PROMPT
+            _resolve_image_hook()
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral = bool(body.get("ephemeral"))
