@@ -431,7 +431,10 @@ async def test_card_omits_absent_control_attrs(monkeypatch):
     assert "brightness" not in sink[0]
 
 
-async def test_list_entities_emits_one_card_per_match(monkeypatch):
+async def test_list_entities_emits_no_cards(monkeypatch):
+    # A bulk scan must NOT card every match (#499): "welche Lichter sind an"
+    # would otherwise dump a card for every light, not just the on one. The
+    # model cards the subset it reports via ha_get_state on those entities.
     states = [
         {
             "entity_id": "light.sofa",
@@ -443,23 +446,16 @@ async def test_list_entities_emits_one_card_per_match(monkeypatch):
             "state": "off",
             "attributes": {"friendly_name": "Garage", "device_class": "garage"},
         },
-        # automation has no read-only card in phase 1 -> not emitted.
-        {
-            "entity_id": "automation.night",
-            "state": "on",
-            "attributes": {"friendly_name": "Nacht"},
-        },
     ]
     _stub(monkeypatch, states=states)
     sink: list = []
     ha_mod.card_sink.set(sink)
 
-    await _tool("ha_list_entities").handler({})
+    out = await _tool("ha_list_entities").handler({})
 
-    ids = [c["entity_id"] for c in sink]
-    assert ids == ["light.sofa", "binary_sensor.garage"]
-    assert sink[0]["state"] == "on" and sink[0]["domain"] == "light"
-    assert sink[1]["device_class"] == "garage"
+    assert sink == []
+    # the scan still returns the entities for the model to read.
+    assert "light.sofa" in out and "binary_sensor.garage" in out
 
 
 async def test_card_sink_dedupes_same_entity(monkeypatch):

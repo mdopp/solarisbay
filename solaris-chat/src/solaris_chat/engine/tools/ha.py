@@ -242,7 +242,8 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
             name = attrs.get("friendly_name") or eid
             if name_q and name_q not in str(name).lower():
                 continue
-            _emit_card(eid, name, s.get("state"), attrs)
+            # No card here: a bulk scan would card every match (#499). The model
+            # cards the subset it actually reports by ha_get_state-ing those.
             out.append({"entity_id": eid, "state": s.get("state"), "name": name})
             # Cap to bound the prompt; the filters keep targeted queries well under it.
             if len(out) >= 200:
