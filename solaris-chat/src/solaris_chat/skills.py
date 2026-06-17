@@ -101,6 +101,9 @@ def list_defs(skills_dir: str | Path, kind: str) -> list[dict[str, str]]:
                 # and the slash-pool entry.
                 "command": meta.get("command", ""),
                 "argument-hint": meta.get("argument-hint", ""),
+                # The 5-field cron a scheduler-kind entry fires on; drives the
+                # `/scheduler` card's cron-time picker, empty for the rest.
+                "schedule": meta.get("schedule", ""),
             }
         )
     out.sort(key=lambda s: s["name"].lower())

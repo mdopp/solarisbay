@@ -590,6 +590,10 @@
       border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: var(--bg); color: var(--ink);
     }
     .code-editor:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    .cron-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 14px; }
+    .cron-picker label { font-weight: 600; }
+    .cron-picker select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+    .cron-picker .cron-preview { color: var(--muted); margin-left: 6px; }
     .editor-bar { display: flex; align-items: center; gap: 10px; }
     .editor-bar .btn-primary { padding: 7px 16px; }
     .editor-bar .secondary { color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 14px; }
@@ -978,6 +982,53 @@
               <button id="command-save" class="btn-primary" type="button">Save</button>
               <button id="command-cancel" class="secondary" type="button">Cancel</button>
               <span id="command-status" class="editor-status"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-scheduler" class="view">
+      <div id="scheduler-list" class="pane">
+        <h2>Scheduler</h2>
+        <p class="lead">Time-fired jobs Solaris runs unattended (cron). Each can also be run on demand by its <code>/</code>-command; editing is for admins.</p>
+        <button id="scheduler-add" class="btn-primary" type="button" hidden>New scheduler entry</button>
+        <div id="scheduler-cards"></div>
+      </div>
+      <div id="scheduler-reader" style="display:none; flex:1 1 auto; min-height:0; flex-direction:column;">
+        <div class="reader-bar">
+          <button class="back" id="scheduler-back" type="button"><svg class="ic"><use href="#i-back"></use></svg> Scheduler</button>
+          <span class="name" id="scheduler-name"></span>
+          <span class="grow"></span>
+          <button class="edit-btn" id="scheduler-delete" type="button" hidden>Delete</button>
+          <button class="edit-btn" id="scheduler-edit" type="button" hidden>Edit</button>
+        </div>
+        <div class="pane" id="scheduler-view"><div class="doc"><div class="md" id="scheduler-body"></div></div></div>
+        <div class="pane" id="scheduler-edit-pane" style="display:none;">
+          <div class="editor-wrap">
+            <div class="cron-picker" id="cron-picker">
+              <label>When:</label>
+              <select id="cron-weekday" aria-label="Weekday">
+                <option value="*">every day</option>
+                <option value="mon">Monday</option>
+                <option value="tue">Tuesday</option>
+                <option value="wed">Wednesday</option>
+                <option value="thu">Thursday</option>
+                <option value="fri">Friday</option>
+                <option value="sat">Saturday</option>
+                <option value="sun">Sunday</option>
+              </select>
+              <span>at</span>
+              <select id="cron-hour" aria-label="Hour"></select>
+              <span>:</span>
+              <select id="cron-minute" aria-label="Minute"></select>
+              <span class="cron-preview" id="cron-preview"></span>
+            </div>
+            <textarea id="scheduler-editor" class="code-editor" spellcheck="false" aria-label="Scheduler source"></textarea>
+            <div class="editor-bar">
+              <button id="scheduler-save" class="btn-primary" type="button">Save</button>
+              <button id="scheduler-cancel" class="secondary" type="button">Cancel</button>
+              <span id="scheduler-status" class="editor-status"></span>
             </div>
           </div>
         </div>
@@ -2122,6 +2173,7 @@
         ["/search", "Search this chat — /search <text>"],
         ["/skills", "Skills Solaris draws on"],
         ["/commands", "Your own /-command prompt templates"],
+        ["/scheduler", "Time-fired jobs Solaris runs unattended"],
         ["/soul", "Solaris's durable identity"],
         ["/persona", "Persona & speed for the next new chat"],
         ["/tools", "What Solaris can do — toolsets & MCP servers"],
@@ -2166,6 +2218,7 @@
         if (cmd === "search") { openSearchCard(rest.trim()); return; }
         if (cmd === "skills" || cmd === "soul" || cmd === "tools") { openSettingCard(cmd); return; }
         if (cmd === "commands") { openSettingCard("commands"); return; }
+        if (cmd === "scheduler") { openSettingCard("scheduler"); return; }
         if (cmd === "persona") {
           if (rest.trim()) { applyPersonaArg(rest.trim()); } else { openPersonaCard(); }
           return;
@@ -2201,9 +2254,10 @@
         addInfo("Unknown command `/" + cmd + "`.\n\n" + helpMarkdown());
       }
 
-      // Expand a typeable command into a turn (#482). A command-kind template
-      // (editable, `kind: command`) fetches its body and sends that; a built-in
-      // inline dual alias (a skill-kind def, no own command body) sends its
+      // Expand a typeable command into a turn (#482, #485). A command- or
+      // scheduler-kind def (editable body) fetches its body and sends that — a
+      // scheduler entry's run-now command runs its job body once on demand; a
+      // built-in inline dual alias (a skill-kind def, no own body) sends its
       // `/trigger` plus the typed args so the engine routes it as today. Arg
       // substitution into the body is a follow-up (the issue defers it).
       function runCommandTemplate(def, args) {
@@ -2214,8 +2268,10 @@
           addUserTurn(prompt, []);
           runTurn(prompt, []);
         }
-        // A dual alias has no editable command-kind pack — send the trigger.
-        fetch("/api/defs/command/" + encodeURIComponent(def.id))
+        // A dual skill alias has no editable body — send the trigger; a command
+        // or scheduler def runs its own markdown body.
+        if (def.kind === "skill") { dispatch(""); return; }
+        fetch("/api/defs/" + (def.kind || "command") + "/" + encodeURIComponent(def.id))
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) { dispatch(j && j.def ? j.def.body : ""); })
           .catch(function () { dispatch(""); });
@@ -2229,23 +2285,30 @@
       function loadCommandPool() {
         return Promise.all([
           fetch("/api/defs/command").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; }),
-          fetch("/api/defs/skill").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; })
+          fetch("/api/defs/skill").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; }),
+          fetch("/api/defs/scheduler").then(function (r) { return r.ok ? r.json() : { defs: [] }; }).catch(function () { return { defs: [] }; })
         ]).then(function (res) {
           var cmdDefs = (res[0] && res[0].defs) || [];
           var skillDefs = (res[1] && res[1].defs) || [];
+          var schedDefs = (res[2] && res[2].defs) || [];
           skillEntries = skillDefs
             .map(function (s) { return ["/" + s.id, s.description || s.name || ""]; })
             .sort(function (a, b) { return a[0].localeCompare(b[0]); });
           // A command's trigger is its `command:` field if set (the built-in
           // aliases pin /debug //status etc.), else `/<id>` for a user template.
-          var typeable = cmdDefs.concat(skillDefs.filter(function (s) { return s.command; }));
+          // Scheduler entries that carry a `command:` join as a manual run-now
+          // trigger (#485) — their body runs once on demand alongside the cron.
+          var typeable = cmdDefs.map(function (d) { return { d: d, kind: "command" }; })
+            .concat(skillDefs.filter(function (s) { return s.command; }).map(function (d) { return { d: d, kind: "skill" }; }))
+            .concat(schedDefs.filter(function (s) { return s.command; }).map(function (d) { return { d: d, kind: "scheduler" }; }));
           commandEntries = []; commandDefs = {};
-          typeable.forEach(function (d) {
+          typeable.forEach(function (e) {
+            var d = e.d;
             var trig = (d.command || "/" + d.id).toLowerCase();
             var hint = d["argument-hint"] || "";
             var desc = (d.description || d.name || "") + (hint ? " — " + trig.slice(1) + " " + hint : "");
             commandEntries.push([trig, desc]);
-            commandDefs[trig] = { id: d.id, command: d.command || trig, hint: hint };
+            commandDefs[trig] = { id: d.id, command: d.command || trig, hint: hint, kind: e.kind };
           });
           commandEntries.sort(function (a, b) { return a[0].localeCompare(b[0]); });
         });
@@ -3123,6 +3186,7 @@
       var settingViews = {
         skills: document.getElementById("view-skills"),
         commands: document.getElementById("view-commands"),
+        scheduler: document.getElementById("view-scheduler"),
         soul: document.getElementById("view-soul"),
         tools: document.getElementById("view-tools"),
         prefs: document.getElementById("view-prefs"),
@@ -3130,7 +3194,7 @@
         voice: document.getElementById("view-voice")
       };
       var settingTitles = {
-        skills: "Skills", commands: "Commands", soul: "Soul", tools: "Tools",
+        skills: "Skills", commands: "Commands", scheduler: "Scheduler", soul: "Soul", tools: "Tools",
         prefs: "Chat", model: "Model", voice: "Voice"
       };
       var skillsLoaded = false, soulLoaded = false;
@@ -3138,6 +3202,7 @@
       function loadSettingPane(name) {
         if (name === "skills") { if (!skillsLoaded) { skillsLoaded = true; loadSkills(); } }
         else if (name === "commands") { loadCommands(); }
+        else if (name === "scheduler") { loadScheduler(); }
         else if (name === "soul") { if (!soulLoaded) { soulLoaded = true; loadSoul(); } }
         else if (name === "tools") { loadTools(); loadMcp(); }
         else if (name === "prefs") { syncThinkingSeg(); }
@@ -3707,6 +3772,205 @@
             else { setCommandStatus("Could not save. Please try again.", "err"); }
           })
           .finally(function () { commandSave.disabled = false; });
+      });
+
+      // ---- Scheduler (#485) — time-fired (cron) jobs with a cron-time picker ----
+      // Mirrors the Commands editor but writes the scheduler-kind registry and
+      // wires the schedule through a guided minute/hour/weekday picker instead of
+      // free-text cron. The engine cron loop (crons.load_jobs) re-reads the pack
+      // on the next tick, so an edit takes effect with no redeploy. Each entry
+      // also surfaces as a run-now /-command (handled by loadCommandPool above).
+      var schedulerCards = document.getElementById("scheduler-cards");
+      var schedulerList = document.getElementById("scheduler-list");
+      var schedulerReader = document.getElementById("scheduler-reader");
+      var schedulerName = document.getElementById("scheduler-name");
+      var schedulerBodyEl = document.getElementById("scheduler-body");
+      var schedulerViewEl = document.getElementById("scheduler-view");
+      var schedulerEditPane = document.getElementById("scheduler-edit-pane");
+      var schedulerEditBtn = document.getElementById("scheduler-edit");
+      var schedulerDeleteBtn = document.getElementById("scheduler-delete");
+      var schedulerAddBtn = document.getElementById("scheduler-add");
+      var schedulerEditor = document.getElementById("scheduler-editor");
+      var schedulerSave = document.getElementById("scheduler-save");
+      var schedulerCancel = document.getElementById("scheduler-cancel");
+      var schedulerStatus = document.getElementById("scheduler-status");
+      var cronWeekday = document.getElementById("cron-weekday");
+      var cronHour = document.getElementById("cron-hour");
+      var cronMinute = document.getElementById("cron-minute");
+      var cronPreview = document.getElementById("cron-preview");
+      var currentSchedulerId = null, currentSchedulerRaw = "", schedulerIsNew = false;
+      var SCHEDULER_TEMPLATE = "---\nname: \ndescription: \nkind: scheduler\nscope: household\ncommand: /\nschedule: 0 9 * * *\n---\n\n";
+      var CRON_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+      (function fillCronSelects() {
+        for (var h = 0; h < 24; h++) { var o = document.createElement("option"); o.value = String(h); o.textContent = (h < 10 ? "0" : "") + h; cronHour.appendChild(o); }
+        for (var m = 0; m < 60; m++) { var p = document.createElement("option"); p.value = String(m); p.textContent = (m < 10 ? "0" : "") + m; cronMinute.appendChild(p); }
+      })();
+
+      // Parse a `min hour dom mon dow` cron into the picker's three fields; the
+      // engine only fires the single-minute/hour (+ optional weekday) shape, so
+      // anything else falls back to a sensible default rather than mis-rendering.
+      function cronToPicker(spec) {
+        var parts = (spec || "").trim().split(/\s+/);
+        var minute = 0, hour = 9, dow = "*";
+        if (parts.length === 5) {
+          var m = parseInt(parts[0], 10), h = parseInt(parts[1], 10);
+          if (!isNaN(m) && m >= 0 && m < 60) minute = m;
+          if (!isNaN(h) && h >= 0 && h < 24) hour = h;
+          if (parts[4] !== "*") {
+            var d = parts[4].toLowerCase();
+            if (CRON_WEEKDAYS.indexOf(d) !== -1) dow = d;
+            else { var di = parseInt(d, 10); if (!isNaN(di)) dow = CRON_WEEKDAYS[((di % 7) + 7) % 7]; }
+          }
+        }
+        return { minute: minute, hour: hour, dow: dow };
+      }
+      function pickerToCron() {
+        return cronMinute.value + " " + cronHour.value + " * * " + cronWeekday.value;
+      }
+      function cronToText(spec) {
+        var p = cronToPicker(spec);
+        var when = p.dow === "*" ? "every day" : p.dow.charAt(0).toUpperCase() + p.dow.slice(1);
+        var hh = (p.hour < 10 ? "0" : "") + p.hour, mm = (p.minute < 10 ? "0" : "") + p.minute;
+        return when + " at " + hh + ":" + mm;
+      }
+      function syncCronPreview() { cronPreview.textContent = cronToText(pickerToCron()); }
+      cronWeekday.addEventListener("change", syncCronPreview);
+      cronHour.addEventListener("change", syncCronPreview);
+      cronMinute.addEventListener("change", syncCronPreview);
+
+      function setCronPicker(spec) {
+        var p = cronToPicker(spec);
+        cronMinute.value = String(p.minute); cronHour.value = String(p.hour); cronWeekday.value = p.dow;
+        syncCronPreview();
+      }
+      // Rewrite (or insert) the `schedule:` frontmatter line so the picker is the
+      // single source of truth for the time, even when the user also edits the
+      // raw markdown by hand.
+      function applyScheduleToRaw(raw, spec) {
+        if (/^schedule:.*$/m.test(raw)) return raw.replace(/^schedule:.*$/m, "schedule: " + spec);
+        if (raw.indexOf("---") === 0) {
+          var end = raw.indexOf("\n---", 3);
+          if (end !== -1) return raw.slice(0, end) + "\nschedule: " + spec + raw.slice(end);
+        }
+        return raw;
+      }
+      function scheduleFromRaw(raw) {
+        var m = /^schedule:(.*)$/m.exec(raw || "");
+        return m ? m[1].trim() : "";
+      }
+
+      function schedulerViewMode() {
+        schedulerEditPane.style.display = "none";
+        schedulerViewEl.style.display = "block";
+        schedulerEditBtn.hidden = !isAdmin;
+        schedulerDeleteBtn.hidden = !isAdmin || schedulerIsNew;
+      }
+      function setSchedulerStatus(msg, kind) { schedulerStatus.className = "editor-status" + (kind ? " " + kind : ""); schedulerStatus.textContent = msg || ""; }
+
+      function loadScheduler() {
+        schedulerAddBtn.hidden = !isAdmin;
+        return fetch("/api/defs/scheduler")
+          .then(function (r) { return r.ok ? r.json() : { defs: [] }; })
+          .catch(function () { return { defs: [] }; })
+          .then(function (res) {
+            var defs = (res && res.defs) || [];
+            schedulerCards.textContent = "";
+            defs.slice().sort(function (a, b) { return String(a.name || a.id).localeCompare(String(b.name || b.id)); })
+              .forEach(function (d) { schedulerCards.appendChild(schedulerCard(d)); });
+            if (!defs.length) {
+              var note = document.createElement("div"); note.className = "empty-note"; note.textContent = "No scheduler entries yet.";
+              schedulerCards.appendChild(note);
+            }
+          });
+      }
+
+      function schedulerCard(d) {
+        var card = document.createElement("div"); card.className = "skill-card";
+        var name = document.createElement("div"); name.className = "name"; name.textContent = d.name || d.id;
+        card.appendChild(name);
+        var sched = document.createElement("div"); sched.className = "desc";
+        sched.textContent = d.schedule ? cronToText(d.schedule) : "no schedule set";
+        if (d.command) sched.textContent += " · run now: " + d.command;
+        card.appendChild(sched);
+        if (d.description) { var desc = document.createElement("div"); desc.className = "desc"; desc.textContent = d.description; card.appendChild(desc); }
+        card.addEventListener("click", function () { openScheduler(d.id); });
+        return card;
+      }
+
+      function openScheduler(id) {
+        return fetch("/api/defs/scheduler/" + encodeURIComponent(id))
+          .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
+          .then(function (j) {
+            var d = (j && j.def) || {};
+            currentSchedulerId = d.id || id;
+            currentSchedulerRaw = d.raw || "";
+            schedulerIsNew = false;
+            schedulerName.textContent = d.name || d.id || id;
+            schedulerBodyEl.innerHTML = window.renderMarkdown(d.body || "");
+            setSchedulerStatus("");
+            schedulerViewMode();
+            schedulerList.style.display = "none";
+            schedulerReader.style.display = "flex";
+          })
+          .catch(function () {});
+      }
+      document.getElementById("scheduler-back").addEventListener("click", function () {
+        schedulerReader.style.display = "none";
+        schedulerList.style.display = "block";
+        schedulerViewMode();
+      });
+
+      schedulerAddBtn.addEventListener("click", function () {
+        var id = (window.prompt("New scheduler id (folder name, e.g. weekly-digest):") || "").trim();
+        if (!id) return;
+        currentSchedulerId = id; currentSchedulerRaw = SCHEDULER_TEMPLATE; schedulerIsNew = true;
+        schedulerName.textContent = id;
+        schedulerBodyEl.innerHTML = "";
+        schedulerList.style.display = "none";
+        schedulerReader.style.display = "flex";
+        schedulerEditBtn.click();
+      });
+      schedulerEditBtn.addEventListener("click", function () {
+        schedulerEditor.value = currentSchedulerRaw;
+        setCronPicker(scheduleFromRaw(currentSchedulerRaw));
+        setSchedulerStatus("");
+        schedulerViewEl.style.display = "none";
+        schedulerEditBtn.hidden = true;
+        schedulerDeleteBtn.hidden = true;
+        schedulerEditPane.style.display = "block";
+        schedulerEditor.focus();
+      });
+      schedulerCancel.addEventListener("click", schedulerViewMode);
+      schedulerDeleteBtn.addEventListener("click", function () {
+        if (!window.confirm("Delete scheduler entry `" + currentSchedulerId + "`?")) return;
+        fetch("/api/defs/scheduler/" + encodeURIComponent(currentSchedulerId), { method: "DELETE" })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (!r.ok) throw new Error("delete failed"); })
+          .then(function () { loadScheduler(); document.getElementById("scheduler-back").click(); loadCommandPool(); })
+          .catch(function (e) { setSchedulerStatus(e.message === "forbidden" ? "Only admins can delete scheduler entries." : "Could not delete. Please try again.", "err"); });
+      });
+      schedulerSave.addEventListener("click", function () {
+        // The picker is authoritative for the schedule: fold its cron into the
+        // raw frontmatter before saving so the time can't drift from the body.
+        var content = applyScheduleToRaw(schedulerEditor.value, pickerToCron());
+        schedulerEditor.value = content;
+        if (!content.trim()) { setSchedulerStatus("Can't save an empty entry.", "err"); return; }
+        schedulerSave.disabled = true;
+        setSchedulerStatus("Saving…");
+        fetch("/api/defs/scheduler/" + encodeURIComponent(currentSchedulerId), {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: content })
+        })
+          .then(function (r) { if (r.status === 403) throw new Error("forbidden"); if (r.status === 400) throw new Error("kind_mismatch"); if (!r.ok) throw new Error("save failed"); return r.json(); })
+          .then(function () {
+            loadScheduler(); loadCommandPool();
+            return openScheduler(currentSchedulerId).then(function () { setSchedulerStatus("Saved. Takes effect on the next cron tick.", "ok"); });
+          })
+          .catch(function (e) {
+            if (e.message === "forbidden") { setSchedulerStatus("Only admins can edit scheduler entries.", "err"); }
+            else if (e.message === "kind_mismatch") { setSchedulerStatus("Keep `kind: scheduler` in the frontmatter.", "err"); }
+            else { setSchedulerStatus("Could not save. Please try again.", "err"); }
+          })
+          .finally(function () { schedulerSave.disabled = false; });
       });
 
       // ---- Soul ----

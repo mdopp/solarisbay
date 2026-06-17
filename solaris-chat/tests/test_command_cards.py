@@ -180,6 +180,56 @@ def test_skills_card_uses_the_defs_api():
     )  # PUT/DELETE
 
 
+def test_scheduler_card_is_a_setting_card_on_the_defs_api():
+    # #485: /scheduler is a card-command; its editor lists + edits the
+    # scheduler-kind registry via /api/defs/scheduler with add/edit/delete.
+    assert '["/scheduler"' in _HTML
+    assert 'if (cmd === "scheduler") { openSettingCard("scheduler"); return; }' in _HTML
+    assert 'scheduler: document.getElementById("view-scheduler")' in _HTML
+    assert '/api/defs/scheduler"' in _HTML  # loadScheduler GET list
+    assert (
+        '/api/defs/scheduler/" + encodeURIComponent(currentSchedulerId)' in _HTML
+    )  # PUT/DELETE
+
+
+def test_scheduler_cron_picker_drives_the_schedule_field():
+    # #485: the cron-time picker (minute/hour/weekday) is the source of truth for
+    # the schedule — save folds the picker's cron into the `schedule:` frontmatter
+    # the engine cron loop reads, instead of free-text cron.
+    assert 'id="cron-minute"' in _HTML
+    assert 'id="cron-hour"' in _HTML
+    assert 'id="cron-weekday"' in _HTML
+    pick = re.search(r"function pickerToCron\(\) \{(.*?)\n      \}", _HTML, re.S)
+    assert pick, "pickerToCron not found"
+    assert "cronMinute.value" in pick.group(1) and "cronHour.value" in pick.group(1)
+    # Save rewrites the frontmatter schedule line from the picker before PUT.
+    fn = re.search(
+        r'schedulerSave\.addEventListener\("click", function \(\) \{(.*?)\n      \}\);',
+        _HTML,
+        re.S,
+    )
+    assert fn, "scheduler save handler not found"
+    assert "applyScheduleToRaw(schedulerEditor.value, pickerToCron())" in fn.group(1)
+    # An edit takes effect on the next cron tick (registry-driven, no redeploy).
+    assert "Takes effect on the next cron tick" in _HTML
+
+
+def test_scheduler_entry_surfaces_a_run_now_command():
+    # #485: a scheduler entry carrying a `command:` joins the typeable `/` pool as
+    # a manual run-now trigger; runCommandTemplate runs its body once on demand.
+    fn = re.search(r"function loadCommandPool\(\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "loadCommandPool not found"
+    body = fn.group(1)
+    assert "/api/defs/scheduler" in body  # scheduler defs join the pool
+    assert 'kind: "scheduler"' in body
+    # runCommandTemplate fetches the body from the def's own kind (scheduler too),
+    # not always /api/defs/command.
+    tpl = re.search(
+        r"function runCommandTemplate\(def, args\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert tpl and '"/api/defs/" + (def.kind || "command") + "/"' in tpl.group(1)
+
+
 def test_pinned_household_row_opens_the_durable_session():
     # #419: the pinned "Zuhause" row opens the resident's ONE durable household
     # session (from /api/whoami) instead of minting a fresh chat per click; only

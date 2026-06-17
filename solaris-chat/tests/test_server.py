@@ -1834,6 +1834,22 @@ def test_list_defs_filters_by_kind_default_is_skill(tmp_path):
     assert skill["kind"] == "skill" and skill["scope"] == "household"
 
 
+def test_list_defs_surfaces_the_scheduler_schedule(tmp_path):
+    # #485: the /scheduler card's cron-time picker needs each entry's `schedule:`
+    # cron on the registry row to render + prefill the picker.
+    _write_def(
+        tmp_path,
+        "chronicle",
+        name="chronicle",
+        kind="scheduler",
+        extra="schedule: 59 23 * * *",
+    )
+    _write_def(tmp_path, "status", name="solaris-status")  # skill: no schedule
+    sched = skills.list_defs(tmp_path, "scheduler")[0]
+    assert sched["schedule"] == "59 23 * * *"
+    assert skills.list_defs(tmp_path, "skill")[0]["schedule"] == ""
+
+
 def test_shipped_pack_groups_into_the_four_kinds():
     # The #484 reorg sorts the household pack by frontmatter kind; admin-soul
     # (admin-act/diagnose/logs) is a sibling pack, so it isn't walked here.
