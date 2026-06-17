@@ -552,6 +552,11 @@
     }
     .mention.person { background: var(--bubble-sol); color: var(--ink); }
 
+    /* [[X]] cross-links (#504): an unresolved target stays plain inline text; a
+       resolved one links to its concept page. */
+    a.wikilink.resolved { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); cursor: pointer; }
+    a.wikilink.resolved:hover { border-bottom-color: var(--accent); }
+
     /* Tag-cloud (#279c): the active chat's #tags / @persons as jump-to-message
        chips. Responsive — a right-side gutter panel when the viewport is wide
        enough to clear the centered 900px log, a strip above the composer
@@ -1692,6 +1697,67 @@
           .catch(function () {});
       }
 
+      // `[[X]]` / `[[X|label]]` cross-links in chat text (#504). Walk the
+      // rendered text nodes of a message body, replace each `[[ ]]` run with a
+      // placeholder span (label shown), collect the targets, and resolve them
+      // against the OKF entity graph via the same /api/anchors/resolve endpoint
+      // the auto-anchors use (a bare token, no #/@, resolves whole). A resolved
+      // target upgrades into a tappable link to its concept page (#/c/<id>); an
+      // unresolved one stays plain text. Targets in code/pre stay literal.
+      var WIKILINK_RE = /\[\[([^\[\]|]+?)(?:\|([^\[\]]+?))?\]\]/g;
+      function linkifyWikiLinks(rootEl) {
+        if (!rootEl) return;
+        var walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, null);
+        var targets = [], nodes = [], node;
+        while ((node = walker.nextNode())) {
+          if (node.nodeValue.indexOf("[[") === -1) continue;
+          var p = node.parentNode;
+          if (p && (p.closest("code") || p.closest("pre") || p.closest("a"))) continue;
+          nodes.push(node);
+        }
+        var spansByTarget = {};
+        nodes.forEach(function (textNode) {
+          var text = textNode.nodeValue, last = 0, m, frag = document.createDocumentFragment();
+          WIKILINK_RE.lastIndex = 0;
+          while ((m = WIKILINK_RE.exec(text))) {
+            if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+            var target = m[1].trim(), label = (m[2] || m[1]).trim();
+            var span = document.createElement("span");
+            span.className = "wikilink";
+            span.textContent = label;
+            frag.appendChild(span);
+            (spansByTarget[target] = spansByTarget[target] || []).push(span);
+            if (targets.indexOf(target) === -1) targets.push(target);
+            last = m.index + m[0].length;
+          }
+          if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+          textNode.parentNode.replaceChild(frag, textNode);
+        });
+        if (!targets.length) return;
+        fetch("/api/anchors/resolve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ anchors: targets }),
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok || !j.resolved) return;
+            Object.keys(j.resolved).forEach(function (target) {
+              var id = j.resolved[target];
+              (spansByTarget[target] || []).forEach(function (span) {
+                if (!id) return;
+                var a = document.createElement("a");
+                a.className = "wikilink resolved";
+                a.href = "#/c/" + encodeURIComponent(id);
+                a.textContent = span.textContent;
+                a.title = target + " öffnen";
+                span.parentNode.replaceChild(a, span);
+              });
+            });
+          })
+          .catch(function () {});
+      }
+
       // One entity's card. `row` renders it as a compact group row (no card
       // chrome) reusing the same controls; otherwise as a standalone card.
       function renderHaCard(c, row) {
@@ -2254,7 +2320,7 @@
       function addText(role, text, when) {
         var el = document.createElement("div");
         el.className = "msg " + role;
-        if (role === "me") tagUserBubble(el, appendMentionText(el, text) > 0);
+        if (role === "me") { tagUserBubble(el, appendMentionText(el, text) > 0); linkifyWikiLinks(el); }
         else el.appendChild(document.createTextNode(text));
         if (role === "me" || role === "sol") {
           var meta = metaLine(when);
@@ -2410,6 +2476,7 @@
             if (!buffer) body.textContent = "(no reply)";
             else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
+            linkifyWikiLinks(body);
             el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
           },
@@ -2420,7 +2487,7 @@
             // Mirror finish() (#406): drop the live bubble so the persisted step
             // list stays the single trace surface, with no ghost on a stopped turn.
             if (bubble && bubble.parentNode) el.removeChild(bubble);
-            if (buffer) { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); renderMermaidIn(body); }
+            if (buffer) { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); renderMermaidIn(body); linkifyWikiLinks(body); }
             else { body.textContent = "(stopped)"; }
             var note = document.createElement("span");
             note.className = "stopped-note"; note.textContent = "stopped";
@@ -2445,6 +2512,7 @@
             if (!buffer) body.textContent = "(no reply)";
             else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
+            linkifyWikiLinks(body);
             el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
           }
@@ -3275,7 +3343,7 @@
           });
           el.appendChild(strip);
         }
-        if (text) tagUserBubble(el, appendMentionText(el, text) > 0);
+        if (text) { tagUserBubble(el, appendMentionText(el, text) > 0); linkifyWikiLinks(el); }
         var meta = metaLine(when || new Date());
         addRerunAction(meta, text);
         el.appendChild(meta);
@@ -3424,6 +3492,7 @@
                 body.setAttribute("data-raw", m.content);
                 body.innerHTML = renderReply(m.content);
                 renderMermaidIn(body);
+                linkifyWikiLinks(body);
                 el.appendChild(body);
                 if (ts) el.appendChild(metaLine(ts));
                 log.appendChild(el);
@@ -3852,6 +3921,7 @@
         Array.prototype.forEach.call(bodies, function (body) {
           body.innerHTML = renderReply(body.getAttribute("data-raw"));
           renderMermaidIn(body);
+          linkifyWikiLinks(body);
         });
       }
       thinkBtns.forEach(function (b) {

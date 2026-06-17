@@ -1524,9 +1524,11 @@ def build_app(
 
         Owner-scoped: each `#`/`@` anchor's bare value is matched against
         `entity_aliases`/`entities` (migration 0016) via the same resolver the
-        concept aggregator uses. Returns `{resolved: {anchor: entity_id}}` for
-        the ones that hit a known entity; unresolved anchors are absent so the
-        client keeps phase 1's `/search` filter chip for them.
+        concept aggregator uses. A token without a `#`/`@` prefix is resolved
+        whole — this is the `[[X]]` cross-link path (#504), which shares this
+        resolver. Returns `{resolved: {token: entity_id}}` for the ones that hit
+        a known entity; unresolved tokens are absent so the client keeps phase
+        1's `/search` filter chip (anchors) or plain text (`[[ ]]`).
         """
         uid = resolve_uid(request, remote_user_header, default_uid)
         body = await request.json()
@@ -1536,7 +1538,11 @@ def build_app(
             conn = projection.open_conn(solaris_db_path)
             try:
                 for anchor in anchors:
-                    value = anchor[1:].strip() if anchor[:1] in ("#", "@") else ""
+                    value = (
+                        anchor[1:].strip()
+                        if anchor[:1] in ("#", "@")
+                        else anchor.strip()
+                    )
                     if not value:
                         continue
                     entity_id = projection.resolve_entity_id(conn, value, uid)
