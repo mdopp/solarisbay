@@ -253,6 +253,84 @@ def record_ingest(
     )
 
 
+# --- concept page aggregation (#502 phase 1) ----------------------------------
+
+
+def resolve_entity_id(
+    conn: sqlite3.Connection, ref: str, resident_uid: str
+) -> str | None:
+    """Resolve a page ref to an entity id for this resident.
+
+    `ref` may already be the entity id, a canonical name, or a recorded alias.
+    Per-resident (§6) so one resident's "Anna" never resolves to another's.
+    Returns the entity id or ``None`` when nothing matches.
+    """
+    row = conn.execute(
+        "SELECT id FROM entities WHERE id = ? AND resident_uid = ?",
+        (ref, resident_uid),
+    ).fetchone()
+    if row is not None:
+        return row["id"]
+    row = conn.execute(
+        "SELECT id FROM entities WHERE resident_uid = ? AND canonical_name = ?",
+        (resident_uid, ref),
+    ).fetchone()
+    if row is not None:
+        return row["id"]
+    row = conn.execute(
+        "SELECT e.id FROM entities e"
+        " JOIN entity_aliases a ON a.entity_id = e.id"
+        " WHERE e.resident_uid = ? AND a.alias = ?",
+        (resident_uid, ref),
+    ).fetchone()
+    return row["id"] if row is not None else None
+
+
+def entity_row(conn: sqlite3.Connection, entity_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT id, type, canonical_name, resident_uid, source FROM entities"
+        " WHERE id = ?",
+        (entity_id,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def entity_aliases(conn: sqlite3.Connection, entity_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT alias FROM entity_aliases WHERE entity_id = ? ORDER BY alias",
+        (entity_id,),
+    ).fetchall()
+    return [r["alias"] for r in rows]
+
+
+def entity_okf_path(conn: sqlite3.Connection, entity_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT okf_path FROM concepts WHERE ref_kind = 'entity' AND ref_id = ?",
+        (entity_id,),
+    ).fetchone()
+    return row["okf_path"] if row is not None else None
+
+
+def entity_facts(conn: sqlite3.Connection, entity_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT predicate, value, confidence FROM facts"
+        " WHERE subject_entity_id = ? ORDER BY predicate, value",
+        (entity_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def entity_events(conn: sqlite3.Connection, entity_id: str) -> list[dict[str, Any]]:
+    """Events this entity participates in (newest first), with its role."""
+    rows = conn.execute(
+        "SELECT ev.id, ev.ts, ev.kind, ee.role FROM event_entities ee"
+        " JOIN events ev ON ev.id = ee.event_id"
+        " WHERE ee.entity_id = ? ORDER BY ev.ts DESC",
+        (entity_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def open_conn(db_path: str) -> sqlite3.Connection:
     return _conn(db_path)
 

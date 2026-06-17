@@ -78,6 +78,55 @@ def _emit_card(entity_id: str, name: str, state: Any, attrs: dict[str, Any]) -> 
     sink.append(spec)
 
 
+def card_spec(
+    entity_id: str, state: Any, attrs: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Build one renderable card-spec from a live HA state, or None if the
+    entity's domain has no card (#502 concept page reuses this; same shape as
+    `_emit_card`)."""
+    domain = entity_id.split(".", 1)[0]
+    if domain not in _CARD_DOMAINS:
+        return None
+    spec: dict[str, Any] = {
+        "entity_id": entity_id,
+        "name": attrs.get("friendly_name") or entity_id,
+        "domain": domain,
+        "device_class": attrs.get("device_class"),
+        "state": None if state is None else str(state),
+        "unit": attrs.get("unit_of_measurement"),
+    }
+    for key in _CONTROL_ATTRS:
+        if attrs.get(key) is not None:
+            spec[key] = attrs[key]
+    return spec
+
+
+async def fetch_card(
+    hass_url: str, hass_token: str, entity_id: str
+) -> dict[str, Any] | None:
+    """Fetch one entity's live state and return its card-spec (read-only).
+
+    The concept page (#502) calls this when the page id is an HA entity; returns
+    None for an unknown entity, a non-card domain, or any HA error so the page
+    just omits the live card.
+    """
+    if not _ENTITY_RE.match(entity_id):
+        return None
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(
+                f"{url}/api/states/{entity_id}", headers=headers
+            ) as resp:
+                if resp.status >= 400:
+                    return None
+                body = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    return card_spec(entity_id, body.get("state"), body.get("attributes") or {})
+
+
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 _BLOCKED_DOMAINS = frozenset(

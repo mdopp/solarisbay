@@ -84,6 +84,45 @@ def notes_for_topic(
     return out
 
 
+def notes_mentioning(
+    notes_dir: str | Path, names: list[str], owner_uid: str, limit: int = 20
+) -> list[dict[str, Any]]:
+    """Notes whose text mentions any of `names` — the concept page's source/
+    backlink docs (#502). Case-insensitive whole-word match on a name, excluding
+    the OKF subtree (those are the canonical concept files, surfaced separately).
+    Per-resident: a note's `added_by` must match (or be absent/shared). Returns
+    `[{path, title}]` relative to the vault, capped. Empty when nothing matches.
+    """
+    root = Path(notes_dir)
+    wanted = [n for n in dict.fromkeys(names) if n]
+    if not wanted or not root.is_dir():
+        return []
+    patterns = [
+        re.compile(rf"(?<!\w){re.escape(n)}(?!\w)", re.IGNORECASE) for n in wanted
+    ]
+    out: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*.md")):
+        if not path.is_file() or "okf" in path.relative_to(root).parts[:1]:
+            continue
+        try:
+            if path.stat().st_size > _MAX_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not any(p.search(text) for p in patterns):
+            continue
+        added_by = _added_by(text)
+        if added_by is not None and added_by != owner_uid:
+            continue
+        out.append(
+            {"path": str(path.relative_to(root)), "title": _title(text, path.stem)}
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _title(text: str, fallback: str) -> str:
     """The note's first `# ` heading, or the filename stem as a fallback."""
     m = re.search(r"(?m)^#\s+(.+?)\s*$", text)

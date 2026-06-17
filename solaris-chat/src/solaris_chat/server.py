@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -40,11 +41,29 @@ from solaris_chat.engine.client import EngineClient, EngineError
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
-from solaris_chat.engine.tools.ha import call_service_scoped
+from solaris_chat.engine.knowledge import okf, projection
+from solaris_chat.engine.tools.ha import call_service_scoped, fetch_card
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
 from solaris_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _read_okf(notes_dir: str, okf_path: str) -> dict[str, str]:
+    """Read an OKF concept file's description + body for the concept page (#502).
+
+    `okf_path` is the projection-stored vault-relative path; resolve it under
+    `notes_dir`, refusing any path that escapes the vault. Empty on any error so
+    the page degrades to the projected facts/events.
+    """
+    root = Path(notes_dir).resolve()
+    try:
+        target = (root / okf_path).resolve()
+        target.relative_to(root)
+        return okf.read_concept(target.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return {"description": "", "body": ""}
+
 
 # Default prompt for an image-only turn (attachment with no typed text), so the
 # media-ingestion hook has a turn to trigger on. Mirrors the German tone the
@@ -1387,6 +1406,73 @@ def build_app(
         items = notes_search.notes_for_topic(notes_dir, slug, uid)
         return web.json_response({"ok": True, "slug": slug, "items": items})
 
+    async def concept_view(request: web.Request) -> web.Response:
+        """Aggregate one entity/concept into the #502 page (phase 1).
+
+        Composes, owner-scoped, what the household already stores for `<id>`:
+        live HA state (when the id is an HA entity), the OKF concept's
+        description/facts/events, the source OKF document + notes that mention
+        it, and chat/note backlinks. `<id>` resolves via `entity_aliases`/
+        `entities` (migration 0016) or is taken as an HA entity id directly.
+        """
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        ref = request.match_info["id"].strip()
+        view: dict[str, Any] = {
+            "id": ref,
+            "title": ref,
+            "type": None,
+            "ha_card": None,
+            "description": "",
+            "body": "",
+            "facts": [],
+            "events": [],
+            "source_docs": [],
+            "backlinks": [],
+        }
+        names = [ref]
+        if Path(solaris_db_path).exists():
+            conn = projection.open_conn(solaris_db_path)
+            try:
+                entity_id = projection.resolve_entity_id(conn, ref, uid)
+                if entity_id is not None:
+                    ent = projection.entity_row(conn, entity_id) or {}
+                    view["id"] = entity_id
+                    view["title"] = ent.get("canonical_name") or entity_id
+                    view["type"] = ent.get("type")
+                    names = [view["title"], *projection.entity_aliases(conn, entity_id)]
+                    view["facts"] = projection.entity_facts(conn, entity_id)
+                    view["events"] = projection.entity_events(conn, entity_id)
+                    okf_path = projection.entity_okf_path(conn, entity_id)
+                    if okf_path:
+                        view["source_docs"].append(
+                            {"path": okf_path, "title": view["title"], "kind": "okf"}
+                        )
+                        parsed = _read_okf(notes_dir, okf_path)
+                        view["description"] = parsed["description"]
+                        view["body"] = parsed["body"]
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        # Live state when the page id (or the resolved entity) is an HA entity.
+        if hass_url and hass_token:
+            card = await fetch_card(hass_url, hass_token, ref)
+            if card is not None:
+                view["ha_card"] = card
+                if view["title"] == ref:
+                    view["title"] = card.get("name") or ref
+        for note in notes_search.notes_mentioning(notes_dir, names, uid):
+            view["source_docs"].append({**note, "kind": "note"})
+        view["backlinks"] = mentions_store.backlinks_for(solaris_db_path, uid, names)
+        return web.json_response({"ok": True, "concept": view})
+
+    async def concept_page(_request: web.Request) -> web.Response:
+        # Bookmarkable deep-link to a concept: serve the SPA shell; the client
+        # router reads the `/c/<id>` path and renders the page from the API.
+        return web.FileResponse(
+            STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+        )
+
     async def mentions_tags(request: web.Request) -> web.Response:
         # Autosuggest for `#tag` (#279): the resident's already-used tags,
         # prefix-filtered. Per-resident scope (owner_uid = resolve_uid).
@@ -1700,6 +1786,8 @@ def build_app(
     app.router.add_get("/api/sessions/{session_id}/topics", get_session_topics)
     app.router.add_post("/api/sessions/{session_id}/topics", set_session_topics)
     app.router.add_get("/api/topics/{slug:.+}/items", topic_items)
+    app.router.add_get("/api/concept/{id}", concept_view)
+    app.router.add_get("/c/{id}", concept_page)
     app.router.add_get("/api/mentions/tags", mentions_tags)
     app.router.add_get("/api/mentions/persons", mentions_persons)
     app.router.add_get("/api/sessions/{session_id}/mentions", session_mentions)

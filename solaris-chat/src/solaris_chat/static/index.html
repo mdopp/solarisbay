@@ -336,6 +336,17 @@
     .ab-row.running .ab-num { opacity: 0.5; }
 
     /* Read-only HA state cards under an answer (#475). */
+    /* Concept/entity page (#502): a card in the log, like the settings cards. */
+    .concept-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+    .concept-title { font-size: 18px; font-weight: 600; }
+    .concept-kind {
+      font-size: 12px; color: var(--muted); padding: 1px 8px;
+      border-radius: 999px; background: rgba(127,127,127,0.14);
+    }
+    .concept-desc { color: var(--muted); margin: 6px 0; }
+    .concept-section { font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .concept-card ul { margin: 2px 0; padding-left: 18px; }
+    .concept-card ul li { margin: 2px 0; }
     .ha-cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
     .ha-card {
       flex: 0 1 auto; min-width: 120px; max-width: 240px;
@@ -3529,6 +3540,137 @@
         closeRail();
       }
 
+      // ---- Concept/entity page (#502 phase 1) ----
+      // The browsable knowledge surface: a hash route `#/c/<id>` (or the
+      // bookmarkable `/c/<id>` shell) renders one entity/concept as a card in
+      // the log, fed by `/api/concept/<id>`. Same SPA, same Authelia gate — a
+      // page is a card here, like the settings cards / trace modal.
+      function openConcept(id) {
+        if (!id) { showView("chat"); return; }
+        closeRail();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card";
+        card.textContent = "Lade…";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+        fetch("/api/concept/" + encodeURIComponent(id))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) { card.textContent = "Konzept nicht gefunden."; return; }
+            renderConceptCard(card, j.concept);
+          })
+          .catch(function () { card.textContent = "Konnte das Konzept nicht laden."; });
+      }
+
+      function renderConceptCard(card, c) {
+        card.textContent = "";
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = c.title || c.id || "";
+        head.appendChild(title);
+        if (c.type) {
+          var kind = document.createElement("span");
+          kind.className = "concept-kind";
+          kind.textContent = c.type;
+          head.appendChild(kind);
+        }
+        card.appendChild(head);
+        // Live HA state — the same card the chat renders (renderHaCard).
+        if (c.ha_card) {
+          var wrap = document.createElement("div");
+          wrap.className = "ha-cards";
+          wrap.appendChild(renderHaCard(c.ha_card, false));
+          card.appendChild(wrap);
+        }
+        if (c.description) {
+          var desc = document.createElement("p");
+          desc.className = "concept-desc";
+          desc.textContent = c.description;
+          card.appendChild(desc);
+        }
+        if (c.body) {
+          var body = document.createElement("div");
+          body.className = "md";
+          body.innerHTML = renderReply(c.body);
+          renderMermaidIn(body);
+          card.appendChild(body);
+        }
+        if (c.facts && c.facts.length) {
+          card.appendChild(conceptSectionTitle("Fakten"));
+          var fl = document.createElement("ul");
+          fl.className = "concept-facts";
+          c.facts.forEach(function (f) {
+            var li = document.createElement("li");
+            li.textContent = f.predicate + ": " + f.value;
+            fl.appendChild(li);
+          });
+          card.appendChild(fl);
+        }
+        if (c.events && c.events.length) {
+          card.appendChild(conceptSectionTitle("Ereignisse"));
+          var el = document.createElement("ul");
+          el.className = "concept-events";
+          c.events.forEach(function (ev) {
+            var li = document.createElement("li");
+            li.textContent = (ev.ts || "") + " · " + (ev.kind || "") +
+              (ev.role ? " (" + ev.role + ")" : "");
+            el.appendChild(li);
+          });
+          card.appendChild(el);
+        }
+        if (c.source_docs && c.source_docs.length) {
+          card.appendChild(conceptSectionTitle("Quellen"));
+          var sl = document.createElement("ul");
+          sl.className = "concept-sources";
+          c.source_docs.forEach(function (d) {
+            var li = document.createElement("li");
+            li.textContent = (d.title || d.path) + (d.kind === "okf" ? " (OKF)" : "");
+            sl.appendChild(li);
+          });
+          card.appendChild(sl);
+        }
+        if (c.backlinks && c.backlinks.length) {
+          card.appendChild(conceptSectionTitle("Erwähnt in Chats"));
+          var bl = document.createElement("ul");
+          bl.className = "concept-backlinks";
+          c.backlinks.forEach(function (b) {
+            var li = document.createElement("li");
+            var a = document.createElement("a");
+            a.href = "?session=" + encodeURIComponent(b.session_id);
+            a.textContent = b.value;
+            a.addEventListener("click", function (e) {
+              e.preventDefault();
+              card.remove();
+              openSession(b.session_id);
+            });
+            li.appendChild(a);
+            bl.appendChild(li);
+          });
+          card.appendChild(bl);
+        }
+      }
+
+      function conceptSectionTitle(text) {
+        var h = document.createElement("div");
+        h.className = "concept-section";
+        h.textContent = text;
+        return h;
+      }
+
+      // Dispatch the current hash/path route. `#/c/<id>` (and the `/c/<id>`
+      // bookmarkable shell, rewritten to the hash form) open the concept page.
+      function routeFromLocation() {
+        var hash = window.location.hash || "";
+        var m = hash.match(/^#\/c\/(.+)$/);
+        if (!m && window.location.pathname.indexOf("/c/") === 0) {
+          m = ["", window.location.pathname.slice(3)];
+        }
+        if (m) openConcept(decodeURIComponent(m[1]));
+      }
+      window.addEventListener("hashchange", routeFromLocation);
+
       // ---- Chat preferences: thinking-mode toggle (#185) ----
       var thinkSeg = document.getElementById("thinking-seg");
       var thinkBtns = thinkSeg.querySelectorAll("button");
@@ -4725,7 +4867,7 @@
       // cross (and, for an Authelia admin, the admin profile #293 — the server
       // re-enforces the gate, so a non-admin can never reach it).
       Promise.all([loadPersonalities(), loadWhoami()]);
-      loadTopics().then(loadSessions);
+      loadTopics().then(loadSessions).then(routeFromLocation);
     })();
   </script>
 </body>
