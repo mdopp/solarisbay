@@ -95,6 +95,12 @@ def list_defs(skills_dir: str | Path, kind: str) -> list[dict[str, str]]:
                 "description": meta.get("description", ""),
                 "kind": kind,
                 "scope": meta.get("scope") or _DEFAULT_SCOPE,
+                # The inline `/`-trigger and its prompt-line hint for a typeable
+                # command (set on command-kind defs and the dual status/notes/
+                # audit skills); empty for the rest. Drives the `/commands` card
+                # and the slash-pool entry.
+                "command": meta.get("command", ""),
+                "argument-hint": meta.get("argument-hint", ""),
             }
         )
     out.sort(key=lambda s: s["name"].lower())

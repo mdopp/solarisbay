@@ -123,38 +123,61 @@ def test_wordmark_i_is_the_brand_glyph():
     assert "em" in rule.group(1)  # sized in em so it sits inline like a glyph
 
 
-def test_help_lists_the_same_skills_as_the_autocomplete():
-    # #421: /help must cover the SAME set as the `/` autocomplete — built-in
-    # commands PLUS the registered skills. Both draw on one shared `skillEntries`
-    # (declared once, populated by the single /api/skills fetch) so they can't
-    # diverge; helpMarkdown appends those entries.
-    assert "var skillEntries = [];" in _HTML
+def test_help_and_autocomplete_pool_commands_only_not_skills():
+    # #482: the `/` autocomplete + /help pool is COMMANDS only — built-in
+    # commands PLUS the typeable command-kind templates / inline dual aliases
+    # (`commandEntries`). Skills are model-picked and hooks are event-fired, so
+    # neither is in the pool: the pool no longer concats `skillEntries`.
     fn = re.search(r"function helpMarkdown\(\) \{(.*?)\n      \}", _HTML, re.S)
     assert fn, "helpMarkdown not found"
     body = fn.group(1)
-    assert "skillEntries.length" in body
-    assert "skillEntries.forEach" in body
-    # The autocomplete reads the shared list (no private re-declaration shadows it).
+    assert "commandEntries.length" in body
+    assert "commandEntries.forEach" in body
+    assert "skillEntries" not in body  # /help no longer lists skills
+    # The autocomplete pool concats commandEntries, NOT skillEntries.
     assert "var pool = availableCommands()" in _HTML
-    assert ".concat(skillEntries)" in _HTML
-    slash = re.search(r"slash = \(function \(\) \{(.*?)return \{ refresh", _HTML, re.S)
-    assert slash, "slash IIFE not found"
-    assert "var skillEntries" not in slash.group(1)
+    assert ".concat(commandEntries)" in _HTML
+    assert ".concat(skillEntries)" not in _HTML
+    # skillEntries still exists — it feeds the /skills editor, just not the menu.
+    assert "var skillEntries = [];" in _HTML
 
 
-def test_skill_slash_command_opens_the_skill_card():
-    # #417: a registered skill `/<skill-id>` offered by the autocomplete must
-    # render — open it in the Skills card — instead of falling through to
-    # "Unknown command", so every suggested slash entry works (household too).
+def test_command_template_runs_as_a_turn():
+    # #482: a typeable command `/<id>` expands its body into the turn prompt and
+    # runs it (no "Unknown command"); skills/hooks are NOT typeable and fall
+    # through. handleCommand routes a `commandDefs` hit to runCommandTemplate.
     fn = re.search(r"function handleCommand\(raw\) \{(.*?)\n      \}", _HTML, re.S)
     assert fn, "handleCommand not found"
     body = fn.group(1)
-    # Case-insensitive skill lookup (#469): a skill id with any uppercase still
-    # resolves instead of falling through to "Unknown command".
-    assert 'c[0].toLowerCase() === "/" + cmd' in body
-    assert "openSkill(skillHit[0].slice(1))" in body
-    # The unknown-command fallthrough stays AFTER the skill check.
-    assert body.index("skillHit") < body.index('"Unknown command `/"')
+    assert 'var def = commandDefs["/" + cmd];' in body
+    assert "runCommandTemplate(def, rest.trim())" in body
+    # The unknown-command fallthrough stays AFTER the command check.
+    assert body.index("commandDefs") < body.index('"Unknown command `/"')
+    # runCommandTemplate sends the expanded prompt as a real turn.
+    tpl = re.search(
+        r"function runCommandTemplate\(def, args\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert tpl, "runCommandTemplate not found"
+    assert "runTurn(prompt, [])" in tpl.group(1)
+
+
+def test_commands_card_is_a_setting_card_on_the_defs_api():
+    # #482: /commands is a card-command; its editor lists + edits the
+    # command-kind registry via /api/defs/command.
+    assert '["/commands"' in _HTML
+    assert 'if (cmd === "commands") { openSettingCard("commands"); return; }' in _HTML
+    assert 'commands: document.getElementById("view-commands")' in _HTML
+    assert '/api/defs/command/" + encodeURIComponent(currentCommandId)' in _HTML
+
+
+def test_skills_card_uses_the_defs_api():
+    # #482: the /skills card lists + edits skill-kind defs via /api/defs/skill
+    # (with add + delete), not the legacy /api/skills surface.
+    assert '/api/defs/skill"' in _HTML  # loadSkills GET list
+    assert '/api/defs/skill/" + encodeURIComponent(id)' in _HTML  # openSkill GET
+    assert (
+        '/api/defs/skill/" + encodeURIComponent(currentSkillId)' in _HTML
+    )  # PUT/DELETE
 
 
 def test_pinned_household_row_opens_the_durable_session():
