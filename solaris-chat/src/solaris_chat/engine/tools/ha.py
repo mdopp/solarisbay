@@ -33,11 +33,29 @@ card_sink: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.Con
 # Domains that get a read-only state card in phase 1. Sensors render a value
 # card (state + unit); binary_sensor/cover.garage an open/closed status; the
 # actionable light/switch a current-state badge (controls are later phases).
-_CARD_DOMAINS = frozenset({"sensor", "binary_sensor", "cover", "light", "switch"})
+_CARD_DOMAINS = frozenset(
+    {"sensor", "binary_sensor", "cover", "light", "switch", "climate"}
+)
+# Attributes the phase-3 controls (sliders/colour/climate) read off the card-spec
+# so the frontend can feature-gate them without a second HA round-trip (#477).
+_CONTROL_ATTRS = (
+    "supported_features",
+    "brightness",
+    "rgb_color",
+    "color_mode",
+    "supported_color_modes",
+    "current_position",
+    "temperature",
+    "current_temperature",
+    "target_temp_step",
+    "min_temp",
+    "max_temp",
+    "hvac_modes",
+)
 
 
 def _emit_card(entity_id: str, name: str, state: Any, attrs: dict[str, Any]) -> None:
-    """Append a read-only card-spec for one entity to the turn's sink (#475)."""
+    """Append a card-spec for one entity to the turn's sink (#475, #477)."""
     sink = card_sink.get()
     if sink is None:
         return
@@ -46,16 +64,18 @@ def _emit_card(entity_id: str, name: str, state: Any, attrs: dict[str, Any]) -> 
         return
     if any(c["entity_id"] == entity_id for c in sink):
         return
-    sink.append(
-        {
-            "entity_id": entity_id,
-            "name": name,
-            "domain": domain,
-            "device_class": attrs.get("device_class"),
-            "state": None if state is None else str(state),
-            "unit": attrs.get("unit_of_measurement"),
-        }
-    )
+    spec = {
+        "entity_id": entity_id,
+        "name": name,
+        "domain": domain,
+        "device_class": attrs.get("device_class"),
+        "state": None if state is None else str(state),
+        "unit": attrs.get("unit_of_measurement"),
+    }
+    for key in _CONTROL_ATTRS:
+        if attrs.get(key) is not None:
+            spec[key] = attrs[key]
+    sink.append(spec)
 
 
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")

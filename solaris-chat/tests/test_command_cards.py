@@ -297,3 +297,28 @@ def test_burger_and_wordmark_are_mobile_only():
         re.S,
     )
     assert mobile, "mobile reveal of the merged header missing"
+
+
+def test_ha_card_phase3_controls_act_via_the_scoped_endpoint():
+    # Phase 3 (#477): light brightness + colour, cover position + open/close/stop,
+    # climate setpoint + hvac mode — all routed through /api/ha/call (no client
+    # HA token), feature-gated by supported_features / colour modes.
+    assert "function renderLightControls(card, c)" in _HTML
+    assert "function renderCoverControls(card, c)" in _HTML
+    assert "function renderClimateCard(card, c, st)" in _HTML
+    assert "function haCall(card, c, service, data)" in _HTML
+    # light: brightness_pct slider + rgb_color picker, gated on colour modes.
+    assert 'haCall(card, c, "light.turn_on", { brightness_pct: v })' in _HTML
+    assert (
+        'haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(picker.value) })'
+        in _HTML
+    )
+    # cover: position slider (SET_POSITION bit) + verb services; garage confirm-first.
+    assert "COVER_SET_POSITION" in _HTML
+    assert 'haCall(card, c, "cover.set_cover_position", { position: v })' in _HTML
+    assert "Garagentor wirklich bewegen?" in _HTML
+    # climate: setpoint stepper + hvac mode select.
+    assert 'haCall(card, c, "climate.set_temperature", { temperature: next })' in _HTML
+    assert 'haCall(card, c, "climate.set_hvac_mode", { hvac_mode: sel.value })' in _HTML
+    # the action goes through the scoped server endpoint, never a client HA token.
+    assert '"/api/ha/call"' in _HTML

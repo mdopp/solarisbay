@@ -677,10 +677,11 @@ def build_app(
     async def ha_call(request: web.Request) -> web.Response:
         """Card-action endpoint (#476): run a scoped HA service on one entity.
 
-        Phase 2 surfaces toggles on light/switch cards only; the helper applies
-        the same allowlist as the `ha_call_service` tool (blocked domains, name
-        regex, domain==entity). Owner-scoped: any authenticated resident, no
-        client-side HA token. Returns the new state so the card can confirm.
+        Phase 2 surfaced toggles on light/switch; phase 3 (#477) adds the slider/
+        colour/climate controls, so cover and climate cards may act too. The
+        helper applies the same allowlist as the `ha_call_service` tool (blocked
+        domains, name regex, domain==entity). Owner-scoped: any authenticated
+        resident, no client-side HA token. Returns the new state to confirm.
         """
         if not hass_url or not hass_token:
             return web.json_response(
@@ -692,7 +693,7 @@ def build_app(
             return web.json_response({"ok": False, "error": "bad_json"}, status=400)
         entity_id = str(body.get("entity_id") or "")
         service = str(body.get("service") or "")
-        if entity_id.split(".", 1)[0] not in ("light", "switch"):
+        if entity_id.split(".", 1)[0] not in ("light", "switch", "cover", "climate"):
             return web.json_response(
                 {"ok": False, "error": "unsupported_domain"}, status=400
             )

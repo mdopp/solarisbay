@@ -355,6 +355,27 @@
     .ha-card.hc-toggle { cursor: pointer; user-select: none; }
     .ha-card.hc-toggle:hover { border-color: var(--accent); }
     .ha-card.busy { opacity: 0.6; pointer-events: none; }
+    /* Phase 3 (#477): slider / colour / climate controls on a card. */
+    .ha-card .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .ha-card .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 80px; }
+    .ha-card .hc-ctrl input[type="color"] {
+      flex: 0 0 auto; width: 28px; height: 24px; padding: 0;
+      border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer;
+    }
+    .ha-card .hc-ctrl .hc-val { font-size: 12px; color: var(--muted); min-width: 34px; text-align: right; }
+    .ha-card .hc-btns { display: flex; gap: 6px; margin-top: 6px; }
+    .ha-card .hc-btns button, .ha-card select.hc-mode {
+      font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer;
+      border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08);
+      color: inherit;
+    }
+    .ha-card .hc-btns button:hover { border-color: var(--accent); }
+    .ha-card .hc-set { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+    .ha-card .hc-set button {
+      font: inherit; width: 26px; height: 26px; cursor: pointer; line-height: 1;
+      border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08); color: inherit;
+    }
+    .ha-card .hc-set .hc-target { font-size: 16px; font-weight: 600; min-width: 52px; text-align: center; }
 
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
@@ -1506,6 +1527,8 @@
               val.appendChild(u);
             }
             card.appendChild(val);
+          } else if (c.domain === "climate") {
+            renderClimateCard(card, c, st);
           } else {
             // binary_sensor / cover / light / switch -> on/off-style badge.
             var onish = st === "on" || st === "open";
@@ -1525,10 +1548,169 @@
                 if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
               });
             }
+            // Phase 3 (#477): richer controls under the badge, feature-gated.
+            if (c.domain === "light") renderLightControls(card, c);
+            else if (c.domain === "cover") renderCoverControls(card, c);
           }
           wrap.appendChild(card);
         });
         return wrap;
+      }
+
+      // HA supported_features bits (only the ones the cards act on).
+      var COVER_SET_POSITION = 4, CLIMATE_TARGET_TEMP = 1;
+      var COLOUR_MODES = ["rgb", "hs", "xy", "rgbw", "rgbww", "color_temp"];
+
+      // Brightness slider (when the light is dimmable) + colour picker (when it
+      // supports a colour mode). Acts via light.turn_on {brightness_pct|rgb_color}.
+      function renderLightControls(card, c) {
+        var dimmable = c.brightness != null ||
+          (c.supported_color_modes || []).some(function (m) { return m !== "onoff"; });
+        if (dimmable) {
+          var pct = c.brightness != null ? Math.round(c.brightness / 255 * 100) : 100;
+          var slider = makeSlider(card, pct, "%", function (v) {
+            haCall(card, c, "light.turn_on", { brightness_pct: v });
+          });
+          card.hcBrightness = slider;
+        }
+        var hasColour = (c.supported_color_modes || []).some(function (m) {
+          return COLOUR_MODES.indexOf(m) !== -1;
+        });
+        if (hasColour) {
+          var row = document.createElement("div");
+          row.className = "hc-ctrl";
+          var picker = document.createElement("input");
+          picker.type = "color";
+          picker.value = rgbToHex(c.rgb_color);
+          picker.title = "Farbe";
+          picker.addEventListener("change", function () {
+            haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(picker.value) });
+          });
+          row.appendChild(picker);
+          card.appendChild(row);
+        }
+      }
+
+      // Position slider + open/close/stop. A garage cover is confirm-first.
+      function renderCoverControls(card, c) {
+        var feat = Number(c.supported_features || 0);
+        if (feat & COVER_SET_POSITION) {
+          var pos = c.current_position != null ? Number(c.current_position) : 0;
+          makeSlider(card, pos, "%", function (v) {
+            haCall(card, c, "cover.set_cover_position", { position: v });
+          });
+        }
+        var btns = document.createElement("div");
+        btns.className = "hc-btns";
+        var garage = c.device_class === "garage";
+        [["▲", "open_cover", "Öffnen"], ["■", "stop_cover", "Stopp"],
+         ["▼", "close_cover", "Schließen"]].forEach(function (b) {
+          var btn = document.createElement("button");
+          btn.textContent = b[0];
+          btn.title = b[2];
+          btn.addEventListener("click", function () {
+            if (garage && b[1] !== "stop_cover" &&
+                !window.confirm(b[2] + " — Garagentor wirklich bewegen?")) return;
+            haCall(card, c, "cover." + b[1], {});
+          });
+          btns.appendChild(btn);
+        });
+        card.appendChild(btns);
+      }
+
+      // Climate: current temp + a setpoint stepper and an hvac-mode select.
+      function renderClimateCard(card, c, st) {
+        var cur = document.createElement("div");
+        cur.className = "hc-state";
+        cur.textContent = c.current_temperature != null
+          ? c.current_temperature + "°C" : (st || "—");
+        card.appendChild(cur);
+        var feat = Number(c.supported_features || 0);
+        if (feat & CLIMATE_TARGET_TEMP || c.temperature != null) {
+          var step = Number(c.target_temp_step) || 0.5;
+          var min = c.min_temp != null ? Number(c.min_temp) : 7;
+          var max = c.max_temp != null ? Number(c.max_temp) : 35;
+          var target = c.temperature != null ? Number(c.temperature) : min;
+          var set = document.createElement("div");
+          set.className = "hc-set";
+          var label = document.createElement("span");
+          label.className = "hc-target";
+          label.textContent = target + "°";
+          var apply = function (next) {
+            next = Math.min(max, Math.max(min, Math.round(next / step) * step));
+            label.textContent = next + "°";
+            haCall(card, c, "climate.set_temperature", { temperature: next });
+          };
+          var minus = document.createElement("button");
+          minus.textContent = "−";
+          minus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) - step); });
+          var plus = document.createElement("button");
+          plus.textContent = "+";
+          plus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) + step); });
+          set.appendChild(minus); set.appendChild(label); set.appendChild(plus);
+          card.appendChild(set);
+        }
+        var modes = c.hvac_modes || [];
+        if (modes.length) {
+          var sel = document.createElement("select");
+          sel.className = "hc-mode";
+          modes.forEach(function (m) {
+            var opt = document.createElement("option");
+            opt.value = m; opt.textContent = m;
+            if (m === st) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          sel.addEventListener("change", function () {
+            haCall(card, c, "climate.set_hvac_mode", { hvac_mode: sel.value });
+          });
+          card.appendChild(sel);
+        }
+      }
+
+      // A labelled range row whose committed value (on change) fires onset(int).
+      function makeSlider(card, value, unit, onset) {
+        var row = document.createElement("div");
+        row.className = "hc-ctrl";
+        var slider = document.createElement("input");
+        slider.type = "range";
+        slider.min = "0"; slider.max = "100"; slider.value = String(value);
+        var val = document.createElement("span");
+        val.className = "hc-val";
+        val.textContent = value + unit;
+        slider.addEventListener("input", function () { val.textContent = slider.value + unit; });
+        slider.addEventListener("change", function () { onset(Number(slider.value)); });
+        row.appendChild(slider); row.appendChild(val);
+        card.appendChild(row);
+        return slider;
+      }
+
+      function rgbToHex(rgb) {
+        if (!Array.isArray(rgb) || rgb.length < 3) return "#ffffff";
+        return "#" + rgb.slice(0, 3).map(function (n) {
+          return ("0" + (Number(n) & 255).toString(16)).slice(-2);
+        }).join("");
+      }
+      function hexToRgb(hex) {
+        var m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+        if (!m) return [255, 255, 255];
+        var n = parseInt(m[1], 16);
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+      }
+
+      // Generic card action (#477): POST a scoped service, mark busy, no revert
+      // (sliders/setpoints have no single prior boolean to flip back to).
+      function haCall(card, c, service, data) {
+        if (card.classList.contains("busy")) return;
+        card.classList.add("busy");
+        fetch("/api/ha/call", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ entity_id: c.entity_id, service: service, data: data }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (res) { if (res && res.ok && res.state != null) c.state = res.state; })
+          .catch(function () {})
+          .finally(function () { card.classList.remove("busy"); });
       }
 
       // German status label for a read-only badge card, keyed off domain + state.

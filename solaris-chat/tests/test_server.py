@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from importlib.metadata import version
 
+import pytest
+
 from solaris_chat import compaction, marker, personalities, skills, topics_store
 from solaris_chat.engine.tools import Toolbox
 from solaris_chat.engine.tools.mcp_tools import CombinedToolbox, McpToolbox
@@ -3060,14 +3062,50 @@ async def test_ha_call_rejects_unsupported_domain(aiohttp_client, monkeypatch):
     )
     client = await aiohttp_client(app)
 
-    # phase 2 = light/switch only; a climate/cover/shell domain is refused
+    # phases 2+3 cover light/switch/cover/climate; a media_player/shell domain is refused
     resp = await client.post(
         "/api/ha/call",
-        json={"entity_id": "climate.living", "service": "climate.toggle"},
+        json={"entity_id": "media_player.tv", "service": "media_player.toggle"},
     )
     assert resp.status == 400
     assert (await resp.json())["error"] == "unsupported_domain"
     assert called is False  # never reaches the HA helper
+
+
+@pytest.mark.parametrize(
+    "entity_id,service,data",
+    [
+        ("cover.blind", "cover.set_cover_position", {"position": 40}),
+        ("climate.living", "climate.set_temperature", {"temperature": 22}),
+    ],
+)
+async def test_ha_call_allows_cover_and_climate_controls(
+    aiohttp_client, monkeypatch, entity_id, service, data
+):
+    # Phase 3 (#477): the cover-position and climate-setpoint controls reach the
+    # scoped helper with the configured creds (mocked HA — never a real device).
+    seen = {}
+
+    async def _fake_call(hass_url, hass_token, eid, svc, d=None):
+        seen.update(entity=eid, service=svc, data=d)
+        return {"ok": True, "state": "ok"}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": entity_id, "service": service, "data": data},
+    )
+    assert resp.status == 200
+    assert seen == {"entity": entity_id, "service": service, "data": data}
 
 
 async def test_ha_call_503_when_ha_not_configured(aiohttp_client):
