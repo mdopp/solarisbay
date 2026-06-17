@@ -123,6 +123,68 @@ def notes_mentioning(
     return out
 
 
+def notes_wikilinking(
+    notes_dir: str | Path,
+    names: list[str],
+    okf_path: str | None,
+    owner_uid: str,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Vault notes whose `[[ ]]` link targets the concept — the other half of
+    the entity page's backlinks (#505), alongside chat-turn mentions.
+
+    A target matches when a `[[ ]]` link names the concept (a `name`/alias) or
+    points at its OKF concept file — by full path (`okf/people/anna`), the
+    `okf/`-stripped path (`people/anna`), or the bare stem (`anna`); a trailing
+    `.md` and an optional `|label` are ignored. The okf/ subtree is skipped (a
+    concept file's own Relationships aren't a backlink to it). Per-resident on
+    `added_by`. Returns `[{path, title}]` relative to the vault, capped.
+    """
+    root = Path(notes_dir)
+    wanted = {n.casefold() for n in names if n}
+    if okf_path:
+        stem = okf_path[len("okf/") :] if okf_path.startswith("okf/") else okf_path
+        if stem.endswith(".md"):
+            stem = stem[:-3]
+        wanted.update(
+            {okf_path.casefold(), stem.casefold(), stem.rsplit("/", 1)[-1].casefold()}
+        )
+    if not wanted or not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*.md")):
+        if not path.is_file() or "okf" in path.relative_to(root).parts[:1]:
+            continue
+        try:
+            if path.stat().st_size > _MAX_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not any(
+            _wikilink_target(m).casefold() in wanted for m in _WIKILINK_RE.findall(text)
+        ):
+            continue
+        added_by = _added_by(text)
+        if added_by is not None and added_by != owner_uid:
+            continue
+        out.append(
+            {"path": str(path.relative_to(root)), "title": _title(text, path.stem)}
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
+_WIKILINK_RE = re.compile(r"\[\[([^\]]+?)\]\]")
+
+
+def _wikilink_target(inner: str) -> str:
+    """The link target from a `[[ ]]` body — the part before `|`, sans `.md`."""
+    target = inner.split("|", 1)[0].strip()
+    return target[:-3] if target.endswith(".md") else target
+
+
 def _title(text: str, fallback: str) -> str:
     """The note's first `# ` heading, or the filename stem as a fallback."""
     m = re.search(r"(?m)^#\s+(.+?)\s*$", text)

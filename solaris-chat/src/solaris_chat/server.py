@@ -1509,7 +1509,14 @@ def build_app(
                     view["title"] = card.get("name") or ref
         for note in notes_search.notes_mentioning(notes_dir, names, uid):
             view["source_docs"].append({**note, "kind": "note"})
+        # Backlinks span both surfaces (#505): chat turns that referenced the
+        # concept and vault notes whose `[[ ]]` link targets its okf/ file.
         view["backlinks"] = mentions_store.backlinks_for(solaris_db_path, uid, names)
+        okf_path = next(
+            (d["path"] for d in view["source_docs"] if d["kind"] == "okf"), None
+        )
+        for note in notes_search.notes_wikilinking(notes_dir, names, okf_path, uid):
+            view["backlinks"].append({**note, "kind": "note"})
         return web.json_response({"ok": True, "concept": view})
 
     async def concept_page(_request: web.Request) -> web.Response:

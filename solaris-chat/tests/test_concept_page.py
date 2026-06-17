@@ -117,6 +117,11 @@ def _notes(tmp_path) -> str:
     (root / "tagebuch.md").write_text(
         "# Tagebuch\nadded_by: mdopp\n\nHeute war Anna da.\n", encoding="utf-8"
     )
+    # A vault note that cross-links the concept via [[ ]] -> a backlink (#505).
+    (root / "projekt.md").write_text(
+        "# Projekt\nadded_by: mdopp\n\nMit [[people/anna|Anna]] besprochen.\n",
+        encoding="utf-8",
+    )
     return str(root)
 
 
@@ -184,6 +189,30 @@ def test_notes_mentioning_excludes_okf_subtree(tmp_path):
     assert all("okf" not in p for p in paths)
 
 
+def test_notes_wikilinking_matches_okf_path_and_name(tmp_path):
+    notes_dir = _notes(tmp_path)
+    # [[people/anna]] (the okf path stem) targets the concept -> a backlink.
+    by_path = notes_search.notes_wikilinking(
+        notes_dir, ["Anna"], "okf/people/anna.md", "mdopp"
+    )
+    assert [n["path"] for n in by_path] == ["projekt.md"]
+    # A note that only mentions the name without a [[ ]] link is not a backlink.
+    assert all(n["path"] != "tagebuch.md" for n in by_path)
+    # The okf/ concept file's own Relationships link is not a self-backlink.
+    assert all("okf" not in n["path"] for n in by_path)
+
+
+def test_notes_wikilinking_is_per_resident(tmp_path):
+    notes_dir = _notes(tmp_path)
+    # projekt.md is added_by mdopp -> lena sees no vault backlink.
+    assert (
+        notes_search.notes_wikilinking(
+            notes_dir, ["Anna"], "okf/people/anna.md", "lena"
+        )
+        == []
+    )
+
+
 # ---- HA card-spec reuse ------------------------------------------------------
 
 
@@ -234,9 +263,13 @@ async def test_concept_api_aggregates_entity(aiohttp_client, tmp_path):
     note_docs = [d for d in c["source_docs"] if d["kind"] == "note"]
     assert okf_docs[0]["path"] == "okf/people/anna.md"
     assert any(d["path"] == "tagebuch.md" for d in note_docs)
-    assert c["backlinks"] == [
-        {"session_id": "sess-7", "message_ref": 3, "value": "Anna"}
-    ]
+    # Backlinks span chat turns AND vault notes that [[ ]]-link the concept (#505).
+    assert {"session_id": "sess-7", "message_ref": 3, "value": "Anna"} in c["backlinks"]
+    assert {
+        "path": "projekt.md",
+        "title": "Projekt",
+        "kind": "note",
+    } in c["backlinks"]
     # No HA configured -> no live card, page still renders.
     assert c["ha_card"] is None
 
