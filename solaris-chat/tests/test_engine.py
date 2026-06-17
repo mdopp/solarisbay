@@ -19,6 +19,7 @@ from solaris_chat.engine.client import (
     EngineClient,
     EngineProfile,
     _is_fabricated_device_claim,
+    _split_anchors,
     _split_followups,
 )
 from solaris_chat.engine.ollama import ChatResult
@@ -594,6 +595,21 @@ def test_split_followups_strips_marker_and_caps_at_three():
     assert chips == ["Was zieht am meisten?", "PV-Erzeugung?", "Akku-Status?"]
 
     plain, none = _split_followups("Klar.")
+    assert plain == "Klar."
+    assert none == []
+
+
+def test_split_anchors_keeps_prefixed_tokens_and_caps_at_three():
+    """#501: the trailing ANCHORS line is parsed into <=3 prefixed anchors and
+    removed; a bare token without #/@ is dropped; no marker leaves it untouched."""
+    answer, anchors = _split_anchors(
+        "Annas Garten-Projekt läuft gut.\n"
+        "ANCHORS: @anna | #garten-projekt | muenchen | #frühling"
+    )
+    assert answer == "Annas Garten-Projekt läuft gut."
+    assert anchors == ["@anna", "#garten-projekt", "#frühling"]
+
+    plain, none = _split_anchors("Klar.")
     assert plain == "Klar."
     assert none == []
 

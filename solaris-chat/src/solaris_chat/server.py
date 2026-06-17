@@ -544,6 +544,32 @@ def build_app(
         tags, persons = parse_mentions(text)
         mentions_store.record_mentions(solaris_db_path, session_id, uid, tags, persons)
 
+    def record_anchors(
+        uid: str,
+        session_id: str,
+        anchors: list[str],
+        user_text: str,
+        *,
+        ephemeral: bool,
+    ) -> None:
+        """Record the agent's auto-surfaced #/@ anchors as turn mentions (#501).
+
+        Anchors keep their `#`/`@` prefix; split into tags/persons and dedup
+        against the tokens the user already typed this turn (those are recorded
+        by persist_mentions). Skipped for ephemeral chats; no-op when empty.
+        """
+        if ephemeral or not anchors:
+            return
+        typed_tags, typed_persons = parse_mentions(user_text)
+        typed = {("#", t) for t in typed_tags} | {("@", p) for p in typed_persons}
+        tags, persons = [], []
+        for a in anchors:
+            prefix, value = a[:1], a[1:].strip().lower()
+            if not value or (prefix, value) in typed:
+                continue
+            (persons if prefix == "@" else tags).append(value)
+        mentions_store.record_mentions(solaris_db_path, session_id, uid, tags, persons)
+
     async def persist_turn_trace(
         uid: str,
         session_id: str,
@@ -552,6 +578,7 @@ def build_app(
         ephemeral: bool,
         ha_cards: list[dict[str, Any]] | None = None,
         suggestions: list[str] | None = None,
+        anchors: list[str] | None = None,
     ) -> None:
         """Persist this turn's engine trace steps under a fresh trace_id.
 
@@ -606,6 +633,15 @@ def build_app(
                     {
                         "step_kind": "suggestions",
                         "detail_json": json.dumps(suggestions),
+                    }
+                )
+            # Auto-surfaced #/@ anchors (#501) ride the same trace_id as a
+            # synthetic step, so reload re-attaches the chips under the bubble.
+            if anchors:
+                steps.append(
+                    {
+                        "step_kind": "anchors",
+                        "detail_json": json.dumps(anchors),
                     }
                 )
             if steps:
@@ -1670,6 +1706,7 @@ def build_app(
         answer_buf = ""
         ha_cards: list[dict[str, Any]] = []
         suggestions: list[str] = []
+        anchors: list[str] = []
         cancelled = False
         try:
             compacted = False
@@ -1740,6 +1777,8 @@ def build_app(
                     ha_cards = data.get("cards") or []
                 elif name == "suggestions":
                     suggestions = data.get("suggestions") or []
+                elif name == "anchors":
+                    anchors = data.get("anchors") or []
                 await _send_event(resp, name, data)
             if not cancelled:
                 t_end = clock() * 1000.0
@@ -1748,6 +1787,7 @@ def build_app(
                     t_end - t_start,
                 )
                 await _send_event(resp, "trace", trace)
+                record_anchors(uid, session_id, anchors, text, ephemeral=ephemeral)
                 await persist_turn_trace(
                     uid,
                     session_id,
@@ -1755,6 +1795,7 @@ def build_app(
                     ephemeral=ephemeral,
                     ha_cards=ha_cards,
                     suggestions=suggestions,
+                    anchors=anchors,
                 )
         except EngineError:
             await _send_event(resp, "error", {"reason": "engine_unavailable"})
@@ -1997,6 +2038,8 @@ def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return "ha_cards", {"cards": payload.get("cards") or []}
     if etype == "suggestions":
         return "suggestions", {"suggestions": payload.get("suggestions") or []}
+    if etype == "anchors":
+        return "anchors", {"anchors": payload.get("anchors") or []}
     if etype == "run.completed":
         return "completed", {
             "reasoning": _reasoning_from_completed(payload),

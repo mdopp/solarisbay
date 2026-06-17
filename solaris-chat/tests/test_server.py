@@ -322,6 +322,16 @@ def test_normalize_ha_cards_passes_through():
     assert _normalize({"type": "ha_cards", "data": {}}) == ("ha_cards", {"cards": []})
 
 
+def test_normalize_anchors_passes_through():
+    # The auto-anchors event (#501) forwards its anchor list verbatim.
+    anchors = ["@anna", "#garten-projekt"]
+    assert _normalize({"type": "anchors", "data": {"anchors": anchors}}) == (
+        "anchors",
+        {"anchors": anchors},
+    )
+    assert _normalize({"type": "anchors", "data": {}}) == ("anchors", {"anchors": []})
+
+
 def test_normalize_completed_surfaces_reasoning():
     # gemma4 puts the thinking text on the final message's reasoning_content
     # field of run.completed — NOT a literal <thinking> tag in the answer (#231).

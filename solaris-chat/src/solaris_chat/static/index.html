@@ -358,6 +358,15 @@
     }
     .followup-chip:hover { border-color: var(--accent); }
     .followup-chip:disabled { opacity: 0.5; cursor: default; }
+    /* Auto-surfaced #/@ anchor chips (#501): smaller tag-like chips under the
+       turn; tapping one filters the chat to that anchor via the /search path. */
+    .anchor-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+    .anchor-chip {
+      font: inherit; font-size: 12px; cursor: pointer;
+      color: var(--accent); background: transparent;
+      border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px;
+    }
+    .anchor-chip:hover { border-color: var(--accent); }
     .ha-card {
       flex: 0 1 auto; min-width: 120px; max-width: 240px;
       border: 1px solid var(--line); border-radius: 10px;
@@ -1450,8 +1459,12 @@
       // not bubble text — strip it here so it never shows even mid-stream (the
       // server strips it from the persisted answer; this covers live deltas).
       var FOLLOWUPS_RE = /\n*FOLLOWUPS:[ \t]*.*$/i;
+      // The trailing `ANCHORS: @x | #y` line (#501) becomes anchor chips, not
+      // bubble text — strip it here too (the server strips it from the persisted
+      // answer; this covers live deltas).
+      var ANCHORS_RE = /\n*ANCHORS:[ \t]*.*$/i;
       function renderReply(raw) {
-        var src = String(raw == null ? "" : raw).replace(FOLLOWUPS_RE, "");
+        var src = String(raw == null ? "" : raw).replace(ANCHORS_RE, "").replace(FOLLOWUPS_RE, "");
         if (thinkingMode === "show" || src.indexOf("<thin") === -1) {
           return window.renderMarkdown(src);
         }
@@ -1611,6 +1624,27 @@
             addUserTurn(text, []);
             runTurn(text, []);
           });
+          wrap.appendChild(b);
+        });
+        return wrap.children.length ? wrap : null;
+      }
+
+      // Auto-surfaced #/@ anchor chips (#501): each chip filters the chat to its
+      // anchor by reusing the /search highlight path (openSearchCard prefilled
+      // with the anchor text). Reusable across the live stream, mirror, reload.
+      function renderAnchors(anchors) {
+        if (!anchors || !anchors.length) return null;
+        var wrap = document.createElement("div");
+        wrap.className = "anchor-chips";
+        anchors.slice(0, 3).forEach(function (a) {
+          var text = String(a == null ? "" : a).trim();
+          if (text[0] !== "#" && text[0] !== "@") return;
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "anchor-chip";
+          b.textContent = text;
+          b.title = "Chat nach " + text + " filtern";
+          b.addEventListener("click", function () { openSearchCard(text); });
           wrap.appendChild(b);
         });
         return wrap.children.length ? wrap : null;
@@ -1874,7 +1908,7 @@
         var rows = document.createElement("div");
         rows.className = "step-rows";
         steps.forEach(function (s) {
-          if (s.step_kind === "ha_cards" || s.step_kind === "suggestions") return; // rendered separately, not a step row
+          if (s.step_kind === "ha_cards" || s.step_kind === "suggestions" || s.step_kind === "anchors") return; // rendered separately, not a step row
           var row = document.createElement("div");
           row.className = "step-row";
           var secs = s.wall_s != null ? Number(s.wall_s).toFixed(2) + "s" : "—";
@@ -2040,6 +2074,16 @@
                 try { sug = JSON.parse(chipStep.detail_json); } catch (e) {}
                 var chipsEl = renderFollowups(sug);
                 if (chipsEl) bubble.insertBefore(chipsEl, meta);
+              }
+              // Re-attach the turn's auto-anchor chips (#501), cleanly on reload.
+              var oldAnchors = bubble.querySelector(".anchor-chips");
+              if (oldAnchors) oldAnchors.remove();
+              var anchorStep = g.steps.filter(function (s) { return s.step_kind === "anchors"; })[0];
+              if (anchorStep && anchorStep.detail_json) {
+                var anc = null;
+                try { anc = JSON.parse(anchorStep.detail_json); } catch (e) {}
+                var anchorsEl = renderAnchors(anc);
+                if (anchorsEl) bubble.insertBefore(anchorsEl, meta);
               }
             });
             // The ring reflects the most recent turn's prompt size: scan all
@@ -2284,6 +2328,15 @@
             if (chipsEl) el.appendChild(chipsEl);
             scrollDown(atBottom());
           },
+          // Auto-anchor chips for the turn (#501), rendered under the answer
+          // body as the anchors event arrives near turn-end.
+          addAnchors: function (anchors) {
+            var old = el.querySelector(".anchor-chips");
+            if (old) old.remove();
+            var anchorsEl = renderAnchors(anchors);
+            if (anchorsEl) el.appendChild(anchorsEl);
+            scrollDown(atBottom());
+          },
           setReasoning: function (text) {
             // Honor the display preference (#185): "hide" => no block at all.
             var src = String(text == null ? "" : text).trim();
@@ -2406,6 +2459,7 @@
             else if (event === "step") { msg.addStep(d.label || "llm", d.wall_s); }
             else if (event === "ha_cards") { if (d.cards && d.cards.length) msg.addCards(d.cards); }
             else if (event === "suggestions") { if (d.suggestions && d.suggestions.length) msg.addChips(d.suggestions); }
+            else if (event === "anchors") { if (d.anchors && d.anchors.length) msg.addAnchors(d.anchors); }
             else if (event === "tool") {
               if (d.phase === "started") { msg.setActivity("using " + (d.name || "tool") + "…"); msg.startStep(d.name || "tool"); }
               else { msg.setActivity("thinking…"); msg.endStep(d.wall_s); }
@@ -2493,6 +2547,11 @@
           if (id !== sessionId || activeTurn || !mirrorMsg) return;
           var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
           if (d.suggestions && d.suggestions.length) mirrorMsg.addChips(d.suggestions);
+        });
+        es.addEventListener("anchors", function (e) {
+          if (id !== sessionId || activeTurn || !mirrorMsg) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.anchors && d.anchors.length) mirrorMsg.addAnchors(d.anchors);
         });
         es.addEventListener("completed", function () {
           if (id !== sessionId || activeTurn || !mirrorMsg) return;
