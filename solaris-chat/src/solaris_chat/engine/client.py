@@ -110,6 +110,44 @@ def _is_fabricated_device_claim(content: str) -> bool:
     return bool(_DEVICE_CLAIM.search(content or ""))
 
 
+# A trailing `FOLLOWUPS: a | b | c` line the SOUL invites the model to emit
+# (#498): tappable follow-up question chips. Parsed off the answer's tail so
+# the chips ride a per-turn event and the marker never shows in the bubble.
+_FOLLOWUPS = re.compile(r"\n*FOLLOWUPS:[ \t]*(.+?)[ \t]*$", re.IGNORECASE)
+
+
+def _split_followups(content: str) -> tuple[str, list[str]]:
+    """Strip a trailing FOLLOWUPS line off `content`, returning (answer, chips).
+
+    Up to three non-empty chips; no marker → the answer unchanged and []."""
+    m = _FOLLOWUPS.search(content or "")
+    if not m:
+        return content, []
+    chips = [c.strip() for c in m.group(1).split("|")]
+    chips = [c for c in chips if c][:3]
+    return content[: m.start()].rstrip(), chips
+
+
+# A trailing `ANCHORS: @person | #topic | #place` line the SOUL invites the
+# model to emit (#501): 0-3 salient anchors for what the turn is about. Parsed
+# off the answer's tail like FOLLOWUPS so the chips ride a per-turn event and
+# the marker never shows in the bubble.
+_ANCHORS = re.compile(r"\n*ANCHORS:[ \t]*(.+?)[ \t]*$", re.IGNORECASE)
+
+
+def _split_anchors(content: str) -> tuple[str, list[str]]:
+    """Strip a trailing ANCHORS line off `content`, returning (answer, anchors).
+
+    Each anchor keeps its `#`/`@` prefix; up to three valid ones (a bare token
+    with no prefix is dropped). No marker → the answer unchanged and []."""
+    m = _ANCHORS.search(content or "")
+    if not m:
+        return content, []
+    anchors = [a.strip() for a in m.group(1).split("|")]
+    anchors = [a for a in anchors if a[:1] in ("#", "@") and a[1:]][:3]
+    return content[: m.start()].rstrip(), anchors
+
+
 class EngineError(Exception):
     """Raised when a turn cannot run (DB/model failures). Name-compatible
     handling: server catches HermesError OR EngineError."""
@@ -536,6 +574,8 @@ class EngineClient:
                 or "Entschuldige, das hat zu viele Schritte gebraucht — ich breche hier ab."
             )
 
+        final_content, anchors = _split_anchors(final_content)
+        final_content, suggestions = _split_followups(final_content)
         if persist:
             store.append_message(
                 self._db_path,
@@ -546,6 +586,10 @@ class EngineClient:
             )
         if ha_cards:
             yield {"type": "ha_cards", "data": {"cards": ha_cards}}
+        if suggestions:
+            yield {"type": "suggestions", "data": {"suggestions": suggestions}}
+        if anchors:
+            yield {"type": "anchors", "data": {"anchors": anchors}}
         yield {
             "type": "run.completed",
             "data": {

@@ -129,6 +129,37 @@ def _known_values(db_path: str, owner_uid: str, kind: str, prefix: str) -> list[
     return [r["value"] for r in rows]
 
 
+def backlinks_for(
+    db_path: str, owner_uid: str, values: list[str], limit: int = 20
+) -> list[dict[str, Any]]:
+    """Chat turns where the resident mentioned any of `values` (concept page).
+
+    A backlink is `{session_id, message_ref, value}` — the turn that referenced
+    the concept, for the #502 page's "mentioned in chat" list. Case-insensitive
+    on the recorded `#tag`/`@person` value. Empty when DB/table missing or none.
+    """
+    vals = [v for v in dict.fromkeys(values) if v]
+    if not vals or not Path(db_path).exists():
+        return []
+    placeholders = ",".join("?" for _ in vals)
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT session_id, message_ref, value
+                  FROM mentions
+                 WHERE owner_uid = ?
+                   AND value COLLATE NOCASE IN ({placeholders})
+                 ORDER BY session_id, message_ref
+                 LIMIT ?
+                """,
+                (owner_uid, *vals, limit),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [dict(r) for r in rows]
+
+
 def _like_prefix(prefix: str) -> str:
     """Escape LIKE wildcards so a literal prefix match isn't a glob."""
     escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

@@ -91,3 +91,31 @@ def render(record: ConceptRecord, *, entity_id: str) -> str:
 def content_hash(text: str) -> str:
     """Stable hash of the rendered concept file — the re-ingest skip key (§5)."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def read_concept(text: str) -> dict[str, str]:
+    """Parse a stored OKF file's `description` (from frontmatter) + `body`.
+
+    The concept page (#502) shows what was authored, not the whole file: the
+    `description:` frontmatter line and the prose body (everything after the
+    closing `---`, with a trailing `## Relationships` section dropped — those
+    are rendered as their own links, not body text). Tolerant of a missing
+    frontmatter fence so a hand-written note still yields a body.
+    """
+    lines = text.splitlines()
+    description = ""
+    body_start = 0
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                body_start = i + 1
+                break
+            m = lines[i].split(":", 1)
+            if len(m) == 2 and m[0].strip() == "description":
+                description = m[1].strip()
+    body_lines = lines[body_start:]
+    for i, line in enumerate(body_lines):
+        if line.strip().startswith("## Relationships"):
+            body_lines = body_lines[:i]
+            break
+    return {"description": description, "body": "\n".join(body_lines).strip()}

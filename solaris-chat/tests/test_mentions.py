@@ -339,6 +339,42 @@ async def test_chat_turn_persists_mentions(aiohttp_client, tmp_path):
     }
 
 
+async def test_chat_turn_records_auto_anchors_deduped(aiohttp_client, tmp_path):
+    """#501: the agent's auto-surfaced anchors land in `mentions`, deduped
+    against the tokens the user already typed this turn (here `#urlaub`)."""
+    db = _db(tmp_path)
+    fake = _FakeHermes(
+        events=[
+            {"type": "assistant.delta", "data": {"delta": "Klar."}},
+            {
+                "type": "anchors",
+                "data": {"anchors": ["#urlaub", "@anna", "#garten"]},
+            },
+            {"type": "run.completed", "data": {}},
+        ]
+    )
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        attachments_dir=str(tmp_path / "att"),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat/stream",
+        json={"input": "Plane #urlaub"},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert resp.status == 200
+    await resp.text()
+    items = mentions_store.list_session_mentions(db, "sess-1", "mdopp")
+    recorded = {(i["kind"], i["value"]) for i in items}
+    # `#urlaub` came from the user (recorded by persist_mentions); the agent's
+    # anchor for it is deduped out — only the new anchors are added.
+    assert recorded == {("tag", "urlaub"), ("person", "anna"), ("tag", "garten")}
+
+
 async def test_ephemeral_chat_persists_no_mentions(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     fake = _FakeHermes()

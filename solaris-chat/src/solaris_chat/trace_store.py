@@ -128,9 +128,10 @@ def list_session_trace(
     for r in rows:
         d = dict(r)
         # detail_json is the on-demand LLM request/response body (fetched via the
-        # detail modal); the list endpoint only inlines it for ha_cards steps
-        # (#475), where it IS the small card payload, never the LLM bodies.
-        if d.get("step_kind") != "ha_cards":
+        # detail modal); the list endpoint only inlines it for ha_cards (#475),
+        # suggestions (#498) and anchors (#501) steps, where it IS the small
+        # card/chip payload, never the LLM bodies.
+        if d.get("step_kind") not in ("ha_cards", "suggestions", "anchors"):
             d.pop("detail_json", None)
         out.append(d)
     return out

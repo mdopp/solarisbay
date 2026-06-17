@@ -336,7 +336,37 @@
     .ab-row.running .ab-num { opacity: 0.5; }
 
     /* Read-only HA state cards under an answer (#475). */
+    /* Concept/entity page (#502): a card in the log, like the settings cards. */
+    .concept-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+    .concept-title { font-size: 18px; font-weight: 600; }
+    .concept-kind {
+      font-size: 12px; color: var(--muted); padding: 1px 8px;
+      border-radius: 999px; background: rgba(127,127,127,0.14);
+    }
+    .concept-desc { color: var(--muted); margin: 6px 0; }
+    .concept-section { font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .concept-card ul { margin: 2px 0; padding-left: 18px; }
+    .concept-card ul li { margin: 2px 0; }
     .ha-cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+    /* Tappable follow-up question chips (#498): shares the answer's surface with
+       ha-cards / concept card; each chip re-sends its text as the next turn. */
+    .followup-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 2px; }
+    .followup-chip {
+      font: inherit; font-size: 13px; cursor: pointer;
+      color: var(--accent); background: var(--bubble-sol);
+      border: 1px solid var(--line); border-radius: 16px; padding: 5px 12px;
+    }
+    .followup-chip:hover { border-color: var(--accent); }
+    .followup-chip:disabled { opacity: 0.5; cursor: default; }
+    /* Auto-surfaced #/@ anchor chips (#501): smaller tag-like chips under the
+       turn; tapping one filters the chat to that anchor via the /search path. */
+    .anchor-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+    .anchor-chip {
+      font: inherit; font-size: 12px; cursor: pointer;
+      color: var(--accent); background: transparent;
+      border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px;
+    }
+    .anchor-chip:hover { border-color: var(--accent); }
     .ha-card {
       flex: 0 1 auto; min-width: 120px; max-width: 240px;
       border: 1px solid var(--line); border-radius: 10px;
@@ -1425,8 +1455,16 @@
       // Render assistant text to HTML, applying the thinking-mode preference.
       // Markdown-render the visible answer and each thinking block separately
       // (markdown.js escapes HTML, so the <details> wrapper is built here).
+      // The model's trailing `FOLLOWUPS: a | b | c` line (#498) becomes chips,
+      // not bubble text — strip it here so it never shows even mid-stream (the
+      // server strips it from the persisted answer; this covers live deltas).
+      var FOLLOWUPS_RE = /\n*FOLLOWUPS:[ \t]*.*$/i;
+      // The trailing `ANCHORS: @x | #y` line (#501) becomes anchor chips, not
+      // bubble text — strip it here too (the server strips it from the persisted
+      // answer; this covers live deltas).
+      var ANCHORS_RE = /\n*ANCHORS:[ \t]*.*$/i;
       function renderReply(raw) {
-        var src = String(raw == null ? "" : raw);
+        var src = String(raw == null ? "" : raw).replace(ANCHORS_RE, "").replace(FOLLOWUPS_RE, "");
         if (thinkingMode === "show" || src.indexOf("<thin") === -1) {
           return window.renderMarkdown(src);
         }
@@ -1565,6 +1603,51 @@
         }
         wrap.appendChild(renderHaCard(cards[0], false));
         return wrap;
+      }
+
+      // Tappable follow-up question chips (#498): each chip re-sends its text as
+      // the next turn via the shared rerunTurn send path. Reusable so the live
+      // stream, the mirror, and a reload all render the row the same way.
+      function renderFollowups(suggestions) {
+        if (!suggestions || !suggestions.length) return null;
+        var wrap = document.createElement("div");
+        wrap.className = "followup-chips";
+        suggestions.slice(0, 3).forEach(function (q) {
+          var text = String(q == null ? "" : q).trim();
+          if (!text) return;
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "followup-chip";
+          b.textContent = text;
+          b.addEventListener("click", function () {
+            if (send.disabled) return;
+            addUserTurn(text, []);
+            runTurn(text, []);
+          });
+          wrap.appendChild(b);
+        });
+        return wrap.children.length ? wrap : null;
+      }
+
+      // Auto-surfaced #/@ anchor chips (#501): each chip filters the chat to its
+      // anchor by reusing the /search highlight path (openSearchCard prefilled
+      // with the anchor text). Reusable across the live stream, mirror, reload.
+      function renderAnchors(anchors) {
+        if (!anchors || !anchors.length) return null;
+        var wrap = document.createElement("div");
+        wrap.className = "anchor-chips";
+        anchors.slice(0, 3).forEach(function (a) {
+          var text = String(a == null ? "" : a).trim();
+          if (text[0] !== "#" && text[0] !== "@") return;
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "anchor-chip";
+          b.textContent = text;
+          b.title = "Chat nach " + text + " filtern";
+          b.addEventListener("click", function () { openSearchCard(text); });
+          wrap.appendChild(b);
+        });
+        return wrap.children.length ? wrap : null;
       }
 
       // One entity's card. `row` renders it as a compact group row (no card
@@ -1825,7 +1908,7 @@
         var rows = document.createElement("div");
         rows.className = "step-rows";
         steps.forEach(function (s) {
-          if (s.step_kind === "ha_cards") return; // rendered separately, not a step row
+          if (s.step_kind === "ha_cards" || s.step_kind === "suggestions" || s.step_kind === "anchors") return; // rendered separately, not a step row
           var row = document.createElement("div");
           row.className = "step-row";
           var secs = s.wall_s != null ? Number(s.wall_s).toFixed(2) + "s" : "—";
@@ -1981,6 +2064,26 @@
                   if (body && body.parentNode) body.parentNode.insertBefore(cardsEl, body.nextSibling);
                   else bubble.insertBefore(cardsEl, meta);
                 }
+              }
+              // Re-attach the turn's follow-up chips (#498), cleanly on reload.
+              var oldChips = bubble.querySelector(".followup-chips");
+              if (oldChips) oldChips.remove();
+              var chipStep = g.steps.filter(function (s) { return s.step_kind === "suggestions"; })[0];
+              if (chipStep && chipStep.detail_json) {
+                var sug = null;
+                try { sug = JSON.parse(chipStep.detail_json); } catch (e) {}
+                var chipsEl = renderFollowups(sug);
+                if (chipsEl) bubble.insertBefore(chipsEl, meta);
+              }
+              // Re-attach the turn's auto-anchor chips (#501), cleanly on reload.
+              var oldAnchors = bubble.querySelector(".anchor-chips");
+              if (oldAnchors) oldAnchors.remove();
+              var anchorStep = g.steps.filter(function (s) { return s.step_kind === "anchors"; })[0];
+              if (anchorStep && anchorStep.detail_json) {
+                var anc = null;
+                try { anc = JSON.parse(anchorStep.detail_json); } catch (e) {}
+                var anchorsEl = renderAnchors(anc);
+                if (anchorsEl) bubble.insertBefore(anchorsEl, meta);
               }
             });
             // The ring reflects the most recent turn's prompt size: scan all
@@ -2216,6 +2319,24 @@
             if (cardsEl) el.insertBefore(cardsEl, body.nextSibling);
             scrollDown(atBottom());
           },
+          // Follow-up question chips for the turn (#498), rendered under the
+          // answer body as the suggestions event arrives near turn-end.
+          addChips: function (suggestions) {
+            var old = el.querySelector(".followup-chips");
+            if (old) old.remove();
+            var chipsEl = renderFollowups(suggestions);
+            if (chipsEl) el.appendChild(chipsEl);
+            scrollDown(atBottom());
+          },
+          // Auto-anchor chips for the turn (#501), rendered under the answer
+          // body as the anchors event arrives near turn-end.
+          addAnchors: function (anchors) {
+            var old = el.querySelector(".anchor-chips");
+            if (old) old.remove();
+            var anchorsEl = renderAnchors(anchors);
+            if (anchorsEl) el.appendChild(anchorsEl);
+            scrollDown(atBottom());
+          },
           setReasoning: function (text) {
             // Honor the display preference (#185): "hide" => no block at all.
             var src = String(text == null ? "" : text).trim();
@@ -2337,6 +2458,8 @@
             else if (event === "reasoning") { if (d.text) msg.setReasoning(d.text); }
             else if (event === "step") { msg.addStep(d.label || "llm", d.wall_s); }
             else if (event === "ha_cards") { if (d.cards && d.cards.length) msg.addCards(d.cards); }
+            else if (event === "suggestions") { if (d.suggestions && d.suggestions.length) msg.addChips(d.suggestions); }
+            else if (event === "anchors") { if (d.anchors && d.anchors.length) msg.addAnchors(d.anchors); }
             else if (event === "tool") {
               if (d.phase === "started") { msg.setActivity("using " + (d.name || "tool") + "…"); msg.startStep(d.name || "tool"); }
               else { msg.setActivity("thinking…"); msg.endStep(d.wall_s); }
@@ -2419,6 +2542,16 @@
           if (id !== sessionId || activeTurn || !mirrorMsg) return;
           var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
           if (d.cards && d.cards.length) mirrorMsg.addCards(d.cards);
+        });
+        es.addEventListener("suggestions", function (e) {
+          if (id !== sessionId || activeTurn || !mirrorMsg) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.suggestions && d.suggestions.length) mirrorMsg.addChips(d.suggestions);
+        });
+        es.addEventListener("anchors", function (e) {
+          if (id !== sessionId || activeTurn || !mirrorMsg) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.anchors && d.anchors.length) mirrorMsg.addAnchors(d.anchors);
         });
         es.addEventListener("completed", function () {
           if (id !== sessionId || activeTurn || !mirrorMsg) return;
@@ -3528,6 +3661,137 @@
         if (name !== "chat") { openSettingCard(name); return; }
         closeRail();
       }
+
+      // ---- Concept/entity page (#502 phase 1) ----
+      // The browsable knowledge surface: a hash route `#/c/<id>` (or the
+      // bookmarkable `/c/<id>` shell) renders one entity/concept as a card in
+      // the log, fed by `/api/concept/<id>`. Same SPA, same Authelia gate — a
+      // page is a card here, like the settings cards / trace modal.
+      function openConcept(id) {
+        if (!id) { showView("chat"); return; }
+        closeRail();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card";
+        card.textContent = "Lade…";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+        fetch("/api/concept/" + encodeURIComponent(id))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) { card.textContent = "Konzept nicht gefunden."; return; }
+            renderConceptCard(card, j.concept);
+          })
+          .catch(function () { card.textContent = "Konnte das Konzept nicht laden."; });
+      }
+
+      function renderConceptCard(card, c) {
+        card.textContent = "";
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = c.title || c.id || "";
+        head.appendChild(title);
+        if (c.type) {
+          var kind = document.createElement("span");
+          kind.className = "concept-kind";
+          kind.textContent = c.type;
+          head.appendChild(kind);
+        }
+        card.appendChild(head);
+        // Live HA state — the same card the chat renders (renderHaCard).
+        if (c.ha_card) {
+          var wrap = document.createElement("div");
+          wrap.className = "ha-cards";
+          wrap.appendChild(renderHaCard(c.ha_card, false));
+          card.appendChild(wrap);
+        }
+        if (c.description) {
+          var desc = document.createElement("p");
+          desc.className = "concept-desc";
+          desc.textContent = c.description;
+          card.appendChild(desc);
+        }
+        if (c.body) {
+          var body = document.createElement("div");
+          body.className = "md";
+          body.innerHTML = renderReply(c.body);
+          renderMermaidIn(body);
+          card.appendChild(body);
+        }
+        if (c.facts && c.facts.length) {
+          card.appendChild(conceptSectionTitle("Fakten"));
+          var fl = document.createElement("ul");
+          fl.className = "concept-facts";
+          c.facts.forEach(function (f) {
+            var li = document.createElement("li");
+            li.textContent = f.predicate + ": " + f.value;
+            fl.appendChild(li);
+          });
+          card.appendChild(fl);
+        }
+        if (c.events && c.events.length) {
+          card.appendChild(conceptSectionTitle("Ereignisse"));
+          var el = document.createElement("ul");
+          el.className = "concept-events";
+          c.events.forEach(function (ev) {
+            var li = document.createElement("li");
+            li.textContent = (ev.ts || "") + " · " + (ev.kind || "") +
+              (ev.role ? " (" + ev.role + ")" : "");
+            el.appendChild(li);
+          });
+          card.appendChild(el);
+        }
+        if (c.source_docs && c.source_docs.length) {
+          card.appendChild(conceptSectionTitle("Quellen"));
+          var sl = document.createElement("ul");
+          sl.className = "concept-sources";
+          c.source_docs.forEach(function (d) {
+            var li = document.createElement("li");
+            li.textContent = (d.title || d.path) + (d.kind === "okf" ? " (OKF)" : "");
+            sl.appendChild(li);
+          });
+          card.appendChild(sl);
+        }
+        if (c.backlinks && c.backlinks.length) {
+          card.appendChild(conceptSectionTitle("Erwähnt in Chats"));
+          var bl = document.createElement("ul");
+          bl.className = "concept-backlinks";
+          c.backlinks.forEach(function (b) {
+            var li = document.createElement("li");
+            var a = document.createElement("a");
+            a.href = "?session=" + encodeURIComponent(b.session_id);
+            a.textContent = b.value;
+            a.addEventListener("click", function (e) {
+              e.preventDefault();
+              card.remove();
+              openSession(b.session_id);
+            });
+            li.appendChild(a);
+            bl.appendChild(li);
+          });
+          card.appendChild(bl);
+        }
+      }
+
+      function conceptSectionTitle(text) {
+        var h = document.createElement("div");
+        h.className = "concept-section";
+        h.textContent = text;
+        return h;
+      }
+
+      // Dispatch the current hash/path route. `#/c/<id>` (and the `/c/<id>`
+      // bookmarkable shell, rewritten to the hash form) open the concept page.
+      function routeFromLocation() {
+        var hash = window.location.hash || "";
+        var m = hash.match(/^#\/c\/(.+)$/);
+        if (!m && window.location.pathname.indexOf("/c/") === 0) {
+          m = ["", window.location.pathname.slice(3)];
+        }
+        if (m) openConcept(decodeURIComponent(m[1]));
+      }
+      window.addEventListener("hashchange", routeFromLocation);
 
       // ---- Chat preferences: thinking-mode toggle (#185) ----
       var thinkSeg = document.getElementById("thinking-seg");
@@ -4725,7 +4989,7 @@
       // cross (and, for an Authelia admin, the admin profile #293 — the server
       // re-enforces the gate, so a non-admin can never reach it).
       Promise.all([loadPersonalities(), loadWhoami()]);
-      loadTopics().then(loadSessions);
+      loadTopics().then(loadSessions).then(routeFromLocation);
     })();
   </script>
 </body>

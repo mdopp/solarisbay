@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -40,11 +41,29 @@ from solaris_chat.engine.client import EngineClient, EngineError
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
-from solaris_chat.engine.tools.ha import call_service_scoped
+from solaris_chat.engine.knowledge import okf, projection
+from solaris_chat.engine.tools.ha import call_service_scoped, fetch_card
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
 from solaris_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _read_okf(notes_dir: str, okf_path: str) -> dict[str, str]:
+    """Read an OKF concept file's description + body for the concept page (#502).
+
+    `okf_path` is the projection-stored vault-relative path; resolve it under
+    `notes_dir`, refusing any path that escapes the vault. Empty on any error so
+    the page degrades to the projected facts/events.
+    """
+    root = Path(notes_dir).resolve()
+    try:
+        target = (root / okf_path).resolve()
+        target.relative_to(root)
+        return okf.read_concept(target.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return {"description": "", "body": ""}
+
 
 # Default prompt for an image-only turn (attachment with no typed text), so the
 # media-ingestion hook has a turn to trigger on. Mirrors the German tone the
@@ -525,6 +544,32 @@ def build_app(
         tags, persons = parse_mentions(text)
         mentions_store.record_mentions(solaris_db_path, session_id, uid, tags, persons)
 
+    def record_anchors(
+        uid: str,
+        session_id: str,
+        anchors: list[str],
+        user_text: str,
+        *,
+        ephemeral: bool,
+    ) -> None:
+        """Record the agent's auto-surfaced #/@ anchors as turn mentions (#501).
+
+        Anchors keep their `#`/`@` prefix; split into tags/persons and dedup
+        against the tokens the user already typed this turn (those are recorded
+        by persist_mentions). Skipped for ephemeral chats; no-op when empty.
+        """
+        if ephemeral or not anchors:
+            return
+        typed_tags, typed_persons = parse_mentions(user_text)
+        typed = {("#", t) for t in typed_tags} | {("@", p) for p in typed_persons}
+        tags, persons = [], []
+        for a in anchors:
+            prefix, value = a[:1], a[1:].strip().lower()
+            if not value or (prefix, value) in typed:
+                continue
+            (persons if prefix == "@" else tags).append(value)
+        mentions_store.record_mentions(solaris_db_path, session_id, uid, tags, persons)
+
     async def persist_turn_trace(
         uid: str,
         session_id: str,
@@ -532,6 +577,8 @@ def build_app(
         *,
         ephemeral: bool,
         ha_cards: list[dict[str, Any]] | None = None,
+        suggestions: list[str] | None = None,
+        anchors: list[str] | None = None,
     ) -> None:
         """Persist this turn's engine trace steps under a fresh trace_id.
 
@@ -577,6 +624,24 @@ def build_app(
                     {
                         "step_kind": "ha_cards",
                         "detail_json": json.dumps(ha_cards),
+                    }
+                )
+            # Follow-up chips (#498) ride the same trace_id as a synthetic step,
+            # so reload re-attaches them under the turn's bubble (like ha_cards).
+            if suggestions:
+                steps.append(
+                    {
+                        "step_kind": "suggestions",
+                        "detail_json": json.dumps(suggestions),
+                    }
+                )
+            # Auto-surfaced #/@ anchors (#501) ride the same trace_id as a
+            # synthetic step, so reload re-attaches the chips under the bubble.
+            if anchors:
+                steps.append(
+                    {
+                        "step_kind": "anchors",
+                        "detail_json": json.dumps(anchors),
                     }
                 )
             if steps:
@@ -1387,6 +1452,73 @@ def build_app(
         items = notes_search.notes_for_topic(notes_dir, slug, uid)
         return web.json_response({"ok": True, "slug": slug, "items": items})
 
+    async def concept_view(request: web.Request) -> web.Response:
+        """Aggregate one entity/concept into the #502 page (phase 1).
+
+        Composes, owner-scoped, what the household already stores for `<id>`:
+        live HA state (when the id is an HA entity), the OKF concept's
+        description/facts/events, the source OKF document + notes that mention
+        it, and chat/note backlinks. `<id>` resolves via `entity_aliases`/
+        `entities` (migration 0016) or is taken as an HA entity id directly.
+        """
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        ref = request.match_info["id"].strip()
+        view: dict[str, Any] = {
+            "id": ref,
+            "title": ref,
+            "type": None,
+            "ha_card": None,
+            "description": "",
+            "body": "",
+            "facts": [],
+            "events": [],
+            "source_docs": [],
+            "backlinks": [],
+        }
+        names = [ref]
+        if Path(solaris_db_path).exists():
+            conn = projection.open_conn(solaris_db_path)
+            try:
+                entity_id = projection.resolve_entity_id(conn, ref, uid)
+                if entity_id is not None:
+                    ent = projection.entity_row(conn, entity_id) or {}
+                    view["id"] = entity_id
+                    view["title"] = ent.get("canonical_name") or entity_id
+                    view["type"] = ent.get("type")
+                    names = [view["title"], *projection.entity_aliases(conn, entity_id)]
+                    view["facts"] = projection.entity_facts(conn, entity_id)
+                    view["events"] = projection.entity_events(conn, entity_id)
+                    okf_path = projection.entity_okf_path(conn, entity_id)
+                    if okf_path:
+                        view["source_docs"].append(
+                            {"path": okf_path, "title": view["title"], "kind": "okf"}
+                        )
+                        parsed = _read_okf(notes_dir, okf_path)
+                        view["description"] = parsed["description"]
+                        view["body"] = parsed["body"]
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+        # Live state when the page id (or the resolved entity) is an HA entity.
+        if hass_url and hass_token:
+            card = await fetch_card(hass_url, hass_token, ref)
+            if card is not None:
+                view["ha_card"] = card
+                if view["title"] == ref:
+                    view["title"] = card.get("name") or ref
+        for note in notes_search.notes_mentioning(notes_dir, names, uid):
+            view["source_docs"].append({**note, "kind": "note"})
+        view["backlinks"] = mentions_store.backlinks_for(solaris_db_path, uid, names)
+        return web.json_response({"ok": True, "concept": view})
+
+    async def concept_page(_request: web.Request) -> web.Response:
+        # Bookmarkable deep-link to a concept: serve the SPA shell; the client
+        # router reads the `/c/<id>` path and renders the page from the API.
+        return web.FileResponse(
+            STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+        )
+
     async def mentions_tags(request: web.Request) -> web.Response:
         # Autosuggest for `#tag` (#279): the resident's already-used tags,
         # prefix-filtered. Per-resident scope (owner_uid = resolve_uid).
@@ -1573,6 +1705,8 @@ def build_app(
         t_tool: float | None = None  # open tool round-trip
         answer_buf = ""
         ha_cards: list[dict[str, Any]] = []
+        suggestions: list[str] = []
+        anchors: list[str] = []
         cancelled = False
         try:
             compacted = False
@@ -1641,6 +1775,10 @@ def build_app(
                         answer_buf += completed_answer
                 elif name == "ha_cards":
                     ha_cards = data.get("cards") or []
+                elif name == "suggestions":
+                    suggestions = data.get("suggestions") or []
+                elif name == "anchors":
+                    anchors = data.get("anchors") or []
                 await _send_event(resp, name, data)
             if not cancelled:
                 t_end = clock() * 1000.0
@@ -1649,8 +1787,15 @@ def build_app(
                     t_end - t_start,
                 )
                 await _send_event(resp, "trace", trace)
+                record_anchors(uid, session_id, anchors, text, ephemeral=ephemeral)
                 await persist_turn_trace(
-                    uid, session_id, wall_t0, ephemeral=ephemeral, ha_cards=ha_cards
+                    uid,
+                    session_id,
+                    wall_t0,
+                    ephemeral=ephemeral,
+                    ha_cards=ha_cards,
+                    suggestions=suggestions,
+                    anchors=anchors,
                 )
         except EngineError:
             await _send_event(resp, "error", {"reason": "engine_unavailable"})
@@ -1700,6 +1845,8 @@ def build_app(
     app.router.add_get("/api/sessions/{session_id}/topics", get_session_topics)
     app.router.add_post("/api/sessions/{session_id}/topics", set_session_topics)
     app.router.add_get("/api/topics/{slug:.+}/items", topic_items)
+    app.router.add_get("/api/concept/{id}", concept_view)
+    app.router.add_get("/c/{id}", concept_page)
     app.router.add_get("/api/mentions/tags", mentions_tags)
     app.router.add_get("/api/mentions/persons", mentions_persons)
     app.router.add_get("/api/sessions/{session_id}/mentions", session_mentions)
@@ -1889,6 +2036,10 @@ def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return "tool", out
     if etype == "ha_cards":
         return "ha_cards", {"cards": payload.get("cards") or []}
+    if etype == "suggestions":
+        return "suggestions", {"suggestions": payload.get("suggestions") or []}
+    if etype == "anchors":
+        return "anchors", {"anchors": payload.get("anchors") or []}
     if etype == "run.completed":
         return "completed", {
             "reasoning": _reasoning_from_completed(payload),
