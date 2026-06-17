@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.15.0](https://github.com/mdopp/solarisbay/compare/v0.14.0...v0.15.0) (2026-06-17)
+
+
+### Features
+
+* **chat:** chat UI polish, definition kind taxonomy phase 1, and read-only HA cards phase 1 ([#493](https://github.com/mdopp/solarisbay/issues/493)) ([c41616e](https://github.com/mdopp/solarisbay/commit/c41616eef1d58be524117594618c1539c1ef4e1f))
+* **chat:** HA group cards for multiple entities ([#497](https://github.com/mdopp/solarisbay/issues/497)) ([bc76685](https://github.com/mdopp/solarisbay/commit/bc766858d0ce006fce0aaf0d9ec011cf38562e91)), closes [#478](https://github.com/mdopp/solarisbay/issues/478)
+* **chat:** OKF concept write-path core for ingest adapters ([57aadc8](https://github.com/mdopp/solarisbay/commit/57aadc855a094c705388380ec736034f6c56bda5)), closes [#447](https://github.com/mdopp/solarisbay/issues/447)
+* **chat:** scheduler and hooks editors with pickers, HA card sliders, colour, and climate ([#496](https://github.com/mdopp/solarisbay/issues/496)) ([c8b7e0b](https://github.com/mdopp/solarisbay/commit/c8b7e0bde0249a0198dd130e1c43ae8d4ddeb457))
+* **chat:** separate Voice card from Model + let setting cards size to content ([#471](https://github.com/mdopp/solarisbay/issues/471)) ([481262c](https://github.com/mdopp/solarisbay/commit/481262c102da7fc0360b0d455e8cc5ef346cfd3d))
+* **chat:** skill taxonomy reorg + /skills and /commands editors, HA toggle cards, CI path-filter ([#495](https://github.com/mdopp/solarisbay/issues/495)) ([3240846](https://github.com/mdopp/solarisbay/commit/3240846a177403a640ce5e2c8ec4945692bb2b11))
+* **db:** add OKF knowledge-index tables ([75c8280](https://github.com/mdopp/solarisbay/commit/75c828091a28072089bd557fa77cf084ceb402c3)), closes [#446](https://github.com/mdopp/solarisbay/issues/446)
+* **engine:** bound the durable household chat by head-truncation ([#466](https://github.com/mdopp/solarisbay/issues/466)) ([7b9a24e](https://github.com/mdopp/solarisbay/commit/7b9a24e117a35061994ea565ab54bae7866d2152))
+* **engine:** discover read-only devices by query instead of packing the prompt ([#463](https://github.com/mdopp/solarisbay/issues/463)) ([128cd28](https://github.com/mdopp/solarisbay/commit/128cd2807e8c28148661c0ca603481b1cbe0636b))
+* **ingest:** calendar + contacts adapter — CalDAV/CardDAV to OKF concepts ([1779e69](https://github.com/mdopp/solarisbay/commit/1779e69462413a699c92454c874480ef8c291e98)), closes [#207](https://github.com/mdopp/solarisbay/issues/207)
+* **ingest:** Immich photo adapter — assets/faces/EXIF-geo to OKF concepts ([30ee597](https://github.com/mdopp/solarisbay/commit/30ee597d98da52a514fdabe438e41b27b07df806)), closes [#206](https://github.com/mdopp/solarisbay/issues/206)
+* **ingest:** Obsidian adapter — existing vault notes to OKF concepts ([e80ccc6](https://github.com/mdopp/solarisbay/commit/e80ccc6ed11bdba928e6b86d812363fdfcfe171e)), closes [#448](https://github.com/mdopp/solarisbay/issues/448)
+* Phase-1 household-knowledge ingestion — OKF write-path + adapters ([8f46a44](https://github.com/mdopp/solarisbay/commit/8f46a44516bc2129f9561e24f9d0017e541a3efe))
+* **skill:** terser household replies + time-only clock answers ([#464](https://github.com/mdopp/solarisbay/issues/464)) ([8ebc8aa](https://github.com/mdopp/solarisbay/commit/8ebc8aabf9838002c48254422d1548dd9400fcc3))
+* **template:** add trained Solaris wake-word model ([#459](https://github.com/mdopp/solarisbay/issues/459)) ([65893c5](https://github.com/mdopp/solarisbay/commit/65893c54839d2cfcd54a4774f1c88993406e000d))
+* **template:** own the full voice pipeline in the solaris stack ([08b6030](https://github.com/mdopp/solarisbay/commit/08b603003a8e7fc6daa8831c64a50297864d14ba))
+* **template:** own the voice pipeline in the solaris stack ([8d94695](https://github.com/mdopp/solarisbay/commit/8d9469511ab333646fc835301d6aa520f6994e73)), closes [#456](https://github.com/mdopp/solarisbay/issues/456)
+* **template:** Solaris owns the openWakeWord wake engine ([#460](https://github.com/mdopp/solarisbay/issues/460)) ([7c50010](https://github.com/mdopp/solarisbay/commit/7c500108a267499a7a84bdfb607780cfad3e7773))
+
+
+### Bug Fixes
+
+* **chat:** attach per-turn step traces to the correct turn ([#465](https://github.com/mdopp/solarisbay/issues/465)) ([8f3252f](https://github.com/mdopp/solarisbay/commit/8f3252f6e5a7f0aae5566ec3c9dc27fa47e3c3fd))
+* **chat:** clear admin-only handling instead of a thin "admins" line ([#470](https://github.com/mdopp/solarisbay/issues/470)) ([233e12c](https://github.com/mdopp/solarisbay/commit/233e12c3e9f0d68275fee8f7ddcd9b2e43f0256c))
+* **chat:** collapse the per-turn step trace by default ([#492](https://github.com/mdopp/solarisbay/issues/492)) ([645f684](https://github.com/mdopp/solarisbay/commit/645f6842619cc929a8e5287c660dac041e750a93))
+* **chat:** give setting cards a min body height so they aren't a thin line ([#468](https://github.com/mdopp/solarisbay/issues/468)) ([6d17c84](https://github.com/mdopp/solarisbay/commit/6d17c8474c1057c80b7b19a499d3df65d5a51d8b))
+* **chat:** keep long mobile streams alive and resume on a transport drop ([f86bd03](https://github.com/mdopp/solarisbay/commit/f86bd0339df70f3e6e265a71e8b6abeac133f47a)), closes [#452](https://github.com/mdopp/solarisbay/issues/452)
+* **chat:** match skill slash-commands case-insensitively ([#469](https://github.com/mdopp/solarisbay/issues/469)) ([8e030f9](https://github.com/mdopp/solarisbay/commit/8e030f919c59175d67630557397c0b02ccd3fa35))
+* **chat:** persist per-turn step-trace detail body so it survives reload + restart ([7a61e1d](https://github.com/mdopp/solarisbay/commit/7a61e1ded93f129ff77338d5f66566a72dbb46ff)), closes [#451](https://github.com/mdopp/solarisbay/issues/451)
+* **chat:** persist step-trace detail + keep long mobile streams alive ([4642945](https://github.com/mdopp/solarisbay/commit/4642945935dd0b7da786e8e11435f03376fc56f8))
+* **chat:** prune session_traces on delete and head-truncation ([#490](https://github.com/mdopp/solarisbay/issues/490)) ([c4cc22d](https://github.com/mdopp/solarisbay/commit/c4cc22dbd5bb75d7e3942c4972786a3c7f28ba46))
+* **chat:** return message created_at so persisted traces render on reopen ([#491](https://github.com/mdopp/solarisbay/issues/491)) ([f9c3392](https://github.com/mdopp/solarisbay/commit/f9c3392e33e4b16e422b882009c4e37b5be3d40d))
+* **chat:** serve index.html with Cache-Control: no-cache ([#473](https://github.com/mdopp/solarisbay/issues/473)) ([60bdcfa](https://github.com/mdopp/solarisbay/commit/60bdcfa5435ac8ea721632f741f9e53beb296c9d))
+* **chat:** sort skills alphabetically + open setting cards from their top ([#472](https://github.com/mdopp/solarisbay/issues/472)) ([666e379](https://github.com/mdopp/solarisbay/commit/666e3797deda600adabafedcdd7c31a54e15475f))
+* **chat:** stop setting cards shrinking + sort the slash list alphabetically ([#479](https://github.com/mdopp/solarisbay/issues/479)) ([734f346](https://github.com/mdopp/solarisbay/commit/734f3468ba7255346325b1c5956e6c15b9295cff))
+* **engine:** resolve guessed entity_ids so history isn't a false "never" ([#467](https://github.com/mdopp/solarisbay/issues/467)) ([f63d14d](https://github.com/mdopp/solarisbay/commit/f63d14d94187b7b8e38b81bf9417ea8ac169a472))
+* **engine:** surface ambient sensors so Solaris finds room temperature ([#462](https://github.com/mdopp/solarisbay/issues/462)) ([73dc499](https://github.com/mdopp/solarisbay/commit/73dc49971cdf2c0c3959233a046f3443e7395c38))
+* **skill:** emit the actual web-search URLs, not just a promise of a link ([#489](https://github.com/mdopp/solarisbay/issues/489)) ([52fa029](https://github.com/mdopp/solarisbay/commit/52fa0292d5cce2d30bfa68b252d506d2568029f9))
+* **template:** make the chat proxy host SSE-friendly for long mobile streams ([d6f0810](https://github.com/mdopp/solarisbay/commit/d6f08106994711bace7c231865792c7fdde9ccf3)), closes [#452](https://github.com/mdopp/solarisbay/issues/452)
+* **template:** SSE-friendly chat proxy host for long mobile streams ([1c6b40f](https://github.com/mdopp/solarisbay/commit/1c6b40f6b96b2dbff3e20807bb892d49b04ce090))
+
 ## [0.14.0](https://github.com/mdopp/solarisbay/compare/v0.13.0...v0.14.0) (2026-06-15)
 
 
