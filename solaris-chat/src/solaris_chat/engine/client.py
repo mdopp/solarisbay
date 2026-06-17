@@ -110,6 +110,24 @@ def _is_fabricated_device_claim(content: str) -> bool:
     return bool(_DEVICE_CLAIM.search(content or ""))
 
 
+# A trailing `FOLLOWUPS: a | b | c` line the SOUL invites the model to emit
+# (#498): tappable follow-up question chips. Parsed off the answer's tail so
+# the chips ride a per-turn event and the marker never shows in the bubble.
+_FOLLOWUPS = re.compile(r"\n*FOLLOWUPS:[ \t]*(.+?)[ \t]*$", re.IGNORECASE)
+
+
+def _split_followups(content: str) -> tuple[str, list[str]]:
+    """Strip a trailing FOLLOWUPS line off `content`, returning (answer, chips).
+
+    Up to three non-empty chips; no marker → the answer unchanged and []."""
+    m = _FOLLOWUPS.search(content or "")
+    if not m:
+        return content, []
+    chips = [c.strip() for c in m.group(1).split("|")]
+    chips = [c for c in chips if c][:3]
+    return content[: m.start()].rstrip(), chips
+
+
 class EngineError(Exception):
     """Raised when a turn cannot run (DB/model failures). Name-compatible
     handling: server catches HermesError OR EngineError."""
@@ -536,6 +554,7 @@ class EngineClient:
                 or "Entschuldige, das hat zu viele Schritte gebraucht — ich breche hier ab."
             )
 
+        final_content, suggestions = _split_followups(final_content)
         if persist:
             store.append_message(
                 self._db_path,
@@ -546,6 +565,8 @@ class EngineClient:
             )
         if ha_cards:
             yield {"type": "ha_cards", "data": {"cards": ha_cards}}
+        if suggestions:
+            yield {"type": "suggestions", "data": {"suggestions": suggestions}}
         yield {
             "type": "run.completed",
             "data": {

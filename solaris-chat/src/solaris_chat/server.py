@@ -551,6 +551,7 @@ def build_app(
         *,
         ephemeral: bool,
         ha_cards: list[dict[str, Any]] | None = None,
+        suggestions: list[str] | None = None,
     ) -> None:
         """Persist this turn's engine trace steps under a fresh trace_id.
 
@@ -596,6 +597,15 @@ def build_app(
                     {
                         "step_kind": "ha_cards",
                         "detail_json": json.dumps(ha_cards),
+                    }
+                )
+            # Follow-up chips (#498) ride the same trace_id as a synthetic step,
+            # so reload re-attaches them under the turn's bubble (like ha_cards).
+            if suggestions:
+                steps.append(
+                    {
+                        "step_kind": "suggestions",
+                        "detail_json": json.dumps(suggestions),
                     }
                 )
             if steps:
@@ -1659,6 +1669,7 @@ def build_app(
         t_tool: float | None = None  # open tool round-trip
         answer_buf = ""
         ha_cards: list[dict[str, Any]] = []
+        suggestions: list[str] = []
         cancelled = False
         try:
             compacted = False
@@ -1727,6 +1738,8 @@ def build_app(
                         answer_buf += completed_answer
                 elif name == "ha_cards":
                     ha_cards = data.get("cards") or []
+                elif name == "suggestions":
+                    suggestions = data.get("suggestions") or []
                 await _send_event(resp, name, data)
             if not cancelled:
                 t_end = clock() * 1000.0
@@ -1736,7 +1749,12 @@ def build_app(
                 )
                 await _send_event(resp, "trace", trace)
                 await persist_turn_trace(
-                    uid, session_id, wall_t0, ephemeral=ephemeral, ha_cards=ha_cards
+                    uid,
+                    session_id,
+                    wall_t0,
+                    ephemeral=ephemeral,
+                    ha_cards=ha_cards,
+                    suggestions=suggestions,
                 )
         except EngineError:
             await _send_event(resp, "error", {"reason": "engine_unavailable"})
@@ -1977,6 +1995,8 @@ def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return "tool", out
     if etype == "ha_cards":
         return "ha_cards", {"cards": payload.get("cards") or []}
+    if etype == "suggestions":
+        return "suggestions", {"suggestions": payload.get("suggestions") or []}
     if etype == "run.completed":
         return "completed", {
             "reasoning": _reasoning_from_completed(payload),

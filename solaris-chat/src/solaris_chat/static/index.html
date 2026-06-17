@@ -348,6 +348,16 @@
     .concept-card ul { margin: 2px 0; padding-left: 18px; }
     .concept-card ul li { margin: 2px 0; }
     .ha-cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+    /* Tappable follow-up question chips (#498): shares the answer's surface with
+       ha-cards / concept card; each chip re-sends its text as the next turn. */
+    .followup-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 2px; }
+    .followup-chip {
+      font: inherit; font-size: 13px; cursor: pointer;
+      color: var(--accent); background: var(--bubble-sol);
+      border: 1px solid var(--line); border-radius: 16px; padding: 5px 12px;
+    }
+    .followup-chip:hover { border-color: var(--accent); }
+    .followup-chip:disabled { opacity: 0.5; cursor: default; }
     .ha-card {
       flex: 0 1 auto; min-width: 120px; max-width: 240px;
       border: 1px solid var(--line); border-radius: 10px;
@@ -1436,8 +1446,12 @@
       // Render assistant text to HTML, applying the thinking-mode preference.
       // Markdown-render the visible answer and each thinking block separately
       // (markdown.js escapes HTML, so the <details> wrapper is built here).
+      // The model's trailing `FOLLOWUPS: a | b | c` line (#498) becomes chips,
+      // not bubble text — strip it here so it never shows even mid-stream (the
+      // server strips it from the persisted answer; this covers live deltas).
+      var FOLLOWUPS_RE = /\n*FOLLOWUPS:[ \t]*.*$/i;
       function renderReply(raw) {
-        var src = String(raw == null ? "" : raw);
+        var src = String(raw == null ? "" : raw).replace(FOLLOWUPS_RE, "");
         if (thinkingMode === "show" || src.indexOf("<thin") === -1) {
           return window.renderMarkdown(src);
         }
@@ -1576,6 +1590,30 @@
         }
         wrap.appendChild(renderHaCard(cards[0], false));
         return wrap;
+      }
+
+      // Tappable follow-up question chips (#498): each chip re-sends its text as
+      // the next turn via the shared rerunTurn send path. Reusable so the live
+      // stream, the mirror, and a reload all render the row the same way.
+      function renderFollowups(suggestions) {
+        if (!suggestions || !suggestions.length) return null;
+        var wrap = document.createElement("div");
+        wrap.className = "followup-chips";
+        suggestions.slice(0, 3).forEach(function (q) {
+          var text = String(q == null ? "" : q).trim();
+          if (!text) return;
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "followup-chip";
+          b.textContent = text;
+          b.addEventListener("click", function () {
+            if (send.disabled) return;
+            addUserTurn(text, []);
+            runTurn(text, []);
+          });
+          wrap.appendChild(b);
+        });
+        return wrap.children.length ? wrap : null;
       }
 
       // One entity's card. `row` renders it as a compact group row (no card
@@ -1836,7 +1874,7 @@
         var rows = document.createElement("div");
         rows.className = "step-rows";
         steps.forEach(function (s) {
-          if (s.step_kind === "ha_cards") return; // rendered separately, not a step row
+          if (s.step_kind === "ha_cards" || s.step_kind === "suggestions") return; // rendered separately, not a step row
           var row = document.createElement("div");
           row.className = "step-row";
           var secs = s.wall_s != null ? Number(s.wall_s).toFixed(2) + "s" : "—";
@@ -1992,6 +2030,16 @@
                   if (body && body.parentNode) body.parentNode.insertBefore(cardsEl, body.nextSibling);
                   else bubble.insertBefore(cardsEl, meta);
                 }
+              }
+              // Re-attach the turn's follow-up chips (#498), cleanly on reload.
+              var oldChips = bubble.querySelector(".followup-chips");
+              if (oldChips) oldChips.remove();
+              var chipStep = g.steps.filter(function (s) { return s.step_kind === "suggestions"; })[0];
+              if (chipStep && chipStep.detail_json) {
+                var sug = null;
+                try { sug = JSON.parse(chipStep.detail_json); } catch (e) {}
+                var chipsEl = renderFollowups(sug);
+                if (chipsEl) bubble.insertBefore(chipsEl, meta);
               }
             });
             // The ring reflects the most recent turn's prompt size: scan all
@@ -2227,6 +2275,15 @@
             if (cardsEl) el.insertBefore(cardsEl, body.nextSibling);
             scrollDown(atBottom());
           },
+          // Follow-up question chips for the turn (#498), rendered under the
+          // answer body as the suggestions event arrives near turn-end.
+          addChips: function (suggestions) {
+            var old = el.querySelector(".followup-chips");
+            if (old) old.remove();
+            var chipsEl = renderFollowups(suggestions);
+            if (chipsEl) el.appendChild(chipsEl);
+            scrollDown(atBottom());
+          },
           setReasoning: function (text) {
             // Honor the display preference (#185): "hide" => no block at all.
             var src = String(text == null ? "" : text).trim();
@@ -2348,6 +2405,7 @@
             else if (event === "reasoning") { if (d.text) msg.setReasoning(d.text); }
             else if (event === "step") { msg.addStep(d.label || "llm", d.wall_s); }
             else if (event === "ha_cards") { if (d.cards && d.cards.length) msg.addCards(d.cards); }
+            else if (event === "suggestions") { if (d.suggestions && d.suggestions.length) msg.addChips(d.suggestions); }
             else if (event === "tool") {
               if (d.phase === "started") { msg.setActivity("using " + (d.name || "tool") + "…"); msg.startStep(d.name || "tool"); }
               else { msg.setActivity("thinking…"); msg.endStep(d.wall_s); }
@@ -2430,6 +2488,11 @@
           if (id !== sessionId || activeTurn || !mirrorMsg) return;
           var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
           if (d.cards && d.cards.length) mirrorMsg.addCards(d.cards);
+        });
+        es.addEventListener("suggestions", function (e) {
+          if (id !== sessionId || activeTurn || !mirrorMsg) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.suggestions && d.suggestions.length) mirrorMsg.addChips(d.suggestions);
         });
         es.addEventListener("completed", function () {
           if (id !== sessionId || activeTurn || !mirrorMsg) return;

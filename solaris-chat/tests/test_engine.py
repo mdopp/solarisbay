@@ -19,6 +19,7 @@ from solaris_chat.engine.client import (
     EngineClient,
     EngineProfile,
     _is_fabricated_device_claim,
+    _split_followups,
 )
 from solaris_chat.engine.ollama import ChatResult
 from solaris_chat.engine.registry import EntityRegistry
@@ -580,6 +581,21 @@ def test_device_claim_matches_perfect_and_passive_forms():
     assert not _is_fabricated_device_claim("Soll ich das Licht einschalten?")
     assert not _is_fabricated_device_claim("Ich schalte gleich das Licht an.")
     assert not _is_fabricated_device_claim("Welches Licht soll ich anschalten?")
+
+
+def test_split_followups_strips_marker_and_caps_at_three():
+    """#498: the trailing FOLLOWUPS line is parsed into <=3 chips and removed
+    from the answer; no marker leaves the answer untouched with no chips."""
+    answer, chips = _split_followups(
+        "Der Verbrauch liegt bei 2,1 kW.\nFOLLOWUPS: Was zieht am meisten? | "
+        "PV-Erzeugung? | Akku-Status? | Tagesverbrauch?"
+    )
+    assert answer == "Der Verbrauch liegt bei 2,1 kW."
+    assert chips == ["Was zieht am meisten?", "PV-Erzeugung?", "Akku-Status?"]
+
+    plain, none = _split_followups("Klar.")
+    assert plain == "Klar."
+    assert none == []
 
 
 async def test_claim_passes_through_without_tools(db, soul):
