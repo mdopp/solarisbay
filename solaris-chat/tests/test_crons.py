@@ -70,6 +70,66 @@ def _baseline(db, name, stamp="2020-01-01T00:00:00+01:00"):
     conn.close()
 
 
+def _write_scheduler(skills_dir, def_id, schedule, body):
+    d = skills_dir / def_id
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {def_id}\nkind: scheduler\nschedule: {schedule}\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def test_parse_schedule_shapes():
+    assert crons._parse_schedule("59 23 * * *") == (59, 23, None)
+    assert crons._parse_schedule("30 4 * * mon") == (30, 4, 0)
+    assert crons._parse_schedule("30 4 * * 0") == (30, 4, 0)
+    assert crons._parse_schedule("0 9 5 * *") is None  # day-of-month unsupported
+    assert crons._parse_schedule("99 0 * * *") is None  # minute out of range
+    assert crons._parse_schedule("not cron") is None
+
+
+def test_load_jobs_from_scheduler_defs(tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_scheduler(
+        skills_dir, "daily-chronicle", "59 23 * * *", "Schreibe die Chronik."
+    )
+    _write_scheduler(skills_dir, "weekly-x", "30 4 * * mon", "Mach den Wochenjob.")
+    jobs = crons.load_jobs(str(skills_dir))
+    by_name = {j.name: j for j in jobs}
+    # The code compactor is always present alongside the scheduler defs.
+    assert "chat-compactor" in by_name and by_name["chat-compactor"].prompt == ""
+    chron = by_name["daily-chronicle"]
+    assert (chron.hour, chron.minute, chron.weekday) == (23, 59, None)
+    assert chron.prompt == "Schreibe die Chronik."
+    assert by_name["weekly-x"].weekday == 0
+
+
+def test_load_jobs_falls_back_to_hardcoded_when_no_scheduler_def(tmp_path):
+    # The current pack carries no scheduler-kind frontmatter yet (pre-#484);
+    # cron must keep firing on the hardcoded JOBS.
+    (tmp_path / "skills").mkdir()
+    assert crons.load_jobs(str(tmp_path / "skills")) == crons.JOBS
+    assert crons.load_jobs(str(tmp_path / "missing")) == crons.JOBS
+
+
+async def test_cron_fires_from_loaded_registry(db, tmp_path):
+    skills_dir = tmp_path / "skills"
+    _write_scheduler(skills_dir, "daily-chronicle", "59 23 * * *", "Schreibe.")
+    deep = _FakeDeep()
+    _baseline(db, "daily-chronicle")
+    # No explicit jobs => CronRunner loads from the scheduler registry.
+    runner = crons.CronRunner(
+        db_path=db,
+        deep=deep,
+        skills_dir=str(skills_dir),
+        context_window=32768,
+    )
+    await runner.tick(datetime(2026, 6, 12, 0, 5, tzinfo=_TZ))
+    assert len(deep.turns) == 1
+    _, text, _ = deep.turns[0]
+    assert text.endswith("Schreibe.")
+
+
 def test_jobs_match_hermes_era_schedules():
     by_name = {j.name: j for j in crons.JOBS}
     assert (by_name["daily-chronicle"].hour, by_name["daily-chronicle"].minute) == (

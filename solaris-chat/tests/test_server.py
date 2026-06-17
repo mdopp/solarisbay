@@ -1792,6 +1792,147 @@ def test_skills_missing_dir_and_traversal(tmp_path):
     assert skills.read_skill(tmp_path, "nope") is None
 
 
+def _write_def(root, dir_name, *, name, kind=None, scope=None, extra="", body="x"):
+    d = root / dir_name
+    d.mkdir()
+    fm = [f"name: {name}", "description: d", "version: 1"]
+    if kind is not None:
+        fm.append(f"kind: {kind}")
+    if scope is not None:
+        fm.append(f"scope: {scope}")
+    if extra:
+        fm.append(extra)
+    head = "\n".join(fm)
+    (d / "SKILL.md").write_text(f"---\n{head}\n---\n\n{body}\n", encoding="utf-8")
+
+
+def test_list_defs_filters_by_kind_default_is_skill(tmp_path):
+    _write_def(tmp_path, "status", name="solaris-status")  # no kind => skill
+    _write_def(tmp_path, "debug-set", name="debug-set", kind="command")
+    _write_def(tmp_path, "chronicle", name="chronicle", kind="scheduler")
+    _write_def(tmp_path, "media", name="media", kind="hook")
+
+    assert [d["id"] for d in skills.list_defs(tmp_path, "skill")] == ["status"]
+    assert [d["id"] for d in skills.list_defs(tmp_path, "command")] == ["debug-set"]
+    assert [d["id"] for d in skills.list_defs(tmp_path, "scheduler")] == ["chronicle"]
+    assert [d["id"] for d in skills.list_defs(tmp_path, "hook")] == ["media"]
+    # list_skills stays the skill-kind view (back-compat).
+    assert [d["id"] for d in skills.list_skills(tmp_path)] == ["status"]
+    # kind + scope surface on the registry rows (scope defaults to household).
+    skill = skills.list_defs(tmp_path, "skill")[0]
+    assert skill["kind"] == "skill" and skill["scope"] == "household"
+
+
+def test_read_def_404s_on_wrong_kind(tmp_path):
+    _write_def(tmp_path, "status", name="solaris-status")  # skill
+    assert skills.read_def(tmp_path, "skill", "status") is not None
+    assert skills.read_def(tmp_path, "scheduler", "status") is None
+
+
+def test_write_def_creates_and_rejects_kind_mismatch(tmp_path):
+    # Create a new command def via the CRUD writer.
+    res = skills.write_def(
+        tmp_path,
+        "command",
+        "greet",
+        "---\nname: greet\nkind: command\n---\n\nSag Hallo.\n",
+    )
+    assert res == {"id": "greet", "created": True, "frontmatter_changed": True}
+    assert skills.read_def(tmp_path, "command", "greet")["body"].strip() == "Sag Hallo."
+
+    # A PUT to /skill with command content is rejected (kind mismatch).
+    assert (
+        skills.write_def(tmp_path, "skill", "greet2", "---\nkind: command\n---\n\nx\n")
+        is None
+    )
+    # Updating an existing def to a different kind is rejected.
+    assert (
+        skills.write_def(tmp_path, "skill", "greet", "---\nkind: skill\n---\n\ny\n")
+        is None
+    )
+
+
+def test_delete_def_only_matching_kind(tmp_path):
+    _write_def(tmp_path, "greet", name="greet", kind="command")
+    assert skills.delete_def(tmp_path, "scheduler", "greet") is False  # wrong kind
+    assert (tmp_path / "greet").exists()
+    assert skills.delete_def(tmp_path, "command", "greet") is True
+    assert not (tmp_path / "greet").exists()
+
+
+def test_hooks_for_event(tmp_path):
+    _write_def(
+        tmp_path, "media", name="media", kind="hook", extra="event: image-upload"
+    )
+    _write_def(tmp_path, "guest", name="guest", kind="hook", extra="event: guest-start")
+    _write_def(
+        tmp_path, "media2", name="media2", kind="hook", extra="event: image-upload"
+    )
+    _write_def(tmp_path, "status", name="status")  # skill, ignored
+    assert skills.hooks_for_event(tmp_path, "image-upload") == ["media", "media2"]
+    assert skills.hooks_for_event(tmp_path, "guest-start") == ["guest"]
+    assert skills.hooks_for_event(tmp_path, "nope") == []
+
+
+async def test_defs_endpoints(aiohttp_client, tmp_path):
+    _write_def(tmp_path, "status", name="solaris-status")  # skill
+    _write_def(tmp_path, "debug-set", name="debug-set", kind="command")
+    fake = _FakeHermes()
+    app = build_app(
+        hermes=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        skills_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/defs/skill")
+    body = await resp.json()
+    assert resp.status == 200
+    assert [d["id"] for d in body["defs"]] == ["status"]
+
+    resp = await client.get("/api/defs/command")
+    assert [d["id"] for d in (await resp.json())["defs"]] == ["debug-set"]
+
+    resp = await client.get("/api/defs/bogus")
+    assert resp.status == 404
+
+    resp = await client.get("/api/defs/skill/status")
+    assert (await resp.json())["def"]["kind"] == "skill"
+
+    # Wrong kind for an existing id 404s.
+    resp = await client.get("/api/defs/scheduler/status")
+    assert resp.status == 404
+
+    # Mutate is admin-gated.
+    resp = await client.put(
+        "/api/defs/command/greet", json={"content": "---\nkind: command\n---\n\nhi\n"}
+    )
+    assert resp.status == 403
+
+    admin = {"Remote-Groups": "admins"}
+    resp = await client.put(
+        "/api/defs/command/greet",
+        json={"content": "---\nkind: command\n---\n\nhi\n"},
+        headers=admin,
+    )
+    body = await resp.json()
+    assert resp.status == 200 and body["created"] is True
+    assert (await client.get("/api/defs/command/greet")).status == 200
+
+    # PUT with kind contradicting the route is a 400.
+    resp = await client.put(
+        "/api/defs/skill/greet2",
+        json={"content": "---\nkind: command\n---\n\nx\n"},
+        headers=admin,
+    )
+    assert resp.status == 400
+
+    resp = await client.delete("/api/defs/command/greet", headers=admin)
+    assert resp.status == 200
+    assert (await client.get("/api/defs/command/greet")).status == 404
+
+
 async def test_skills_endpoints(aiohttp_client, tmp_path):
     _write_skill(
         tmp_path, "status", "solaris-status", "Health", "# Status\nrendered me"

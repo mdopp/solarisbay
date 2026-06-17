@@ -87,6 +87,76 @@ JOBS = (
     CronJob(name="chat-compactor", minute=15, hour=4),
 )
 
+# The compactor is a code job (empty prompt → _compact_stale), so it can't live
+# as a prompt-bearing scheduler definition; it stays defined here and is always
+# present in the loaded registry.
+_CODE_JOBS = (CronJob(name="chat-compactor", minute=15, hour=4),)
+
+_WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _parse_schedule(spec: str) -> tuple[int, int, int | None] | None:
+    """A scheduler def's `schedule:` — a 5-field cron `min hour dom mon dow`,
+    restricted to the shapes the runner supports (a single minute + hour, an
+    optional single weekday; `*` elsewhere). Returns `(minute, hour, weekday)`
+    or None when it isn't a shape we can fire."""
+    parts = spec.split()
+    if len(parts) != 5:
+        return None
+    minute, hour, dom, mon, dow = parts
+    if dom != "*" or mon != "*":
+        return None
+    try:
+        m, h = int(minute), int(hour)
+    except ValueError:
+        return None
+    if not (0 <= m < 60 and 0 <= h < 24):
+        return None
+    weekday: int | None = None
+    if dow != "*":
+        weekday = _WEEKDAYS.get(dow.lower())
+        if weekday is None:
+            try:
+                weekday = int(dow) % 7
+            except ValueError:
+                return None
+    return m, h, weekday
+
+
+def load_jobs(skills_dir: str) -> tuple[CronJob, ...]:
+    """Build the cron registry from the scheduler-kind definitions in the pack
+    (`schedule:` frontmatter + body-as-prompt), plus the code jobs.
+
+    Falls back to the hardcoded `JOBS` when no scheduler-kind definition is
+    present yet — the pack carries the `kind`/`schedule` frontmatter only after
+    the #484 reorg, so cron keeps firing on the current pack meanwhile.
+    """
+    from solaris_chat import skills
+
+    jobs: list[CronJob] = list(_CODE_JOBS)
+    for entry in skills.list_defs(skills_dir, "scheduler"):
+        one = skills.read_def(skills_dir, "scheduler", entry["id"])
+        if one is None:
+            continue
+        meta, body = skills._split_frontmatter(one["raw"])
+        parsed = _parse_schedule(meta.get("schedule", ""))
+        if parsed is None or not body.strip():
+            log.warning("engine.cron.skipped_invalid_scheduler", id=entry["id"])
+            continue
+        minute, hour, weekday = parsed
+        jobs.append(
+            CronJob(
+                name=entry["id"],
+                minute=minute,
+                hour=hour,
+                weekday=weekday,
+                prompt=body.strip(),
+                skill=entry["id"],
+            )
+        )
+    has_scheduler_entry = any(j.prompt for j in jobs)
+    return tuple(jobs) if has_scheduler_entry else JOBS
+
 
 def _slot(job: CronJob, now: datetime) -> str | None:
     """The job's most recent due slot at/before `now` (ISO), or None when the
@@ -145,13 +215,13 @@ class CronRunner:
         deep: EngineClient,
         skills_dir: str,
         context_window: int,
-        jobs: tuple[CronJob, ...] = JOBS,
+        jobs: tuple[CronJob, ...] | None = None,
     ):
         self._db_path = db_path
         self._deep = deep
         self._skills_dir = skills_dir
         self._context_window = context_window
-        self._jobs = jobs
+        self._jobs = jobs if jobs is not None else load_jobs(skills_dir)
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:

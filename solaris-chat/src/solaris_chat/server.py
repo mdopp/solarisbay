@@ -813,6 +813,97 @@ def build_app(
             {"ok": True, "restart_needed": result["frontmatter_changed"]}
         )
 
+    def _valid_kind(request: web.Request) -> str | None:
+        kind = request.match_info["kind"]
+        return kind if kind in skills.KINDS else None
+
+    async def list_defs(request: web.Request) -> web.Response:
+        kind = _valid_kind(request)
+        if kind is None:
+            return web.json_response(
+                {"ok": False, "reason": "unknown_kind"}, status=404
+            )
+        return web.json_response(
+            {"ok": True, "kind": kind, "defs": skills.list_defs(skills_dir, kind)}
+        )
+
+    async def get_def(request: web.Request) -> web.Response:
+        kind = _valid_kind(request)
+        if kind is None:
+            return web.json_response(
+                {"ok": False, "reason": "unknown_kind"}, status=404
+            )
+        one = skills.read_def(skills_dir, kind, request.match_info["def_id"])
+        if one is None:
+            return web.json_response({"ok": False, "reason": "not_found"}, status=404)
+        return web.json_response({"ok": True, "def": one})
+
+    async def put_def(request: web.Request) -> web.Response:
+        if not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        kind = _valid_kind(request)
+        if kind is None:
+            return web.json_response(
+                {"ok": False, "reason": "unknown_kind"}, status=404
+            )
+        def_id = request.match_info["def_id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        content = body.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return web.json_response(
+                {"ok": False, "reason": "empty_content"}, status=400
+            )
+        try:
+            result = skills.write_def(skills_dir, kind, def_id, content)
+        except OSError:
+            return web.json_response(
+                {"ok": False, "reason": "write_failed"}, status=500
+            )
+        if result is None:
+            # Bad id, or the content's kind contradicts the registry.
+            return web.json_response(
+                {"ok": False, "reason": "kind_mismatch"}, status=400
+            )
+        log.info(
+            "chat.def.edited",
+            uid=resolve_uid(request, remote_user_header, default_uid),
+            kind=kind,
+            def_id=def_id,
+            created=result["created"],
+            frontmatter_changed=result["frontmatter_changed"],
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "created": result["created"],
+                "restart_needed": result["frontmatter_changed"],
+            }
+        )
+
+    async def delete_def_route(request: web.Request) -> web.Response:
+        if not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        kind = _valid_kind(request)
+        if kind is None:
+            return web.json_response(
+                {"ok": False, "reason": "unknown_kind"}, status=404
+            )
+        def_id = request.match_info["def_id"]
+        if not skills.delete_def(skills_dir, kind, def_id):
+            return web.json_response({"ok": False, "reason": "not_found"}, status=404)
+        log.info(
+            "chat.def.deleted",
+            uid=resolve_uid(request, remote_user_header, default_uid),
+            kind=kind,
+            def_id=def_id,
+        )
+        return web.json_response({"ok": True})
+
     async def get_soul(_request: web.Request) -> web.Response:
         # The soul lives on the chat-owned data volume now (Solaris Engine reads
         # it per turn), so the panel reads the file directly — the Hermes-era
@@ -1517,6 +1608,10 @@ def build_app(
     app.router.add_get("/api/skills", list_skills)
     app.router.add_get("/api/skills/{skill_id}", get_skill)
     app.router.add_put("/api/skills/{skill_id}", put_skill)
+    app.router.add_get("/api/defs/{kind}", list_defs)
+    app.router.add_get("/api/defs/{kind}/{def_id}", get_def)
+    app.router.add_put("/api/defs/{kind}/{def_id}", put_def)
+    app.router.add_delete("/api/defs/{kind}/{def_id}", delete_def_route)
     app.router.add_get("/api/soul", get_soul)
     app.router.add_put("/api/soul", put_soul)
     app.router.add_get("/api/model", get_model)
