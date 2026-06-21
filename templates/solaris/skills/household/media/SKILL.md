@@ -1,6 +1,6 @@
 ---
 name: solaris-media
-description: Play and control household media — Jellyfin music/audiobooks/movies and live internet radio — on a room speaker or Cast device via Home Assistant media_player. Use for "play …", "next/previous", "pause/resume", "play <radio station>".
+description: Play and control household media — Jellyfin music/audiobooks/movies, live internet radio, and podcasts — on a room speaker or Cast device via Home Assistant media_player. Use for "play …", "next/previous", "pause/resume", "play <radio station>", "play the latest <podcast>".
 kind: skill
 scope: household
 version: 1.0.0
@@ -17,6 +17,8 @@ Play and control household media on a target room device. Two sources:
   integration, so its library is reachable through `media_player.play_media`.
 - **Live internet radio** — not in the Jellyfin library; played by a station
   name (HA Radio Browser) or a direct stream URL.
+- **Podcasts** — found via the free, keyless fyyd.de index by show name; the
+  newest episode is resolved and played on the room device.
 
 ## When to use
 
@@ -24,6 +26,7 @@ Play and control household media on a target room device. Two sources:
 - "Leg mein Hörbuch wieder auf." / "Spiel den Film X im Wohnzimmer."
 - "Weiter." / "Zurück." / "Pause." / "Mach weiter." / "Stopp."
 - "Spiel Radio <Sender>." / "Spiel den Stream <URL>."
+- "Spiel die neueste Folge von <Podcast>." / "Leg den <Podcast> auf."
 
 Out of scope: ingesting an uploaded image/audio file
 (`media-ingestion-multimodal`), buying/managing devices (HA setup).
@@ -55,6 +58,18 @@ A station name or a stream URL → `media_player.play_media`:
 - `media_content_type`: `music`
 - `media_content_id`: the resolved stream URL. For a named station, resolve it
   via HA Radio Browser; for a direct URL the request already gives the id.
+
+## Play a podcast
+
+Call `media_find_podcast` with the show `name` and the room's `entity_id`
+(a `media_player.*`). It resolves the show on fyyd.de, picks the newest
+episode's audio, and plays it via `media_player.play_media`. If no room was
+named, call it with `name` only first — it returns the resolved episode without
+playing; then ask which room and call again with the `entity_id`.
+
+- "Spiel die neueste Folge von Lage der Nation im Wohnzimmer" →
+  `media_find_podcast {name: "Lage der Nation", entity_id: "media_player.wohnzimmer"}`.
+- Show not found / no episode → say so plainly; don't guess a feed URL.
 
 ## Transport control
 
