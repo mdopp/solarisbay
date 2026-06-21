@@ -1278,6 +1278,7 @@ def ensure_assist_pipeline(
                 or existing.get("tts_voice") != tts_fields["tts_voice"]
                 or existing.get("stt_engine") != stt_entity
                 or existing.get("wake_word_entity") != wake_fields["wake_word_entity"]
+                or existing.get("wake_word_id") != wake_fields["wake_word_id"]
             ):
                 upd = {
                     k: existing.get(k)

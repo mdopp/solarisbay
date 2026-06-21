@@ -622,6 +622,55 @@ def test_existing_pipeline_converges_wake_word(pd, monkeypatch):
     assert upd["wake_word_id"] == "solaris"
 
 
+def test_existing_pipeline_converges_wake_word_id_when_entity_already_set(
+    pd, monkeypatch
+):
+    # A prior deploy resolved wake_word_entity but never persisted wake_word_id
+    # (so the PE still answers to okay-nabu). A redeploy must converge the id
+    # even though wake_word_entity already matches.
+    _FakeWS.created, _FakeWS.preferred, _FakeWS.updated = [], [], []
+    _FakeWS.pipelines = [
+        {
+            "name": "Solaris",
+            "id": "p-old",
+            "tts_engine": "tts.piper",
+            "tts_language": "de_DE",
+            "tts_voice": None,
+            "conversation_engine": "conversation.solaris",
+            "conversation_language": "de",
+            "language": "de",
+            "stt_engine": "stt.faster_whisper",
+            "stt_language": "de",
+            "wake_word_entity": "wake_word.openwakeword",
+            "wake_word_id": None,
+        }
+    ]
+
+    def find(token, prefix, needle=""):
+        if prefix == "stt.":
+            return "stt.faster_whisper"
+        if prefix == "tts." and needle == "openai":
+            return ""
+        if prefix == "tts.":
+            return "tts.piper"
+        if prefix == "wake_word.":
+            return "wake_word.openwakeword"
+        return ""
+
+    monkeypatch.setattr(pd, "_find_entity", find)
+    monkeypatch.setattr(pd, "HAWebSocket", _FakeWS)
+    monkeypatch.setattr(pd, "_assign_pe_pipeline", lambda token: None)
+    ok = pd.ensure_assist_pipeline(
+        "tok", "conversation.solaris", wake_word_id="solaris"
+    )
+    assert ok is True
+    assert _FakeWS.created == []
+    assert _FakeWS.updated, "redeploy must update the pipeline to persist wake_word_id"
+    upd = _FakeWS.updated[0]
+    assert upd["wake_word_entity"] == "wake_word.openwakeword"
+    assert upd["wake_word_id"] == "solaris"
+
+
 def test_wire_installs_model_and_passes_wake_word(pd, monkeypatch):
     monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: None)
     monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
