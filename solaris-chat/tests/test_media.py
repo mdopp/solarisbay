@@ -1,0 +1,169 @@
+"""Podcast tool tests (#513).
+
+aiohttp is stubbed so the fyyd search, the RSS feed fetch, and the HA
+play_media POST are exercised with no live network; the handler's request
+shapes + graceful-failure paths are asserted.
+"""
+
+from __future__ import annotations
+
+import json
+
+from solaris_chat.engine.tools import media as media_mod
+from solaris_chat.engine.tools.media import _newest_enclosure, build_media_tools
+
+
+class _Resp:
+    def __init__(self, *, json_body=None, text_body="", status=200):
+        self._json = json_body
+        self._text = text_body
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def json(self):
+        return self._json
+
+    async def text(self):
+        return self._text
+
+
+_FEED = """<?xml version="1.0"?>
+<rss><channel>
+  <item>
+    <title>Folge 100</title>
+    <pubDate>Wed, 18 Jun 2026 06:00:00 +0000</pubDate>
+    <enclosure url="https://cdn.example/100.mp3" type="audio/mpeg"/>
+  </item>
+  <item>
+    <title>Folge 99</title>
+    <pubDate>Wed, 11 Jun 2026 06:00:00 +0000</pubDate>
+    <enclosure url="https://cdn.example/99.mp3" type="audio/mpeg"/>
+  </item>
+</channel></rss>"""
+
+
+def _stub(monkeypatch, *, search=None, feed=_FEED, posts=None, feed_status=200):
+    """Stub aiohttp: first GET = fyyd search, second GET = feed; record POSTs."""
+    gets: list[tuple[str, dict]] = []
+    search_body = (
+        search
+        if search is not None
+        else {"data": [{"title": "Lage der Nation", "xmlURL": "https://feed/ldn.xml"}]}
+    )
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, geturl, *, params=None, **k):
+            gets.append((geturl, params or {}))
+            if "api.fyyd.de" in geturl:
+                return _Resp(json_body=search_body)
+            if "/api/states/" in geturl:
+                # call_service_scoped reads back the player state after play
+                return _Resp(json_body={"state": "playing"})
+            return _Resp(text_body=feed, status=feed_status)
+
+        def post(self, posturl, *, json, **k):
+            if posts is not None:
+                posts.append((posturl, json))
+            return _Resp(json_body={"state": "playing"})
+
+    monkeypatch.setattr(media_mod.aiohttp, "ClientSession", _Session)
+    return gets
+
+
+def _tool():
+    return build_media_tools("http://ha", "tok")[0]
+
+
+def test_newest_enclosure_picks_latest_by_pubdate():
+    ep = _newest_enclosure(_FEED)
+    assert ep == {"title": "Folge 100", "url": "https://cdn.example/100.mp3"}
+
+
+def test_newest_enclosure_skips_items_without_enclosure():
+    feed = """<rss><channel>
+      <item><title>no audio</title></item>
+      <item><title>has audio</title>
+        <enclosure url="https://cdn/x.mp3"/></item>
+    </channel></rss>"""
+    assert _newest_enclosure(feed) == {"title": "has audio", "url": "https://cdn/x.mp3"}
+
+
+async def test_find_and_play_resolves_show_feed_and_plays(monkeypatch):
+    posts: list = []
+    gets = _stub(monkeypatch, posts=posts)
+    out = json.loads(
+        await _tool().handler(
+            {"name": "Lage der Nation", "entity_id": "media_player.wohnzimmer"}
+        )
+    )
+    assert out["ok"] is True and out["played"] is True
+    assert out["show"] == "Lage der Nation"
+    assert out["episode"] == "Folge 100"
+    assert out["media_url"] == "https://cdn.example/100.mp3"
+    # fyyd search hit with the title param, then the feed url fetched
+    assert any(
+        "api.fyyd.de" in u and p.get("title") == "Lage der Nation" for u, p in gets
+    )
+    assert any(u == "https://feed/ldn.xml" for u, _ in gets)
+    # play_media POSTed to HA with the newest enclosure as content id
+    posturl, body = posts[0]
+    assert posturl == "http://ha/api/services/media_player/play_media"
+    assert body["media_content_id"] == "https://cdn.example/100.mp3"
+    assert body["media_content_type"] == "music"
+    assert body["entity_id"] == "media_player.wohnzimmer"
+
+
+async def test_find_without_entity_resolves_only_no_play(monkeypatch):
+    posts: list = []
+    _stub(monkeypatch, posts=posts)
+    out = json.loads(await _tool().handler({"name": "Lage der Nation"}))
+    assert out["ok"] is True and out["played"] is False
+    assert out["media_url"] == "https://cdn.example/100.mp3"
+    assert posts == []  # no device => no HA call
+
+
+async def test_show_not_found_is_graceful(monkeypatch):
+    _stub(monkeypatch, search={"data": []})
+    out = json.loads(
+        await _tool().handler({"name": "nope", "entity_id": "media_player.x"})
+    )
+    assert out == {"ok": False, "reason": "show_not_found", "query": "nope"}
+
+
+async def test_missing_name_is_graceful(monkeypatch):
+    out = json.loads(await _tool().handler({"entity_id": "media_player.x"}))
+    assert out == {"ok": False, "reason": "missing_name"}
+
+
+async def test_feed_with_no_enclosure_is_graceful(monkeypatch):
+    _stub(monkeypatch, feed="<rss><channel></channel></rss>")
+    out = json.loads(
+        await _tool().handler(
+            {"name": "Lage der Nation", "entity_id": "media_player.x"}
+        )
+    )
+    assert out["ok"] is False and out["reason"] == "no_episode"
+
+
+async def test_unparseable_feed_is_graceful(monkeypatch):
+    _stub(monkeypatch, feed="<not xml")
+    out = json.loads(
+        await _tool().handler(
+            {"name": "Lage der Nation", "entity_id": "media_player.x"}
+        )
+    )
+    assert out["ok"] is False and out["reason"] == "no_episode"

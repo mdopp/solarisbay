@@ -28,6 +28,7 @@ from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.tools import Tool, Toolbox
 from solaris_chat.engine.tools.ha import build_ha_tools
 from solaris_chat.engine.tools.mcp_tools import CombinedToolbox, McpToolbox
+from solaris_chat.engine.tools.media import build_media_tools
 from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.engine.tools.onboarding_approval import (
     build_onboarding_approval_tools,
@@ -100,6 +101,8 @@ def build_engine_clients(
     household_tools: list[Tool] = list(ha_tools)
     household_tools += build_timer_tools(db_path, _current_uid)
     household_tools += web_tools
+    if hass_url and hass_token:
+        household_tools += build_media_tools(hass_url, hass_token)
     if notes_dir:
         household_tools += build_notes_tools(notes_dir, _current_uid)
     # First-run/owner self-enrolment (#396): with zero enrolments an unknown
