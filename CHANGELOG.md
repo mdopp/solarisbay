@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.16.0](https://github.com/mdopp/solarisbay/compare/v0.15.0...v0.16.0) (2026-06-21)
+
+
+### Features
+
+* **chat:** anchor→OKF resolution, [[ ]] cross-links, and household energy page ([#509](https://github.com/mdopp/solarisbay/issues/509)) ([508b965](https://github.com/mdopp/solarisbay/commit/508b965201aad7ecf19fdf0372866da0137042c6))
+* **chat:** scoped HA cards, concept/entity page, follow-up chips, auto-anchors ([#507](https://github.com/mdopp/solarisbay/issues/507)) ([392e6a6](https://github.com/mdopp/solarisbay/commit/392e6a636679bde4682c88292804ba7860e11399))
+* **chat:** span concept-page backlinks across chat and vault [[ ]] links ([8b76165](https://github.com/mdopp/solarisbay/commit/8b76165be83794add7d3b57ed837f09440176a12)), closes [#505](https://github.com/mdopp/solarisbay/issues/505)
+* **skill:** find and play podcasts via the keyless fyyd.de index ([72d75e5](https://github.com/mdopp/solarisbay/commit/72d75e5e0e47b468c97638d8590ea3a792c44382))
+* **skill:** find and play podcasts via the keyless fyyd.de index ([bc24f70](https://github.com/mdopp/solarisbay/commit/bc24f70f8f9d60ca43ceec282203e2fe7c7a36f0)), closes [#513](https://github.com/mdopp/solarisbay/issues/513)
+* **skill:** Jellyfin media control + internet radio media skill, play_media legend ([7db7519](https://github.com/mdopp/solarisbay/commit/7db7519c2ce3c3f67d19fa6b4bb2e1400f864bdc)), closes [#511](https://github.com/mdopp/solarisbay/issues/511) [#512](https://github.com/mdopp/solarisbay/issues/512)
+* Solaris wakeword convergence + media control skill ([def92ba](https://github.com/mdopp/solarisbay/commit/def92ba448b32d72a3c12ba31c6527d34f017334))
+
+
+### Bug Fixes
+
+* **template:** converge wake_word_id so Solaris wakeword stays active on redeploy ([52641b5](https://github.com/mdopp/solarisbay/commit/52641b51ea2003e1c93dbd9fdab325e2c6577d03)), closes [#514](https://github.com/mdopp/solarisbay/issues/514)
+
 ## [0.15.0](https://github.com/mdopp/solarisbay/compare/v0.14.0...v0.15.0) (2026-06-17)
 
 
