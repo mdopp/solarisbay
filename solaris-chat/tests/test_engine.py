@@ -835,6 +835,25 @@ async def test_registry_no_device_class_no_trailing_column(monkeypatch):
     assert "cover.tor | Tor\n" in block
 
 
+async def test_registry_media_player_legend_includes_play_media(monkeypatch):
+    """#511/#512: a media_player advertises play_media so the model can stream
+    Jellyfin / radio in one call instead of guessing the service and 400'ing."""
+    reg = EntityRegistry("http://ha", "token")
+
+    async def fake_states():
+        return [
+            {
+                "entity_id": "media_player.wohnzimmer",
+                "attributes": {"friendly_name": "Wohnzimmer"},
+            },
+        ]
+
+    monkeypatch.setattr(reg, "_fetch_states", fake_states)
+    block = await reg.prompt_block()
+    assert "media_player: play_media/" in block
+    assert "media_next_track/media_previous_track" in block
+
+
 def test_tool_discipline_confirms_safety_actions():
     """#382: one crisp confirm-first rule for home-securing actions (locks,
     alarm disarm, garage covers) and act-decisively for everything else."""

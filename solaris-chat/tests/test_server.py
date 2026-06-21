@@ -1943,6 +1943,7 @@ def test_shipped_pack_groups_into_the_four_kinds():
         "notes-search",
         "audit-query",
         "dynamic-skills",
+        "media",
     }
     assert by_kind["command"] == {"debug-set"}
     # list_skills stays the skill-kind view — no scheduler/hook/command leaks in.
