@@ -54,7 +54,7 @@ _DOMAIN_SERVICES = {
     "switch": "turn_on/turn_off",
     "climate": "set_temperature/set_hvac_mode",
     "cover": "open_cover/close_cover/stop_cover",
-    "media_player": "media_play/media_pause/media_stop/volume_set",
+    "media_player": "play_media/media_play/media_pause/media_stop/media_next_track/media_previous_track/volume_set",
     "scene": "turn_on",
     "script": "turn_on",
     "fan": "turn_on/turn_off/set_percentage",
