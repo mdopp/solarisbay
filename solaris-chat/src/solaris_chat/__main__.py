@@ -7,6 +7,7 @@ import asyncio
 from solaris_chat.config import settings
 from solaris_chat.context import build_context_window
 from solaris_chat.engine.crons import CronRunner
+from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.profiles import build_engine_clients
 from solaris_chat.engine.scheduler import TimerScheduler
 from solaris_chat.logging import log
@@ -52,6 +53,9 @@ async def _run() -> None:
         context_window=context_window.value,
     )
     crons.start()
+    # Populate the OKF store on boot (#517). Backgrounded so a slow source
+    # never delays the chat server coming up; the runner never raises.
+    asyncio.create_task(run_ingest(settings))
     await serve(
         settings.host,
         settings.port,
