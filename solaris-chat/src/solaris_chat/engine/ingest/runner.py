@@ -18,7 +18,7 @@ from __future__ import annotations
 from solaris_chat.config import Settings
 from solaris_chat.logging import log
 
-from ..knowledge import PendingEmbeddingQueue
+from ..knowledge import PendingEmbeddingQueue, projection
 from ..knowledge.writer import OkfWriter
 from .caldav import DavIngest
 from .dav_client import HttpDavClient
@@ -65,14 +65,19 @@ async def _run_immich(settings: Settings, writer: OkfWriter, uid: str) -> None:
         log.info("engine.ingest.immich_skipped", reason="unconfigured")
         return
     try:
+        cursor = _load_cursor(settings, "immich")
         client = RestImmichClient(settings.immich_base_url, settings.immich_api_key)
-        stats = await ImmichIngest(client, writer, ingesting_uid=uid).run()
+        stats = await ImmichIngest(client, writer, ingesting_uid=uid).run(
+            updated_after=cursor
+        )
+        _save_cursor(settings, "immich", stats.cursor)
         log.info(
             "engine.ingest.immich",
             assets=stats.assets,
             events=stats.events_written,
             people=stats.people_written,
             places=stats.places_written,
+            cursor=stats.cursor,
         )
     except Exception as e:  # noqa: BLE001 — degrade gracefully on any source error.
         log.error("engine.ingest.immich_failed", error=str(e))
@@ -101,3 +106,22 @@ async def _run_caldav(settings: Settings, writer: OkfWriter, uid: str) -> None:
         )
     except Exception as e:  # noqa: BLE001 — degrade gracefully on any source error.
         log.error("engine.ingest.caldav_failed", error=str(e))
+
+
+def _load_cursor(settings: Settings, source: str) -> str:
+    conn = projection.open_conn(settings.solaris_db_path)
+    try:
+        return projection.get_cursor(conn, source)
+    finally:
+        conn.close()
+
+
+def _save_cursor(settings: Settings, source: str, cursor: str) -> None:
+    if not cursor:
+        return
+    conn = projection.open_conn(settings.solaris_db_path)
+    try:
+        projection.set_cursor(conn, source, cursor)
+        conn.commit()
+    finally:
+        conn.close()

@@ -129,6 +129,9 @@ def parse_vevent(body: str, *, resource: str = "", etag: str = "") -> CalEvent |
     uid = title = start = end = description = location = ""
     participants: list[str] = []
     in_event = False
+    # A VEVENT can contain nested components (VALARM); their properties (e.g. a
+    # VALARM DESCRIPTION) must not be folded into the event itself (#527).
+    nesting = 0
     for line in _unfold(body):
         parsed = _split_line(line)
         if not parsed:
@@ -140,6 +143,14 @@ def parse_vevent(body: str, *, resource: str = "", etag: str = "") -> CalEvent |
         if name == "END" and value.upper() == "VEVENT":
             break
         if not in_event:
+            continue
+        if name == "BEGIN":
+            nesting += 1
+            continue
+        if name == "END":
+            nesting -= 1
+            continue
+        if nesting:
             continue
         if name == "UID":
             uid = value.strip()

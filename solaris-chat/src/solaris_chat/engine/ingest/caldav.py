@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ...logging import log
 from ..knowledge import ConceptRecord, Relationship, safe_slug
 from ..knowledge.writer import OkfWriter
 from .dav_client import CalEvent, Contact, DavClient
@@ -66,10 +67,28 @@ class DavIngest:
         """
         stats = DavIngestStats()
         async for contact in self._client.iter_contacts(sync_token=contact_sync_token):
-            self._ingest_contact(contact, stats)
+            try:
+                self._ingest_contact(contact, stats)
+            except Exception as e:  # noqa: BLE001
+                # One bad contact (e.g. a non-Latin name -> safe_slug ValueError)
+                # must never abort the whole run (#528).
+                log.error(
+                    "engine.ingest.carddav_contact_failed",
+                    uid=contact.uid,
+                    error=str(e),
+                )
+                stats.skipped += 1
             stats.contacts += 1
         async for event in self._client.iter_events(sync_token=event_sync_token):
-            self._ingest_event(event, stats)
+            try:
+                self._ingest_event(event, stats)
+            except Exception as e:  # noqa: BLE001
+                log.error(
+                    "engine.ingest.caldav_event_failed",
+                    uid=event.uid,
+                    error=str(e),
+                )
+                stats.skipped += 1
             stats.events += 1
         return stats
 

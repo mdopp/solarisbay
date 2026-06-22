@@ -255,6 +255,27 @@ def test_sync_tokens_are_passed_through(env):
     assert client.contact_tokens_seen == ["card-tok"]
 
 
+def test_bad_contact_is_skipped_and_the_rest_still_ingest(env):
+    # A contact whose name is purely non-Latin -> safe_slug ValueError. Without
+    # per-item isolation it would abort the whole run (#528); it must be skipped
+    # and the following contact must still ingest.
+    writer, db_path, _ = env
+    client = FakeDavClient(
+        contacts=[
+            _contact(uid="c-bad", name="王芳"),
+            _contact(uid="c-ok", name="Anna Müller", phones=["+49 89 1"]),
+        ]
+    )
+    stats = _run(client, writer)
+    assert stats.contacts == 2 and stats.skipped == 1 and stats.people_written == 1
+    conn = projection.open_conn(db_path)
+    names = {
+        r["canonical_name"] for r in conn.execute("SELECT canonical_name FROM entities")
+    }
+    assert names == {"Anna Müller"}
+    conn.close()
+
+
 def test_empty_collections_are_a_noop(env):
     writer, db_path, _ = env
     stats = _run(FakeDavClient(), writer)
@@ -318,6 +339,26 @@ def test_parse_vcard_subset():
 def test_parse_returns_none_without_uid():
     assert parse_vevent("BEGIN:VEVENT\nSUMMARY:x\nEND:VEVENT") is None
     assert parse_vcard("BEGIN:VCARD\nFN:x\nEND:VCARD") is None
+
+
+def test_valarm_description_does_not_overwrite_event_description():
+    # A nested VALARM's DESCRIPTION must not be folded into the VEVENT (#527).
+    ics = (
+        "BEGIN:VEVENT\r\n"
+        "UID:abc123\r\n"
+        "DTSTART:20260622T180000Z\r\n"
+        "SUMMARY:Team meeting\r\n"
+        "DESCRIPTION:Discuss Q3 roadmap\r\n"
+        "BEGIN:VALARM\r\n"
+        "TRIGGER:-PT15M\r\n"
+        "ACTION:DISPLAY\r\n"
+        "DESCRIPTION:Reminder: Team meeting\r\n"
+        "END:VALARM\r\n"
+        "END:VEVENT\r\n"
+    )
+    ev = parse_vevent(ics)
+    assert ev is not None
+    assert ev.description == "Discuss Q3 roadmap"
 
 
 class _FakeResp:

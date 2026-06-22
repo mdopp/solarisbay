@@ -195,6 +195,49 @@ async def test_run_ingest_immich_runs_when_configured(env, monkeypatch):
     assert list((notes_dir / "okf").rglob("*.md"))
 
 
+class _CursorImmich:
+    """Records the updated_after it was asked for; yields one dated asset."""
+
+    seen: list[str] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def iter_assets(self, *, updated_after: str = ""):
+        _CursorImmich.seen.append(updated_after)
+        yield _FakeAsset(
+            id="a1", file_name="beach.jpg", when="2026-05-30T10:00:00", checksum="x"
+        )
+
+    def asset_uri(self, asset_id: str) -> str:
+        return f"immich://{asset_id}"
+
+
+async def test_run_ingest_immich_persists_and_reuses_cursor(env, monkeypatch):
+    db_path, notes_dir = env
+    _CursorImmich.seen = []
+    monkeypatch.setattr(runner, "RestImmichClient", _CursorImmich)
+    settings = FakeSettings(
+        solaris_db_path=db_path,
+        notes_dir=str(notes_dir),
+        immich_base_url="http://immich",
+        immich_api_key="k",
+    )
+    # First boot: no cursor yet -> full scan; the high-water `when` is persisted.
+    await runner.run_ingest(settings)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.execute(
+        "SELECT content_hash FROM ingest_log"
+        " WHERE source = 'immich' AND external_id = '__cursor__'"
+    ).fetchone()[0]
+    conn.close()
+    assert cursor == "2026-05-30T10:00:00"
+    # Second boot: the persisted cursor is passed to the client so only changes
+    # since then are fetched — not a full re-scan.
+    await runner.run_ingest(settings)
+    assert _CursorImmich.seen == ["", "2026-05-30T10:00:00"]
+
+
 async def test_run_ingest_immich_skipped_when_unconfigured(env, monkeypatch):
     db_path, notes_dir = env
 
