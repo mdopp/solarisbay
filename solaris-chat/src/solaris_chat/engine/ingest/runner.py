@@ -15,6 +15,10 @@ process env (`config.Settings`).
 
 from __future__ import annotations
 
+import asyncio
+
+import aiohttp
+
 from solaris_chat.config import Settings
 from solaris_chat.logging import log
 
@@ -26,6 +30,11 @@ from .immich import ImmichIngest
 from .immich_client import RestImmichClient
 from .obsidian import ObsidianIngest
 from .obsidian_reader import VaultObsidianReader
+
+# Boot races pod startup: a source may be briefly unreachable (#531). Probe it a
+# few times with backoff before running its adapter, but never block boot — cap
+# the total wait so a down source is skipped cleanly, not waited on forever.
+_HEALTH_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0)  # seconds — cumulative cap ~30s.
 
 
 async def run_ingest(settings: Settings) -> None:
@@ -60,9 +69,35 @@ def _run_obsidian(settings: Settings, writer: OkfWriter, uid: str) -> None:
         log.error("engine.ingest.obsidian_failed", error=str(e))
 
 
+async def _wait_for_health(source: str, url: str) -> bool:
+    """Probe `url` with bounded retry/backoff; True once it answers, else
+    False after the cap. Any 2xx-4xx response means the server is up (an
+    unauthenticated ping may 401/404 — that still proves reachability); only a
+    connection-level failure counts as not-yet-ready. Never raises."""
+    for i in range(len(_HEALTH_BACKOFF) + 1):
+        try:
+            timeout = aiohttp.ClientTimeout(total=5.0)
+            async with (
+                aiohttp.ClientSession(timeout=timeout) as session,
+                session.get(url) as resp,
+            ):
+                if resp.status < 500:
+                    return True
+        except (aiohttp.ClientError, TimeoutError):
+            pass
+        if i < len(_HEALTH_BACKOFF):
+            log.info("engine.ingest.health_retry", source=source, attempt=i + 1)
+            await asyncio.sleep(_HEALTH_BACKOFF[i])
+    log.error("engine.ingest.health_unreachable", source=source)
+    return False
+
+
 async def _run_immich(settings: Settings, writer: OkfWriter, uid: str) -> None:
     if not (settings.immich_base_url and settings.immich_api_key):
         log.info("engine.ingest.immich_skipped", reason="unconfigured")
+        return
+    base = settings.immich_base_url.rstrip("/")
+    if not await _wait_for_health("immich", f"{base}/api/server/ping"):
         return
     try:
         cursor = _load_cursor(settings, "immich")
@@ -86,6 +121,9 @@ async def _run_immich(settings: Settings, writer: OkfWriter, uid: str) -> None:
 async def _run_caldav(settings: Settings, writer: OkfWriter, uid: str) -> None:
     if not (settings.caldav_url or settings.carddav_url):
         log.info("engine.ingest.caldav_skipped", reason="unconfigured")
+        return
+    probe = settings.caldav_url or settings.carddav_url
+    if not await _wait_for_health("caldav", probe):
         return
     try:
         client = HttpDavClient(
