@@ -26,8 +26,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ...logging import log
 from ..knowledge import ConceptRecord, Relationship, projection, safe_slug
-from ..knowledge.records import domain_for
+from ..knowledge.records import domain_for, is_known_type
 from ..knowledge.writer import OkfWriter
 from .obsidian_reader import ObsidianReader, VaultNote
 
@@ -77,12 +78,31 @@ class ObsidianIngest:
         """Normalize every hand-written vault note into an OKF concept."""
         stats = ObsidianIngestStats()
         for note in self._reader.iter_notes():
-            self._ingest_note(note, stats)
+            try:
+                self._ingest_note(note, stats)
+            except Exception as e:
+                # One malformed note must never abort the whole vault ingest.
+                log.error(
+                    "engine.ingest.obsidian_note_failed",
+                    relpath=note.relpath,
+                    error=str(e),
+                )
+                stats.skipped += 1
             stats.notes += 1
         return stats
 
     def _ingest_note(self, note: VaultNote, stats: ObsidianIngestStats) -> None:
         concept_type = note.note_type or _FOLDER_TYPE.get(note.folder, "note")
+        if not is_known_type(concept_type):
+            # An explicit frontmatter type the OKF model has no domain for (e.g.
+            # `journal` diary entries) is not an OKF concept — skip, don't crash.
+            log.info(
+                "engine.ingest.obsidian_note_skipped",
+                relpath=note.relpath,
+                concept_type=concept_type,
+            )
+            stats.skipped += 1
+            return
         rels, body = self._relationships(note)
         rec = ConceptRecord(
             type=concept_type,

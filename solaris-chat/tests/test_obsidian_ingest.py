@@ -232,6 +232,52 @@ def test_changed_note_reingests_no_dup(env):
     conn.close()
 
 
+# --- robustness: unknown type + per-note isolation (#520) --------------------
+
+
+def test_unknown_type_note_is_skipped_and_does_not_zero_the_run(env):
+    writer, db_path, tmp_path = env
+    # A `journal` diary entry (#520) has no OKF domain; it must be skipped while
+    # the good knowledge-base note still produces its concept.
+    reader = FakeObsidianReader(
+        [
+            _note(relpath="journal/2026-06-21.md", note_type="journal", title="Diary"),
+            _note(relpath="people/anna.md", folder="people", title="Anna"),
+        ]
+    )
+    stats = _run(reader, writer, db_path)
+    assert stats.notes == 2 and stats.written == 1 and stats.skipped == 1
+    conn = projection.open_conn(db_path)
+    # The good note still ingested -> the run is not zeroed.
+    assert projection.row_count(conn, "entities") == 1
+    assert conn.execute("SELECT type FROM entities").fetchone()["type"] == "person"
+    conn.close()
+    assert (tmp_path / "notes" / "okf" / "people" / "anna.md").is_file()
+    # The journal note produced no concept.
+    assert not (tmp_path / "notes" / "okf" / "notes").exists()
+
+
+def test_unknown_type_note_does_not_raise(env):
+    writer, db_path, _ = env
+    reader = FakeObsidianReader(
+        [_note(relpath="journal/x.md", note_type="journal", title="X")]
+    )
+    stats = _run(reader, writer, db_path)  # must not raise
+    assert stats.notes == 1 and stats.written == 0 and stats.skipped == 1
+
+
+def test_one_failing_note_skips_and_the_rest_still_ingest(env):
+    writer, db_path, tmp_path = env
+    # A known-type note whose title slugs to nothing makes the writer raise
+    # (safe_slug ValueError); per-note isolation must skip it and still ingest
+    # the good note that follows.
+    bad = _note(relpath="people/bad.md", folder="people", title="!!!")
+    good = _note(relpath="people/anna.md", folder="people", title="Anna")
+    stats = _run(FakeObsidianReader([bad, good]), writer, db_path)
+    assert stats.notes == 2 and stats.written == 1 and stats.skipped == 1
+    assert (tmp_path / "notes" / "okf" / "people" / "anna.md").is_file()
+
+
 # --- VaultObsidianReader (real tmp vault, read-only) -------------------------
 
 

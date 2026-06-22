@@ -30,6 +30,10 @@ _DOMAIN_BY_TYPE = {
 _EVENT_TYPES = frozenset({"event"})
 
 
+def is_known_type(concept_type: str) -> bool:
+    return concept_type in _DOMAIN_BY_TYPE
+
+
 def domain_for(concept_type: str) -> str:
     try:
         return _DOMAIN_BY_TYPE[concept_type]
