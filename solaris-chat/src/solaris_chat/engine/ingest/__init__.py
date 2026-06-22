@@ -13,9 +13,11 @@ from .immich import ImmichIngest, ImmichIngestStats
 from .immich_client import ImmichAsset, ImmichClient, ImmichPerson, RestImmichClient
 from .obsidian import ObsidianIngest, ObsidianIngestStats
 from .obsidian_reader import ObsidianReader, VaultNote, VaultObsidianReader
+from .runner import run_ingest
 
 
 __all__ = [
+    "run_ingest",
     "ImmichIngest",
     "ImmichIngestStats",
     "ImmichAsset",
