@@ -256,6 +256,30 @@ def test_updated_after_cursor_is_passed_through(env):
     assert client.updated_after_seen == ["2026-05-01T00:00:00"]
 
 
+def test_bad_asset_is_skipped_and_the_rest_still_ingest(env):
+    # An asset whose only depicted person has a purely non-Latin name ->
+    # safe_slug ValueError. Without per-item isolation it would abort the whole
+    # run (#528); it must be skipped and the next asset must still ingest.
+    writer, db_path, _ = env
+    bad = _asset(id="bad", checksum="cb", people=[ImmichPerson(id="p1", name="王芳")])
+    ok = _asset(id="ok", checksum="co")
+    stats = _run(FakeImmichClient([bad, ok]), writer)
+    assert stats.assets == 2 and stats.skipped == 1 and stats.events_written == 1
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "events") == 1
+    conn.close()
+
+
+def test_run_returns_high_water_cursor(env):
+    # The run reports the max asset `when` so the caller can persist it as the
+    # next incremental cursor (#529).
+    writer, _, _ = env
+    a1 = _asset(id="a1", checksum="c1", when="2026-05-01T00:00:00")
+    a2 = _asset(id="a2", checksum="c2", when="2026-05-30T10:00:00")
+    stats = _run(FakeImmichClient([a1, a2]), writer)
+    assert stats.cursor == "2026-05-30T10:00:00"
+
+
 def test_same_place_dedups_across_assets(env):
     writer, db_path, _ = env
     a1 = _asset(id="a1", checksum="c1", latitude=48.0, longitude=11.0, city="Munich")

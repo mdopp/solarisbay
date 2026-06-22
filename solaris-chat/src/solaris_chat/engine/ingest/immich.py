@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ...logging import log
 from ..knowledge import ConceptRecord, Relationship, safe_slug
 from ..knowledge.writer import OkfWriter
 from .immich_client import ImmichAsset, ImmichClient, ImmichPerson
@@ -41,6 +42,8 @@ class ImmichIngestStats:
     people_written: int = 0
     places_written: int = 0
     skipped: int = 0
+    # High-water sync cursor (max asset `when`) for the next incremental run.
+    cursor: str = ""
 
 
 class ImmichIngest:
@@ -62,9 +65,22 @@ class ImmichIngest:
         so the next run only pulls newer assets — incremental on top of the
         per-asset content_hash idempotency.
         """
-        stats = ImmichIngestStats()
+        stats = ImmichIngestStats(cursor=updated_after)
         async for asset in self._client.iter_assets(updated_after=updated_after):
-            self._ingest_asset(asset, stats)
+            try:
+                self._ingest_asset(asset, stats)
+            except Exception as e:  # noqa: BLE001
+                # One bad asset (e.g. a non-Latin name -> safe_slug ValueError)
+                # must never abort the whole run (#528).
+                log.error(
+                    "engine.ingest.immich_asset_failed",
+                    asset_id=asset.id,
+                    error=str(e),
+                )
+                stats.skipped += 1
+            else:
+                if asset.when > stats.cursor:
+                    stats.cursor = asset.when
             stats.assets += 1
         return stats
 

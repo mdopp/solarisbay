@@ -253,6 +253,28 @@ def record_ingest(
     )
 
 
+# --- per-source sync cursor (#529) --------------------------------------------
+#
+# Reuses the ingest_log table (a free-text content_hash column) with a reserved
+# external_id so a source's incremental cursor (Immich high-water `when`, a DAV
+# sync token) persists across boots without a new table/migration.
+
+_CURSOR_KEY = "__cursor__"
+
+
+def get_cursor(conn: sqlite3.Connection, source: str) -> str:
+    """The persisted incremental cursor for a source, "" when none yet."""
+    row = conn.execute(
+        "SELECT content_hash FROM ingest_log WHERE source = ? AND external_id = ?",
+        (source, _CURSOR_KEY),
+    ).fetchone()
+    return row["content_hash"] if row else ""
+
+
+def set_cursor(conn: sqlite3.Connection, source: str, cursor: str) -> None:
+    record_ingest(conn, source=source, external_id=_CURSOR_KEY, content_hash=cursor)
+
+
 # --- concept page aggregation (#502 phase 1) ----------------------------------
 
 
