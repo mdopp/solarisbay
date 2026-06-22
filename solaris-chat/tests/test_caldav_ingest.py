@@ -263,3 +263,152 @@ def test_empty_collections_are_a_noop(env):
     assert projection.row_count(conn, "events") == 0
     assert projection.row_count(conn, "entities") == 0
     conn.close()
+
+
+# --- HttpDavClient: hand-parsing + read-only HTTP (all mocked) ----------------
+
+from solaris_chat.engine.ingest.dav_client import (  # noqa: E402
+    HttpDavClient,
+    parse_vcard,
+    parse_vevent,
+)
+
+
+_ICS = (
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+    "UID:ev-1\r\nSUMMARY:Team Dinner\r\nDTSTART:20260530T190000\r\n"
+    "DTEND:20260530T210000\r\nLOCATION:Club X\r\n"
+    "DESCRIPTION:Bring a dish\\, please\r\n"
+    "ATTENDEE;CN=Anna Müller:mailto:anna@example.org\r\n"
+    "END:VEVENT\r\nEND:VCALENDAR\r\n"
+)
+
+# A folded DESCRIPTION-style continuation (RFC folding drops the fold space) is
+# covered by the VEVENT; the vCard FN stays on one line.
+_VCF = (
+    "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:c-1\r\nFN:Anna Müller\r\n"
+    "N:Müller;Anna;;;\r\nNICKNAME:Anni\r\nTEL:+49 89 123\r\n"
+    "EMAIL:anna@example.org\r\nEND:VCARD\r\n"
+)
+
+
+def test_parse_vevent_subset():
+    ev = parse_vevent(_ICS, resource="cal/ev-1.ics", etag="e1")
+    assert ev is not None
+    assert ev.uid == "ev-1"
+    assert ev.title == "Team Dinner"
+    assert ev.start == "20260530T190000"
+    assert ev.end == "20260530T210000"
+    assert ev.location == "Club X"
+    assert ev.description == "Bring a dish, please"  # unescaped
+    assert ev.participants == ["Anna Müller"]
+    assert ev.etag == "e1" and ev.resource == "cal/ev-1.ics"
+
+
+def test_parse_vcard_subset():
+    c = parse_vcard(_VCF, resource="book/c-1.vcf", etag="e2")
+    assert c is not None
+    assert c.uid == "c-1"
+    assert c.name == "Anna Müller"  # folded continuation joined
+    assert "Anni" in c.aliases
+    assert c.phones == ["+49 89 123"]
+    assert c.emails == ["anna@example.org"]
+
+
+def test_parse_returns_none_without_uid():
+    assert parse_vevent("BEGIN:VEVENT\nSUMMARY:x\nEND:VEVENT") is None
+    assert parse_vcard("BEGIN:VCARD\nFN:x\nEND:VCARD") is None
+
+
+class _FakeResp:
+    def __init__(self, *, text: str):
+        self._text = text
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    async def text(self):
+        return self._text
+
+
+class _FakeSession:
+    """Records every HTTP method issued and serves canned PROPFIND/GET bodies."""
+
+    methods: list[str] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def _multistatus(self, base: str, suffix: str) -> str:
+        href = base.rstrip("/") + f"/item{suffix}"
+        return (
+            '<?xml version="1.0"?>'
+            '<multistatus xmlns="DAV:">'
+            "<response><href>/coll/</href>"
+            "<propstat><prop><resourcetype><collection/></resourcetype>"
+            "</prop></propstat></response>"
+            f"<response><href>{href}</href>"
+            "<propstat><prop><getetag>etag-1</getetag><resourcetype/></prop>"
+            "</propstat></response>"
+            "</multistatus>"
+        )
+
+    def request(self, method, url, *, data=None, headers=None):
+        _FakeSession.methods.append(method)
+        suffix = ".vcf" if "contacts" in url else ".ics"
+        return _FakeResp(text=self._multistatus(url, suffix))
+
+    def get(self, url):
+        _FakeSession.methods.append("GET")
+        return _FakeResp(text=_ICS if url.endswith(".ics") else _VCF)
+
+
+def _patch_session(monkeypatch):
+    import solaris_chat.engine.ingest.dav_client as mod
+
+    _FakeSession.methods = []
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", _FakeSession)
+
+
+def test_http_client_iter_events_only_reads(monkeypatch):
+    _patch_session(monkeypatch)
+    client = HttpDavClient(caldav_url="https://radicale/cal/")
+    events = asyncio.run(_collect(client.iter_events()))
+    assert len(events) == 1 and events[0].uid == "ev-1"
+    # PROPFIND + GET only — never a write method.
+    assert set(_FakeSession.methods) <= {"PROPFIND", "GET"}
+    assert "PUT" not in _FakeSession.methods
+    assert "DELETE" not in _FakeSession.methods
+
+
+def test_http_client_iter_contacts_only_reads(monkeypatch):
+    _patch_session(monkeypatch)
+    client = HttpDavClient(carddav_url="https://radicale/contacts/")
+    contacts = asyncio.run(_collect(client.iter_contacts()))
+    assert len(contacts) == 1 and contacts[0].name == "Anna Müller"
+    assert set(_FakeSession.methods) <= {"PROPFIND", "GET"}
+
+
+def test_http_client_inert_half_yields_nothing(monkeypatch):
+    _patch_session(monkeypatch)
+    # carddav_url unset -> iter_contacts is inert and issues NO HTTP at all.
+    client = HttpDavClient(caldav_url="https://radicale/cal/")
+    contacts = asyncio.run(_collect(client.iter_contacts()))
+    assert contacts == []
+    assert _FakeSession.methods == []
+
+
+async def _collect(aiter):
+    return [x async for x in aiter]
