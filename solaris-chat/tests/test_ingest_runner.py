@@ -17,6 +17,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 
+import aiohttp
 import pytest
 
 from solaris_chat.engine import ingest
@@ -179,9 +180,14 @@ class _FakeImmich:
         return f"immich://{asset_id}"
 
 
+async def _healthy(*a, **k):
+    return True
+
+
 async def test_run_ingest_immich_runs_when_configured(env, monkeypatch):
     db_path, notes_dir = env
     monkeypatch.setattr(runner, "RestImmichClient", _FakeImmich)
+    monkeypatch.setattr(runner, "_wait_for_health", _healthy)
     await runner.run_ingest(
         FakeSettings(
             solaris_db_path=db_path,
@@ -217,6 +223,7 @@ async def test_run_ingest_immich_persists_and_reuses_cursor(env, monkeypatch):
     db_path, notes_dir = env
     _CursorImmich.seen = []
     monkeypatch.setattr(runner, "RestImmichClient", _CursorImmich)
+    monkeypatch.setattr(runner, "_wait_for_health", _healthy)
     settings = FakeSettings(
         solaris_db_path=db_path,
         notes_dir=str(notes_dir),
@@ -296,6 +303,7 @@ class _FakeDav:
 async def test_run_ingest_caldav_runs_when_configured(env, monkeypatch):
     db_path, notes_dir = env
     monkeypatch.setattr(runner, "HttpDavClient", _FakeDav)
+    monkeypatch.setattr(runner, "_wait_for_health", _healthy)
     await runner.run_ingest(
         FakeSettings(
             solaris_db_path=db_path,
@@ -319,6 +327,7 @@ async def test_run_ingest_survives_an_adapter_failure(env, monkeypatch):
             raise RuntimeError("immich down")
 
     monkeypatch.setattr(runner, "RestImmichClient", _BadImmich)
+    monkeypatch.setattr(runner, "_wait_for_health", _healthy)
     # Immich blows up, but Obsidian still ran and the trigger did not raise.
     await runner.run_ingest(
         FakeSettings(
@@ -336,3 +345,113 @@ async def test_run_ingest_survives_an_adapter_failure(env, monkeypatch):
 
 def test_run_ingest_is_exported_from_ingest_package():
     assert ingest.run_ingest is runner.run_ingest
+
+
+# --- boot-vs-source race: wait-for-health + bounded retry (#531) --------------
+
+
+class _RanImmich:
+    """Records whether the adapter was actually constructed/run."""
+
+    built = False
+
+    def __init__(self, *a, **k):
+        _RanImmich.built = True
+
+    async def iter_assets(self, *, updated_after: str = ""):
+        yield _FakeAsset(id="a1", file_name="b.jpg", when="2026-05-01", checksum="x")
+
+    def asset_uri(self, asset_id: str) -> str:
+        return f"immich://{asset_id}"
+
+
+async def test_immich_runs_after_health_retries(env, monkeypatch):
+    db_path, notes_dir = env
+    _RanImmich.built = False
+    # The probe fails twice (source not up yet) then answers; the adapter runs.
+    session = _FakeSession(fail_count=2)
+    monkeypatch.setattr(runner.asyncio, "sleep", _healthy)  # skip the backoff wait.
+    monkeypatch.setattr(runner.aiohttp, "ClientSession", lambda *a, **k: session)
+    monkeypatch.setattr(runner, "RestImmichClient", _RanImmich)
+    await runner.run_ingest(
+        FakeSettings(
+            solaris_db_path=db_path,
+            notes_dir=str(notes_dir),
+            immich_base_url="http://immich",
+            immich_api_key="k",
+        )
+    )
+    assert session.gets == 3  # two refusals, then a 200.
+    assert _RanImmich.built
+    assert _counts(db_path)["concepts"] >= 1
+
+
+async def test_immich_skipped_cleanly_when_health_never_answers(env, monkeypatch):
+    db_path, notes_dir = env
+    _RanImmich.built = False
+
+    async def _never(*a, **k):
+        return False  # capped out — source never came up.
+
+    monkeypatch.setattr(runner, "_wait_for_health", _never)
+    monkeypatch.setattr(runner, "RestImmichClient", _RanImmich)
+    # Must NOT raise and must NOT build/run the adapter after the cap.
+    await runner.run_ingest(
+        FakeSettings(
+            solaris_db_path=db_path,
+            notes_dir=str(notes_dir),
+            immich_base_url="http://immich",
+            immich_api_key="k",
+        )
+    )
+    assert not _RanImmich.built
+    assert _counts(db_path)["concepts"] == 0
+
+
+class _FakeResp:
+    def __init__(self, status):
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _FakeSession:
+    """Mocks aiohttp.ClientSession: raises ClientError until `fail_count`
+    GETs have happened, then returns a 200. No real network."""
+
+    def __init__(self, fail_count):
+        self._fail_count = fail_count
+        self.gets = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def get(self, url):
+        self.gets += 1
+        if self.gets <= self._fail_count:
+            raise aiohttp.ClientConnectionError("refused")
+        return _FakeResp(200)
+
+
+async def test_wait_for_health_retries_then_succeeds(monkeypatch):
+    monkeypatch.setattr(runner.asyncio, "sleep", _healthy)  # no real backoff wait.
+    session = _FakeSession(fail_count=2)
+    monkeypatch.setattr(runner.aiohttp, "ClientSession", lambda *a, **k: session)
+    assert await runner._wait_for_health("immich", "http://immich/api/server/ping")
+    assert session.gets == 3  # two refusals, then a 200.
+
+
+async def test_wait_for_health_gives_up_after_cap(monkeypatch):
+    monkeypatch.setattr(runner.asyncio, "sleep", _healthy)  # no real backoff wait.
+    session = _FakeSession(fail_count=999)  # never recovers.
+    monkeypatch.setattr(runner.aiohttp, "ClientSession", lambda *a, **k: session)
+    # Does not raise; returns False after the bounded attempts.
+    assert not await runner._wait_for_health("immich", "http://immich/api/server/ping")
+    assert session.gets == len(runner._HEALTH_BACKOFF) + 1
