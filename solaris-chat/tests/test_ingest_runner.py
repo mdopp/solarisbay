@@ -71,7 +71,11 @@ class FakeSettings:
     immich_base_url: str = ""
     immich_api_key: str = ""
     caldav_url: str = ""
+    caldav_username: str = ""
+    caldav_password: str = ""
     carddav_url: str = ""
+    carddav_username: str = ""
+    carddav_password: str = ""
 
 
 @pytest.fixture
@@ -207,16 +211,60 @@ async def test_run_ingest_immich_skipped_when_unconfigured(env, monkeypatch):
 # --- graceful degradation -----------------------------------------------------
 
 
-async def test_run_ingest_caldav_skipped_no_http_client(env):
+async def test_run_ingest_caldav_skipped_when_unconfigured(env, monkeypatch):
     db_path, notes_dir = env
-    # CalDAV config present but no concrete client ships -> log + skip, no crash.
+
+    def _boom(*a, **k):  # the client must never be built when unconfigured.
+        raise AssertionError("DAV client built without config")
+
+    monkeypatch.setattr(runner, "HttpDavClient", _boom)
+    # No CalDAV/CardDAV URL -> skipped; no crash, no client built.
+    await runner.run_ingest(
+        FakeSettings(solaris_db_path=db_path, notes_dir=str(notes_dir))
+    )
+
+
+class _FakeContact:
+    """Stands in for a Contact dataclass from a mocked DAV client."""
+
+    uid = "c-1"
+    name = "Anna Müller"
+    aliases: list = []
+    phones = ["+49 89 123"]
+    emails: list = []
+    resource = "carddav://book/c-1.vcf"
+    etag = "e1"
+
+
+class _FakeDav:
+    """Stands in for HttpDavClient — no network."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def iter_contacts(self, *, sync_token: str = ""):
+        yield _FakeContact()
+
+    async def iter_events(self, *, sync_token: str = ""):
+        return
+        yield  # pragma: no cover — makes this an async generator.
+
+
+async def test_run_ingest_caldav_runs_when_configured(env, monkeypatch):
+    db_path, notes_dir = env
+    monkeypatch.setattr(runner, "HttpDavClient", _FakeDav)
     await runner.run_ingest(
         FakeSettings(
             solaris_db_path=db_path,
             notes_dir=str(notes_dir),
             caldav_url="https://radicale/cal",
+            carddav_url="https://radicale/contacts",
         )
     )
+    # The mocked contact produced a person concept + a phone fact.
+    counts = _counts(db_path)
+    assert counts["entities"] >= 1
+    assert counts["facts"] >= 1
 
 
 async def test_run_ingest_survives_an_adapter_failure(env, monkeypatch):

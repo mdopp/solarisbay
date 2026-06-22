@@ -20,6 +20,8 @@ from solaris_chat.logging import log
 
 from ..knowledge import PendingEmbeddingQueue
 from ..knowledge.writer import OkfWriter
+from .caldav import DavIngest
+from .dav_client import HttpDavClient
 from .immich import ImmichIngest
 from .immich_client import RestImmichClient
 from .obsidian import ObsidianIngest
@@ -37,7 +39,7 @@ async def run_ingest(settings: Settings) -> None:
 
     _run_obsidian(settings, writer, uid)
     await _run_immich(settings, writer, uid)
-    _run_caldav(settings)
+    await _run_caldav(settings, writer, uid)
 
 
 def _run_obsidian(settings: Settings, writer: OkfWriter, uid: str) -> None:
@@ -76,11 +78,26 @@ async def _run_immich(settings: Settings, writer: OkfWriter, uid: str) -> None:
         log.error("engine.ingest.immich_failed", error=str(e))
 
 
-def _run_caldav(settings: Settings) -> None:
+async def _run_caldav(settings: Settings, writer: OkfWriter, uid: str) -> None:
     if not (settings.caldav_url or settings.carddav_url):
         log.info("engine.ingest.caldav_skipped", reason="unconfigured")
         return
-    # The CalDAV/CardDAV source config is set but no concrete DavClient ships yet
-    # (dav_client.py defines only the Protocol + dataclasses); wiring the live
-    # HTTP CalDAV/CardDAV reader is a follow-up. Degrade rather than crash.
-    log.warn("engine.ingest.caldav_skipped", reason="no_http_dav_client")
+    try:
+        client = HttpDavClient(
+            caldav_url=settings.caldav_url,
+            caldav_username=settings.caldav_username,
+            caldav_password=settings.caldav_password,
+            carddav_url=settings.carddav_url,
+            carddav_username=settings.carddav_username,
+            carddav_password=settings.carddav_password,
+        )
+        stats = await DavIngest(client, writer, ingesting_uid=uid).run()
+        log.info(
+            "engine.ingest.caldav",
+            contacts=stats.contacts,
+            people=stats.people_written,
+            events=stats.events,
+            events_written=stats.events_written,
+        )
+    except Exception as e:  # noqa: BLE001 — degrade gracefully on any source error.
+        log.error("engine.ingest.caldav_failed", error=str(e))
