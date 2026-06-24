@@ -16,7 +16,7 @@ import pytest
 from solaris_chat.engine import store
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.client import EngineClient, EngineProfile
-from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.ollama import ChatResult, OllamaError
 from solaris_chat.engine.tools import Tool, Toolbox
 from solaris_chat.engine.trace import TraceRecorder
 from solaris_chat.server import build_app
@@ -433,6 +433,94 @@ async def test_voice_turn_persists_session_trace_row(aiohttp_client, db, soul):
     conn.close()
     assert rows and all(r[0] == "michael" for r in rows)
     assert any(r[1] == "llm" for r in rows)
+
+
+async def test_failed_voice_turn_still_persists_its_trace(aiohttp_client, db, soul):
+    # A voice turn that errors mid-loop (#562) must still write the steps the
+    # recorder captured before the failure — otherwise the failure (the
+    # operator's intent-failed) is invisible in the chat UI. Pass 1 runs a tool
+    # (one llm + one tool step recorded under the household session), pass 2
+    # raises, surfacing as an EngineError; the trace must persist anyway.
+    seen = []
+
+    async def handler(args):
+        seen.append(args)
+        return '{"ok": true}'
+
+    tool = Tool(
+        name="ha_call_service",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+
+    class FailingOllama:
+        def __init__(self):
+            self.n = 0
+
+        async def stream(self, model, messages, tools=None, think=False, options=None):
+            self.n += 1
+            if self.n == 1:
+                yield (
+                    "done",
+                    ChatResult(
+                        content="",
+                        tool_calls=[
+                            {
+                                "function": {
+                                    "name": "ha_call_service",
+                                    "arguments": {"entity_id": "light.buero"},
+                                }
+                            }
+                        ],
+                        prompt_tokens=10,
+                    ),
+                )
+                return
+            raise OllamaError("intent-failed")
+            yield  # pragma: no cover — makes this an async generator
+
+    household = EngineClient(
+        EngineProfile(
+            name="household",
+            model="gemma4:e2b",
+            soul_path=soul,
+            toolbox=Toolbox([tool]),
+        ),
+        db_path=db,
+        ollama=FailingOllama(),
+        recorder=TraceRecorder(),
+        context_window=32768,
+    )
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    app = build_app(
+        hermes=household,
+        hermes_deep=deep,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "messages": [{"role": "user", "content": "Licht an"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    lines = [json.loads(line) for line in (await resp.text()).strip().splitlines()]
+    assert lines[-1]["done_reason"] == "error"
+    sid = store.household_session_id("michael")
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT step_kind FROM session_traces WHERE session_id = ?",
+        (sid,),
+    ).fetchall()
+    conn.close()
+    assert rows, "a failed voice turn must still leave a visible trace"
+    assert any(r[0] == "llm" for r in rows)
 
 
 async def test_guest_voice_turn_persists_no_trace(aiohttp_client, db, soul):
