@@ -28,14 +28,13 @@ _FYYD_SEARCH = "https://api.fyyd.de/0.2/search/podcast"
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 
 
-def _pick_best(name: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Choose the candidate whose title is closest to `name`, else the top hit.
+_GOOD_MATCH = 0.6
 
-    fyyd ranks by relevance, but a slightly-off query ("Netzpolitik" vs the
-    show's exact title) can rank a wrong show first. Score each by fuzzy title
-    similarity (casefold/strip-normalized) and prefer the closest; fall back to
-    fyyd's top result when nothing is meaningfully close.
-    """
+
+def _best_by_title(
+    name: str, candidates: list[dict[str, Any]]
+) -> tuple[float, dict[str, Any]] | None:
+    """Score candidates by fuzzy title similarity; return (score, show) of the best."""
     target = name.casefold().strip()
     best: tuple[float, dict[str, Any]] | None = None
     for show in candidates:
@@ -45,28 +44,64 @@ def _pick_best(name: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | 
         score = SequenceMatcher(None, target, title).ratio()
         if best is None or score > best[0]:
             best = (score, show)
-    if best is not None and best[0] >= 0.6:
+    return best
+
+
+def _pick_best(name: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Choose the candidate whose title is closest to `name`, else the top hit.
+
+    fyyd ranks by relevance, but a slightly-off query ("Netzpolitik" vs the
+    show's exact title) can rank a wrong show first. Score each by fuzzy title
+    similarity (casefold/strip-normalized) and prefer the closest; fall back to
+    fyyd's top result when nothing is meaningfully close.
+    """
+    best = _best_by_title(name, candidates)
+    if best is not None and best[0] >= _GOOD_MATCH:
         return best[1]
     return candidates[0] if candidates else None
 
 
-async def _fyyd_resolve_feed(name: str) -> dict[str, Any] | None:
-    """Resolve a show name to its {title, feed} via fyyd's keyless search."""
-    async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
-        async with client.get(_FYYD_SEARCH, params={"title": name, "count": 5}) as resp:
-            if resp.status >= 400:
-                return None
-            body = await resp.json()
-    data = body.get("data") if isinstance(body, dict) else None
-    if not isinstance(data, list) or not data:
-        return None
-    show = _pick_best(name, [s for s in data if isinstance(s, dict)])
-    if show is None:
-        return None
+def _feed_of(show: dict[str, Any], name: str) -> dict[str, Any] | None:
     feed = str(show.get("xmlURL") or "").strip()
     if not feed.startswith("http"):
         return None
     return {"title": str(show.get("title") or name), "feed": feed}
+
+
+async def _fyyd_query(
+    client: aiohttp.ClientSession, param: str, name: str
+) -> list[dict[str, Any]]:
+    """One keyless fyyd search; `param` is 'title' (show titles) or 'term' (title+host+desc)."""
+    async with client.get(_FYYD_SEARCH, params={param: name, "count": 5}) as resp:
+        if resp.status >= 400:
+            return []
+        body = await resp.json()
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, list):
+        return []
+    return [s for s in data if isinstance(s, dict)]
+
+
+async def _fyyd_resolve_feed(name: str) -> dict[str, Any] | None:
+    """Resolve a show name to its {title, feed} via fyyd's keyless search.
+
+    The `title=` search matches show titles only, so "Tim Pritlove" (a host, not
+    a title) finds nothing there. When the title search yields no meaningfully
+    close match, fall back to fyyd's `term=` search, which also matches the
+    author/host and description — resolving "Podcasts von <Person>" to one of
+    that person's shows (#568).
+    """
+    async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+        title_hits = await _fyyd_query(client, "title", name)
+        best = _best_by_title(name, title_hits)
+        if best is not None and best[0] >= _GOOD_MATCH:
+            return _feed_of(best[1], name)
+
+        term_hits = await _fyyd_query(client, "term", name)
+        show = _pick_best(name, term_hits) or (title_hits[0] if title_hits else None)
+    if show is None:
+        return None
+    return _feed_of(show, name)
 
 
 def _newest_enclosure(feed_xml: str) -> dict[str, str] | None:
@@ -194,7 +229,9 @@ def build_media_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 " media_player-Entität des Zielraums als 'entity_id'"
                 " (z.B. media_player.wohnzimmer). Ohne entity_id wird nur die"
                 " neueste Folge aufgelöst (frag dann nach dem Raum und ruf erneut)."
-                " Nutze es für 'Spiel die neueste Folge von <Podcast>'."
+                " Nutze es für 'Spiel die neueste Folge von <Podcast>' und auch für"
+                " 'Podcasts von <Person>' — der Index findet auch Sendungen über den"
+                " Host-/Autorennamen."
             ),
             parameters={
                 "type": "object",
