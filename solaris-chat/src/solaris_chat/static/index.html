@@ -378,9 +378,13 @@
     }
     .ha-card {
       flex: 0 1 auto; min-width: 120px; max-width: 240px;
+      box-sizing: border-box;
       border: 1px solid var(--line); border-radius: 10px;
       padding: 8px 12px; background: rgba(127,127,127,0.05);
     }
+    /* Inside a grid a card fills its column (no 240px cap, no shrink-overflow):
+       border-box + min-width:0 keep its contents within the column edge. */
+    .hc-grid > .ha-card { max-width: 100%; min-width: 0; }
     .ha-card .hc-name { font-size: 12px; color: var(--muted); }
     .ha-card .hc-state { font-size: 18px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
     .ha-card .hc-unit { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 3px; }
@@ -400,7 +404,7 @@
     .hc-compact { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
     .hc-compact .hc-badge { margin-top: 0; flex: 0 0 auto; }
     .hc-compact .hc-state { margin-top: 0; flex: 0 0 auto; }
-    .hc-compact .hc-ctrl-inline { flex: 1 1 auto; margin-top: 0; min-width: 90px; }
+    .hc-compact .hc-ctrl-inline { flex: 1 1 100%; margin-top: 0; min-width: 0; max-width: 100%; }
     /* #550: every controllable card lays its primary controls on the compact
        badge row — cover/media transport buttons and the climate setpoint
        stepper sit inline next to the badge, no own row, no top margin. */
@@ -417,13 +421,37 @@
        (.hc-span2 / .hc-span3) while staying aligned to the same grid.
        Supersedes the loose #539 grid. */
     .hc-grid {
-      --hc-col: 230px;
+      --hc-col: 300px;
       display: grid; gap: 8px;
-      grid-template-columns: repeat(auto-fill, minmax(var(--hc-col), 1fr));
+      /* min(100%, --hc-col) forces ONE full-width column when the container is
+         narrower than the base (phone), so cards never get cramped/overflow;
+         2-3 uniform columns only appear when there's genuinely >= 2x the base. */
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--hc-col)), 1fr));
     }
-    .hc-grid .hc-span2 { grid-column: span 2; }
-    .hc-grid .hc-span3 { grid-column: span 3; }
+    /* Span large cards across multiple base columns. On a narrow/phone layout
+       the grid is a single column (the min(100%,...) guard above), so a spanning
+       card must NOT force a 2/3-wide track — default to full-width (span 1) and
+       only widen once the viewport is wide enough to hold that many base cols. */
+    .hc-grid .hc-span2,
+    .hc-grid .hc-span3 { grid-column: 1 / -1; }
+    @media (min-width: 640px) {
+      .hc-grid .hc-span2 { grid-column: span 2; }
+    }
+    @media (min-width: 940px) {
+      .hc-grid .hc-span3 { grid-column: span 3; }
+    }
     .hc-grid .hc-row { border-top: none; }
+    /* #553: nothing inside a card may extend past its edge on a narrow/phone
+       layout. Control rows are border-box + can wrap + allow their flex items to
+       shrink (min-width:0); sliders take the full row, never their intrinsic min. */
+    .ha-card .hc-ctrl, .ha-card .hc-btns, .ha-card .hc-set,
+    .ha-card .hc-compact,
+    .hc-group .hc-ctrl, .hc-group .hc-btns, .hc-group .hc-set, .hc-row .hc-compact {
+      box-sizing: border-box; max-width: 100%; min-width: 0; flex-wrap: wrap;
+    }
+    .ha-card input[type="range"], .hc-group input[type="range"] {
+      min-width: 0; max-width: 100%; width: 100%;
+    }
     /* #537: room header on a per-room group; inline room label when ungrouped. */
     .hc-room {
       padding: 6px 12px 4px; font-size: 11px; font-weight: 600;
@@ -450,7 +478,7 @@
     .hc-group .hc-state { font-size: 18px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
     .hc-group .hc-unit { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 3px; }
     .hc-group .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-    .hc-group .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 80px; }
+    .hc-group .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 0; max-width: 100%; }
     .hc-group .hc-ctrl input[type="color"] {
       flex: 0 0 auto; width: 28px; height: 24px; padding: 0;
       border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer;
@@ -470,7 +498,7 @@
     .hc-group .hc-set .hc-target { font-size: 16px; font-weight: 600; min-width: 52px; text-align: center; }
     /* Phase 3 (#477): slider / colour / climate controls on a card. */
     .ha-card .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-    .ha-card .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 80px; }
+    .ha-card .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 0; max-width: 100%; }
     .ha-card .hc-ctrl input[type="color"] {
       flex: 0 0 auto; width: 28px; height: 24px; padding: 0;
       border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer;

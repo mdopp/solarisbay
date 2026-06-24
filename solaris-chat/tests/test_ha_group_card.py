@@ -204,11 +204,39 @@ def test_group_cards_lay_out_side_by_side_on_a_grid():
     # large cards span a multiple of the same base unit.
     assert ".hc-grid {" in _HTML
     assert "display: grid;" in _HTML
+    # #553: the min(100%, --hc-col) guard forces a single full-width column when
+    # the container is narrower than the base (phone), so cards never get cramped.
     assert (
-        "grid-template-columns: repeat(auto-fill, minmax(var(--hc-col), 1fr));" in _HTML
+        "grid-template-columns: repeat(auto-fill, "
+        "minmax(min(100%, var(--hc-col)), 1fr));" in _HTML
     )
     assert "--hc-col:" in _HTML
+    # Spanning cards degrade to full-width (span 1) when the grid is 1 column and
+    # only widen at a viewport breakpoint, so they never leave half-empty rows.
     assert ".hc-grid .hc-span2 { grid-column: span 2; }" in _HTML
+
+
+def test_grid_renders_one_full_width_column_on_narrow_no_overflow():
+    # #553: on a phone the grid must be ONE full-width column (the min(100%, base)
+    # guard), cards fill the column (no 240px cap inside the grid), and control
+    # rows / sliders never extend past the card edge.
+    # Single-column guard: the track min is min(100%, base), so a viewport
+    # narrower than the base collapses to one full-width column.
+    assert "minmax(min(100%, var(--hc-col)), 1fr)" in _HTML
+    # Cards in the grid drop the 240px cap and can shrink to fit the column.
+    assert ".hc-grid > .ha-card { max-width: 100%; min-width: 0; }" in _HTML
+    # Cards are border-box so padding/border stay within the column.
+    assert "box-sizing: border-box;" in _HTML
+    # Sliders take the full row and never claim an intrinsic min that overflows.
+    for rule in (
+        '.hc-group .hc-ctrl input[type="range"] { flex: 1 1 auto; '
+        "min-width: 0; max-width: 100%; }",
+        '.ha-card .hc-ctrl input[type="range"] { flex: 1 1 auto; '
+        "min-width: 0; max-width: 100%; }",
+    ):
+        assert rule in _HTML
+    # Spanning cards default to full-width (span 1 == "1 / -1") on narrow.
+    assert "grid-column: 1 / -1;" in _HTML
 
 
 def test_answer_container_is_full_width():
