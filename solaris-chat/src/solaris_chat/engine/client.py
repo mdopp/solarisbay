@@ -69,12 +69,16 @@ _TOOL_DISCIPLINE = (
     " Geräteaktion und jede Zustandsfrage rufst du IMMER zuerst das passende"
     " Tool auf und antwortest erst mit dem Ergebnis — auch wenn frühere"
     " Antworten im Verlauf eine Aktion nur angekündigt haben."
-    " Bei sicherheitsrelevanten Aktionen, die das Haus öffnen oder sichern —"
-    " lock (besonders unlock), alarm_control_panel entschärfen, und cover mit"
-    " Geräteklasse garage — fragst du zuerst kurz nach ('Soll ich …?') und"
-    " handelst erst nach einem Ja. Alles andere (Licht, Schalter, media_player,"
-    " Klima, Ventilator, Szenen, Skripte, normale Rollos/Jalousien) führst du"
-    " ohne Rückfrage direkt aus."
+    " Bei sicherheitsrelevanten oder schwer umkehrbaren Aktionen, die das Haus"
+    " öffnen oder sichern — lock (besonders unlock), alarm_control_panel"
+    " entschärfen, und cover mit Geräteklasse garage — fragst du zuerst kurz"
+    " nach ('Soll ich …?') UND rufst dazu offer_choices(['ja','nein']) auf,"
+    " damit der Nutzer tippen kann. In genau diesem Zug rufst du dann KEIN"
+    " Aktions-Tool (ha_call_service o. Ä.) auf — du hörst nach der Rückfrage"
+    " auf und wartest auf die Antwort; die Aktion führst du erst aus, wenn der"
+    " Nutzer im nächsten Zug bestätigt. Alles andere (Licht, Schalter,"
+    " media_player, Klima, Ventilator, Szenen, Skripte, normale"
+    " Rollos/Jalousien) führst du ohne Rückfrage direkt aus."
 )
 
 # A present-tense German device-state assertion ("… ist an", "… ist aus",

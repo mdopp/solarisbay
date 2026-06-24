@@ -59,7 +59,13 @@ def build_choice_tools() -> list[Tool]:
                 ' ["ja","nein"]; „Alle Lichter an?“ → ["alle","nur im'
                 ' Wohnzimmer","nur im Büro"]. Halte die Optionen kurz; höchstens'
                 " 4. Stelle die Frage normal im Text und rufe zusätzlich dieses"
-                " Tool mit den Optionen auf. Nicht für offene Fragen verwenden."
+                " Tool mit den Optionen auf. Dies ist das richtige Tool, um vor"
+                " sicherheitsrelevanten oder schwer umkehrbaren Aktionen (Garage,"
+                " Türen, Schlösser, Alarm) rückzufragen. WICHTIG: Dieses Tool"
+                " aufzurufen bedeutet, dass du nur FRAGST — du führst die Aktion"
+                " in diesem Zug NICHT aus und rufst dazu KEIN Aktions-Tool"
+                " (ha_call_service o. Ä.) auf, sondern wartest auf die Antwort des"
+                " Nutzers. Nicht für offene Fragen verwenden."
             ),
             parameters={
                 "type": "object",

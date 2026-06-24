@@ -50,6 +50,16 @@ def _offer_tool() -> Tool:
 # -- engine: the offer_choices tool ---------------------------------------
 
 
+def test_offer_choices_description_steers_confirm_first_no_act():
+    # #558: the description must make explicit that calling offer_choices means
+    # "I am ASKING" — no action tool this turn, wait for the reply — and that
+    # it's the right tool for confirming sensitive/irreversible actions.
+    desc = _offer_tool().description
+    assert "ha_call_service" in desc and "NICHT" in desc
+    assert "wartest" in desc
+    assert "Garage" in desc or "Schlösser" in desc
+
+
 @pytest.mark.asyncio
 async def test_offer_choices_fills_the_sink():
     sink: list[str] = []
