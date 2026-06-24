@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from solaris_chat.engine import store
+from solaris_chat.engine import confirm, store
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
@@ -213,6 +213,10 @@ class EngineClient:
         self._context_window = context_window
         self._bus = bus
         self._soul_cache: tuple[float, str] = (0.0, "")
+        # Per-session stash of a sensitive action held for ja/nein confirmation
+        # (#570). In-memory on the client (one per profile) — survives the turn
+        # boundary for both the durable session and the stateless facade source.
+        self._pending = confirm.PendingStore()
 
     @property
     def recorder(self) -> TraceRecorder:
@@ -439,6 +443,48 @@ class EngineClient:
         async for event in self.chat_stream(session_id, turn):
             yield event
 
+    def _gate_sensitive(
+        self,
+        args: dict[str, Any],
+        confirmed: set[tuple[str, str, str]],
+        session_id: str,
+        quick_replies: list[str],
+    ) -> str | None:
+        """Hold a sensitive, unconfirmed ha_call_service (#570).
+
+        Returns a needs_confirmation tool-result string (and stashes the pending
+        action + fills the ja/nein chips) when the call must be confirmed first;
+        returns None to let dispatch run normally (routine, or just-confirmed)."""
+        domain = str(args.get("domain") or "")
+        service = str(args.get("service") or "")
+        # Normalise the model's natural verb the same way call_service does
+        # (cover "open" -> "open_cover"), so the classification sees the real
+        # service name.
+        service = ha_tools._SERVICE_ALIASES.get(domain, {}).get(service, service)
+        entity_id = str(args.get("entity_id") or "")
+        if not confirm.is_sensitive(domain, service):
+            return None
+        if (domain, service, entity_id) in confirmed:
+            return None
+        data = args.get("data") if isinstance(args.get("data"), dict) else None
+        prompt = confirm.confirm_prompt(domain, service, entity_id)
+        self._pending.stash(
+            session_id,
+            confirm.PendingAction(
+                domain=domain,
+                service=service,
+                entity_id=entity_id,
+                data=data,
+                prompt=prompt,
+            ),
+        )
+        quick_replies.clear()
+        quick_replies.extend(["ja", "nein"])
+        return json.dumps(
+            {"ok": False, "needs_confirmation": True, "prompt": prompt},
+            ensure_ascii=False,
+        )
+
     async def _loop(
         self,
         messages: list[dict[str, Any]],
@@ -470,8 +516,61 @@ class EngineClient:
             else None
         )
 
+        # Deterministic confirmation gate (#570): if this session holds a
+        # sensitive action from a prior turn, the current user reply decides its
+        # fate before the model runs. An affirmative reply executes the held
+        # action now (then the model reports the result from the tool message); a
+        # negative drops it; anything else leaves it pending and the turn proceeds
+        # normally. `confirmed` carries the just-confirmed target so the gate
+        # below doesn't re-hold the very action we are now executing.
+        confirmed: set[tuple[str, str, str]] = set()
+        confirmed_executed = False
+        pending = self._pending.peek(session_id)
+        if pending is not None:
+            reply = _last_user_text(messages)
+            if confirm.is_negative(reply):
+                self._pending.take(session_id)
+            elif confirm.is_affirmative(reply):
+                self._pending.take(session_id)
+                confirmed.add((pending.domain, pending.service, pending.entity_id))
+                tc = {
+                    "function": {"name": "ha_call_service", "arguments": pending.args()}
+                }
+                yield {"type": "tool.started", "data": {"tool": "ha_call_service"}}
+                if uid:
+                    current_uid.set(uid)
+                t0 = time.monotonic()
+                output = await self._profile.toolbox.dispatch(
+                    "ha_call_service", pending.args()
+                )
+                tool_wall_s = time.monotonic() - t0
+                self._recorder.record_tool(
+                    session_id=session_id,
+                    profile=self._profile.name,
+                    tool_name="ha_call_service",
+                    wall_s=tool_wall_s,
+                )
+                yield {
+                    "type": "tool.completed",
+                    "data": {"tool": "ha_call_service", "wall_s": tool_wall_s},
+                }
+                if persist:
+                    store.append_message(
+                        self._db_path, session_id, "assistant", "", tool_calls=[tc]
+                    )
+                    store.append_message(self._db_path, session_id, "tool", output)
+                messages.append(
+                    {"role": "assistant", "content": "", "tool_calls": [tc]}
+                )
+                messages.append(
+                    {"role": "tool", "content": output, "tool_name": "ha_call_service"}
+                )
+                confirmed_executed = True
+
         has_tools = bool(self._profile.toolbox.names())
-        tool_dispatched = False
+        # A confirmed action already ran a tool this turn, so the model's report
+        # ("Garagentor ist offen") is grounded, not a fabrication (#570/#356).
+        tool_dispatched = confirmed_executed
         corrected = False
         final_content = ""
         final_thinking = ""
@@ -569,6 +668,27 @@ class EngineClient:
                 # during dispatch would otherwise land nowhere (#475).
                 ha_tools.card_sink.set(ha_cards)
                 choice_tools.choice_sink.set(quick_replies)
+                # Confirmation gate (#570): a sensitive ha_call_service the model
+                # issues without prior confirmation is NOT executed. Hold it,
+                # offer ja/nein chips, and feed the model a needs_confirmation
+                # result so it relays the question instead of a fake "done".
+                if name == "ha_call_service" and isinstance(args, dict):
+                    held = self._gate_sensitive(
+                        args, confirmed, session_id, quick_replies
+                    )
+                    if held is not None:
+                        yield {
+                            "type": "tool.completed",
+                            "data": {"tool": name, "wall_s": 0.0},
+                        }
+                        if persist:
+                            store.append_message(
+                                self._db_path, session_id, "tool", held
+                            )
+                        messages.append(
+                            {"role": "tool", "content": held, "tool_name": name}
+                        )
+                        continue
                 t0 = time.monotonic()
                 output = await self._profile.toolbox.dispatch(name, args)
                 tool_wall_s = time.monotonic() - t0
