@@ -96,7 +96,10 @@ def entity_id_for_okf_path(conn: sqlite3.Connection, okf_path: str) -> str | Non
     """The entity id behind an OKF link path (e.g. ``people/anna`` →
     ``okf/people/anna.md``). Event participants are written as ``[[people/...]]``
     links; this maps a link target back to its `.db` entity for `event_entities`.
-    """
+
+    A link path is `okf/`-relative and carries no owner prefix, but a
+    private concept is stored under ``users/<uid>/okf/...`` (#576). So also match
+    any row whose path ENDS WITH ``/okf/<candidate>`` (the per-user subtree)."""
     candidate = okf_path if okf_path.endswith(".md") else f"{okf_path}.md"
     for path in (candidate, f"okf/{candidate}"):
         row = conn.execute(
@@ -105,7 +108,11 @@ def entity_id_for_okf_path(conn: sqlite3.Connection, okf_path: str) -> str | Non
         ).fetchone()
         if row is not None:
             return row["ref_id"]
-    return None
+    row = conn.execute(
+        "SELECT ref_id FROM concepts WHERE ref_kind = 'entity' AND okf_path LIKE ?",
+        (f"users/%/okf/{candidate}",),
+    ).fetchone()
+    return row["ref_id"] if row is not None else None
 
 
 def upsert_event(

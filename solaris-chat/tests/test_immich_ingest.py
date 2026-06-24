@@ -123,9 +123,10 @@ def test_asset_maps_to_event_with_media_and_resource(env):
     concept = conn.execute(
         "SELECT okf_path FROM concepts WHERE ref_kind = 'event'"
     ).fetchone()
-    assert concept["okf_path"] == "okf/events/2026-05-30-img-0001-jpg-a1.md"
+    # Private asset (not shared) -> mdopp-owned, routed under the user path (#576).
+    assert concept["okf_path"] == "users/mdopp/okf/events/2026-05-30-img-0001-jpg-a1.md"
     conn.close()
-    text = next((env[2] / "notes").glob("okf/events/*.md")).read_text()
+    text = next((env[2] / "notes").glob("users/mdopp/okf/events/*.md")).read_text()
     assert "resource: immich://asset/a1" in text
     assert "media:" in text and "- immich://asset/a1" in text
 
@@ -143,7 +144,9 @@ def test_named_face_creates_person_and_depicted_edge(env):
     edge = conn.execute("SELECT * FROM event_entities").fetchone()
     assert edge["role"] == "depicted" and edge["entity_id"] == person["id"]
     conn.close()
-    person_path = tmp_path / "notes" / "okf" / "people" / "anna-mueller.md"
+    person_path = (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "people" / "anna-mueller.md"
+    )
     assert person_path.is_file()
 
 
@@ -172,7 +175,9 @@ def test_geo_creates_place_and_event_at_edge(env):
     edge = conn.execute("SELECT * FROM event_entities WHERE role = 'at'").fetchone()
     assert edge["entity_id"] == place["id"]
     conn.close()
-    place_text = (tmp_path / "notes" / "okf" / "places" / "muenchen-de.md").read_text()
+    place_text = (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "places" / "muenchen-de.md"
+    ).read_text()
     assert "geo: 48.1372,11.5756" in place_text
 
 

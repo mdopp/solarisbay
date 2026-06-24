@@ -13,6 +13,13 @@ So "welche Musik von <artist> habe ich" resolves from the central knowledge
 store and music becomes a research source. Films/audiobooks + playback are out
 of scope (slices 2/3).
 
+Per-library ownership (#576): the adapter enumerates the libraries
+(`GET /Library/MediaFolders`) and maps each library NAME to an owner uid (the
+`JELLYFIN_LIBRARY_OWNERS` config; default 'Music (cdopp)' -> cdopp, everything
+else -> household). A private library's concepts are written under the owner's
+path (`users/<owner>/okf/...`); shared libraries stay household. A band that
+appears in any shared library stays shared (shared artists stay shared).
+
 Auth: the engine reuses the existing JELLYFIN_USERNAME/JELLYFIN_PASSWORD stack
 vars (not an API key) — `POST /Users/AuthenticateByName` with an
 `X-Emby-Authorization` header yields an AccessToken, then the music API is
@@ -67,8 +74,13 @@ class JellyfinMusicClient(Protocol):
         """Exchange username/password for an access token. Idempotent."""
         ...
 
-    def iter_music(self) -> AsyncIterator[JellyfinItem]:
-        """Yield the music catalog (artists + tracks). Implementations
+    async def libraries(self) -> list[tuple[str, str]]:
+        """The media libraries as `(id, name)` — `GET /Library/MediaFolders`.
+        The adapter maps a library NAME to an owner uid (#576 per-library)."""
+        ...
+
+    def iter_library(self, library_id: str) -> AsyncIterator[JellyfinItem]:
+        """Yield one library's music items (artists + tracks). Implementations
         paginate."""
         ...
 
@@ -131,13 +143,29 @@ class RestJellyfinMusicClient:
         self._token = str(payload.get("AccessToken") or "")
         self._user_id = str((payload.get("User") or {}).get("Id") or "")
 
-    async def iter_music(self) -> AsyncIterator[JellyfinItem]:
+    async def libraries(self) -> list[tuple[str, str]]:
+        await self.authenticate()
+        headers = {"X-Emby-Token": self._token, "Accept": "application/json"}
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.get(
+                f"{self._base_url}/Library/MediaFolders", headers=headers
+            ) as resp:
+                resp.raise_for_status()
+                payload = await resp.json()
+        return [
+            (_str(f, "Id"), _str(f, "Name"))
+            for f in (payload.get("Items") or [])
+            if _str(f, "Id")
+        ]
+
+    async def iter_library(self, library_id: str) -> AsyncIterator[JellyfinItem]:
         await self.authenticate()
         headers = {"X-Emby-Token": self._token, "Accept": "application/json"}
         start = 0
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             while True:
                 params = {
+                    "ParentId": library_id,
                     "IncludeItemTypes": "MusicArtist,Audio",
                     "Recursive": "true",
                     "Fields": "Genres,AlbumArtist,ProductionYear,DateCreated",
@@ -183,6 +211,9 @@ class JellyfinIngestStats:
     cursor: str = ""
 
 
+_SHARED = "household"
+
+
 class JellyfinMusicIngest:
     def __init__(
         self,
@@ -190,53 +221,81 @@ class JellyfinMusicIngest:
         writer: OkfWriter,
         *,
         ingesting_uid: str,
+        library_owners: dict[str, str] | None = None,
     ):
         self._client = client
         self._writer = writer
         self._uid = ingesting_uid
+        # Library NAME -> owner uid (#576 per-library ownership). A library not
+        # in the map is shared (household). Default 'Music (cdopp)' -> cdopp is
+        # supplied by the runner from JELLYFIN_LIBRARY_OWNERS config.
+        self._library_owners = {
+            name.casefold(): uid for name, uid in (library_owners or {}).items()
+        }
         # Bands written this run, so a track's artist isn't re-written per track.
         self._seen_bands: set[str] = set()
+        # Bands seen in a SHARED library: a band there stays household even if it
+        # also appears in a private library (shared artists stay shared).
+        self._shared_bands: set[str] = set()
+
+    def _owner_for(self, library_name: str) -> str:
+        return self._library_owners.get(library_name.casefold(), _SHARED)
 
     async def run(self) -> JellyfinIngestStats:
-        """Ingest the music catalog; return run stats with a high-water cursor.
+        """Ingest the music catalog per library; return stats + high-water cursor.
 
-        The music catalog is shared by the household, so every concept is
-        household-scoped.
+        Each library maps to an owner: a shared library writes household-scoped
+        concepts (vault `okf/...`), a private library ('Music (cdopp)') writes
+        the owner's concepts (`users/<owner>/okf/...`). A two-pass walk so a band
+        in any shared library stays shared even if also in a private one.
         """
         stats = JellyfinIngestStats()
         await self._client.authenticate()
-        async for item in self._client.iter_music():
-            try:
-                self._ingest_item(item, stats)
-            except Exception as e:  # noqa: BLE001
-                # One bad item (e.g. a name that fails safe_slug) must never
-                # abort the whole run (mirrors Immich #528).
-                log.error(
-                    "engine.ingest.jellyfin_item_failed",
-                    item_id=item.id,
-                    error=str(e),
-                )
-                stats.skipped += 1
-            else:
-                if item.changed > stats.cursor:
-                    stats.cursor = item.changed
-            stats.items += 1
+        libraries = await self._client.libraries()
+        owned = [(lib_id, self._owner_for(name)) for lib_id, name in libraries]
+        # Shared libraries first so a shared band claims the household scope
+        # before a private library would route it under a user path.
+        owned.sort(key=lambda lo: lo[1] != _SHARED)
+        for lib_id, owner in owned:
+            async for item in self._client.iter_library(lib_id):
+                try:
+                    self._ingest_item(item, owner, stats)
+                except Exception as e:  # noqa: BLE001
+                    # One bad item (e.g. a name that fails safe_slug) must never
+                    # abort the whole run (mirrors Immich #528).
+                    log.error(
+                        "engine.ingest.jellyfin_item_failed",
+                        item_id=item.id,
+                        error=str(e),
+                    )
+                    stats.skipped += 1
+                else:
+                    if item.changed > stats.cursor:
+                        stats.cursor = item.changed
+                stats.items += 1
         return stats
 
-    def _ingest_item(self, item: JellyfinItem, stats: JellyfinIngestStats) -> None:
+    def _ingest_item(
+        self, item: JellyfinItem, owner: str, stats: JellyfinIngestStats
+    ) -> None:
         if item.kind == "MusicArtist":
-            self._write_band(item.name, stats)
+            self._write_band(item.name, owner, stats)
         elif item.kind == "Audio":
             rels: list[Relationship] = []
             if item.artist:
-                self._write_band(item.artist, stats)
+                self._write_band(item.artist, owner, stats)
                 rels.append(Relationship("by", f"bands/{safe_slug(item.artist)}"))
-            self._write_song(item, rels, stats)
+            self._write_song(item, owner, rels, stats)
 
-    def _write_band(self, name: str, stats: JellyfinIngestStats) -> None:
+    def _write_band(self, name: str, owner: str, stats: JellyfinIngestStats) -> None:
         if not name:
             return
         slug = safe_slug(name)
+        # Shared wins: once a band is shared it never gets re-scoped to a user.
+        if owner == _SHARED:
+            self._shared_bands.add(slug)
+        elif slug in self._shared_bands:
+            owner = _SHARED
         if slug in self._seen_bands:
             return
         self._seen_bands.add(slug)
@@ -245,14 +304,18 @@ class JellyfinMusicIngest:
             title=name,
             source=_SOURCE,
             external_id=f"artist/{slug}",
-            resident="household",
+            resident=owner,
             resource=f"jellyfin://artist/{slug}",
         )
         if not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
             stats.bands_written += 1
 
     def _write_song(
-        self, item: JellyfinItem, rels: list[Relationship], stats: JellyfinIngestStats
+        self,
+        item: JellyfinItem,
+        owner: str,
+        rels: list[Relationship],
+        stats: JellyfinIngestStats,
     ) -> None:
         uri = self._client.audio_uri(item.id)
         extra: dict[str, object] = {}
@@ -273,7 +336,7 @@ class JellyfinMusicIngest:
             slug=f"{safe_slug(item.name or item.id)}-{safe_slug(item.id)}",
             source=_SOURCE,
             external_id=f"audio/{item.id}",
-            resident="household",
+            resident=owner,
             resource=uri,
             # Metadata rides the body so a changed track moves the content_hash
             # and re-ingests.

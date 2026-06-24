@@ -159,7 +159,8 @@ def test_okf_file_written_with_frontmatter_and_relationships(env):
         relationships=[Relationship("friend-of", "people/lena")],
     )
     res = writer.write_concept(rec, ingesting_uid="mdopp")
-    assert res.okf_path == "okf/people/anna.md"
+    # A real-resident concept is private-by-default under the owner's path (#576).
+    assert res.okf_path == "users/mdopp/okf/people/anna.md"
     path = tmp_path / "notes" / res.okf_path
     text = path.read_text(encoding="utf-8")
     assert text.startswith("---\n")
@@ -169,6 +170,24 @@ def test_okf_file_written_with_frontmatter_and_relationships(env):
     assert "source: immich" in text
     assert "## Relationships" in text
     assert "- friend-of → [[people/lena]]" in text
+
+
+def test_resident_concept_routes_under_user_path(env):
+    # An explicit real-resident concept lands under users/<resident>/okf/... .
+    writer, _, tmp_path = env
+    rec = _person(external_id="immich:person/cd", resident="cdopp")
+    res = writer.write_concept(rec, ingesting_uid="household")
+    assert res.okf_path == "users/cdopp/okf/people/anna.md"
+    assert (tmp_path / "notes" / res.okf_path).is_file()
+
+
+def test_household_concept_stays_shared_root(env):
+    writer, _, tmp_path = env
+    rec = _person(external_id="immich:person/h", resident="household")
+    res = writer.write_concept(rec, ingesting_uid="cdopp")
+    # An explicit household resident is shared at the vault-root okf/.
+    assert res.okf_path == "okf/people/anna.md"
+    assert (tmp_path / "notes" / res.okf_path).is_file()
 
 
 def test_event_concept_is_date_prefixed_and_event_kind(env):
@@ -187,7 +206,7 @@ def test_event_concept_is_date_prefixed_and_event_kind(env):
     writer.write_concept(_person(), ingesting_uid="mdopp")
     res = writer.write_concept(rec, ingesting_uid="mdopp")
     assert res.ref_kind == "event"
-    assert res.okf_path == "okf/events/2026-05-30-climbing-trip.md"
+    assert res.okf_path == "users/mdopp/okf/events/2026-05-30-climbing-trip.md"
     assert (tmp_path / "notes" / res.okf_path).is_file()
     conn = projection.open_conn(db_path)
     assert projection.row_count(conn, "events") == 1

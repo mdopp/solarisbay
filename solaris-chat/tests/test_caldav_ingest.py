@@ -150,7 +150,9 @@ def test_contact_maps_to_person_with_aliases_and_contact_uri(env):
     }
     assert {"Anna", "Anni"} <= aliases
     conn.close()
-    text = (tmp_path / "notes" / "okf" / "people" / "anna-mueller.md").read_text()
+    text = (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "people" / "anna-mueller.md"
+    ).read_text()
     assert "contact: carddav://book/c-1.vcf" in text
 
 
@@ -186,10 +188,17 @@ def test_event_maps_to_event_with_when_and_kind(env):
     concept = conn.execute(
         "SELECT okf_path FROM concepts WHERE ref_kind = 'event'"
     ).fetchone()
-    assert concept["okf_path"] == "okf/events/2026-05-30-team-dinner.md"
+    # Caldav events default to the ingesting resident -> private user path (#576).
+    assert concept["okf_path"] == "users/mdopp/okf/events/2026-05-30-team-dinner.md"
     conn.close()
     text = (
-        tmp_path / "notes" / "okf" / "events" / "2026-05-30-team-dinner.md"
+        tmp_path
+        / "notes"
+        / "users"
+        / "mdopp"
+        / "okf"
+        / "events"
+        / "2026-05-30-team-dinner.md"
     ).read_text()
     assert "when: 2026-05-30T19:00:00/2026-05-30T21:00:00" in text
     assert "where: Club X" in text

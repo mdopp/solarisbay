@@ -161,7 +161,12 @@ async def _run_jellyfin(settings: Settings, writer: OkfWriter, uid: str) -> None
             settings.jellyfin_username,
             settings.jellyfin_password,
         )
-        stats = await JellyfinMusicIngest(client, writer, ingesting_uid=uid).run()
+        stats = await JellyfinMusicIngest(
+            client,
+            writer,
+            ingesting_uid=uid,
+            library_owners=settings.jellyfin_library_owners,
+        ).run()
         log.info(
             "engine.ingest.jellyfin",
             items=stats.items,
