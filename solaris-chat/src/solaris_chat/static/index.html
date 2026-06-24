@@ -1856,6 +1856,8 @@
           card.appendChild(val);
         } else if (c.domain === "climate") {
           renderClimateCard(card, c, st);
+        } else if (c.domain === "media_player") {
+          renderMediaPlayerCard(card, c, st);
         } else {
           // binary_sensor / cover / light / switch -> on/off-style badge.
           var onish = st === "on" || st === "open";
@@ -2004,6 +2006,43 @@
         }
       }
 
+      // media_player (#541): state badge (playing/paused/...), what's playing,
+      // a transport row (prev / play-pause / next) and a volume slider.
+      function renderMediaPlayerCard(card, c, st) {
+        var playing = st === "playing";
+        card.classList.add(playing ? "on" : "off");
+        var badge = document.createElement("span");
+        badge.className = "hc-badge";
+        badge.textContent = haStateLabel("media_player", st);
+        card.appendChild(badge);
+        if (c.media_title) {
+          var nowp = document.createElement("div");
+          nowp.className = "hc-now";
+          nowp.textContent = c.media_artist
+            ? c.media_artist + " — " + c.media_title : c.media_title;
+          card.appendChild(nowp);
+        }
+        var btns = document.createElement("div");
+        btns.className = "hc-btns";
+        [["⏮", "media_previous_track", "Zurück"],
+         [playing ? "⏸" : "▶", "media_play_pause", "Play/Pause"],
+         ["⏭", "media_next_track", "Weiter"]].forEach(function (b) {
+          var btn = document.createElement("button");
+          btn.textContent = b[0];
+          btn.title = b[2];
+          btn.addEventListener("click", function () {
+            haCall(card, c, "media_player." + b[1], {});
+          });
+          btns.appendChild(btn);
+        });
+        card.appendChild(btns);
+        if (c.volume_level != null) {
+          makeSlider(card, Math.round(Number(c.volume_level) * 100), "%", function (v) {
+            haCall(card, c, "media_player.volume_set", { volume_level: v / 100 });
+          });
+        }
+      }
+
       // A labelled range row whose committed value (on change) fires onset(int).
       // inline=true mounts it on the given host (the compact badge row) instead
       // of as its own row, and stops a slider drag from toggling the card.
@@ -2061,6 +2100,12 @@
         }
         if (domain === "light" || domain === "switch") {
           if (state === "on") return "an";
+          if (state === "off") return "aus";
+        }
+        if (domain === "media_player") {
+          if (state === "playing") return "spielt";
+          if (state === "paused") return "pausiert";
+          if (state === "idle") return "bereit";
           if (state === "off") return "aus";
         }
         return state || "—";

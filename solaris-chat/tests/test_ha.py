@@ -422,6 +422,51 @@ async def test_climate_card_is_emitted_with_setpoint_attrs(monkeypatch):
     assert sink[0]["hvac_modes"] == ["off", "heat"]
 
 
+async def test_media_player_card_carries_state_and_controls(monkeypatch):
+    # #541: media_player gets a card with its transport state + control attrs
+    # (volume + what's playing) so the SPA can render the player variant.
+    states = {
+        "state": "playing",
+        "attributes": {
+            "friendly_name": "Wohnzimmer TV",
+            "volume_level": 0.4,
+            "media_title": "Tagesschau",
+            "media_artist": "ARD",
+        },
+    }
+    _stub(monkeypatch, states=states)
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+
+    await _tool("ha_get_state").handler({"entity_id": "media_player.living_tv"})
+
+    assert sink[0]["domain"] == "media_player"
+    assert sink[0]["state"] == "playing"
+    assert sink[0]["volume_level"] == 0.4
+    assert sink[0]["media_title"] == "Tagesschau"
+    assert sink[0]["media_artist"] == "ARD"
+
+
+def test_media_player_participates_in_room_grouping():
+    # #541: a media_player card groups by room alongside lights.
+    cards = [
+        {"entity_id": "light.l0", "state": "on", "domain": "light"},
+        {"entity_id": "light.l1", "state": "on", "domain": "light"},
+        {"entity_id": "light.l2", "state": "on", "domain": "light"},
+        {"entity_id": "media_player.tv", "state": "playing", "domain": "media_player"},
+        {"entity_id": "light.l3", "state": "on", "domain": "light"},
+    ]
+    area = {
+        "light.l0": "Küche",
+        "light.l1": "Küche",
+        "light.l2": "Wohnzimmer",
+        "media_player.tv": "Wohnzimmer",
+        "light.l3": "Wohnzimmer",
+    }
+    assert ha_mod.group_cards_by_room(cards, area) is True
+    assert cards[3]["room"] == "Wohnzimmer"
+
+
 async def test_card_omits_absent_control_attrs(monkeypatch):
     # A plain temperature sensor must not gain phase-3 control keys.
     states = {

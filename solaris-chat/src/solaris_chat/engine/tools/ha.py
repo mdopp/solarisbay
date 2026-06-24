@@ -34,13 +34,16 @@ card_sink: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.Con
 # Domains that get a read-only state card in phase 1. Sensors render a value
 # card (state + unit); binary_sensor/cover.garage an open/closed status; the
 # actionable light/switch a current-state badge (controls are later phases).
+# media_player (#541) cards the playing/paused state + transport/volume controls.
 _CARD_DOMAINS = frozenset(
-    {"sensor", "binary_sensor", "cover", "light", "switch", "climate"}
+    {"sensor", "binary_sensor", "cover", "light", "switch", "climate", "media_player"}
 )
 # A room query ("zeig mir das Wohnzimmer") cards the room's ACTUATORS — the
 # controllable card domains, not the read-only sensors (#540). Sensor data
 # stays on-demand via ha_list_entities.
-_ROOM_ACTUATOR_DOMAINS = frozenset({"light", "switch", "cover", "climate"})
+_ROOM_ACTUATOR_DOMAINS = frozenset(
+    {"light", "switch", "cover", "climate", "media_player"}
+)
 # Attributes the phase-3 controls (sliders/colour/climate) read off the card-spec
 # so the frontend can feature-gate them without a second HA round-trip (#477).
 _CONTROL_ATTRS = (
@@ -56,6 +59,10 @@ _CONTROL_ATTRS = (
     "min_temp",
     "max_temp",
     "hvac_modes",
+    # media_player (#541): volume + what's playing for the transport card.
+    "volume_level",
+    "media_title",
+    "media_artist",
 )
 
 
