@@ -15,11 +15,13 @@ exact slug, separated by a `/` boundary — `topic/projekt/wintergarten` matches
 slug `projekt/wintergarten`, not `projekt`.
 
 Per-resident isolation (D3 / #576): a resident sees their own notes plus shared
-household notes — never another resident's private note. A note records its
-writer in frontmatter `added_by: <uid>`; visibility is `added_by IN (caller,
-'household')`. Notes with no `added_by` (system/legacy) are treated as shared
-and shown. Default-deny: an unknown/unauthenticated caller (`household`) sees
-only shared notes, never a personal one.
+household notes — never another resident's private note. Ownership is
+**path-based** (the operator's model): a note under `users/<uid>/` is private to
+that uid; the rest of the vault is shared. When the path doesn't scope it,
+ownership falls back to the frontmatter — `added_by: <uid>` (model/hand-written
+notes), then `resident: <uid>` (OKF concept files). Notes with neither signal
+are treated as shared and shown. Default-deny: an unknown/unauthenticated caller
+(`household`) sees only shared notes, never a personal one.
 """
 
 from __future__ import annotations
@@ -34,10 +36,31 @@ _MAX_BYTES = 256 * 1024  # skip pathological files; notes are small markdown
 # by this uid — or by no one — is visible to every resident.
 SHARED_UID = "household"
 
+# A note under `users/<uid>/...` is private to `<uid>`, whatever its frontmatter.
+_USER_PATH_RE = re.compile(r"^users/([^/]+)/")
 
-def owner_of(text: str) -> str | None:
-    """The note's `added_by:` frontmatter uid, or None when unset (shared)."""
-    return _added_by(text)
+
+def resident_for_path(relpath: str) -> str | None:
+    """The uid a vault-relative path scopes to, or None when it's shared.
+
+    A note under `users/<uid>/...` belongs to `<uid>`; everything else is
+    shared. Path ownership only — no frontmatter (so the structured-ingest side
+    can scope a concept by its source path the same way reads do)."""
+    m = _USER_PATH_RE.match(relpath.replace("\\", "/"))
+    return m.group(1) if m else None
+
+
+def owner_of(relpath: str, text: str) -> str | None:
+    """The note's owner uid, or None when unowned (shared).
+
+    Path wins: a note under `users/<uid>/` is owned by `<uid>` regardless of
+    frontmatter. Otherwise fall back to the frontmatter — `added_by:` first
+    (model/hand-written notes), then `resident:` (OKF concept files; reading it
+    closes the leak where a `resident: <uid>` OKF file surfaced via search)."""
+    path_owner = resident_for_path(relpath)
+    if path_owner is not None:
+        return path_owner
+    return _added_by(text) or _resident(text)
 
 
 def is_visible(added_by: str | None, caller_uid: str) -> bool:
@@ -60,7 +83,20 @@ def _topic_pattern(slug: str) -> re.Pattern[str]:
 
 def _added_by(text: str) -> str | None:
     """The note's `added_by:` frontmatter uid, or None when absent."""
-    m = re.search(r"(?mi)^added_by:\s*(.+?)\s*$", text)
+    return _frontmatter_value(text, "added_by")
+
+
+def _resident(text: str) -> str | None:
+    """The note's `resident:` frontmatter uid (OKF files), or None when absent.
+
+    `household` is the shared sentinel, not an owner — treat it as unowned so a
+    shared OKF concept stays visible to everyone."""
+    value = _frontmatter_value(text, "resident")
+    return None if value == SHARED_UID else value
+
+
+def _frontmatter_value(text: str, key: str) -> str | None:
+    m = re.search(rf"(?mi)^{key}:\s*(.+?)\s*$", text)
     if not m:
         return None
     value = m.group(1).strip().strip("'\"")
@@ -94,14 +130,10 @@ def notes_for_topic(
             continue
         if not pattern.search(text):
             continue
-        if not is_visible(_added_by(text), owner_uid):
+        rel = str(path.relative_to(root))
+        if not is_visible(owner_of(rel, text), owner_uid):
             continue
-        out.append(
-            {
-                "path": str(path.relative_to(root)),
-                "title": _title(text, path.stem),
-            }
-        )
+        out.append({"path": rel, "title": _title(text, path.stem)})
     return out
 
 
@@ -133,11 +165,10 @@ def notes_mentioning(
             continue
         if not any(p.search(text) for p in patterns):
             continue
-        if not is_visible(_added_by(text), owner_uid):
+        rel = str(path.relative_to(root))
+        if not is_visible(owner_of(rel, text), owner_uid):
             continue
-        out.append(
-            {"path": str(path.relative_to(root)), "title": _title(text, path.stem)}
-        )
+        out.append({"path": rel, "title": _title(text, path.stem)})
         if len(out) >= limit:
             break
     return out
@@ -185,11 +216,10 @@ def notes_wikilinking(
             _wikilink_target(m).casefold() in wanted for m in _WIKILINK_RE.findall(text)
         ):
             continue
-        if not is_visible(_added_by(text), owner_uid):
+        rel = str(path.relative_to(root))
+        if not is_visible(owner_of(rel, text), owner_uid):
             continue
-        out.append(
-            {"path": str(path.relative_to(root)), "title": _title(text, path.stem)}
-        )
+        out.append({"path": rel, "title": _title(text, path.stem)})
         if len(out) >= limit:
             break
     return out

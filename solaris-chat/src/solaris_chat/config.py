@@ -14,6 +14,19 @@ from dataclasses import dataclass
 from solaris_chat import context
 
 
+def _parse_library_owners(raw: str) -> dict[str, str]:
+    """Parse `Name=uid;Name2=uid2` into a {library_name: owner_uid} map.
+
+    Blank/malformed entries are skipped. A library NAME may contain `()`/spaces
+    (e.g. `Music (cdopp)`); only the first `=` splits name from uid."""
+    owners: dict[str, str] = {}
+    for entry in raw.split(";"):
+        name, sep, uid = entry.partition("=")
+        if sep and name.strip() and uid.strip():
+            owners[name.strip()] = uid.strip()
+    return owners
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str
@@ -58,6 +71,7 @@ class Settings:
     jellyfin_url: str
     jellyfin_username: str
     jellyfin_password: str
+    jellyfin_library_owners: dict[str, str]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -193,6 +207,13 @@ class Settings:
             jellyfin_url=os.environ.get("JELLYFIN_URL", "").strip(),
             jellyfin_username=os.environ.get("JELLYFIN_USERNAME", "").strip(),
             jellyfin_password=os.environ.get("JELLYFIN_PASSWORD", "").strip(),
+            # Per-library music ownership (#576): a Jellyfin library NAME -> the
+            # owner resident uid, so a private library ('Music (cdopp)') ingests
+            # under that resident's path; any unlisted library is household.
+            # Format: `Name=uid;Name2=uid2`. Default maps 'Music (cdopp)'->cdopp.
+            jellyfin_library_owners=_parse_library_owners(
+                os.environ.get("JELLYFIN_LIBRARY_OWNERS", "Music (cdopp)=cdopp")
+            ),
         )
 
 

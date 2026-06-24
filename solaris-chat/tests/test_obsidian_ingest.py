@@ -113,7 +113,9 @@ def test_note_maps_to_note_concept_with_source_and_preserved_body(env):
     log = conn.execute("SELECT source, external_id FROM ingest_log").fetchone()
     assert (log["source"], log["external_id"]) == ("obsidian", "ideas/garden.md")
     conn.close()
-    text = (tmp_path / "notes" / "okf" / "notes" / "a-note.md").read_text()
+    text = (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "notes" / "a-note.md"
+    ).read_text()
     assert "type: note" in text and "source: obsidian" in text
     assert "Plant beans." in text  # body preserved verbatim
 
@@ -127,7 +129,9 @@ def test_type_inferred_from_folder_when_no_frontmatter_type(env):
     conn = projection.open_conn(db_path)
     assert conn.execute("SELECT type FROM entities").fetchone()["type"] == "person"
     conn.close()
-    assert (tmp_path / "notes" / "okf" / "people" / "anna.md").is_file()
+    assert (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "people" / "anna.md"
+    ).is_file()
 
 
 def test_frontmatter_type_title_tags_timestamp_carried_over(env):
@@ -145,7 +149,9 @@ def test_frontmatter_type_title_tags_timestamp_carried_over(env):
         ]
     )
     _run(reader, writer, db_path)
-    text = (tmp_path / "notes" / "okf" / "places" / "club-x.md").read_text()
+    text = (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "places" / "club-x.md"
+    ).read_text()
     assert "type: place" in text and "title: Club X" in text
     assert "timestamp: 2026-05-01T00:00:00" in text
     assert "- nightlife" in text and "- muenchen" in text
@@ -170,7 +176,9 @@ def test_wikilink_to_known_concept_becomes_relationship(env):
         ]
     )
     _run(reader, writer, db_path)
-    text = (tmp_path / "notes" / "okf" / "notes" / "diary.md").read_text()
+    text = (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "notes" / "diary.md"
+    ).read_text()
     assert "## Relationships" in text
     assert "- related → [[people/anna]]" in text
     # Body link preserved too (the original text is never mutated).
@@ -196,7 +204,9 @@ def test_wikilink_to_unknown_target_stays_plain_link_no_relationship(env):
         ]
     )
     _run(reader, writer, db_path)
-    text = (tmp_path / "notes" / "okf" / "notes" / "diary.md").read_text()
+    text = (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "notes" / "diary.md"
+    ).read_text()
     assert "## Relationships" not in text  # unknown target -> no edge
     assert "Met [[Nobody]] today." in text  # left as a plain body link
     conn = projection.open_conn(db_path)
@@ -252,9 +262,11 @@ def test_unknown_type_note_is_skipped_and_does_not_zero_the_run(env):
     assert projection.row_count(conn, "entities") == 1
     assert conn.execute("SELECT type FROM entities").fetchone()["type"] == "person"
     conn.close()
-    assert (tmp_path / "notes" / "okf" / "people" / "anna.md").is_file()
+    assert (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "people" / "anna.md"
+    ).is_file()
     # The journal note produced no concept.
-    assert not (tmp_path / "notes" / "okf" / "notes").exists()
+    assert not (tmp_path / "notes" / "users" / "mdopp" / "okf" / "notes").exists()
 
 
 def test_unknown_type_note_does_not_raise(env):
@@ -275,7 +287,9 @@ def test_one_failing_note_skips_and_the_rest_still_ingest(env):
     good = _note(relpath="people/anna.md", folder="people", title="Anna")
     stats = _run(FakeObsidianReader([bad, good]), writer, db_path)
     assert stats.notes == 2 and stats.written == 1 and stats.skipped == 1
-    assert (tmp_path / "notes" / "okf" / "people" / "anna.md").is_file()
+    assert (
+        tmp_path / "notes" / "users" / "mdopp" / "okf" / "people" / "anna.md"
+    ).is_file()
 
 
 # --- VaultObsidianReader (real tmp vault, read-only) -------------------------
@@ -311,6 +325,22 @@ def test_vault_reader_skips_okf_subtree_and_facts(tmp_path):
     (vault / "hand.md").write_text("hand-written", "utf-8")
     paths = {n.relpath for n in VaultObsidianReader(str(vault)).iter_notes()}
     assert paths == {"hand.md"}  # own OKF output + fact-capture dir excluded
+
+
+def test_vault_reader_skips_per_user_okf_and_facts_but_keeps_user_notes(tmp_path):
+    # Per-user machine subtrees (#576) — users/<uid>/okf|facts — are our own
+    # output and must not be re-ingested; a hand-written note directly under the
+    # user dir IS still ingested (path-scoped private).
+    vault = tmp_path / "vault"
+    (vault / "users" / "cdopp" / "okf" / "people").mkdir(parents=True)
+    (vault / "users" / "cdopp" / "facts").mkdir(parents=True)
+    (vault / "users" / "cdopp" / "okf" / "people" / "x.md").write_text(
+        "---\ntype: person\n---\n", "utf-8"
+    )
+    (vault / "users" / "cdopp" / "facts" / "f.md").write_text("a fact", "utf-8")
+    (vault / "users" / "cdopp" / "tagebuch.md").write_text("privat", "utf-8")
+    paths = {n.relpath for n in VaultObsidianReader(str(vault)).iter_notes()}
+    assert paths == {"users/cdopp/tagebuch.md"}
 
 
 def test_vault_reader_does_not_write_the_source(tmp_path):

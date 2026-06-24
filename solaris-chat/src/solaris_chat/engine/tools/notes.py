@@ -18,6 +18,7 @@ from typing import Any
 
 from solaris_chat import notes_search
 from solaris_chat.engine.tools import Tool
+from solaris_chat.notes_search import _USER_PATH_RE
 
 _MAX_BYTES = 256 * 1024
 _MAX_HITS = 8
@@ -43,14 +44,17 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if not notes_search.is_visible(notes_search.owner_of(text), caller_uid):
+            rel = str(path.relative_to(root))
+            if not notes_search.is_visible(
+                notes_search.owner_of(rel, text), caller_uid
+            ):
                 continue
             lower = text.lower()
             if not all(t in lower for t in terms):
                 continue
             idx = lower.find(terms[0])
             snippet = text[max(0, idx - 80) : idx + 160].replace("\n", " ")
-            hits.append({"path": str(path.relative_to(root)), "snippet": snippet})
+            hits.append({"path": rel, "snippet": snippet})
             if len(hits) >= _MAX_HITS:
                 break
         return json.dumps(hits, ensure_ascii=False)
@@ -63,8 +67,12 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
         text = path.read_text(encoding="utf-8", errors="replace")
         # Per-owner scope (#576): a path is not a capability — a caller may only
         # read their own or shared notes, never another resident's private note.
-        # Deny indistinguishably from a missing path (no content, no existence).
-        if not notes_search.is_visible(notes_search.owner_of(text), uid_getter()):
+        # Ownership is path-based (users/<uid>/) then frontmatter; use the
+        # vault-relative resolved path so `../`-style args can't dodge the prefix.
+        canon = str(path.relative_to(root.resolve()))
+        if not notes_search.is_visible(
+            notes_search.owner_of(canon, text), uid_getter()
+        ):
             return '{"error": "not found"}'
         return json.dumps({"path": rel, "content": text[:8000]}, ensure_ascii=False)
 
@@ -73,9 +81,23 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
         content = str(args.get("content") or "")
         if not rel.endswith(".md") or not content.strip():
             return '{"error": "path must end in .md and content must be non-empty"}'
-        path = (root / rel).resolve()
-        if not str(path).startswith(str(root.resolve())):
-            return '{"error": "path outside the vault"}'
+        # Private-by-default (#576): a real resident's writes ALWAYS land inside
+        # their own `users/<owner>/` subtree — a model-supplied `users/<other>/x`
+        # or a `../<other>/x` traversal must never reach another resident's space.
+        # Strip any leading `users/<anyuid>/`, neutralise `..`, then re-root under
+        # the caller; household keeps writing to the shared vault root.
+        owner = uid_getter()
+        if owner != notes_search.SHARED_UID:
+            safe_rel = _USER_PATH_RE.sub("", rel)
+            base = (root / "users" / owner).resolve()
+            path = (base / safe_rel).resolve()
+            if not str(path).startswith(str(base) + "/"):
+                return '{"error": "path outside the vault"}'
+            rel = str(path.relative_to(root.resolve()))
+        else:
+            path = (root / rel).resolve()
+            if not str(path).startswith(str(root.resolve())):
+                return '{"error": "path outside the vault"}'
         path.parent.mkdir(parents=True, exist_ok=True)
         if bool(args.get("append")) and path.is_file():
             with path.open("a", encoding="utf-8") as f:
@@ -85,7 +107,6 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
             # the resident it was written for, not the shared pool. Without this
             # the note is untagged and (None = shared) visible to everyone.
             body = content.rstrip("\n") + "\n"
-            owner = uid_getter()
             note = f"---\nadded_by: {owner}\n---\n\n{body}"
             path.write_text(note, encoding="utf-8")
         return json.dumps({"written": rel})
@@ -94,13 +115,18 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
         fact = str(args.get("fact") or "").strip()
         if not fact:
             return '{"error": "empty fact"}'
+        # Private-by-default (#576): a resident's facts live under their own path;
+        # household facts stay in the shared `facts/` dir.
+        owner = uid_getter()
         facts_dir = root / "facts"
+        if owner != notes_search.SHARED_UID:
+            facts_dir = root / "users" / owner / "facts"
         facts_dir.mkdir(parents=True, exist_ok=True)
         slug = re.sub(r"[^a-z0-9äöüß]+", "-", fact.lower())[:48].strip("-")
         day = datetime.now(UTC).strftime("%Y-%m-%d")
         path = facts_dir / f"{day}-{slug or 'fact'}.md"
         path.write_text(
-            f"---\nadded_by: {uid_getter()}\ndate: {day}\n---\n\n{fact}\n",
+            f"---\nadded_by: {owner}\ndate: {day}\n---\n\n{fact}\n",
             encoding="utf-8",
         )
         return json.dumps({"stored": str(path.relative_to(root))})

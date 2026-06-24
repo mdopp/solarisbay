@@ -80,6 +80,7 @@ class FakeSettings:
     jellyfin_url: str = ""
     jellyfin_username: str = ""
     jellyfin_password: str = ""
+    jellyfin_library_owners: dict = field(default_factory=dict)
 
 
 @pytest.fixture
@@ -273,7 +274,10 @@ class _FakeJellyfin:
     async def authenticate(self):
         pass
 
-    async def iter_music(self):
+    async def libraries(self):
+        return [("lib-music", "Music")]
+
+    async def iter_library(self, library_id: str):
         from solaris_chat.engine.ingest.jellyfin import JellyfinItem
 
         yield JellyfinItem(

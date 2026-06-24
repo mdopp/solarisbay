@@ -18,15 +18,25 @@ from .slug import safe_slug
 _REL_ARROW = "→"
 
 
+_SHARED_RESIDENT = "household"
+
+
 def okf_path(record: ConceptRecord) -> str:
-    """`notes/okf/<domain>/<slug>.md` — events are date-prefixed (§2)."""
+    """`okf/<domain>/<slug>.md` — events are date-prefixed (§2).
+
+    Path-based ownership (#576): a concept owned by a real resident lands under
+    `users/<resident>/okf/...` (private to them); household stays shared at the
+    vault-root `okf/...`."""
     domain = domain_for(record.type)
     slug = safe_slug(record.slug or record.title)
     if record.type == "event":
         day = (record.event_ts or record.timestamp or "")[:10]
         if day:
             slug = f"{safe_slug(day)}-{slug}"
-    return f"okf/{domain}/{slug}.md"
+    rel = f"okf/{domain}/{slug}.md"
+    if record.resident and record.resident != _SHARED_RESIDENT:
+        return f"users/{safe_slug(record.resident)}/{rel}"
+    return rel
 
 
 def _scalar(value: Any) -> str:

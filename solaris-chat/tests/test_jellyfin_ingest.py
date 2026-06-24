@@ -64,19 +64,38 @@ CREATE INDEX ingest_log_source_external_idx ON ingest_log (source, external_id);
 
 
 class FakeJellyfinMusicClient:
-    """A mocked read-only Jellyfin source yielding canned `JellyfinItem`s."""
+    """A mocked read-only Jellyfin source.
 
-    def __init__(self, items: list[JellyfinItem]):
-        self.items = items
+    Single-library form: pass a flat `list[JellyfinItem]` (one default 'Music'
+    library). Multi-library form: pass `libraries=[(id, name)]` and
+    `by_library={lib_id: [items]}` to exercise per-library ownership (#576).
+    """
+
+    def __init__(
+        self,
+        items: list[JellyfinItem] | None = None,
+        *,
+        libraries: list[tuple[str, str]] | None = None,
+        by_library: dict[str, list[JellyfinItem]] | None = None,
+    ):
         self.authenticated = 0
+        if libraries is not None:
+            self._libraries = libraries
+            self._by_library = by_library or {}
+        else:
+            self._libraries = [("lib-music", "Music")]
+            self._by_library = {"lib-music": items or []}
 
     async def authenticate(self) -> None:
         self.authenticated += 1
 
-    async def iter_music(self) -> AsyncIterator[JellyfinItem]:
-        # Mirrors RestJellyfinMusicClient.iter_music, which authenticates first.
+    async def libraries(self) -> list[tuple[str, str]]:
         await self.authenticate()
-        for item in self.items:
+        return self._libraries
+
+    async def iter_library(self, library_id: str) -> AsyncIterator[JellyfinItem]:
+        await self.authenticate()
+        for item in self._by_library.get(library_id, []):
             yield item
 
     def audio_uri(self, item_id: str) -> str:
@@ -116,8 +135,10 @@ def _track(**kw) -> JellyfinItem:
     return JellyfinItem(**base)
 
 
-def _run(client, writer, *, uid="household"):
-    ingest = JellyfinMusicIngest(client, writer, ingesting_uid=uid)
+def _run(client, writer, *, uid="household", library_owners=None):
+    ingest = JellyfinMusicIngest(
+        client, writer, ingesting_uid=uid, library_owners=library_owners
+    )
     return asyncio.run(ingest.run())
 
 
@@ -196,10 +217,85 @@ def test_shared_artist_band_dedups_across_tracks(env):
 
 def test_music_catalog_is_household_scoped(env):
     writer, db_path, _ = env
+    # No library_owners map -> the single 'Music' library is shared.
     _run(FakeJellyfinMusicClient([_track()]), writer, uid="mdopp")
     conn = projection.open_conn(db_path)
     scopes = {r[0] for r in conn.execute("SELECT DISTINCT resident_uid FROM entities")}
     assert scopes == {"household"}
+    conn.close()
+
+
+# --- per-library ownership (#576) --------------------------------------------
+
+
+def test_private_library_writes_under_owner_path(env):
+    writer, db_path, tmp_path = env
+    client = FakeJellyfinMusicClient(
+        libraries=[("lib-c", "Music (cdopp)")],
+        by_library={"lib-c": [_track(id="t1", name="Geheim", artist="Adele")]},
+    )
+    _run(client, writer, library_owners={"Music (cdopp)": "cdopp"})
+    conn = projection.open_conn(db_path)
+    scopes = {r[0] for r in conn.execute("SELECT DISTINCT resident_uid FROM entities")}
+    assert scopes == {"cdopp"}
+    conn.close()
+    # cdopp's concepts live under her private path, not the shared okf/ root.
+    assert list((tmp_path / "notes" / "users" / "cdopp" / "okf" / "songs").glob("*.md"))
+    assert not (tmp_path / "notes" / "okf" / "songs").exists()
+
+
+def test_library_name_case_insensitive_owner_match(env):
+    writer, db_path, _ = env
+    client = FakeJellyfinMusicClient(
+        libraries=[("lib-c", "music (CDOPP)")],
+        by_library={"lib-c": [_artist(name="Adele")]},
+    )
+    _run(client, writer, library_owners={"Music (cdopp)": "cdopp"})
+    conn = projection.open_conn(db_path)
+    scopes = {r[0] for r in conn.execute("SELECT DISTINCT resident_uid FROM entities")}
+    assert scopes == {"cdopp"}
+    conn.close()
+
+
+def test_shared_and_private_libraries_split_by_owner(env):
+    writer, db_path, tmp_path = env
+    client = FakeJellyfinMusicClient(
+        libraries=[("lib-s", "Music"), ("lib-c", "Music (cdopp)")],
+        by_library={
+            "lib-s": [_track(id="s1", name="Shared", artist="Beatles")],
+            "lib-c": [_track(id="c1", name="Private", artist="Adele")],
+        },
+    )
+    _run(client, writer, library_owners={"Music (cdopp)": "cdopp"})
+    conn = projection.open_conn(db_path)
+    rows = dict(
+        conn.execute(
+            "SELECT canonical_name, resident_uid FROM entities WHERE type = 'song'"
+        ).fetchall()
+    )
+    assert rows == {"Shared": "household", "Private": "cdopp"}
+    conn.close()
+    assert (tmp_path / "notes" / "okf" / "songs").exists()
+    assert (tmp_path / "notes" / "users" / "cdopp" / "okf" / "songs").exists()
+
+
+def test_band_in_both_libraries_stays_shared(env):
+    # An artist appearing in a shared library AND cdopp's private library must
+    # stay household — shared artists stay shared (operator rule).
+    writer, db_path, _ = env
+    client = FakeJellyfinMusicClient(
+        libraries=[("lib-s", "Music"), ("lib-c", "Music (cdopp)")],
+        by_library={
+            "lib-s": [_track(id="s1", name="Shared Hit", artist="Queen")],
+            "lib-c": [_track(id="c1", name="Private Take", artist="Queen")],
+        },
+    )
+    _run(client, writer, library_owners={"Music (cdopp)": "cdopp"})
+    conn = projection.open_conn(db_path)
+    band = conn.execute(
+        "SELECT resident_uid FROM entities WHERE type = 'band'"
+    ).fetchone()
+    assert band["resident_uid"] == "household"
     conn.close()
 
 

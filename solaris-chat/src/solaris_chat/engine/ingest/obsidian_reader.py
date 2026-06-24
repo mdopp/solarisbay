@@ -73,8 +73,7 @@ class VaultObsidianReader:
             return
         for path in sorted(self._root.rglob("*.md")):
             relpath = path.relative_to(self._root).as_posix()
-            top = relpath.split("/", 1)[0]
-            if top in self._SKIP_DIRS and "/" in relpath:
+            if self._is_machine_subtree(relpath):
                 continue
             if not path.is_file():
                 continue
@@ -85,6 +84,17 @@ class VaultObsidianReader:
             except OSError:
                 continue
             yield self._parse(relpath, text)
+
+    def _is_machine_subtree(self, relpath: str) -> bool:
+        """Our own OKF output / fact-capture dir — at the vault root and under a
+        per-user path (`users/<uid>/okf|facts/...`, #576). A hand-written note
+        directly under `users/<uid>/` is still ingested (path-scoped private)."""
+        parts = relpath.split("/")
+        if len(parts) > 1 and parts[0] in self._SKIP_DIRS:
+            return True
+        if len(parts) > 3 and parts[0] == "users" and parts[2] in self._SKIP_DIRS:
+            return True
+        return False
 
     def _parse(self, relpath: str, text: str) -> VaultNote:
         front, body = _split_frontmatter(text)
