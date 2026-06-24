@@ -254,6 +254,150 @@ async def test_chat_non_stream_single_json(aiohttp_client, db, soul):
     assert body["message"]["content"] == "Erledigt."
 
 
+# -- #566: continuous conversation — a follow-up turn ends in `?` -----------
+
+
+def _offer_tool():
+    from solaris_chat.engine.tools.choices import build_choice_tools
+
+    return build_choice_tools()
+
+
+def _offer_then_say(content: str):
+    # Pass 1 calls offer_choices (populates the choice_sink -> quick_replies);
+    # pass 2 produces the spoken answer text.
+    return [
+        ChatResult(
+            content="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "offer_choices",
+                        "arguments": {"options": ["ja", "nein"]},
+                    }
+                }
+            ],
+            prompt_tokens=5,
+        ),
+        ChatResult(content=content, prompt_tokens=6, completion_tokens=2),
+    ]
+
+
+async def test_followup_turn_final_text_ends_with_question_mark_non_stream(
+    aiohttp_client, db, soul
+):
+    # A turn that called offer_choices must end the spoken text in `?` so HA's
+    # ollama integration sets continue_conversation and the Voice PE re-opens
+    # the mic without a re-wake (#566). The model's text lacks the `?`.
+    household, _ = _engine(db, soul, _offer_then_say("Soll ich das Garagentor öffnen"))
+    household._profile.toolbox = Toolbox(_offer_tool())
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    app = build_app(
+        hermes=household,
+        hermes_deep=deep,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Garagentor öffnen"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["message"]["content"].rstrip().endswith("?")
+
+
+async def test_followup_turn_final_text_ends_with_question_mark_stream(
+    aiohttp_client, db, soul
+):
+    household, _ = _engine(db, soul, _offer_then_say("Meinst du das Büro oder das Bad"))
+    household._profile.toolbox = Toolbox(_offer_tool())
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    app = build_app(
+        hermes=household,
+        hermes_deep=deep,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "messages": [{"role": "user", "content": "Mach das Licht an"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    lines = [json.loads(line) for line in (await resp.text()).strip().splitlines()]
+    content = "".join(line["message"]["content"] for line in lines)
+    assert content.rstrip().endswith("?")
+
+
+async def test_followup_does_not_double_existing_question_mark(
+    aiohttp_client, db, soul
+):
+    # The model already asked properly — don't append a second `?`.
+    household, _ = _engine(db, soul, _offer_then_say("Garage öffnen?"))
+    household._profile.toolbox = Toolbox(_offer_tool())
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    app = build_app(
+        hermes=household,
+        hermes_deep=deep,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Garagentor öffnen"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["message"]["content"].rstrip().endswith("?")
+    assert not body["message"]["content"].rstrip().endswith("??")
+
+
+async def test_statement_turn_does_not_get_forced_question_mark(
+    aiohttp_client, db, soul
+):
+    # No offer_choices this turn: a normal statement must NOT be forced into a
+    # question, so the Voice PE stops listening (continue_conversation=False).
+    app, _ = _app(
+        db,
+        soul,
+        [ChatResult(content="Erledigt.", prompt_tokens=5, completion_tokens=1)],
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Licht an"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["message"]["content"] == "Erledigt."
+    assert not body["message"]["content"].rstrip().endswith("?")
+
+
 async def test_chat_unknown_model_404(aiohttp_client, db, soul):
     app, _ = _app(db, soul, [])
     client = await aiohttp_client(app)
