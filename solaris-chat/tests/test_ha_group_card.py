@@ -69,6 +69,8 @@ def test_room_grouping_renders_room_header_or_label():
     rb = gf.group(1)
     assert "cards.length <= 4" in rb
     assert ">= 2" in rb
+    # #540: a single-room set (room query) groups under one header at any count.
+    assert "singleRoom" in rb
     # Styling for both the header and the inline label exists.
     assert ".hc-room {" in _HTML
     assert ".hc-room-label {" in _HTML

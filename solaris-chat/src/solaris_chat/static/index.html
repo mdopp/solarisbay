@@ -1621,14 +1621,17 @@
       // the engine annotates each card's `room` for the >4 case. Mirrors
       // group_cards_by_room so reload (cards only) groups like the live turn.
       function roomGroups(cards) {
-        if (cards.length <= 4) return null;
         var byRoom = {}, order = [];
         cards.forEach(function (c) {
           var r = c.room || "";
           if (!(r in byRoom)) { byRoom[r] = []; order.push(r); }
           byRoom[r].push(c);
         });
-        var grouped = order.every(function (r) { return byRoom[r].length >= 2; });
+        // A room query (#540) cards one room's actuators -> one header at any
+        // count. Otherwise group only above 4 cards and when every room has ≥2.
+        var singleRoom = cards.length > 1 && order.length === 1 && order[0] !== "";
+        if (cards.length <= 4 && !singleRoom) return null;
+        var grouped = singleRoom || order.every(function (r) { return byRoom[r].length >= 2; });
         return grouped ? order.map(function (r) { return { room: r, cards: byRoom[r] }; }) : null;
       }
 

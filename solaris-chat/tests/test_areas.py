@@ -257,3 +257,82 @@ async def test_list_entities_attaches_room_and_friendly_name(monkeypatch):
     # the entity_id is metadata for the model, but the user-facing name is there
     # and the room resolves — no bare-id-only answer.
     assert row["entity_id"] == "light.wohnzimmer_jackie"
+
+
+async def test_ha_room_cards_cards_every_actuator_of_the_room(monkeypatch):
+    # #540: a room query cards every ACTUATOR of the room (not the sensor),
+    # each emitted to the turn's sink so they render under the one room header.
+    states = [
+        {
+            "entity_id": "light.wz_a",
+            "state": "on",
+            "attributes": {"friendly_name": "WZ A"},
+        },
+        {
+            "entity_id": "switch.wz_b",
+            "state": "off",
+            "attributes": {"friendly_name": "WZ B"},
+        },
+        {
+            "entity_id": "sensor.wz_temp",
+            "state": "21",
+            "attributes": {"friendly_name": "WZ Temp"},
+        },
+        {
+            "entity_id": "light.kueche_c",
+            "state": "on",
+            "attributes": {"friendly_name": "K C"},
+        },
+    ]
+    area = {
+        "light.wz_a": "Wohnzimmer",
+        "switch.wz_b": "Wohnzimmer",
+        "sensor.wz_temp": "Wohnzimmer",
+        "light.kueche_c": "Küche",
+    }
+    import solaris_chat.engine.areas as a_mod
+    import solaris_chat.engine.tools.ha as ha_mod
+    from solaris_chat.engine.areas import AreaSnapshot
+
+    class _Resp:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return states
+
+        def raise_for_status(self):
+            pass
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
+
+    async def _snap(self):
+        return AreaSnapshot(rooms=["Küche", "Wohnzimmer"], entity_area=area)
+
+    monkeypatch.setattr(a_mod.AreaRegistry, "snapshot", _snap)
+
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+    tool = _ha_tool("ha_room_cards")
+    out = json.loads(await tool.handler({"room": "Wohnzimmer"}))
+
+    # the two Wohnzimmer actuators are cards; the sensor + the Küche light are not
+    assert out["room"] == "Wohnzimmer"
+    assert {a["entity_id"] for a in out["actuators"]} == {"light.wz_a", "switch.wz_b"}
+    assert {c["entity_id"] for c in sink} == {"light.wz_a", "switch.wz_b"}

@@ -568,6 +568,18 @@ def test_no_group_when_a_room_is_a_singleton():
     assert cards[4]["room"] == "Flur"
 
 
+def test_single_room_groups_under_threshold():
+    # A room query (#540) cards one room's actuators -> one header even at ≤4.
+    cards = _room_cards(3)
+    area = {
+        "light.l0": "Wohnzimmer",
+        "light.l1": "Wohnzimmer",
+        "light.l2": "Wohnzimmer",
+    }
+    assert ha_mod.group_cards_by_room(cards, area) is True
+    assert [c["room"] for c in cards] == ["Wohnzimmer"] * 3
+
+
 def _stub_call(monkeypatch, *, new_state="on", post_status=200):
     """Stub aiohttp for call_service_scoped: record POSTs, GET returns new state."""
     posts: list[tuple[str, dict]] = []
