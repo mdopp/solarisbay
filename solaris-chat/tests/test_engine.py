@@ -855,11 +855,17 @@ async def test_registry_media_player_legend_includes_play_media(monkeypatch):
 
 
 def test_tool_discipline_confirms_safety_actions():
-    """#382: one crisp confirm-first rule for home-securing actions (locks,
-    alarm disarm, garage covers) and act-decisively for everything else."""
+    """#382/#558: one crisp confirm-first rule for home-securing actions (locks,
+    alarm disarm, garage covers) and act-decisively for everything else. The
+    confirm uses offer_choices(ja/nein) AND must NOT run the action this turn —
+    it waits for the reply (the #558 bug was asking and executing in one turn)."""
     rule = _TOOL_DISCIPLINE
     assert "Soll ich" in rule
     assert "unlock" in rule and "garage" in rule and "alarm_control_panel" in rule
+    # #558: the confirm goes through offer_choices(ja/nein) so chips appear ...
+    assert "offer_choices" in rule
+    # ... and the same turn dispatches no action tool — it stops and waits.
+    assert "KEIN" in rule and "wartest" in rule
     # act decisively on the ordinary domains — no confirmation nag
     assert "ohne Rückfrage" in rule
     for direct in ("Licht", "media_player", "Rollos"):
