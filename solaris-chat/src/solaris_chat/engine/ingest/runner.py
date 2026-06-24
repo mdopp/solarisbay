@@ -28,6 +28,7 @@ from .caldav import DavIngest
 from .dav_client import HttpDavClient
 from .immich import ImmichIngest
 from .immich_client import RestImmichClient
+from .jellyfin import JellyfinMusicIngest, RestJellyfinMusicClient
 from .obsidian import ObsidianIngest
 from .obsidian_reader import VaultObsidianReader
 
@@ -49,6 +50,7 @@ async def run_ingest(settings: Settings) -> None:
     _run_obsidian(settings, writer, uid)
     await _run_immich(settings, writer, uid)
     await _run_caldav(settings, writer, uid)
+    await _run_jellyfin(settings, writer, uid)
 
 
 def _run_obsidian(settings: Settings, writer: OkfWriter, uid: str) -> None:
@@ -144,6 +146,32 @@ async def _run_caldav(settings: Settings, writer: OkfWriter, uid: str) -> None:
         )
     except Exception as e:  # noqa: BLE001 — degrade gracefully on any source error.
         log.error("engine.ingest.caldav_failed", error=str(e))
+
+
+async def _run_jellyfin(settings: Settings, writer: OkfWriter, uid: str) -> None:
+    if not settings.jellyfin_url:
+        log.info("engine.ingest.jellyfin_skipped", reason="unconfigured")
+        return
+    base = settings.jellyfin_url.rstrip("/")
+    if not await _wait_for_health("jellyfin", f"{base}/System/Info/Public"):
+        return
+    try:
+        client = RestJellyfinMusicClient(
+            settings.jellyfin_url,
+            settings.jellyfin_username,
+            settings.jellyfin_password,
+        )
+        stats = await JellyfinMusicIngest(client, writer, ingesting_uid=uid).run()
+        log.info(
+            "engine.ingest.jellyfin",
+            items=stats.items,
+            bands=stats.bands_written,
+            songs=stats.songs_written,
+            skipped=stats.skipped,
+            cursor=stats.cursor,
+        )
+    except Exception as e:  # noqa: BLE001 — degrade gracefully on any source error.
+        log.error("engine.ingest.jellyfin_failed", error=str(e))
 
 
 def _load_cursor(settings: Settings, source: str) -> str:

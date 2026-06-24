@@ -11,6 +11,13 @@ from .caldav import DavIngest, DavIngestStats
 from .dav_client import CalEvent, Contact, DavClient
 from .immich import ImmichIngest, ImmichIngestStats
 from .immich_client import ImmichAsset, ImmichClient, ImmichPerson, RestImmichClient
+from .jellyfin import (
+    JellyfinIngestStats,
+    JellyfinItem,
+    JellyfinMusicClient,
+    JellyfinMusicIngest,
+    RestJellyfinMusicClient,
+)
 from .obsidian import ObsidianIngest, ObsidianIngestStats
 from .obsidian_reader import ObsidianReader, VaultNote, VaultObsidianReader
 from .runner import run_ingest
@@ -24,6 +31,11 @@ __all__ = [
     "ImmichPerson",
     "ImmichClient",
     "RestImmichClient",
+    "JellyfinMusicIngest",
+    "JellyfinIngestStats",
+    "JellyfinItem",
+    "JellyfinMusicClient",
+    "RestJellyfinMusicClient",
     "DavIngest",
     "DavIngestStats",
     "CalEvent",
