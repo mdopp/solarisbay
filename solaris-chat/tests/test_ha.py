@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from solaris_chat.engine import areas as areas_mod
 from solaris_chat.engine.tools import ha as ha_mod
 from solaris_chat.engine.tools.ha import build_ha_tools
 
@@ -62,7 +63,13 @@ def _stub(monkeypatch, *, states=None, history=None, calls=None):
                 calls.append((posturl, json))
             return _Resp({"ok": True})
 
+        def ws_connect(self, _url):
+            # No HA WS in these REST tests — the area registry fails open to an
+            # empty snapshot (room data must never break a state read, #535).
+            raise OSError("no ws")
+
     monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
+    monkeypatch.setattr(areas_mod.aiohttp, "ClientSession", _Session)
     return gets
 
 
