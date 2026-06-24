@@ -400,7 +400,15 @@
     /* Phase 4 (#478): a group card stacks one row per entity, each row keeping
        the per-entity control. Group fills the answer width; rows share the
        card's badge/toggle/busy affordances via .hc-row. */
-    .ha-card.hc-group { max-width: 360px; flex: 1 1 280px; padding: 4px 0; }
+    .ha-card.hc-group { max-width: 100%; flex: 1 1 100%; padding: 4px 0; }
+    /* #539: a group's cards sit side-by-side on an invisible grid (auto-fill,
+       min 200px) so they align in columns when there's room and collapse to a
+       single column when narrow; the groups themselves keep stacking. */
+    .hc-grid {
+      display: grid; gap: 8px;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    }
+    .hc-grid .hc-row { border-top: none; }
     /* #537: room header on a per-room group; inline room label when ungrouped. */
     .hc-room {
       padding: 6px 12px 4px; font-size: 11px; font-weight: 600;
@@ -1649,13 +1657,20 @@
                 head.textContent = g.room;
                 group.appendChild(head);
               }
-              g.cards.forEach(function (c) { group.appendChild(renderHaCard(c, true)); });
+              // #539: the room's cards lay out side-by-side on an invisible grid
+              // (auto-fill, wraps to single-column when narrow); groups stack.
+              var grid = document.createElement("div");
+              grid.className = "hc-grid";
+              g.cards.forEach(function (c) { grid.appendChild(renderHaCard(c, true)); });
+              group.appendChild(grid);
               wrap.appendChild(group);
             });
             return wrap;
           }
           var group = document.createElement("div");
           group.className = "ha-card hc-group";
+          var grid = document.createElement("div");
+          grid.className = "hc-grid";
           cards.forEach(function (c) {
             var row = renderHaCard(c, true);
             if (hasRooms && c.room) {
@@ -1664,8 +1679,9 @@
               lbl.textContent = c.room;
               row.appendChild(lbl);
             }
-            group.appendChild(row);
+            grid.appendChild(row);
           });
+          group.appendChild(grid);
           wrap.appendChild(group);
           return wrap;
         }

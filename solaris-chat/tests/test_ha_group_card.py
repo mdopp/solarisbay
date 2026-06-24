@@ -111,3 +111,21 @@ def test_light_card_is_compact_badge_and_slider_one_row():
     # Compact-row styling: badge + slider laid out on one flex row.
     assert ".hc-compact { display: flex;" in _HTML
     assert ".hc-compact .hc-ctrl-inline" in _HTML
+
+
+def test_group_cards_lay_out_side_by_side_on_a_grid():
+    # #539: within a group the cards sit in a .hc-grid container so they lay out
+    # side-by-side on an invisible grid and wrap to a single column when narrow;
+    # the groups themselves keep stacking. Composes with the #537 room grouping.
+    fn = re.search(r"function renderHaCards\(cards\) \{(.*?)\n      \}\n", _HTML, re.S)
+    assert fn, "renderHaCards not found"
+    body = fn.group(1)
+    # Both the per-room groups and the single ungrouped group build a grid host.
+    assert body.count('grid.className = "hc-grid"') == 2
+    assert "grid.appendChild(renderHaCard(c, true))" in body  # room-group rows
+    assert "grid.appendChild(row)" in body  # ungrouped rows
+    assert "group.appendChild(grid)" in body
+    # CSS grid: responsive auto-fill columns with a min width (degrades to 1col).
+    assert ".hc-grid {" in _HTML
+    assert "display: grid;" in _HTML
+    assert "grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));" in _HTML
