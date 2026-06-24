@@ -154,6 +154,7 @@ def add_facade_routes(
             try:
                 answer = await _drain(turns())
             except EngineError:
+                persist_trace()
                 return web.json_response({"error": "engine unavailable"}, status=502)
             persist_trace()
             return web.Response(
@@ -179,6 +180,10 @@ def add_facade_routes(
                         await resp.write(_chunk(model, final, done=False))
         except EngineError as e:
             log.error("engine.facade.failed", model=model, error=str(e))
+            # A failed voice turn still persists whatever the recorder captured
+            # before the error (#562) — otherwise the failure is invisible in
+            # the chat UI, the operator's exact complaint about intent-failed.
+            persist_trace()
             await resp.write(_chunk(model, "", done=True, done_reason="error"))
             return resp
         persist_trace()

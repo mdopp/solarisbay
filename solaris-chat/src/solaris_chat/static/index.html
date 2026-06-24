@@ -410,6 +410,23 @@
     .ha-card.off .hc-badge { background: rgba(127,127,127,0.18); }
     .ha-card.hc-toggle { cursor: pointer; user-select: none; }
     .ha-card.hc-toggle:hover { border-color: var(--accent); }
+    /* #560: the light/switch on/off badge reads as a real toggle switch — a
+       pill track with a sliding knob that slides right + turns green when on,
+       grey/left when off. The state label text is hidden (it stays as the
+       accessible aria-label on the card). Driven by the card's .on/.off class. */
+    .hc-badge.hc-switch {
+      position: relative; width: 34px; height: 18px; padding: 0;
+      border-radius: 999px; overflow: hidden; font-size: 0;
+      transition: background 0.15s ease; vertical-align: middle;
+    }
+    .hc-badge.hc-switch::after {
+      content: ""; position: absolute; top: 2px; left: 2px;
+      width: 14px; height: 14px; border-radius: 50%; background: #fff;
+      transition: transform 0.15s ease;
+    }
+    .on .hc-badge.hc-switch { background: #22c55e; }
+    .on .hc-badge.hc-switch::after { transform: translateX(16px); }
+    .off .hc-badge.hc-switch { background: rgba(127,127,127,0.45); }
     .ha-card.busy { opacity: 0.6; pointer-events: none; }
     /* #538: a light card is compact — the on/off badge + brightness slider
        share one row (.hc-compact); the slider drops its own top margin and
@@ -1970,9 +1987,14 @@
           }
           badgeHost.appendChild(badge);
           // Phase 2 (#476): light/switch badge becomes an on/off toggle.
+          // #560: render it as a real on/off switch (state-reflecting, flips on
+          // click), not an ambiguous "an"/"aus" label — the badge text stays as
+          // the accessible label while the pill reads visually as a switch.
           if (c.domain === "light" || c.domain === "switch") {
+            badge.classList.add("hc-switch");
             card.classList.add("hc-toggle");
-            card.setAttribute("role", "button");
+            card.setAttribute("role", "switch");
+            card.setAttribute("aria-checked", onish ? "true" : "false");
             card.tabIndex = 0;
             var act = function () { haToggle(card, badge, c); };
             card.addEventListener("click", act);
@@ -1989,6 +2011,8 @@
 
       // HA supported_features bits (only the ones the cards act on).
       var COVER_SET_POSITION = 4, CLIMATE_TARGET_TEMP = 1;
+      // media_player feature bits: turn_on / turn_off / select_source.
+      var MP_TURN_ON = 128, MP_TURN_OFF = 256, MP_SELECT_SOURCE = 2048;
       var COLOUR_MODES = ["rgb", "hs", "xy", "rgbw", "rgbww", "color_temp"];
 
       // Brightness slider (when the light is dimmable) + colour picker (when it
@@ -2102,17 +2126,43 @@
 
       // media_player (#541): state badge (playing/paused/...), what's playing,
       // a transport row (prev / play-pause / next) and a volume slider.
+      // #561: a power on/off toggle (turn_on/turn_off, gated on TURN_ON/OFF) so
+      // an off TV is reachable from the card, plus a source/app picker when the
+      // player supports select_source — reuses the #560 .hc-switch toggle style.
       function renderMediaPlayerCard(card, c, st) {
+        var on = st !== "off" && st !== "" && st !== "unavailable";
         var playing = st === "playing";
-        card.classList.add(playing ? "on" : "off");
-        var badge = document.createElement("span");
-        badge.className = "hc-badge";
-        badge.textContent = haStateLabel("media_player", st);
+        card.classList.add(on ? "on" : "off");
+        var feat = Number(c.supported_features || 0);
         // #550: the badge + the transport buttons share one compact row.
         var compact = document.createElement("div");
         compact.className = "hc-compact";
-        compact.appendChild(badge);
         card.appendChild(compact);
+        // #561: power toggle when the player can be turned on AND off; renders as
+        // the same sliding switch as a light/switch and flips via turn_on/off.
+        if (feat & MP_TURN_ON && feat & MP_TURN_OFF) {
+          var power = document.createElement("span");
+          power.className = "hc-badge hc-switch";
+          power.title = on ? "Ausschalten" : "Einschalten";
+          power.tabIndex = 0;
+          var togglePower = function () {
+            haCall(card, c, "media_player." + (card.classList.contains("on") ? "turn_off" : "turn_on"), {});
+            var nowOn = !card.classList.contains("on");
+            card.classList.toggle("on", nowOn);
+            card.classList.toggle("off", !nowOn);
+            power.title = nowOn ? "Ausschalten" : "Einschalten";
+          };
+          power.addEventListener("click", togglePower);
+          power.addEventListener("keydown", function (e) {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); togglePower(); }
+          });
+          compact.appendChild(power);
+        } else {
+          var badge = document.createElement("span");
+          badge.className = "hc-badge";
+          badge.textContent = haStateLabel("media_player", st);
+          compact.appendChild(badge);
+        }
         makeButtons(compact, [
           ["⏮", "media_previous_track", "Zurück"],
           [playing ? "⏸" : "▶", "media_play_pause", "Play/Pause"],
@@ -2120,6 +2170,22 @@
         ], function (b) {
           haCall(card, c, "media_player." + b[1], {});
         }, true);
+        // #561: source/app picker — only when SELECT_SOURCE is supported and a
+        // source_list is present; a compact dropdown that calls select_source.
+        if (feat & MP_SELECT_SOURCE && Array.isArray(c.source_list) && c.source_list.length) {
+          var sel = document.createElement("select");
+          sel.className = "hc-mode";
+          c.source_list.forEach(function (s) {
+            var opt = document.createElement("option");
+            opt.value = s; opt.textContent = s;
+            if (s === c.source) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          sel.addEventListener("change", function () {
+            haCall(card, c, "media_player.select_source", { source: sel.value });
+          });
+          card.appendChild(sel);
+        }
         if (c.media_title) {
           var nowp = document.createElement("div");
           nowp.className = "hc-now";
@@ -2228,6 +2294,7 @@
         var apply = function (on) {
           card.classList.toggle("on", on);
           card.classList.toggle("off", !on);
+          card.setAttribute("aria-checked", on ? "true" : "false");
           c.state = on ? "on" : "off";
           badge.textContent = haStateLabel(c.domain, c.state);
         };
