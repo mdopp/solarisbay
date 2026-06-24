@@ -25,6 +25,15 @@ def _conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 10000")
+    # WAL so readers (the gatekeeper's speaker-ID lookups) and the ingest
+    # writer don't block each other. Under the default rollback journal a
+    # reader blocks the writer, so the OKF ingest hits "database is locked"
+    # on every asset and its retry loop wedges the chat server (#586). WAL is
+    # persisted in the db header; _conn runs at boot (before the ingest), so
+    # this flips both existing and fresh databases. synchronous=NORMAL is the
+    # safe, recommended pairing for WAL.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 

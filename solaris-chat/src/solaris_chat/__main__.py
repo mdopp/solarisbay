@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 from solaris_chat.config import settings
 from solaris_chat.context import build_context_window
@@ -53,9 +54,21 @@ async def _run() -> None:
         context_window=context_window.value,
     )
     crons.start()
-    # Populate the OKF store on boot (#517). Backgrounded so a slow source
-    # never delays the chat server coming up; the runner never raises.
-    asyncio.create_task(run_ingest(settings))
+
+    # Populate the OKF store on boot (#517). Run in a dedicated worker thread
+    # with its own event loop, NOT as a task on the chat server's loop: the
+    # ingest does synchronous sqlite writes + per-asset embedding work, and on
+    # the main loop that grinds through the whole Immich/Jellyfin library while
+    # blocking every request — /health times out for the entire run and the
+    # chat becomes unreachable (#586). Daemon so it never delays shutdown;
+    # run_ingest never raises, but guard the thread regardless.
+    def _bg_ingest() -> None:
+        try:
+            asyncio.run(run_ingest(settings))
+        except Exception as e:  # noqa: BLE001 — ingest must never crash the box.
+            log.error("engine.ingest.thread_failed", error=str(e))
+
+    threading.Thread(target=_bg_ingest, name="okf-ingest", daemon=True).start()
     await serve(
         settings.host,
         settings.port,
