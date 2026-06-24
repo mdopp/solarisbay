@@ -158,6 +158,70 @@ async def test_resolve_feed_picks_closest_title_over_top_hit(monkeypatch):
     assert any("api.fyyd.de" in u and p.get("count") == 5 for u, p in gets)
 
 
+def _stub_split(monkeypatch, *, title_body, term_body, feed=_FEED):
+    """Stub aiohttp: fyyd GET returns title_body for title=, term_body for term=."""
+    gets: list[tuple[str, dict]] = []
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, geturl, *, params=None, **k):
+            params = params or {}
+            gets.append((geturl, params))
+            if "api.fyyd.de" in geturl:
+                if "term" in params:
+                    return _Resp(json_body=term_body)
+                return _Resp(json_body=title_body)
+            return _Resp(text_body=feed)
+
+        def post(self, posturl, *, json, **k):
+            return _Resp(json_body={"state": "playing"})
+
+    monkeypatch.setattr(media_mod.aiohttp, "ClientSession", _Session)
+    return gets
+
+
+async def test_resolve_feed_falls_back_to_host_term_when_title_misses(monkeypatch):
+    # A host name ("Tim Pritlove") finds no show *title*, so fall back to the
+    # term= search (matches author/host) and fuzzy-pick one of his shows (#568).
+    gets = _stub_split(
+        monkeypatch,
+        title_body={"data": []},
+        term_body={
+            "data": [
+                {"title": "Freak Show", "xmlURL": "https://feed/freakshow.xml"},
+                {"title": "Logbuch:Netzpolitik", "xmlURL": "https://feed/lnp.xml"},
+            ]
+        },
+    )
+    show = await _fyyd_resolve_feed("Tim Pritlove")
+    assert show == {"title": "Freak Show", "feed": "https://feed/freakshow.xml"}
+    # tried title= first (miss), then fell back to term=
+    assert any("api.fyyd.de" in u and p.get("title") == "Tim Pritlove" for u, p in gets)
+    assert any("api.fyyd.de" in u and p.get("term") == "Tim Pritlove" for u, p in gets)
+
+
+async def test_resolve_feed_title_hit_skips_term_search(monkeypatch):
+    # A good title match returns straight away — no needless term= fallback.
+    gets = _stub_split(
+        monkeypatch,
+        title_body={
+            "data": [{"title": "Netzpolitik", "xmlURL": "https://feed/nz.xml"}]
+        },
+        term_body={"data": [{"title": "WRONG", "xmlURL": "https://feed/wrong.xml"}]},
+    )
+    show = await _fyyd_resolve_feed("Netzpolitik")
+    assert show == {"title": "Netzpolitik", "feed": "https://feed/nz.xml"}
+    assert not any("term" in p for _, p in gets)
+
+
 async def test_resolve_feed_falls_back_to_top_when_none_close(monkeypatch):
     _stub(
         monkeypatch,
