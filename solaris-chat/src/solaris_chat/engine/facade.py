@@ -58,6 +58,19 @@ def _authorized(request: web.Request, api_key: str) -> bool:
     return request.headers.get("Authorization", "") == f"Bearer {api_key}"
 
 
+# HA's `ollama` conversation integration derives `continue_conversation` purely
+# from whether the assistant's reply text ends in a question mark (chat_log.py
+# continue_conversation ← util.py). So when THIS turn offered a follow-up via
+# offer_choices (the `quick_replies` event), the spoken text must end in `?` for
+# the Voice PE to re-open the mic without a re-wake (#566). A normal statement
+# answer must NOT, so the loop stops.
+_QUESTION_MARKS = ("?", "？", ";")
+
+
+def _as_question(text: str) -> str:
+    return text if text.rstrip().endswith(_QUESTION_MARKS) else text.rstrip() + "?"
+
+
 def _chunk(model: str, content: str, done: bool, done_reason: str = "") -> bytes:
     body: dict[str, Any] = {
         "model": model,
@@ -152,11 +165,13 @@ def add_facade_routes(
 
         if not stream:
             try:
-                answer = await _drain(turns())
+                answer, offered_choices = await _drain(turns())
             except EngineError:
                 persist_trace()
                 return web.json_response({"error": "engine unavailable"}, status=502)
             persist_trace()
+            if offered_choices and answer:
+                answer = _as_question(answer)
             return web.Response(
                 body=_chunk(model, answer, done=True),
                 content_type="application/json",
@@ -165,6 +180,7 @@ def add_facade_routes(
         resp = web.StreamResponse(headers={"Content-Type": "application/x-ndjson"})
         await resp.prepare(request)
         streamed = ""
+        offered_choices = False
         try:
             async for event in turns():
                 if event["type"] == "assistant.delta":
@@ -172,12 +188,24 @@ def add_facade_routes(
                     if delta:
                         streamed += delta
                         await resp.write(_chunk(model, delta, done=False))
+                elif event["type"] == "quick_replies":
+                    offered_choices = True
                 elif event["type"] == "run.completed":
                     final = _final_answer(event)
                     # A tool turn can finish with no streamed deltas — surface
                     # the final answer as one late chunk (the #258 pattern).
                     if final and not streamed.strip():
+                        streamed = final
                         await resp.write(_chunk(model, final, done=False))
+            # A follow-up turn (offer_choices) must end in `?` so HA keeps the
+            # mic open for the answer without a re-wake (#566). Deltas already
+            # went out verbatim — append the missing `?` as a trailing chunk.
+            if (
+                offered_choices
+                and streamed.strip()
+                and not streamed.rstrip().endswith(_QUESTION_MARKS)
+            ):
+                await resp.write(_chunk(model, "?", done=False))
         except EngineError as e:
             log.error("engine.facade.failed", model=model, error=str(e))
             # A failed voice turn still persists whatever the recorder captured
@@ -243,15 +271,18 @@ def _last_user(messages: list[Any]) -> str:
     return ""
 
 
-async def _drain(turns: AsyncIterator[dict[str, Any]]) -> str:
+async def _drain(turns: AsyncIterator[dict[str, Any]]) -> tuple[str, bool]:
     answer = ""
     streamed = ""
+    offered_choices = False
     async for event in turns:
         if event["type"] == "assistant.delta":
             streamed += str(event["data"].get("delta") or "")
+        elif event["type"] == "quick_replies":
+            offered_choices = True
         elif event["type"] == "run.completed":
             answer = _final_answer(event)
-    return answer or streamed
+    return answer or streamed, offered_choices
 
 
 def _final_answer(event: dict[str, Any]) -> str:
