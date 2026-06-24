@@ -488,18 +488,129 @@ def test_libraries_through_run_maps_per_library_owner(monkeypatch):
     }
 
 
-def test_bad_item_is_skipped_and_the_rest_still_ingest(env):
-    # A track whose title is purely non-Latin -> safe_slug ValueError. Without
-    # per-item isolation it would abort the whole run; it must be skipped and
-    # the next track must still ingest.
+def test_empty_slug_name_is_captured_via_item_id(env):
+    # A track whose title slugifies empty (purely non-Latin) used to abort/skip
+    # (#583); now it falls back to an id-based slug so nothing is lost. Both
+    # tracks ingest, and the unusual one is reachable under its id-based slug.
     writer, db_path, _ = env
     bad = _track(id="bad", name="王芳", artist="")
     ok = _track(id="ok", name="Good Song", artist="")
     stats = _run(FakeJellyfinMusicClient([bad, ok]), writer)
-    assert stats.items == 2 and stats.skipped == 1 and stats.songs_written == 1
+    assert stats.items == 2 and stats.skipped == 0 and stats.songs_written == 2
     conn = projection.open_conn(db_path)
     assert (
         conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'song'").fetchone()[0]
-        == 1
+        == 2
     )
     conn.close()
+
+
+def test_empty_slug_artist_band_and_by_edge_share_id_slug(env):
+    # An artist string that slugifies empty: the band concept and the song's `by`
+    # edge must share the same id-based fallback slug so the link still resolves.
+    writer, db_path, _ = env
+    track = _track(id="tk1", name="Song One", artist="王芳")
+    stats = _run(FakeJellyfinMusicClient([track]), writer)
+    assert stats.skipped == 0 and stats.bands_written == 1 and stats.songs_written == 1
+    conn = projection.open_conn(db_path)
+    bands = conn.execute(
+        "SELECT COUNT(*) FROM entities WHERE type = 'band'"
+    ).fetchone()[0]
+    conn.close()
+    assert bands == 1
+
+
+def _items_page(items, *, total):
+    return {"Items": items, "TotalRecordCount": total}
+
+
+def test_iter_library_reauths_on_401_and_resumes_all_items(monkeypatch):
+    # A token expires mid-pagination: the second /Items page 401s once, then 200s
+    # after a re-auth. The iteration must re-authenticate and resume from the same
+    # StartIndex so NO items are lost (the #583 truncation bug).
+    auth_calls = {"n": 0}
+    page_calls = {"n": 0}
+
+    def _page(start):
+        # 2 items per page, 3 items total -> two pages (start 0, start 2).
+        if start == 0:
+            return _items_page(
+                [
+                    {"Id": "i0", "Type": "Audio", "Name": "S0", "Artists": ["A"]},
+                    {"Id": "i1", "Type": "Audio", "Name": "S1", "Artists": ["A"]},
+                ],
+                total=3,
+            )
+        return _items_page(
+            [{"Id": "i2", "Type": "Audio", "Name": "S2", "Artists": ["A"]}], total=3
+        )
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            auth_calls["n"] += 1
+            return _Resp(
+                json_body={"AccessToken": f"tok{auth_calls['n']}", "User": {"Id": "u1"}}
+            )
+
+        def get(self, url, *, headers=None, params=None, **k):
+            start = int((params or {}).get("StartIndex", "0"))
+            page_calls["n"] += 1
+            # The 2nd /Items page 401s exactly once (token expired mid-ingest).
+            if start == 2 and page_calls["n"] == 2:
+                return _Resp(status=401)
+            return _Resp(json_body=_page(start))
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+
+    async def _collect():
+        return [it.id async for it in client.iter_library("lib-music")]
+
+    ids = asyncio.run(_collect())
+
+    assert ids == ["i0", "i1", "i2"]  # resumed, nothing lost
+    assert auth_calls["n"] == 2  # initial auth + one re-auth on the 401
+    assert client._token == "tok2"  # fresh token in use after re-auth
+
+
+def test_get_json_reauth_is_bounded(monkeypatch):
+    # A server that 401s every request must not loop forever: after the bounded
+    # re-auth the request finally raises instead of re-authing endlessly.
+    auth_calls = {"n": 0}
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            auth_calls["n"] += 1
+            return _Resp(json_body={"AccessToken": "tok", "User": {"Id": "u1"}})
+
+        def get(self, url, *, headers=None, params=None, **k):
+            return _Resp(status=401)  # always unauthorized
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+
+    async def _collect():
+        return [it async for it in client.iter_library("lib-music")]
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        asyncio.run(_collect())
+    # One initial auth + at most _MAX_REAUTH forced re-auths, never unbounded.
+    assert auth_calls["n"] <= client._MAX_REAUTH + 1

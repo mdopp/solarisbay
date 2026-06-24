@@ -107,6 +107,9 @@ class RestJellyfinMusicClient:
     """
 
     _PAGE_SIZE = 500
+    # A long ingest can outlive one session token; cap how many times the whole
+    # run will re-authenticate so a server that 401s every request can't loop.
+    _MAX_REAUTH = 5
     _AUTH_HEADER = (
         'MediaBrowser Client="Solaris", Device="Solaris",'
         ' DeviceId="solaris-ingest", Version="1"'
@@ -126,13 +129,23 @@ class RestJellyfinMusicClient:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._token = ""
         self._user_id = ""
+        self._reauths = 0
 
     def audio_uri(self, item_id: str) -> str:
         return f"jellyfin://audio/{item_id}"
 
+    def _auth_headers(self) -> dict[str, str]:
+        return {"X-Emby-Token": self._token, "Accept": "application/json"}
+
     async def authenticate(self) -> None:
         if self._token:
             return
+        await self._reauthenticate()
+
+    async def _reauthenticate(self) -> None:
+        # Force a fresh AuthenticateByName even if a (stale) token is held, so a
+        # 401 mid-ingest can recover; bounded by _MAX_REAUTH across the run.
+        self._token = ""
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             async with client.post(
                 f"{self._base_url}/Users/AuthenticateByName",
@@ -144,18 +157,37 @@ class RestJellyfinMusicClient:
         self._token = str(payload.get("AccessToken") or "")
         self._user_id = str((payload.get("User") or {}).get("Id") or "")
 
+    async def _get_json(
+        self, client: aiohttp.ClientSession, path: str, *, params: dict | None = None
+    ) -> dict[str, Any]:
+        """Authenticated GET that survives a mid-ingest token expiry: on a 401 it
+        re-authenticates once (fresh token + userId) and retries the SAME request.
+        A long ingest can outlive one token, so this lets pagination resume from
+        the same StartIndex with the new token instead of truncating the tail."""
+        for attempt in (0, 1):
+            async with client.get(
+                f"{self._base_url}{path}", params=params, headers=self._auth_headers()
+            ) as resp:
+                if (
+                    resp.status == 401
+                    and attempt == 0
+                    and self._reauths < self._MAX_REAUTH
+                ):
+                    self._reauths += 1
+                    log.info("engine.ingest.jellyfin_reauth", path=path)
+                    await self._reauthenticate()
+                    continue
+                resp.raise_for_status()
+                return await resp.json()
+        raise AssertionError("unreachable")  # pragma: no cover
+
     async def libraries(self) -> list[tuple[str, str]]:
         # User-scoped Views (not admin-only /Library/MediaFolders, which 403s for
         # the read-only service user, #581); keep only music collections so
         # Playlists/non-music are excluded.
         await self.authenticate()
-        headers = {"X-Emby-Token": self._token, "Accept": "application/json"}
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
-            async with client.get(
-                f"{self._base_url}/Users/{self._user_id}/Views", headers=headers
-            ) as resp:
-                resp.raise_for_status()
-                payload = await resp.json()
+            payload = await self._get_json(client, f"/Users/{self._user_id}/Views")
         return [
             (_str(f, "Id"), _str(f, "Name"))
             for f in (payload.get("Items") or [])
@@ -164,7 +196,6 @@ class RestJellyfinMusicClient:
 
     async def iter_library(self, library_id: str) -> AsyncIterator[JellyfinItem]:
         await self.authenticate()
-        headers = {"X-Emby-Token": self._token, "Accept": "application/json"}
         start = 0
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             while True:
@@ -176,13 +207,9 @@ class RestJellyfinMusicClient:
                     "StartIndex": str(start),
                     "Limit": str(self._PAGE_SIZE),
                 }
-                async with client.get(
-                    f"{self._base_url}/Items",
-                    params=params,
-                    headers=headers,
-                ) as resp:
-                    resp.raise_for_status()
-                    payload = await resp.json()
+                # _get_json re-auths + retries this same page on a 401, so the
+                # pagination resumes from `start` after a token expiry.
+                payload = await self._get_json(client, "/Items", params=params)
                 items = payload.get("Items") or []
                 for raw in items:
                     yield self._item(raw)
@@ -216,6 +243,16 @@ class JellyfinIngestStats:
 
 
 _SHARED = "household"
+
+
+def _slug_or_id(name: str, item_id: str) -> str:
+    """An OKF-safe slug for `name`, falling back to the Jellyfin item id when the
+    name slugifies empty (#583), so an unusual-name item is still captured rather
+    than lost to a ValueError."""
+    try:
+        return safe_slug(name)
+    except ValueError:
+        return safe_slug(f"item-{item_id}")
 
 
 class JellyfinMusicIngest:
@@ -283,29 +320,34 @@ class JellyfinMusicIngest:
         self, item: JellyfinItem, owner: str, stats: JellyfinIngestStats
     ) -> None:
         if item.kind == "MusicArtist":
-            self._write_band(item.name, owner, stats)
+            self._write_band(item.name, item.id, owner, stats)
         elif item.kind == "Audio":
             rels: list[Relationship] = []
             if item.artist:
-                self._write_band(item.artist, owner, stats)
-                rels.append(Relationship("by", f"bands/{safe_slug(item.artist)}"))
+                # Fall back to this track's id only when the artist name has no
+                # own slug, so the band concept and the `by` edge share a slug.
+                slug = self._write_band(item.artist, item.id, owner, stats)
+                rels.append(Relationship("by", f"bands/{slug}"))
             self._write_song(item, owner, rels, stats)
 
-    def _write_band(self, name: str, owner: str, stats: JellyfinIngestStats) -> None:
-        if not name:
-            return
-        slug = safe_slug(name)
+    def _write_band(
+        self, name: str, item_id: str, owner: str, stats: JellyfinIngestStats
+    ) -> str:
+        slug = _slug_or_id(name, item_id)
         # Shared wins: once a band is shared it never gets re-scoped to a user.
         if owner == _SHARED:
             self._shared_bands.add(slug)
         elif slug in self._shared_bands:
             owner = _SHARED
         if slug in self._seen_bands:
-            return
+            return slug
         self._seen_bands.add(slug)
         rec = ConceptRecord(
             type="band",
             title=name,
+            # Pin the slug (id-based when the name slugifies empty, #583) so the
+            # okf path matches the `by` edge and an unusual name isn't lost.
+            slug=slug,
             source=_SOURCE,
             external_id=f"artist/{slug}",
             resident=owner,
@@ -313,6 +355,7 @@ class JellyfinMusicIngest:
         )
         if not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
             stats.bands_written += 1
+        return slug
 
     def _write_song(
         self,
@@ -325,7 +368,7 @@ class JellyfinMusicIngest:
         extra: dict[str, object] = {}
         if item.artist:
             extra["artist"] = item.artist
-            extra["by"] = f"bands/{safe_slug(item.artist)}"
+            extra["by"] = f"bands/{_slug_or_id(item.artist, item.id)}"
         if item.album:
             extra["album"] = item.album
         if item.genre:
@@ -337,7 +380,8 @@ class JellyfinMusicIngest:
             title=item.name or f"Track {item.id}",
             # Suffix the item id so two tracks with the same title don't collide
             # on the title-derived slug; re-ingest of the same track is stable.
-            slug=f"{safe_slug(item.name or item.id)}-{safe_slug(item.id)}",
+            # _slug_or_id falls back to the id when the title slugifies empty.
+            slug=f"{_slug_or_id(item.name, item.id)}-{safe_slug(item.id)}",
             source=_SOURCE,
             external_id=f"audio/{item.id}",
             resident=owner,
