@@ -35,6 +35,7 @@ from solaris_chat.engine.tools.onboarding_approval import (
     build_onboarding_approval_tools,
 )
 from solaris_chat.engine.tools.register import build_register_tools
+from solaris_chat.engine.tools.research import build_research_tools
 from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
 from solaris_chat.engine.tools.timers import build_timer_tools
 from solaris_chat.engine.tools.web import build_web_tools
@@ -98,6 +99,14 @@ def build_engine_clients(
         build_ha_tools(hass_url, hass_token) if hass_url and hass_token else []
     )
     web_tools = build_web_tools(tavily_api_key)
+    # Research-synthesis (#574): one tool does gather+trust-rank+cite so the
+    # small model only phrases. Rides with the web fan-out, so it's gated on web
+    # availability exactly as the web tools are; it pulls in the notes vault too.
+    research_tools = build_research_tools(
+        notes_dir=notes_dir,
+        uid_getter=_current_uid,
+        tavily_api_key=tavily_api_key,
+    )
 
     # Quick-reply chips (#555): offered on any profile that holds a conversation,
     # so household, deep and guest all get the offer_choices tool.
@@ -106,6 +115,7 @@ def build_engine_clients(
     household_tools: list[Tool] = list(ha_tools)
     household_tools += build_timer_tools(db_path, _current_uid)
     household_tools += web_tools
+    household_tools += research_tools
     household_tools += choice_tools
     if hass_url and hass_token:
         household_tools += build_media_tools(hass_url, hass_token)
@@ -131,6 +141,7 @@ def build_engine_clients(
     guest_tools: list[Tool] = (
         [t for t in ha_tools if t.name != "ha_run_scene_script"]
         + list(web_tools)
+        + list(research_tools)
         + choice_tools
     )
     # The registration flow runs under the guest profile (an unknown speaker is
