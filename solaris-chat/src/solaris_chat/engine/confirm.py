@@ -25,10 +25,26 @@ from typing import Any
 SENSITIVE_DOMAINS: frozenset[str] = frozenset({"lock", "alarm_control_panel"})
 SENSITIVE_SERVICES: frozenset[str] = frozenset(
     {
-        "open_cover",  # cover: garage door / gate
         "open",
         "unlock",
         "alarm_disarm",
+    }
+)
+
+# A `cover` is the house's perimeter only when its device_class is a garage door,
+# entrance door or gate — those get gated; blinds/shades/curtains/awnings/windows
+# must NOT (don't annoy the daily blind). The gate keys on the cover's
+# device_class, so a `cover` call is sensitive only for an OPENING/MOVING service
+# on a perimeter class. close_cover stays ungated (re-securing), and an
+# unresolvable device_class fails SAFE for these open-direction services.
+SENSITIVE_COVER_CLASSES: frozenset[str] = frozenset({"garage", "door", "gate"})
+COVER_OPEN_SERVICES: frozenset[str] = frozenset(
+    {
+        "open_cover",
+        "toggle",
+        "set_cover_position",
+        "set_cover_tilt_position",
+        "open_cover_tilt",
     }
 )
 
@@ -39,25 +55,19 @@ _AFFIRMATIVE: frozenset[str] = frozenset(
     {
         "ja",
         "jawohl",
-        "jep",
         "jo",
-        "klar",
-        "gerne",
+        "jepp",
+        "joa",
         "ok",
         "okay",
-        "mach",
-        "machs",
-        "los",
-        "öffne",
-        "öffnen",
-        "auf",
-        "bestätige",
-        "bestätigen",
+        "oki",
         "yes",
         "yep",
         "yeah",
-        "sure",
-        "go",
+        "genau",
+        "bestätige",
+        "bestätigt",
+        "bitte",
     }
 )
 _NEGATIVE: frozenset[str] = frozenset(
@@ -85,6 +95,10 @@ _WORD_RE = re.compile(r"[a-zäöüß]+")
 # the bare service name so an extension to SENSITIVE_SERVICES still asks.
 _ACTION_VERBS: dict[str, str] = {
     "open_cover": "öffnen",
+    "open_cover_tilt": "öffnen",
+    "toggle": "umschalten",
+    "set_cover_position": "verstellen",
+    "set_cover_tilt_position": "verstellen",
     "open": "öffnen",
     "unlock": "entsperren",
     "alarm_disarm": "entschärfen",
@@ -103,9 +117,21 @@ def confirm_prompt(domain: str, service: str, entity_id: str) -> str:
     return f"Soll ich {name} wirklich {verb}?"
 
 
-def is_sensitive(domain: str, service: str) -> bool:
-    """True when a ha_call_service domain+service can open/unsecure the house."""
-    return domain in SENSITIVE_DOMAINS or service in SENSITIVE_SERVICES
+def is_sensitive(domain: str, service: str, device_class: str | None = None) -> bool:
+    """True when a ha_call_service domain+service can open/unsecure the house.
+
+    For a `cover`, the danger is class-specific: a garage/door/gate opening or
+    moving is gated, an ordinary blind/shade/curtain is not. `device_class` is
+    the target entity's HA device_class (None when it could not be resolved); an
+    open-direction cover service with an unresolved class fails SAFE (gated)."""
+    if domain in SENSITIVE_DOMAINS or service in SENSITIVE_SERVICES:
+        return True
+    if domain == "cover" and service in COVER_OPEN_SERVICES:
+        dc = (device_class or "").lower()
+        if not dc:
+            return True  # fail safe — can't prove it's a harmless blind
+        return dc in SENSITIVE_COVER_CLASSES
+    return False
 
 
 def is_affirmative(text: str) -> bool:
@@ -144,13 +170,15 @@ class PendingAction:
 
 
 class PendingStore:
-    """Per-session stash of one pending sensitive action.
+    """Per-conversation stash of one pending sensitive action.
 
-    In-memory and keyed by the session/source id the loop runs under — both the
-    durable household session (voice + browser share one row) and the stateless
-    facade source land here, so the gate survives the turn boundary without a
-    schema change. One slot per session: a fresh sensitive request replaces an
-    unanswered one.
+    In-memory and keyed by the conversation the loop runs under: the durable
+    household session id (voice + browser share one row — by design), or, on the
+    stateless facade path, HA's per-conversation id. A per-profile constant must
+    NOT be used as the key — that would let one caller confirm another caller's
+    held action (#570 fail-open F3). When the ephemeral path has no
+    per-conversation key, the loop simply does not stash (re-gate every turn).
+    One slot per key: a fresh sensitive request replaces an unanswered one.
     """
 
     def __init__(self) -> None:

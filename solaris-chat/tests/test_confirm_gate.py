@@ -18,12 +18,47 @@ import pytest
 
 from solaris_chat.engine import areas as areas_mod
 from solaris_chat.engine import confirm
+from solaris_chat.engine.client import EngineClient, EngineProfile
 from solaris_chat.engine.ollama import ChatResult
+from solaris_chat.engine.tools import Toolbox
 from solaris_chat.engine.tools import ha as ha_mod
 from solaris_chat.engine.tools.choices import build_choice_tools
 from solaris_chat.engine.tools.ha import build_ha_tools
+from solaris_chat.engine.trace import TraceRecorder
 
 from tests.test_engine import _SCHEMA, _client  # shared schema + client harness
+from tests.test_engine import FakeOllama
+
+
+class _FakeRegistry:
+    """Duck-typed EntityRegistry: resolves a fixed entity->device_class map for
+    the gate (so a cover test needn't touch HA)."""
+
+    def __init__(self, classes: dict[str, str]):
+        self._classes = classes
+
+    async def device_class(self, entity_id: str) -> str | None:
+        return self._classes.get(entity_id)
+
+    async def prompt_block(self) -> str:
+        return ""
+
+
+def _client_with_registry(db, soul, results, classes: dict[str, str]) -> EngineClient:
+    fake = FakeOllama(results)
+    return EngineClient(
+        EngineProfile(
+            name="household",
+            model="gemma4:e2b",
+            soul_path=soul,
+            registry=_FakeRegistry(classes),  # type: ignore[arg-type]
+            toolbox=Toolbox(_tools()),
+        ),
+        db_path=db,
+        ollama=fake,
+        recorder=TraceRecorder(),
+        context_window=32768,
+    )
 
 
 @pytest.fixture
@@ -110,25 +145,66 @@ def _open_garage_call() -> ChatResult:
     )
 
 
+def _cover_call(service: str, entity_id: str, data: dict | None = None) -> ChatResult:
+    args: dict = {"domain": "cover", "service": service, "entity_id": entity_id}
+    if data is not None:
+        args["data"] = data
+    return ChatResult(
+        tool_calls=[{"function": {"name": "ha_call_service", "arguments": args}}]
+    )
+
+
 # -- policy units ---------------------------------------------------------
 
 
 def test_classify_sensitive_by_service_and_domain():
-    assert confirm.is_sensitive("cover", "open_cover")
     assert confirm.is_sensitive("lock", "unlock")
     assert confirm.is_sensitive("alarm_control_panel", "alarm_disarm")
     assert confirm.is_sensitive("lock", "lock")  # whole lock domain is gated
     # routine controls are not sensitive
     assert not confirm.is_sensitive("light", "turn_on")
-    assert not confirm.is_sensitive("cover", "close_cover")
     assert not confirm.is_sensitive("switch", "turn_off")
+
+
+def test_classify_cover_is_class_specific():
+    # A garage/door/gate cover is gated for any opening/moving service (F1)...
+    for svc in (
+        "open_cover",
+        "toggle",
+        "set_cover_position",
+        "set_cover_tilt_position",
+        "open_cover_tilt",
+    ):
+        assert confirm.is_sensitive("cover", svc, "garage")
+    assert confirm.is_sensitive("cover", "toggle", "door")
+    assert confirm.is_sensitive("cover", "set_cover_position", "gate")
+    # ...but an ordinary blind/shade/curtain/awning/window is NOT — don't annoy.
+    for dc in ("blind", "shade", "curtain", "awning", "window"):
+        assert not confirm.is_sensitive("cover", "set_cover_position", dc)
+        assert not confirm.is_sensitive("cover", "open_cover", dc)
+        assert not confirm.is_sensitive("cover", "toggle", dc)
+    # close_cover is always ungated (re-secures), even for a garage.
+    assert not confirm.is_sensitive("cover", "close_cover", "garage")
+    # Unresolvable device_class on an open-direction service fails SAFE (gated).
+    assert confirm.is_sensitive("cover", "open_cover", None)
+    assert confirm.is_sensitive("cover", "set_cover_position", "")
+    # but a non-opening service on an unknown cover is not gated by the rule
+    assert not confirm.is_sensitive("cover", "close_cover", None)
 
 
 def test_affirmative_negative_detection():
     assert confirm.is_affirmative("ja")
     assert confirm.is_affirmative("Ja bitte öffnen")
-    assert confirm.is_affirmative("mach")
+    assert confirm.is_affirmative("ja mach auf")  # "ja" token still confirms
     assert not confirm.is_affirmative("nein")
+    # common filler words must NOT detonate a pending action (F2)
+    assert not confirm.is_affirmative("mach")
+    assert not confirm.is_affirmative("Mach mal das Licht an")
+    assert not confirm.is_affirmative("los")
+    assert not confirm.is_affirmative("klar")
+    assert not confirm.is_affirmative("gerne")
+    assert not confirm.is_affirmative("go")
+    assert not confirm.is_affirmative("auf")
     assert confirm.is_negative("nein")
     assert confirm.is_negative("Stop, abbrechen")
     # negative wins on a mixed reply — never auto-execute on ambiguity
@@ -281,3 +357,213 @@ async def test_gate_normalizes_cover_open_alias(db, soul, monkeypatch):
     assert posts == []
     pending = client._pending.peek(sid)
     assert pending is not None and pending.service == "open_cover"
+
+
+# -- F1: cover gate is device_class-specific ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_garage_set_cover_position_is_gated(db, soul, monkeypatch):
+    posts = _stub_ha(monkeypatch)
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            _cover_call("set_cover_position", "cover.garage_door", {"position": 100}),
+            ChatResult(content="Soll ich das Garagentor wirklich verstellen?"),
+        ],
+        {"cover.garage_door": "garage"},
+    )
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Garage auf 100")]
+    # NOT executed on turn 1 — held for confirmation.
+    assert posts == []
+    qr = [e for e in events if e["type"] == "quick_replies"]
+    assert qr and qr[0]["data"]["options"] == ["ja", "nein"]
+    pending = client._pending.peek(sid)
+    assert pending is not None and pending.service == "set_cover_position"
+
+
+@pytest.mark.asyncio
+async def test_garage_toggle_is_gated(db, soul, monkeypatch):
+    posts = _stub_ha(monkeypatch)
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            _cover_call("toggle", "cover.garage_door"),
+            ChatResult(content="Soll ich das Garagentor wirklich umschalten?"),
+        ],
+        {"cover.garage_door": "garage"},
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Garage umschalten")]
+    assert posts == []
+    assert client._pending.peek(sid) is not None
+
+
+@pytest.mark.asyncio
+async def test_blind_set_cover_position_not_gated(db, soul, monkeypatch):
+    posts = _stub_ha(monkeypatch)
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            _cover_call("set_cover_position", "cover.living_blind", {"position": 50}),
+            ChatResult(content="Rollo ist auf 50%."),
+        ],
+        {"cover.living_blind": "blind"},
+    )
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Rollo auf 50")]
+    # A blind is NOT sensitive — it executes directly, no confirmation chips.
+    assert len(posts) == 1
+    assert posts[0][0].endswith("/api/services/cover/set_cover_position")
+    assert client._pending.peek(sid) is None
+    assert not any(e["type"] == "quick_replies" for e in events)
+
+
+# -- F2: a fresh request must not detonate the pending action -------------
+
+
+@pytest.mark.asyncio
+async def test_fresh_request_drops_pending_without_executing(db, soul, monkeypatch):
+    posts = _stub_ha(monkeypatch)
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            _open_garage_call(),
+            ChatResult(content="Soll ich das Garagentor wirklich öffnen?"),
+            # turn 2 is a NEW request — the model turns on the light.
+            ChatResult(
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "ha_call_service",
+                            "arguments": {
+                                "domain": "light",
+                                "service": "turn_on",
+                                "entity_id": "light.kitchen",
+                            },
+                        }
+                    }
+                ]
+            ),
+            ChatResult(content="Licht ist an."),
+        ],
+        {"cover.garage_door": "garage"},
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Garagentor öffnen")]
+    assert posts == []  # held
+
+    _ = [e async for e in client.chat_stream(sid, "Mach mal das Licht an")]
+    # The pending garage is DROPPED, not executed — only the light was switched.
+    assert len(posts) == 1
+    assert posts[0][0].endswith("/api/services/light/turn_on")
+    assert all("cover" not in url for url, _ in posts)
+    assert client._pending.peek(sid) is None
+
+
+@pytest.mark.asyncio
+async def test_clear_ja_executes_pending(db, soul, monkeypatch):
+    posts = _stub_ha(monkeypatch)
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            _open_garage_call(),
+            ChatResult(content="Soll ich das Garagentor wirklich öffnen?"),
+            ChatResult(content="Erledigt."),
+        ],
+        {"cover.garage_door": "garage"},
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Garagentor öffnen")]
+    assert posts == []
+    _ = [e async for e in client.chat_stream(sid, "ja")]
+    assert len(posts) == 1
+    assert posts[0][0].endswith("/api/services/cover/open_cover")
+    assert client._pending.peek(sid) is None
+
+
+@pytest.mark.asyncio
+async def test_new_sensitive_request_while_pending_does_not_execute_old(
+    db, soul, monkeypatch
+):
+    posts = _stub_ha(monkeypatch)
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            _open_garage_call(),
+            ChatResult(content="Soll ich das Garagentor wirklich öffnen?"),
+            # turn 2: a DIFFERENT sensitive action (unlock), no yes/no.
+            ChatResult(
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "ha_call_service",
+                            "arguments": {
+                                "domain": "lock",
+                                "service": "unlock",
+                                "entity_id": "lock.front",
+                            },
+                        }
+                    }
+                ]
+            ),
+            ChatResult(content="Soll ich das Schloss wirklich entsperren?"),
+        ],
+        {"cover.garage_door": "garage"},
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Garagentor öffnen")]
+    _ = [e async for e in client.chat_stream(sid, "Schloss aufschließen")]
+    # Neither the old garage nor the new unlock ran — the new one is re-gated.
+    assert posts == []
+    pending = client._pending.peek(sid)
+    assert pending is not None
+    assert (pending.domain, pending.service) == ("lock", "unlock")
+
+
+# -- F3: ephemeral key isolates two callers -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_conversation_id_isolates_callers(db, soul, monkeypatch):
+    posts = _stub_ha(monkeypatch)
+    # One ephemeral client (one profile source) serves two distinct
+    # conversations; caller B's "ja" must not confirm caller A's held garage.
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            _open_garage_call(),  # A turn 1: gated
+            ChatResult(content="Soll ich das Garagentor wirklich öffnen?"),
+            ChatResult(content="Hallo!"),  # B turn 1: just a greeting
+        ],
+        {"cover.garage_door": "garage"},
+    )
+    a = [{"role": "user", "content": "Garagentor öffnen"}]
+    _ = [
+        e
+        async for e in client.respond(
+            a, uid="household", source="solaris-guest", conversation_id="conv-A"
+        )
+    ]
+    assert posts == []  # A's garage is held under conv-A
+
+    # Caller B (different conversation) says "ja" — must NOT execute A's pending.
+    b = [{"role": "user", "content": "ja"}]
+    _ = [
+        e
+        async for e in client.respond(
+            b, uid="household", source="solaris-guest", conversation_id="conv-B"
+        )
+    ]
+    assert posts == []  # B's "ja" never reached A's pending action
+    # A's pending still sits under its own conversation key, untouched.
+    assert client._pending.peek("conv-A") is not None
+    assert client._pending.peek("conv-B") is None

@@ -153,9 +153,17 @@ def add_facade_routes(
         # guest turns persist nothing.
         t0 = time.time()
 
+        # HA's conversation id keys the confirmation gate per conversation on the
+        # ephemeral path so one caller can't confirm another's held action (#570
+        # F3); None when absent disables stashing (re-gate every turn).
+        conversation_id = body.get("conversation_id")
+        conversation_id = str(conversation_id) if conversation_id else None
+
         def turns() -> AsyncIterator[dict[str, Any]]:
             if client.ephemeral:
-                return client.respond(messages, uid=uid, source=model)
+                return client.respond(
+                    messages, uid=uid, source=model, conversation_id=conversation_id
+                )
             return client.respond_session(text, uid=uid)
 
         def persist_trace() -> None:
