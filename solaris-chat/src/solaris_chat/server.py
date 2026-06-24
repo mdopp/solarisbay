@@ -2106,6 +2106,8 @@ def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return "tool", out
     if etype == "ha_cards":
         return "ha_cards", {"cards": payload.get("cards") or []}
+    if etype == "quick_replies":
+        return "quick_replies", {"options": payload.get("options") or []}
     if etype == "suggestions":
         return "suggestions", {"suggestions": payload.get("suggestions") or []}
     if etype == "anchors":
