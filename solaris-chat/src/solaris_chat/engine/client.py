@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from solaris_chat.engine import store
+from solaris_chat.engine import confirm, store
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
@@ -49,6 +49,14 @@ current_uid: contextvars.ContextVar[str] = contextvars.ContextVar(
 # Tool-call passes per turn: enough for list->act->confirm chains plus a
 # retry, small enough that a confused model can't spin.
 _MAX_PASSES = 6
+
+
+class _Unset:
+    """Sentinel: `pending_key` was not passed (use session_id), distinct from an
+    explicit None (no per-conversation key — do not stash)."""
+
+
+_UNSET = _Unset()
 
 _LOCAL_TZ = ZoneInfo("Europe/Berlin")
 
@@ -213,6 +221,10 @@ class EngineClient:
         self._context_window = context_window
         self._bus = bus
         self._soul_cache: tuple[float, str] = (0.0, "")
+        # Per-session stash of a sensitive action held for ja/nein confirmation
+        # (#570). In-memory on the client (one per profile) — survives the turn
+        # boundary for both the durable session and the stateless facade source.
+        self._pending = confirm.PendingStore()
 
     @property
     def recorder(self) -> TraceRecorder:
@@ -367,6 +379,7 @@ class EngineClient:
         *,
         uid: str = "",
         source: str = "assist",
+        conversation_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stateless turn for the Ollama facade (HA Assist / gatekeeper).
 
@@ -376,6 +389,11 @@ class EngineClient:
         and the wall-clock hint rides the last user message — same lever the
         session path uses, and prefix-cache-friendly (the stable soul+registry
         block stays byte-identical across turns).
+
+        `conversation_id` (HA's per-turn id) keys the confirmation gate so a
+        held action is confirmable only within the same conversation, never by a
+        different caller on the same profile source (#570 F3). None when HA sent
+        no id — the gate then re-gates every turn instead of stashing.
         """
         token = current_uid.set(uid)
         try:
@@ -403,6 +421,7 @@ class EngineClient:
                 session_id=source,
                 persist=False,
                 uid=uid,
+                pending_key=conversation_id,
             ):
                 yield event
         except OllamaError as e:
@@ -439,6 +458,60 @@ class EngineClient:
         async for event in self.chat_stream(session_id, turn):
             yield event
 
+    async def _gate_sensitive(
+        self,
+        args: dict[str, Any],
+        confirmed: set[tuple[str, str, str]],
+        session_id: str | None,
+        quick_replies: list[str],
+    ) -> str | None:
+        """Hold a sensitive, unconfirmed ha_call_service (#570).
+
+        Returns a needs_confirmation tool-result string (and, when a per-
+        conversation `session_id` is available, stashes the pending action +
+        fills the ja/nein chips) when the call must be confirmed first; returns
+        None to let dispatch run normally (routine, or just-confirmed). With no
+        per-conversation key (ephemeral, no conversation_id) it still gates but
+        does not stash — every turn re-gates rather than risk a cross-caller
+        confirmation (F3)."""
+        domain = str(args.get("domain") or "")
+        service = str(args.get("service") or "")
+        # Normalise the model's natural verb the same way call_service does
+        # (cover "open" -> "open_cover"), so the classification sees the real
+        # service name.
+        service = ha_tools._SERVICE_ALIASES.get(domain, {}).get(service, service)
+        entity_id = str(args.get("entity_id") or "")
+        # A cover's danger is class-specific: resolve the entity's device_class
+        # so a garage/door/gate is gated but a blind is not (F1).
+        device_class: str | None = None
+        if domain == "cover" and self._profile.registry is not None:
+            device_class = await self._profile.registry.device_class(entity_id)
+        if not confirm.is_sensitive(domain, service, device_class):
+            return None
+        if (domain, service, entity_id) in confirmed:
+            return None
+        data = args.get("data") if isinstance(args.get("data"), dict) else None
+        prompt = confirm.confirm_prompt(domain, service, entity_id)
+        # Only stash when we have a per-conversation key (F3): without one a held
+        # action could be confirmed by a different caller, so re-gate next turn.
+        if session_id:
+            self._pending.stash(
+                session_id,
+                confirm.PendingAction(
+                    domain=domain,
+                    service=service,
+                    entity_id=entity_id,
+                    data=data,
+                    prompt=prompt,
+                ),
+            )
+        quick_replies.clear()
+        quick_replies.extend(["ja", "nein"])
+        return json.dumps(
+            {"ok": False, "needs_confirmation": True, "prompt": prompt},
+            ensure_ascii=False,
+        )
+
     async def _loop(
         self,
         messages: list[dict[str, Any]],
@@ -447,13 +520,22 @@ class EngineClient:
         session_id: str,
         persist: bool,
         uid: str = "",
+        pending_key: str | None | _Unset = _UNSET,
     ) -> AsyncIterator[dict[str, Any]]:
         """The agent loop: stream, dispatch tools, feed results back, repeat.
 
         `persist=False` runs the identical loop without store writes (the
         stateless facade path); traces record either way — session turns under
         their session id, stateless ones under the source label.
+
+        `pending_key` keys the confirmation gate's stash per CONVERSATION, not
+        per session/source (F3): the durable path leaves it unset (its session
+        id is the conversation), the stateless facade path passes HA's
+        conversation_id — or None when absent, which disables stashing so a
+        per-profile source can never be a cross-caller confirmation key.
         """
+        if isinstance(pending_key, _Unset):
+            pending_key = session_id
         await self._profile.toolbox.prepare()
         tools = self._profile.toolbox.definitions()
         # Per-turn sink the HA state tools fill with read-only card-specs (#475);
@@ -470,8 +552,67 @@ class EngineClient:
             else None
         )
 
+        # Deterministic confirmation gate (#570): if this conversation holds a
+        # sensitive action from a prior turn, the current user reply decides its
+        # fate before the model runs. A CLEAR affirmative executes the held
+        # action now (then the model reports the result from the tool message); a
+        # clear negative drops it (negative wins on a tie). ANYTHING ELSE — a
+        # fresh request with no yes/no — DROPS the pending (does NOT execute, F2)
+        # and lets the new request process normally, re-gating if it is itself
+        # sensitive. `confirmed` carries the just-confirmed target so the gate
+        # below doesn't re-hold the very action we are now executing.
+        confirmed: set[tuple[str, str, str]] = set()
+        confirmed_executed = False
+        pending = self._pending.peek(pending_key) if pending_key else None
+        if pending is not None:
+            reply = _last_user_text(messages)
+            if confirm.is_negative(reply):
+                self._pending.take(pending_key)
+            elif not confirm.is_affirmative(reply):
+                # A new request, not a yes — abandon the stale pending and let
+                # the turn run; never execute the old action on ambiguity.
+                self._pending.take(pending_key)
+            else:
+                self._pending.take(pending_key)
+                confirmed.add((pending.domain, pending.service, pending.entity_id))
+                tc = {
+                    "function": {"name": "ha_call_service", "arguments": pending.args()}
+                }
+                yield {"type": "tool.started", "data": {"tool": "ha_call_service"}}
+                if uid:
+                    current_uid.set(uid)
+                t0 = time.monotonic()
+                output = await self._profile.toolbox.dispatch(
+                    "ha_call_service", pending.args()
+                )
+                tool_wall_s = time.monotonic() - t0
+                self._recorder.record_tool(
+                    session_id=session_id,
+                    profile=self._profile.name,
+                    tool_name="ha_call_service",
+                    wall_s=tool_wall_s,
+                )
+                yield {
+                    "type": "tool.completed",
+                    "data": {"tool": "ha_call_service", "wall_s": tool_wall_s},
+                }
+                if persist:
+                    store.append_message(
+                        self._db_path, session_id, "assistant", "", tool_calls=[tc]
+                    )
+                    store.append_message(self._db_path, session_id, "tool", output)
+                messages.append(
+                    {"role": "assistant", "content": "", "tool_calls": [tc]}
+                )
+                messages.append(
+                    {"role": "tool", "content": output, "tool_name": "ha_call_service"}
+                )
+                confirmed_executed = True
+
         has_tools = bool(self._profile.toolbox.names())
-        tool_dispatched = False
+        # A confirmed action already ran a tool this turn, so the model's report
+        # ("Garagentor ist offen") is grounded, not a fabrication (#570/#356).
+        tool_dispatched = confirmed_executed
         corrected = False
         final_content = ""
         final_thinking = ""
@@ -569,6 +710,27 @@ class EngineClient:
                 # during dispatch would otherwise land nowhere (#475).
                 ha_tools.card_sink.set(ha_cards)
                 choice_tools.choice_sink.set(quick_replies)
+                # Confirmation gate (#570): a sensitive ha_call_service the model
+                # issues without prior confirmation is NOT executed. Hold it,
+                # offer ja/nein chips, and feed the model a needs_confirmation
+                # result so it relays the question instead of a fake "done".
+                if name == "ha_call_service" and isinstance(args, dict):
+                    held = await self._gate_sensitive(
+                        args, confirmed, pending_key, quick_replies
+                    )
+                    if held is not None:
+                        yield {
+                            "type": "tool.completed",
+                            "data": {"tool": name, "wall_s": 0.0},
+                        }
+                        if persist:
+                            store.append_message(
+                                self._db_path, session_id, "tool", held
+                            )
+                        messages.append(
+                            {"role": "tool", "content": held, "tool_name": name}
+                        )
+                        continue
                 t0 = time.monotonic()
                 output = await self._profile.toolbox.dispatch(name, args)
                 tool_wall_s = time.monotonic() - t0

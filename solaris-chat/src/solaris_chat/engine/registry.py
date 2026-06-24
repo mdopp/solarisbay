@@ -75,6 +75,33 @@ class EntityRegistry:
         self._areas = AreaRegistry(hass_url, hass_token)
         self._block = ""
         self._fetched_at = 0.0
+        # entity_id -> device_class ("" when the entity has none), filled from
+        # the same /api/states read prompt_block already does. The gate reads it
+        # to tell a garage cover from a blind (#570 F1).
+        self._device_classes: dict[str, str] = {}
+
+    async def device_class(self, entity_id: str) -> str | None:
+        """The entity's HA device_class, or None when it can't be resolved.
+
+        Synchronous policy needs this for the confirmation gate (a garage cover
+        vs. a blind). Served from the cache the registry already populates; on a
+        miss it does one targeted state read. None on any HA error so the caller
+        can fail SAFE — an empty string means the entity exists but has no class.
+        """
+        if entity_id in self._device_classes:
+            return self._device_classes[entity_id]
+        if not self._url or not self._token:
+            return None
+        try:
+            states = await self._fetch_states()
+        except (aiohttp.ClientError, TimeoutError, OSError) as e:
+            log.warn("engine.registry.device_class.unreachable", error=str(e))
+            return None
+        for s in states:
+            eid = str(s.get("entity_id") or "")
+            attrs = s.get("attributes") or {}
+            self._device_classes[eid] = str(attrs.get("device_class") or "")
+        return self._device_classes.get(entity_id)
 
     async def area_snapshot(self) -> AreaSnapshot:
         """The current area snapshot (entity→room map), for card room-grouping
@@ -101,11 +128,13 @@ class EntityRegistry:
         # which device_classes — so the model knows what it can fetch on demand.
         readonly_domains: set[str] = set()
         sensor_classes: set[str] = set()
+        self._device_classes = {}
         for s in states:
             entity_id = str(s.get("entity_id") or "")
             domain = entity_id.split(".", 1)[0]
             attrs = s.get("attributes") or {}
             device_class = str(attrs.get("device_class") or "")
+            self._device_classes[entity_id] = device_class
             if domain not in CONTROLLABLE_DOMAINS:
                 # Not actionable — keep it out of the prompt, just record that it
                 # exists so the legend can point the model at a targeted query.
