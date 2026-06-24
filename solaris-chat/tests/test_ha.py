@@ -525,6 +525,49 @@ def test_open_state_scope_filters_covers():
     assert [c["entity_id"] for c in kept] == ["cover.a"]
 
 
+def _room_cards(n):
+    return [
+        {"entity_id": f"light.l{i}", "state": "on", "domain": "light"} for i in range(n)
+    ]
+
+
+def test_group_under_threshold_unchanged():
+    # ≤4 cards: no grouping, no room annotation (#537).
+    cards = _room_cards(4)
+    assert ha_mod.group_cards_by_room(cards, {"light.l0": "Küche"}) is False
+    assert all("room" not in c for c in cards)
+
+
+def test_group_when_every_room_has_two_plus():
+    # >4 cards across 2 rooms, ≥2 each -> grouped, each card carries its room.
+    cards = _room_cards(6)
+    area = {
+        "light.l0": "Küche",
+        "light.l1": "Küche",
+        "light.l2": "Küche",
+        "light.l3": "Bad",
+        "light.l4": "Bad",
+        "light.l5": "Bad",
+    }
+    assert ha_mod.group_cards_by_room(cards, area) is True
+    assert [c["room"] for c in cards] == ["Küche"] * 3 + ["Bad"] * 3
+
+
+def test_no_group_when_a_room_is_a_singleton():
+    # >4 cards but one room holds a single card -> no grouping; rooms annotated
+    # so the frontend labels each card instead (#537).
+    cards = _room_cards(5)
+    area = {
+        "light.l0": "Küche",
+        "light.l1": "Küche",
+        "light.l2": "Bad",
+        "light.l3": "Bad",
+        "light.l4": "Flur",
+    }
+    assert ha_mod.group_cards_by_room(cards, area) is False
+    assert cards[4]["room"] == "Flur"
+
+
 def _stub_call(monkeypatch, *, new_state="on", post_status=200):
     """Stub aiohttp for call_service_scoped: record POSTs, GET returns new state."""
     posts: list[tuple[str, dict]] = []

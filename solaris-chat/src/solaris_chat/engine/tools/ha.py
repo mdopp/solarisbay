@@ -114,6 +114,31 @@ def filter_cards_by_query_state(
     return [c for c in cards if str(c.get("state") or "").lower() in wanted]
 
 
+# Above this many cards a flat list is hard to scan, so we group by room (#537).
+_GROUP_THRESHOLD = 4
+
+
+def group_cards_by_room(
+    cards: list[dict[str, Any]], entity_area: dict[str, str]
+) -> bool:
+    """Annotate cards with their room and decide whether to group by room (#537).
+
+    Mutates each card with a `room` field (the entity's area, "" when unknown).
+    With more than `_GROUP_THRESHOLD` cards, grouping applies only when **every**
+    room would hold ≥2 cards — then returns True (the frontend renders one group
+    per room with a header). If grouping would leave a singleton room, returns
+    False: the cards still carry their `room` so the frontend labels each card,
+    but renders them ungrouped. ≤4 cards stay unchanged (no room annotation)."""
+    if len(cards) <= _GROUP_THRESHOLD:
+        return False
+    counts: dict[str, int] = {}
+    for c in cards:
+        room = entity_area.get(str(c.get("entity_id") or ""), "")
+        c["room"] = room
+        counts[room] = counts.get(room, 0) + 1
+    return all(n >= 2 for n in counts.values())
+
+
 def card_spec(
     entity_id: str, state: Any, attrs: dict[str, Any]
 ) -> dict[str, Any] | None:

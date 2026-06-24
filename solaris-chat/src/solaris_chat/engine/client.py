@@ -597,7 +597,11 @@ class EngineClient:
                 ha_cards, _last_user_text(messages)
             )
         if ha_cards:
-            yield {"type": "ha_cards", "data": {"cards": ha_cards}}
+            grouped = False
+            if self._profile.registry is not None:
+                snap = await self._profile.registry.area_snapshot()
+                grouped = ha_tools.group_cards_by_room(ha_cards, snap.entity_area)
+            yield {"type": "ha_cards", "data": {"cards": ha_cards, "grouped": grouped}}
         if suggestions:
             yield {"type": "suggestions", "data": {"suggestions": suggestions}}
         if anchors:

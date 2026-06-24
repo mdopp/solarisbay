@@ -18,7 +18,7 @@ from typing import Any
 
 import aiohttp
 
-from solaris_chat.engine.areas import AreaRegistry
+from solaris_chat.engine.areas import AreaRegistry, AreaSnapshot
 from solaris_chat.logging import log
 
 # Read-only domains we advertise for ON-DEMAND discovery instead of packing
@@ -75,6 +75,11 @@ class EntityRegistry:
         self._areas = AreaRegistry(hass_url, hass_token)
         self._block = ""
         self._fetched_at = 0.0
+
+    async def area_snapshot(self) -> AreaSnapshot:
+        """The current area snapshot (entity→room map), for card room-grouping
+        (#537). Shares the registry's cached `AreaRegistry`."""
+        return await self._areas.snapshot()
 
     async def prompt_block(self) -> str:
         """The registry block for the system prompt; "" when HA is absent or

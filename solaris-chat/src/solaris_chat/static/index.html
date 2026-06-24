@@ -395,6 +395,14 @@
        the per-entity control. Group fills the answer width; rows share the
        card's badge/toggle/busy affordances via .hc-row. */
     .ha-card.hc-group { max-width: 360px; flex: 1 1 280px; padding: 4px 0; }
+    /* #537: room header on a per-room group; inline room label when ungrouped. */
+    .hc-room {
+      padding: 6px 12px 4px; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+    }
+    .hc-room-label {
+      display: block; font-size: 11px; color: var(--muted); margin-top: 2px;
+    }
     .hc-row {
       display: block; padding: 8px 12px;
       border-top: 1px solid var(--line);
@@ -1595,6 +1603,21 @@
       // Read-only HA state cards under an answer (#475): one card per entity the
       // turn read (sensor value, binary_sensor/cover open-closed, light/switch
       // on/off badge). Read-only here; controls arrive in later phases.
+      // >4 cards group by room only when every room would hold ≥2 cards (#537);
+      // the engine annotates each card's `room` for the >4 case. Mirrors
+      // group_cards_by_room so reload (cards only) groups like the live turn.
+      function roomGroups(cards) {
+        if (cards.length <= 4) return null;
+        var byRoom = {}, order = [];
+        cards.forEach(function (c) {
+          var r = c.room || "";
+          if (!(r in byRoom)) { byRoom[r] = []; order.push(r); }
+          byRoom[r].push(c);
+        });
+        var grouped = order.every(function (r) { return byRoom[r].length >= 2; });
+        return grouped ? order.map(function (r) { return { room: r, cards: byRoom[r] }; }) : null;
+      }
+
       function renderHaCards(cards) {
         if (!cards || !cards.length) return null;
         var wrap = document.createElement("div");
@@ -1605,10 +1628,37 @@
         // standalone card (phases 1-3 unchanged).
         if (cards.length > 1) {
           wrap.classList.add("ha-group");
+          // #537: above 4 cards, split into one group per room (each ≥2 cards)
+          // with a room header; otherwise one group, room-labelling each row
+          // when the engine annotated rooms but couldn't form ≥2-card groups.
+          var groups = roomGroups(cards);
+          var hasRooms = cards.some(function (c) { return c.room; });
+          if (groups) {
+            groups.forEach(function (g) {
+              var group = document.createElement("div");
+              group.className = "ha-card hc-group";
+              if (g.room) {
+                var head = document.createElement("div");
+                head.className = "hc-room";
+                head.textContent = g.room;
+                group.appendChild(head);
+              }
+              g.cards.forEach(function (c) { group.appendChild(renderHaCard(c, true)); });
+              wrap.appendChild(group);
+            });
+            return wrap;
+          }
           var group = document.createElement("div");
           group.className = "ha-card hc-group";
           cards.forEach(function (c) {
-            group.appendChild(renderHaCard(c, true));
+            var row = renderHaCard(c, true);
+            if (hasRooms && c.room) {
+              var lbl = document.createElement("span");
+              lbl.className = "hc-room-label";
+              lbl.textContent = c.room;
+              row.appendChild(lbl);
+            }
+            group.appendChild(row);
           });
           wrap.appendChild(group);
           return wrap;

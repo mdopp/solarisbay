@@ -52,3 +52,23 @@ def test_group_card_has_row_styling():
     assert ".hc-row {" in _HTML
     assert ".hc-row.on .hc-badge" in _HTML
     assert ".hc-row.busy" in _HTML
+
+
+def test_room_grouping_renders_room_header_or_label():
+    # #537: >4 cards group by room (≥2 each) into one hc-group per room with a
+    # .hc-room header; the singleton case labels each row via .hc-room-label.
+    fn = re.search(r"function renderHaCards\(cards\) \{(.*?)\n      \}\n", _HTML, re.S)
+    assert fn, "renderHaCards not found"
+    body = fn.group(1)
+    assert "roomGroups(cards)" in body
+    assert "hc-room" in body  # per-room header
+    assert "hc-room-label" in body  # singleton/ungrouped per-card label
+    # The grouping rule (every room ≥2) lives in roomGroups, mirroring the engine.
+    gf = re.search(r"function roomGroups\(cards\) \{(.*?)\n      \}\n", _HTML, re.S)
+    assert gf, "roomGroups not found"
+    rb = gf.group(1)
+    assert "cards.length <= 4" in rb
+    assert ">= 2" in rb
+    # Styling for both the header and the inline label exists.
+    assert ".hc-room {" in _HTML
+    assert ".hc-room-label {" in _HTML
