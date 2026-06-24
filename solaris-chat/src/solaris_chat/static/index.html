@@ -237,7 +237,10 @@
     #log > :first-child { margin-top: auto; }
     .msg { max-width: 84%; padding: 10px 13px; border-radius: var(--radius); word-wrap: break-word; overflow-wrap: anywhere; }
     .msg.me { align-self: flex-end; background: var(--bubble-me); white-space: pre-wrap; border-top-right-radius: 4px; }
-    .msg.sol { align-self: flex-start; background: var(--bubble-sol); }
+    /* #551: the answer spans the FULL chat width (the #log column) regardless of
+       length, so its card grid has room to lay 2-3 base-width cards side by side;
+       only the user's own bubble keeps the narrow 84% cap. */
+    .msg.sol { align-self: stretch; max-width: 100%; background: var(--bubble-sol); }
     .msg.system { align-self: center; color: var(--muted); background: none; font-size: 13px; padding: 4px; }
     .msg.info { align-self: flex-start; background: var(--accent-soft); }
     /* Subtle per-message footer: HH:MM timestamp (+ date when not today),
@@ -407,13 +410,19 @@
        the per-entity control. Group fills the answer width; rows share the
        card's badge/toggle/busy affordances via .hc-row. */
     .ha-card.hc-group { max-width: 100%; flex: 1 1 100%; padding: 4px 0; }
-    /* #539: a group's cards sit side-by-side on an invisible grid (auto-fill,
-       min 200px) so they align in columns when there's room and collapse to a
-       single column when narrow; the groups themselves keep stacking. */
+    /* #551: a group's cards sit on a UNIFORM base-unit grid — every column is
+       the same base width (--hc-col), so 2-3 normal cards align side by side
+       when there's room and collapse to a single column when narrow. Large
+       cards (media_player now-playing) span a MULTIPLE of the base unit
+       (.hc-span2 / .hc-span3) while staying aligned to the same grid.
+       Supersedes the loose #539 grid. */
     .hc-grid {
+      --hc-col: 230px;
       display: grid; gap: 8px;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(var(--hc-col), 1fr));
     }
+    .hc-grid .hc-span2 { grid-column: span 2; }
+    .hc-grid .hc-span3 { grid-column: span 3; }
     .hc-grid .hc-row { border-top: none; }
     /* #537: room header on a per-room group; inline room label when ungrouped. */
     .hc-room {
@@ -1863,6 +1872,10 @@
         } else if (c.domain === "climate") {
           renderClimateCard(card, c, st);
         } else if (c.domain === "media_player") {
+          // #551: a now-playing media_player is the wide card — it spans 2 base
+          // grid columns so its title/transport row isn't cramped; it still
+          // collapses to the single column when the viewport is narrow.
+          card.classList.add("hc-span2");
           renderMediaPlayerCard(card, c, st);
         } else {
           // binary_sensor / cover / light / switch -> on/off-style badge.
