@@ -26,6 +26,7 @@ from solaris_chat.engine.client import EngineClient, EngineProfile
 from solaris_chat.engine.ollama import OllamaChat
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.tools import Tool, Toolbox
+from solaris_chat.engine.tools.choices import build_choice_tools
 from solaris_chat.engine.tools.ha import build_ha_tools
 from solaris_chat.engine.tools.mcp_tools import CombinedToolbox, McpToolbox
 from solaris_chat.engine.tools.media import build_media_tools
@@ -98,9 +99,14 @@ def build_engine_clients(
     )
     web_tools = build_web_tools(tavily_api_key)
 
+    # Quick-reply chips (#555): offered on any profile that holds a conversation,
+    # so household, deep and guest all get the offer_choices tool.
+    choice_tools = build_choice_tools()
+
     household_tools: list[Tool] = list(ha_tools)
     household_tools += build_timer_tools(db_path, _current_uid)
     household_tools += web_tools
+    household_tools += choice_tools
     if hass_url and hass_token:
         household_tools += build_media_tools(hass_url, hass_token)
     if notes_dir:
@@ -122,9 +128,11 @@ def build_engine_clients(
     # MCP. The denial is the absence of those tool modules here (#353).
     # ha_run_scene_script fires whole routines/automations; that's beyond a
     # guest's "simple home control" remit, so it's withheld here (#370).
-    guest_tools: list[Tool] = [
-        t for t in ha_tools if t.name != "ha_run_scene_script"
-    ] + list(web_tools)
+    guest_tools: list[Tool] = (
+        [t for t in ha_tools if t.name != "ha_run_scene_script"]
+        + list(web_tools)
+        + choice_tools
+    )
     # The registration flow runs under the guest profile (an unknown speaker is
     # a guest turn, #353) but only the onboarding skill ever invokes it: enrol
     # the voice + file a pending request (#376). It's the one durable write a

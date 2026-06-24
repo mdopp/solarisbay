@@ -361,6 +361,19 @@
     }
     .followup-chip:hover { border-color: var(--accent); }
     .followup-chip:disabled { opacity: 0.5; cursor: default; }
+    /* Quick-reply chips (#555): a row directly above the composer; tapping one
+       sends that text as the next turn and clears the row. */
+    .quick-replies {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      max-width: 900px; width: 100%; margin: 0 auto; padding: 10px 18px 0;
+    }
+    .quick-reply-chip {
+      font: inherit; font-size: 13px; cursor: pointer;
+      color: var(--accent); background: var(--bubble-sol);
+      border: 1px solid var(--line); border-radius: 16px; padding: 5px 12px;
+    }
+    .quick-reply-chip:hover { border-color: var(--accent); }
+    .quick-reply-chip:disabled { opacity: 0.5; cursor: default; }
     /* Auto-surfaced #/@ anchor chips (#501): smaller tag-like chips under the
        turn; tapping one filters the chat to that anchor via the /search path. */
     .anchor-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
@@ -1081,6 +1094,7 @@
       <div id="log" aria-live="polite"></div>
       <aside id="tag-cloud" aria-label="Erwähnungen in diesem Chat" hidden></aside>
       <div class="composer-bar">
+        <div id="quick-replies" class="quick-replies" aria-label="Schnellantworten" hidden></div>
         <div id="tag-cloud-strip" aria-label="Erwähnungen in diesem Chat" hidden></div>
         <div class="attach-preview" id="attach-preview" hidden></div>
         <form id="composer">
@@ -1757,6 +1771,39 @@
           wrap.appendChild(b);
         });
         return wrap.children.length ? wrap : null;
+      }
+
+      // Quick-reply chips (#555): when the model calls offer_choices, the turn
+      // emits a `quick_replies` event with up to 4 short options. Render them as
+      // tappable chips in the row DIRECTLY ABOVE the composer; clicking one sends
+      // that text as the next user turn immediately (then clears the row). The
+      // row also clears whenever the user types or sends anything else.
+      var quickRepliesEl = document.getElementById("quick-replies");
+
+      function clearQuickReplies() {
+        quickRepliesEl.textContent = "";
+        quickRepliesEl.hidden = true;
+      }
+
+      function renderQuickReplies(options) {
+        clearQuickReplies();
+        if (!options || !options.length) return;
+        options.slice(0, 4).forEach(function (o) {
+          var text = String(o == null ? "" : o).trim();
+          if (!text) return;
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "quick-reply-chip";
+          b.textContent = text;
+          b.addEventListener("click", function () {
+            if (send.disabled) return;
+            clearQuickReplies();
+            addUserTurn(text, []);
+            runTurn(text, []);
+          });
+          quickRepliesEl.appendChild(b);
+        });
+        quickRepliesEl.hidden = !quickRepliesEl.children.length;
       }
 
       // Auto-surfaced #/@ anchor chips (#501): each chip filters the chat to its
@@ -2766,6 +2813,7 @@
             else if (event === "reasoning") { if (d.text) msg.setReasoning(d.text); }
             else if (event === "step") { msg.addStep(d.label || "llm", d.wall_s); }
             else if (event === "ha_cards") { if (d.cards && d.cards.length) msg.addCards(d.cards); }
+            else if (event === "quick_replies") { renderQuickReplies(d.options); }
             else if (event === "suggestions") { if (d.suggestions && d.suggestions.length) msg.addChips(d.suggestions); }
             else if (event === "anchors") { if (d.anchors && d.anchors.length) msg.addAnchors(d.anchors); }
             else if (event === "tool") {
@@ -2850,6 +2898,11 @@
           if (id !== sessionId || activeTurn || !mirrorMsg) return;
           var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
           if (d.cards && d.cards.length) mirrorMsg.addCards(d.cards);
+        });
+        es.addEventListener("quick_replies", function (e) {
+          if (id !== sessionId || activeTurn) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          renderQuickReplies(d.options);
         });
         es.addEventListener("suggestions", function (e) {
           if (id !== sessionId || activeTurn || !mirrorMsg) return;
@@ -3510,6 +3563,8 @@
         var text = input.value.trim();
         var images = attach.take(); // data-URLs; clears the tray
         if (!text && !images.length) return;
+        // Any fresh send retires the previous turn's quick-reply chips (#555).
+        clearQuickReplies();
         // Slash commands are browser-local — never carry an attachment.
         if (text.charAt(0) === "/" && !images.length) { input.value = ""; autosize(); handleCommand(text); return; }
         addUserTurn(text, images);
@@ -3650,6 +3705,7 @@
           if (sec && log.contains(sec)) { sec.classList.remove("active"); main.appendChild(sec); }
         });
         log.textContent = ""; mentionRefSeq = 0;
+        clearQuickReplies();
       }
 
       function openSession(id) {

@@ -34,6 +34,7 @@ from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.residents import identity_block
 from solaris_chat.engine.tools import Toolbox
+from solaris_chat.engine.tools import choices as choice_tools
 from solaris_chat.engine.tools import ha as ha_tools
 from solaris_chat.engine.trace import TraceRecorder
 from solaris_chat.logging import log
@@ -455,6 +456,10 @@ class EngineClient:
         # drained into a `ha_cards` event at turn end.
         ha_cards: list[dict[str, Any]] = []
         ha_tools.card_sink.set(ha_cards)
+        # Per-turn sink the offer_choices tool fills with quick-reply options
+        # (#555); drained into a `quick_replies` event at turn end like ha_cards.
+        quick_replies: list[str] = []
+        choice_tools.choice_sink.set(quick_replies)
         options = (
             {"temperature": self._profile.temperature}
             if self._profile.temperature is not None
@@ -559,6 +564,7 @@ class EngineClient:
                 # _loop set() (same reason as current_uid above), so a card read
                 # during dispatch would otherwise land nowhere (#475).
                 ha_tools.card_sink.set(ha_cards)
+                choice_tools.choice_sink.set(quick_replies)
                 t0 = time.monotonic()
                 output = await self._profile.toolbox.dispatch(name, args)
                 tool_wall_s = time.monotonic() - t0
@@ -602,6 +608,8 @@ class EngineClient:
                 snap = await self._profile.registry.area_snapshot()
                 grouped = ha_tools.group_cards_by_room(ha_cards, snap.entity_area)
             yield {"type": "ha_cards", "data": {"cards": ha_cards, "grouped": grouped}}
+        if quick_replies:
+            yield {"type": "quick_replies", "data": {"options": quick_replies}}
         if suggestions:
             yield {"type": "suggestions", "data": {"suggestions": suggestions}}
         if anchors:
