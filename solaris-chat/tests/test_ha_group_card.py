@@ -40,7 +40,7 @@ def test_group_rows_reuse_the_per_entity_controls():
     body = fn.group(1)
     assert 'card.className = row ? "hc-row" : "ha-card";' in body
     assert "haToggle(card, badge, c)" in body
-    assert "renderLightControls(card, c)" in body
+    assert "renderLightControls(card, c, badgeHost)" in body
     assert "renderCoverControls(card, c)" in body
     assert "renderClimateCard(card, c, st)" in body
 
@@ -72,3 +72,42 @@ def test_room_grouping_renders_room_header_or_label():
     # Styling for both the header and the inline label exists.
     assert ".hc-room {" in _HTML
     assert ".hc-room-label {" in _HTML
+
+
+def test_light_card_is_compact_badge_and_slider_one_row():
+    # #538: a light card packs the on/off badge + the brightness slider onto ONE
+    # compact row (.hc-compact); the colour picker stays its own row below.
+    fn = re.search(r"function renderHaCard\(c, row\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "renderHaCard not found"
+    body = fn.group(1)
+    # The light routes its badge into a .hc-compact host instead of the card.
+    assert 'badgeHost.className = "hc-compact"' in body
+    assert "badgeHost.appendChild(badge)" in body
+    # The brightness slider is mounted on that same compact row.
+    assert "renderLightControls(card, c, badgeHost)" in body
+
+    lc = re.search(
+        r"function renderLightControls\(card, c, brightHost\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
+    )
+    assert lc, "renderLightControls not found"
+    lcb = lc.group(1)
+    # Brightness slider goes onto the compact host as an inline control.
+    assert "makeSlider(brightHost || card, pct" in lcb
+    assert "true);" in lcb  # inline flag
+
+    # makeSlider honours an inline flag (no own row, drag doesn't toggle).
+    ms = re.search(
+        r"function makeSlider\(card, value, unit, onset, inline\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
+    )
+    assert ms, "makeSlider not found (inline arg)"
+    msb = ms.group(1)
+    assert 'inline ? "hc-ctrl hc-ctrl-inline" : "hc-ctrl"' in msb
+    assert "stopPropagation" in msb
+
+    # Compact-row styling: badge + slider laid out on one flex row.
+    assert ".hc-compact { display: flex;" in _HTML
+    assert ".hc-compact .hc-ctrl-inline" in _HTML

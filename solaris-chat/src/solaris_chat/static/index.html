@@ -391,6 +391,12 @@
     .ha-card.hc-toggle { cursor: pointer; user-select: none; }
     .ha-card.hc-toggle:hover { border-color: var(--accent); }
     .ha-card.busy { opacity: 0.6; pointer-events: none; }
+    /* #538: a light card is compact — the on/off badge + brightness slider
+       share one row (.hc-compact); the slider drops its own top margin and
+       grows to fill, the colour picker stays on its own row below. */
+    .hc-compact { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+    .hc-compact .hc-badge { margin-top: 0; flex: 0 0 auto; }
+    .hc-compact .hc-ctrl-inline { flex: 1 1 auto; margin-top: 0; min-width: 90px; }
     /* Phase 4 (#478): a group card stacks one row per entity, each row keeping
        the per-entity control. Group fills the answer width; rows share the
        card's badge/toggle/busy affordances via .hc-row. */
@@ -1838,7 +1844,15 @@
           var badge = document.createElement("span");
           badge.className = "hc-badge";
           badge.textContent = haStateLabel(c.domain, st);
-          card.appendChild(badge);
+          // #538: a light packs the on/off badge + brightness slider onto ONE
+          // compact row; everything else keeps the badge directly on the card.
+          var badgeHost = card;
+          if (c.domain === "light") {
+            badgeHost = document.createElement("div");
+            badgeHost.className = "hc-compact";
+            card.appendChild(badgeHost);
+          }
+          badgeHost.appendChild(badge);
           // Phase 2 (#476): light/switch badge becomes an on/off toggle.
           if (c.domain === "light" || c.domain === "switch") {
             card.classList.add("hc-toggle");
@@ -1851,7 +1865,8 @@
             });
           }
           // Phase 3 (#477): richer controls under the badge, feature-gated.
-          if (c.domain === "light") renderLightControls(card, c);
+          // #538: the light's brightness slider rides the compact badge row.
+          if (c.domain === "light") renderLightControls(card, c, badgeHost);
           else if (c.domain === "cover") renderCoverControls(card, c);
         }
         return card;
@@ -1863,14 +1878,17 @@
 
       // Brightness slider (when the light is dimmable) + colour picker (when it
       // supports a colour mode). Acts via light.turn_on {brightness_pct|rgb_color}.
-      function renderLightControls(card, c) {
+      function renderLightControls(card, c, brightHost) {
         var dimmable = c.brightness != null ||
           (c.supported_color_modes || []).some(function (m) { return m !== "onoff"; });
         if (dimmable) {
           var pct = c.brightness != null ? Math.round(c.brightness / 255 * 100) : 100;
-          var slider = makeSlider(card, pct, "%", function (v) {
+          // #538: append the brightness slider to the compact badge row (one
+          // line), not as a fresh row under the card. inline=true keeps the
+          // slider on the badge row and stops its drag toggling the light.
+          var slider = makeSlider(brightHost || card, pct, "%", function (v) {
             haCall(card, c, "light.turn_on", { brightness_pct: v });
-          });
+          }, true);
           card.hcBrightness = slider;
         }
         var hasColour = (c.supported_color_modes || []).some(function (m) {
@@ -1968,9 +1986,11 @@
       }
 
       // A labelled range row whose committed value (on change) fires onset(int).
-      function makeSlider(card, value, unit, onset) {
+      // inline=true mounts it on the given host (the compact badge row) instead
+      // of as its own row, and stops a slider drag from toggling the card.
+      function makeSlider(card, value, unit, onset, inline) {
         var row = document.createElement("div");
-        row.className = "hc-ctrl";
+        row.className = inline ? "hc-ctrl hc-ctrl-inline" : "hc-ctrl";
         var slider = document.createElement("input");
         slider.type = "range";
         slider.min = "0"; slider.max = "100"; slider.value = String(value);
@@ -1979,6 +1999,7 @@
         val.textContent = value + unit;
         slider.addEventListener("input", function () { val.textContent = slider.value + unit; });
         slider.addEventListener("change", function () { onset(Number(slider.value)); });
+        if (inline) row.addEventListener("click", function (e) { e.stopPropagation(); });
         row.appendChild(slider); row.appendChild(val);
         card.appendChild(row);
         return slider;
