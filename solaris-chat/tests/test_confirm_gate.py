@@ -205,6 +205,11 @@ def test_affirmative_negative_detection():
     assert not confirm.is_affirmative("gerne")
     assert not confirm.is_affirmative("go")
     assert not confirm.is_affirmative("auf")
+    # "bitte" is a politeness particle, not a confirmation — a fresh "bitte …"
+    # command must not detonate a pending sensitive action (re-review residual)
+    assert not confirm.is_affirmative("bitte")
+    assert not confirm.is_affirmative("Bitte mach das Tor zu")
+    assert confirm.is_affirmative("ja bitte")  # explicit "ja" still confirms
     assert confirm.is_negative("nein")
     assert confirm.is_negative("Stop, abbrechen")
     # negative wins on a mixed reply — never auto-execute on ambiguity

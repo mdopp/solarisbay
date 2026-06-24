@@ -67,7 +67,6 @@ _AFFIRMATIVE: frozenset[str] = frozenset(
         "genau",
         "bestätige",
         "bestätigt",
-        "bitte",
     }
 )
 _NEGATIVE: frozenset[str] = frozenset(
