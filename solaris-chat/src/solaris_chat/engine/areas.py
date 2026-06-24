@@ -56,6 +56,7 @@ class AreaRegistry:
         self._token = hass_token
         self._snap = AreaSnapshot()
         self._fetched_at = 0.0
+        self._fetched = False
 
     async def snapshot(self) -> AreaSnapshot:
         """Current area snapshot; the cached one while fresh, else a WS refresh.
@@ -64,7 +65,10 @@ class AreaRegistry:
         empty on first failure) — room data must never break the prompt."""
         if not self._url or not self._token:
             return self._snap
-        if self._snap.rooms and (time.time() - self._fetched_at) < _TTL_S:
+        # Guard on "have we ever fetched", not "is the result non-empty": an HA
+        # with 0 configured areas yields an empty-but-valid snapshot that must
+        # still satisfy the TTL, else every turn re-opens a WS (#546).
+        if self._fetched and (time.time() - self._fetched_at) < _TTL_S:
             return self._snap
         try:
             snap = await self._fetch()
@@ -73,6 +77,7 @@ class AreaRegistry:
             return self._snap
         self._snap = snap
         self._fetched_at = time.time()
+        self._fetched = True
         log.info(
             "engine.areas.refreshed",
             rooms=len(snap.rooms),
