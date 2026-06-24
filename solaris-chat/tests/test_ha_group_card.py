@@ -245,3 +245,31 @@ def test_answer_container_is_full_width():
     m = re.search(r"\.msg\.sol \{([^}]*)\}", _HTML)
     assert m, ".msg.sol rule not found"
     assert "max-width: 100%" in m.group(1)
+
+
+def test_onoff_control_is_a_toggle_switch_not_a_label_button():
+    # #560: the light/switch on/off control reads as a real toggle SWITCH that
+    # reflects the live state and flips on click — not an ambiguous "an"/"aus"
+    # label-button. The badge gains the .hc-switch class, the card is a role=switch
+    # with aria-checked tracking state, and it still routes through haToggle.
+    fn = re.search(r"function renderHaCard\(c, row\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "renderHaCard not found"
+    body = fn.group(1)
+    assert 'badge.classList.add("hc-switch")' in body
+    assert 'card.setAttribute("role", "switch")' in body
+    assert 'card.setAttribute("aria-checked"' in body
+    assert "haToggle(card, badge, c)" in body  # still the existing service-call path
+
+    # haToggle keeps aria-checked in sync on optimistic flip / confirm / revert.
+    ht = re.search(
+        r"function haToggle\(card, badge, c\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert ht, "haToggle not found"
+    assert 'card.setAttribute("aria-checked"' in ht.group(1)
+
+    # The switch is a CSS pill+knob driven by the card's on/off class, with the
+    # label text hidden (font-size: 0) so it reads purely as a switch.
+    assert ".hc-badge.hc-switch {" in _HTML
+    assert "font-size: 0;" in _HTML
+    assert ".on .hc-badge.hc-switch::after { transform: translateX(16px); }" in _HTML
+    assert ".off .hc-badge.hc-switch {" in _HTML
