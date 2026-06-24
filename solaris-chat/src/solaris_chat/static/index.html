@@ -237,7 +237,10 @@
     #log > :first-child { margin-top: auto; }
     .msg { max-width: 84%; padding: 10px 13px; border-radius: var(--radius); word-wrap: break-word; overflow-wrap: anywhere; }
     .msg.me { align-self: flex-end; background: var(--bubble-me); white-space: pre-wrap; border-top-right-radius: 4px; }
-    .msg.sol { align-self: flex-start; background: var(--bubble-sol); }
+    /* #551: the answer spans the FULL chat width (the #log column) regardless of
+       length, so its card grid has room to lay 2-3 base-width cards side by side;
+       only the user's own bubble keeps the narrow 84% cap. */
+    .msg.sol { align-self: stretch; max-width: 100%; background: var(--bubble-sol); }
     .msg.system { align-self: center; color: var(--muted); background: none; font-size: 13px; padding: 4px; }
     .msg.info { align-self: flex-start; background: var(--accent-soft); }
     /* Subtle per-message footer: HH:MM timestamp (+ date when not today),
@@ -394,20 +397,32 @@
     /* #538: a light card is compact — the on/off badge + brightness slider
        share one row (.hc-compact); the slider drops its own top margin and
        grows to fill, the colour picker stays on its own row below. */
-    .hc-compact { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+    .hc-compact { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
     .hc-compact .hc-badge { margin-top: 0; flex: 0 0 auto; }
+    .hc-compact .hc-state { margin-top: 0; flex: 0 0 auto; }
     .hc-compact .hc-ctrl-inline { flex: 1 1 auto; margin-top: 0; min-width: 90px; }
+    /* #550: every controllable card lays its primary controls on the compact
+       badge row — cover/media transport buttons and the climate setpoint
+       stepper sit inline next to the badge, no own row, no top margin. */
+    .hc-compact .hc-btns-inline { margin-top: 0; flex: 0 0 auto; }
+    .hc-compact .hc-set-inline { margin-top: 0; flex: 0 0 auto; }
     /* Phase 4 (#478): a group card stacks one row per entity, each row keeping
        the per-entity control. Group fills the answer width; rows share the
        card's badge/toggle/busy affordances via .hc-row. */
     .ha-card.hc-group { max-width: 100%; flex: 1 1 100%; padding: 4px 0; }
-    /* #539: a group's cards sit side-by-side on an invisible grid (auto-fill,
-       min 200px) so they align in columns when there's room and collapse to a
-       single column when narrow; the groups themselves keep stacking. */
+    /* #551: a group's cards sit on a UNIFORM base-unit grid — every column is
+       the same base width (--hc-col), so 2-3 normal cards align side by side
+       when there's room and collapse to a single column when narrow. Large
+       cards (media_player now-playing) span a MULTIPLE of the base unit
+       (.hc-span2 / .hc-span3) while staying aligned to the same grid.
+       Supersedes the loose #539 grid. */
     .hc-grid {
+      --hc-col: 230px;
       display: grid; gap: 8px;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(var(--hc-col), 1fr));
     }
+    .hc-grid .hc-span2 { grid-column: span 2; }
+    .hc-grid .hc-span3 { grid-column: span 3; }
     .hc-grid .hc-row { border-top: none; }
     /* #537: room header on a per-room group; inline room label when ungrouped. */
     .hc-room {
@@ -1857,6 +1872,10 @@
         } else if (c.domain === "climate") {
           renderClimateCard(card, c, st);
         } else if (c.domain === "media_player") {
+          // #551: a now-playing media_player is the wide card — it spans 2 base
+          // grid columns so its title/transport row isn't cramped; it still
+          // collapses to the single column when the viewport is narrow.
+          card.classList.add("hc-span2");
           renderMediaPlayerCard(card, c, st);
         } else {
           // binary_sensor / cover / light / switch -> on/off-style badge.
@@ -1865,10 +1884,11 @@
           var badge = document.createElement("span");
           badge.className = "hc-badge";
           badge.textContent = haStateLabel(c.domain, st);
-          // #538: a light packs the on/off badge + brightness slider onto ONE
-          // compact row; everything else keeps the badge directly on the card.
+          // #550: every controllable card packs its on/off badge + its primary
+          // controls onto ONE compact row (.hc-compact), like the #538 light.
+          // A read-only badge (binary_sensor) keeps the badge directly.
           var badgeHost = card;
-          if (c.domain === "light") {
+          if (c.domain === "light" || c.domain === "switch" || c.domain === "cover") {
             badgeHost = document.createElement("div");
             badgeHost.className = "hc-compact";
             card.appendChild(badgeHost);
@@ -1885,10 +1905,9 @@
               if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
             });
           }
-          // Phase 3 (#477): richer controls under the badge, feature-gated.
-          // #538: the light's brightness slider rides the compact badge row.
+          // Phase 3 (#477): richer controls on the compact badge row, gated.
           if (c.domain === "light") renderLightControls(card, c, badgeHost);
-          else if (c.domain === "cover") renderCoverControls(card, c);
+          else if (c.domain === "cover") renderCoverControls(card, c, badgeHost);
         }
         return card;
       }
@@ -1931,7 +1950,18 @@
       }
 
       // Position slider + open/close/stop. A garage cover is confirm-first.
-      function renderCoverControls(card, c) {
+      // #550: open/stop/close ride the compact badge row; the position slider
+      // sits on its own line below when the cover supports set_position.
+      function renderCoverControls(card, c, host) {
+        var garage = c.device_class === "garage";
+        makeButtons(host || card, [
+          ["▲", "open_cover", "Öffnen"], ["■", "stop_cover", "Stopp"],
+          ["▼", "close_cover", "Schließen"],
+        ], function (b) {
+          if (garage && b[1] !== "stop_cover" &&
+              !window.confirm(b[2] + " — Garagentor wirklich bewegen?")) return;
+          haCall(card, c, "cover." + b[1], {});
+        }, host != null);
         var feat = Number(c.supported_features || 0);
         if (feat & COVER_SET_POSITION) {
           var pos = c.current_position != null ? Number(c.current_position) : 0;
@@ -1939,31 +1969,20 @@
             haCall(card, c, "cover.set_cover_position", { position: v });
           });
         }
-        var btns = document.createElement("div");
-        btns.className = "hc-btns";
-        var garage = c.device_class === "garage";
-        [["▲", "open_cover", "Öffnen"], ["■", "stop_cover", "Stopp"],
-         ["▼", "close_cover", "Schließen"]].forEach(function (b) {
-          var btn = document.createElement("button");
-          btn.textContent = b[0];
-          btn.title = b[2];
-          btn.addEventListener("click", function () {
-            if (garage && b[1] !== "stop_cover" &&
-                !window.confirm(b[2] + " — Garagentor wirklich bewegen?")) return;
-            haCall(card, c, "cover." + b[1], {});
-          });
-          btns.appendChild(btn);
-        });
-        card.appendChild(btns);
       }
 
       // Climate: current temp + a setpoint stepper and an hvac-mode select.
+      // #550: the current temp + the setpoint stepper share one compact row;
+      // the hvac-mode select sits below.
       function renderClimateCard(card, c, st) {
+        var compact = document.createElement("div");
+        compact.className = "hc-compact";
+        card.appendChild(compact);
         var cur = document.createElement("div");
         cur.className = "hc-state";
         cur.textContent = c.current_temperature != null
           ? c.current_temperature + "°C" : (st || "—");
-        card.appendChild(cur);
+        compact.appendChild(cur);
         var feat = Number(c.supported_features || 0);
         if (feat & CLIMATE_TARGET_TEMP || c.temperature != null) {
           var step = Number(c.target_temp_step) || 0.5;
@@ -1971,7 +1990,7 @@
           var max = c.max_temp != null ? Number(c.max_temp) : 35;
           var target = c.temperature != null ? Number(c.temperature) : min;
           var set = document.createElement("div");
-          set.className = "hc-set";
+          set.className = "hc-set hc-set-inline";
           var label = document.createElement("span");
           label.className = "hc-target";
           label.textContent = target + "°";
@@ -1987,7 +2006,7 @@
           plus.textContent = "+";
           plus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) + step); });
           set.appendChild(minus); set.appendChild(label); set.appendChild(plus);
-          card.appendChild(set);
+          compact.appendChild(set);
         }
         var modes = c.hvac_modes || [];
         if (modes.length) {
@@ -2014,7 +2033,18 @@
         var badge = document.createElement("span");
         badge.className = "hc-badge";
         badge.textContent = haStateLabel("media_player", st);
-        card.appendChild(badge);
+        // #550: the badge + the transport buttons share one compact row.
+        var compact = document.createElement("div");
+        compact.className = "hc-compact";
+        compact.appendChild(badge);
+        card.appendChild(compact);
+        makeButtons(compact, [
+          ["⏮", "media_previous_track", "Zurück"],
+          [playing ? "⏸" : "▶", "media_play_pause", "Play/Pause"],
+          ["⏭", "media_next_track", "Weiter"],
+        ], function (b) {
+          haCall(card, c, "media_player." + b[1], {});
+        }, true);
         if (c.media_title) {
           var nowp = document.createElement("div");
           nowp.className = "hc-now";
@@ -2022,20 +2052,6 @@
             ? c.media_artist + " — " + c.media_title : c.media_title;
           card.appendChild(nowp);
         }
-        var btns = document.createElement("div");
-        btns.className = "hc-btns";
-        [["⏮", "media_previous_track", "Zurück"],
-         [playing ? "⏸" : "▶", "media_play_pause", "Play/Pause"],
-         ["⏭", "media_next_track", "Weiter"]].forEach(function (b) {
-          var btn = document.createElement("button");
-          btn.textContent = b[0];
-          btn.title = b[2];
-          btn.addEventListener("click", function () {
-            haCall(card, c, "media_player." + b[1], {});
-          });
-          btns.appendChild(btn);
-        });
-        card.appendChild(btns);
         if (c.volume_level != null) {
           makeSlider(card, Math.round(Number(c.volume_level) * 100), "%", function (v) {
             haCall(card, c, "media_player.volume_set", { volume_level: v / 100 });
@@ -2061,6 +2077,24 @@
         row.appendChild(slider); row.appendChild(val);
         card.appendChild(row);
         return slider;
+      }
+
+      // A row of control buttons firing onclick(spec) per [glyph, action, title].
+      // inline=true mounts it on the compact badge row and stops a button click
+      // from toggling the card; otherwise it's its own row under the card.
+      function makeButtons(host, specs, onclick, inline) {
+        var btns = document.createElement("div");
+        btns.className = inline ? "hc-btns hc-btns-inline" : "hc-btns";
+        specs.forEach(function (b) {
+          var btn = document.createElement("button");
+          btn.textContent = b[0];
+          btn.title = b[2];
+          btn.addEventListener("click", function () { onclick(b); });
+          btns.appendChild(btn);
+        });
+        if (inline) btns.addEventListener("click", function (e) { e.stopPropagation(); });
+        host.appendChild(btns);
+        return btns;
       }
 
       function rgbToHex(rgb) {
