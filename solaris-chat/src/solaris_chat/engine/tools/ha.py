@@ -34,8 +34,15 @@ card_sink: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.Con
 # Domains that get a read-only state card in phase 1. Sensors render a value
 # card (state + unit); binary_sensor/cover.garage an open/closed status; the
 # actionable light/switch a current-state badge (controls are later phases).
+# media_player (#541) cards the playing/paused state + transport/volume controls.
 _CARD_DOMAINS = frozenset(
-    {"sensor", "binary_sensor", "cover", "light", "switch", "climate"}
+    {"sensor", "binary_sensor", "cover", "light", "switch", "climate", "media_player"}
+)
+# A room query ("zeig mir das Wohnzimmer") cards the room's ACTUATORS — the
+# controllable card domains, not the read-only sensors (#540). Sensor data
+# stays on-demand via ha_list_entities.
+_ROOM_ACTUATOR_DOMAINS = frozenset(
+    {"light", "switch", "cover", "climate", "media_player"}
 )
 # Attributes the phase-3 controls (sliders/colour/climate) read off the card-spec
 # so the frontend can feature-gate them without a second HA round-trip (#477).
@@ -52,6 +59,10 @@ _CONTROL_ATTRS = (
     "min_temp",
     "max_temp",
     "hvac_modes",
+    # media_player (#541): volume + what's playing for the transport card.
+    "volume_level",
+    "media_title",
+    "media_artist",
 )
 
 
@@ -77,6 +88,71 @@ def _emit_card(entity_id: str, name: str, state: Any, attrs: dict[str, Any]) -> 
         if attrs.get(key) is not None:
             spec[key] = attrs[key]
     sink.append(spec)
+
+
+# State-scope detection (#536): when a query asks which entities are in a given
+# state ("welche lichter sind AN"), the cards should cover only the matching
+# entities, not every entity the model state-read. Each entry maps query cues to
+# the on-/off-style states a card's `state` may carry. A query that names no
+# state (e.g. "welche lichter gibt es") matches nothing here ⇒ no filtering.
+_STATE_SCOPES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
+    (frozenset({"an", "eingeschaltet", "on"}), frozenset({"on"})),
+    (frozenset({"aus", "ausgeschaltet", "off"}), frozenset({"off"})),
+    (frozenset({"offen", "geöffnet", "open"}), frozenset({"open"})),
+    (
+        frozenset({"geschlossen", "zu", "closed"}),
+        frozenset({"closed"}),
+    ),
+)
+_WORD_RE = re.compile(r"[a-zäöüß]+")
+
+
+def filter_cards_by_query_state(
+    cards: list[dict[str, Any]], query: str
+) -> list[dict[str, Any]]:
+    """Narrow a turn's cards to the state the query asked about (#536).
+
+    "welche lichter sind an" ⇒ keep only cards whose `state` is on; a query that
+    names no state ("welche lichter gibt es") is returned unchanged so existence
+    questions still show the full set."""
+    words = set(_WORD_RE.findall(query.lower()))
+    wanted: set[str] = set()
+    for cues, states in _STATE_SCOPES:
+        if words & cues:
+            wanted |= states
+    if not wanted:
+        return cards
+    return [c for c in cards if str(c.get("state") or "").lower() in wanted]
+
+
+# Above this many cards a flat list is hard to scan, so we group by room (#537).
+_GROUP_THRESHOLD = 4
+
+
+def group_cards_by_room(
+    cards: list[dict[str, Any]], entity_area: dict[str, str]
+) -> bool:
+    """Annotate cards with their room and decide whether to group by room (#537).
+
+    Mutates each card with a `room` field (the entity's area, "" when unknown).
+    A room query (#540) yields a set that all resolves to one non-empty room —
+    that always groups under the single header regardless of count. Otherwise,
+    with more than `_GROUP_THRESHOLD` cards, grouping applies only when **every**
+    room would hold ≥2 cards — then returns True (the frontend renders one group
+    per room with a header). If grouping would leave a singleton room, returns
+    False: the cards still carry their `room` so the frontend labels each card,
+    but renders them ungrouped. ≤4 mixed-room cards stay unchanged."""
+    rooms = [entity_area.get(str(c.get("entity_id") or ""), "") for c in cards]
+    single_room = len(cards) > 1 and len(set(rooms)) == 1 and rooms[0] != ""
+    if len(cards) <= _GROUP_THRESHOLD and not single_room:
+        return False
+    counts: dict[str, int] = {}
+    for c, room in zip(cards, rooms):
+        c["room"] = room
+        counts[room] = counts.get(room, 0) + 1
+    if single_room:
+        return True
+    return all(n >= 2 for n in counts.values())
 
 
 def card_spec(
@@ -394,6 +470,34 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
             )
         return json.dumps(out, ensure_ascii=False)
 
+    async def room_cards(args: dict[str, Any]) -> str:
+        """Card every actuator of a room (#540) — a room query shows them all."""
+        room_q = str(args.get("room") or "").lower()
+        if not room_q:
+            return json.dumps({"error": "room required"})
+        snap = await areas.snapshot()
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                resp.raise_for_status()
+                states = await resp.json()
+        room_name = ""
+        out = []
+        for s in states:
+            eid = str(s.get("entity_id") or "")
+            if eid.split(".", 1)[0] not in _ROOM_ACTUATOR_DOMAINS:
+                continue
+            room = snap.area_of(eid)
+            if room_q not in room.lower():
+                continue
+            room_name = room
+            attrs = s.get("attributes") or {}
+            name = attrs.get("friendly_name") or eid
+            _emit_card(eid, name, s.get("state"), attrs)
+            out.append({"entity_id": eid, "name": name, "state": s.get("state")})
+        return json.dumps(
+            {"room": room_name or room_q, "actuators": out}, ensure_ascii=False
+        )
+
     async def _resolve_entity_id(ref: str) -> str:
         """Resolve a model-supplied reference to a real entity_id, "" on no match.
 
@@ -587,6 +691,21 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
             ),
             parameters={"type": "object", "properties": {}},
             handler=list_rooms,
+        ),
+        Tool(
+            name="ha_room_cards",
+            description=(
+                "Zeigt ALLE steuerbaren Geräte (Lichter, Schalter, Rollos,"
+                " Heizung) eines Raums als Karten — für Raum-Fragen wie 'zeig mir"
+                " das Wohnzimmer' oder 'was ist im Wohnzimmer'. Der Raumname wird"
+                " einmal als Überschrift gezeigt. Parameter: room (Raumname)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"room": {"type": "string"}},
+                "required": ["room"],
+            },
+            handler=room_cards,
         ),
         Tool(
             name="ha_state_history",

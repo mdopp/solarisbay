@@ -391,10 +391,32 @@
     .ha-card.hc-toggle { cursor: pointer; user-select: none; }
     .ha-card.hc-toggle:hover { border-color: var(--accent); }
     .ha-card.busy { opacity: 0.6; pointer-events: none; }
+    /* #538: a light card is compact — the on/off badge + brightness slider
+       share one row (.hc-compact); the slider drops its own top margin and
+       grows to fill, the colour picker stays on its own row below. */
+    .hc-compact { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+    .hc-compact .hc-badge { margin-top: 0; flex: 0 0 auto; }
+    .hc-compact .hc-ctrl-inline { flex: 1 1 auto; margin-top: 0; min-width: 90px; }
     /* Phase 4 (#478): a group card stacks one row per entity, each row keeping
        the per-entity control. Group fills the answer width; rows share the
        card's badge/toggle/busy affordances via .hc-row. */
-    .ha-card.hc-group { max-width: 360px; flex: 1 1 280px; padding: 4px 0; }
+    .ha-card.hc-group { max-width: 100%; flex: 1 1 100%; padding: 4px 0; }
+    /* #539: a group's cards sit side-by-side on an invisible grid (auto-fill,
+       min 200px) so they align in columns when there's room and collapse to a
+       single column when narrow; the groups themselves keep stacking. */
+    .hc-grid {
+      display: grid; gap: 8px;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    }
+    .hc-grid .hc-row { border-top: none; }
+    /* #537: room header on a per-room group; inline room label when ungrouped. */
+    .hc-room {
+      padding: 6px 12px 4px; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+    }
+    .hc-room-label {
+      display: block; font-size: 11px; color: var(--muted); margin-top: 2px;
+    }
     .hc-row {
       display: block; padding: 8px 12px;
       border-top: 1px solid var(--line);
@@ -1595,6 +1617,24 @@
       // Read-only HA state cards under an answer (#475): one card per entity the
       // turn read (sensor value, binary_sensor/cover open-closed, light/switch
       // on/off badge). Read-only here; controls arrive in later phases.
+      // >4 cards group by room only when every room would hold ≥2 cards (#537);
+      // the engine annotates each card's `room` for the >4 case. Mirrors
+      // group_cards_by_room so reload (cards only) groups like the live turn.
+      function roomGroups(cards) {
+        var byRoom = {}, order = [];
+        cards.forEach(function (c) {
+          var r = c.room || "";
+          if (!(r in byRoom)) { byRoom[r] = []; order.push(r); }
+          byRoom[r].push(c);
+        });
+        // A room query (#540) cards one room's actuators -> one header at any
+        // count. Otherwise group only above 4 cards and when every room has ≥2.
+        var singleRoom = cards.length > 1 && order.length === 1 && order[0] !== "";
+        if (cards.length <= 4 && !singleRoom) return null;
+        var grouped = singleRoom || order.every(function (r) { return byRoom[r].length >= 2; });
+        return grouped ? order.map(function (r) { return { room: r, cards: byRoom[r] }; }) : null;
+      }
+
       function renderHaCards(cards) {
         if (!cards || !cards.length) return null;
         var wrap = document.createElement("div");
@@ -1605,11 +1645,46 @@
         // standalone card (phases 1-3 unchanged).
         if (cards.length > 1) {
           wrap.classList.add("ha-group");
+          // #537: above 4 cards, split into one group per room (each ≥2 cards)
+          // with a room header; otherwise one group, room-labelling each row
+          // when the engine annotated rooms but couldn't form ≥2-card groups.
+          var groups = roomGroups(cards);
+          var hasRooms = cards.some(function (c) { return c.room; });
+          if (groups) {
+            groups.forEach(function (g) {
+              var group = document.createElement("div");
+              group.className = "ha-card hc-group";
+              if (g.room) {
+                var head = document.createElement("div");
+                head.className = "hc-room";
+                head.textContent = g.room;
+                group.appendChild(head);
+              }
+              // #539: the room's cards lay out side-by-side on an invisible grid
+              // (auto-fill, wraps to single-column when narrow); groups stack.
+              var grid = document.createElement("div");
+              grid.className = "hc-grid";
+              g.cards.forEach(function (c) { grid.appendChild(renderHaCard(c, true)); });
+              group.appendChild(grid);
+              wrap.appendChild(group);
+            });
+            return wrap;
+          }
           var group = document.createElement("div");
           group.className = "ha-card hc-group";
+          var grid = document.createElement("div");
+          grid.className = "hc-grid";
           cards.forEach(function (c) {
-            group.appendChild(renderHaCard(c, true));
+            var row = renderHaCard(c, true);
+            if (hasRooms && c.room) {
+              var lbl = document.createElement("span");
+              lbl.className = "hc-room-label";
+              lbl.textContent = c.room;
+              row.appendChild(lbl);
+            }
+            grid.appendChild(row);
           });
+          group.appendChild(grid);
           wrap.appendChild(group);
           return wrap;
         }
@@ -1781,6 +1856,8 @@
           card.appendChild(val);
         } else if (c.domain === "climate") {
           renderClimateCard(card, c, st);
+        } else if (c.domain === "media_player") {
+          renderMediaPlayerCard(card, c, st);
         } else {
           // binary_sensor / cover / light / switch -> on/off-style badge.
           var onish = st === "on" || st === "open";
@@ -1788,7 +1865,15 @@
           var badge = document.createElement("span");
           badge.className = "hc-badge";
           badge.textContent = haStateLabel(c.domain, st);
-          card.appendChild(badge);
+          // #538: a light packs the on/off badge + brightness slider onto ONE
+          // compact row; everything else keeps the badge directly on the card.
+          var badgeHost = card;
+          if (c.domain === "light") {
+            badgeHost = document.createElement("div");
+            badgeHost.className = "hc-compact";
+            card.appendChild(badgeHost);
+          }
+          badgeHost.appendChild(badge);
           // Phase 2 (#476): light/switch badge becomes an on/off toggle.
           if (c.domain === "light" || c.domain === "switch") {
             card.classList.add("hc-toggle");
@@ -1801,7 +1886,8 @@
             });
           }
           // Phase 3 (#477): richer controls under the badge, feature-gated.
-          if (c.domain === "light") renderLightControls(card, c);
+          // #538: the light's brightness slider rides the compact badge row.
+          if (c.domain === "light") renderLightControls(card, c, badgeHost);
           else if (c.domain === "cover") renderCoverControls(card, c);
         }
         return card;
@@ -1813,14 +1899,17 @@
 
       // Brightness slider (when the light is dimmable) + colour picker (when it
       // supports a colour mode). Acts via light.turn_on {brightness_pct|rgb_color}.
-      function renderLightControls(card, c) {
+      function renderLightControls(card, c, brightHost) {
         var dimmable = c.brightness != null ||
           (c.supported_color_modes || []).some(function (m) { return m !== "onoff"; });
         if (dimmable) {
           var pct = c.brightness != null ? Math.round(c.brightness / 255 * 100) : 100;
-          var slider = makeSlider(card, pct, "%", function (v) {
+          // #538: append the brightness slider to the compact badge row (one
+          // line), not as a fresh row under the card. inline=true keeps the
+          // slider on the badge row and stops its drag toggling the light.
+          var slider = makeSlider(brightHost || card, pct, "%", function (v) {
             haCall(card, c, "light.turn_on", { brightness_pct: v });
-          });
+          }, true);
           card.hcBrightness = slider;
         }
         var hasColour = (c.supported_color_modes || []).some(function (m) {
@@ -1917,10 +2006,49 @@
         }
       }
 
+      // media_player (#541): state badge (playing/paused/...), what's playing,
+      // a transport row (prev / play-pause / next) and a volume slider.
+      function renderMediaPlayerCard(card, c, st) {
+        var playing = st === "playing";
+        card.classList.add(playing ? "on" : "off");
+        var badge = document.createElement("span");
+        badge.className = "hc-badge";
+        badge.textContent = haStateLabel("media_player", st);
+        card.appendChild(badge);
+        if (c.media_title) {
+          var nowp = document.createElement("div");
+          nowp.className = "hc-now";
+          nowp.textContent = c.media_artist
+            ? c.media_artist + " — " + c.media_title : c.media_title;
+          card.appendChild(nowp);
+        }
+        var btns = document.createElement("div");
+        btns.className = "hc-btns";
+        [["⏮", "media_previous_track", "Zurück"],
+         [playing ? "⏸" : "▶", "media_play_pause", "Play/Pause"],
+         ["⏭", "media_next_track", "Weiter"]].forEach(function (b) {
+          var btn = document.createElement("button");
+          btn.textContent = b[0];
+          btn.title = b[2];
+          btn.addEventListener("click", function () {
+            haCall(card, c, "media_player." + b[1], {});
+          });
+          btns.appendChild(btn);
+        });
+        card.appendChild(btns);
+        if (c.volume_level != null) {
+          makeSlider(card, Math.round(Number(c.volume_level) * 100), "%", function (v) {
+            haCall(card, c, "media_player.volume_set", { volume_level: v / 100 });
+          });
+        }
+      }
+
       // A labelled range row whose committed value (on change) fires onset(int).
-      function makeSlider(card, value, unit, onset) {
+      // inline=true mounts it on the given host (the compact badge row) instead
+      // of as its own row, and stops a slider drag from toggling the card.
+      function makeSlider(card, value, unit, onset, inline) {
         var row = document.createElement("div");
-        row.className = "hc-ctrl";
+        row.className = inline ? "hc-ctrl hc-ctrl-inline" : "hc-ctrl";
         var slider = document.createElement("input");
         slider.type = "range";
         slider.min = "0"; slider.max = "100"; slider.value = String(value);
@@ -1929,6 +2057,7 @@
         val.textContent = value + unit;
         slider.addEventListener("input", function () { val.textContent = slider.value + unit; });
         slider.addEventListener("change", function () { onset(Number(slider.value)); });
+        if (inline) row.addEventListener("click", function (e) { e.stopPropagation(); });
         row.appendChild(slider); row.appendChild(val);
         card.appendChild(row);
         return slider;
@@ -1971,6 +2100,12 @@
         }
         if (domain === "light" || domain === "switch") {
           if (state === "on") return "an";
+          if (state === "off") return "aus";
+        }
+        if (domain === "media_player") {
+          if (state === "playing") return "spielt";
+          if (state === "paused") return "pausiert";
+          if (state === "idle") return "bereit";
           if (state === "off") return "aus";
         }
         return state || "—";

@@ -422,6 +422,51 @@ async def test_climate_card_is_emitted_with_setpoint_attrs(monkeypatch):
     assert sink[0]["hvac_modes"] == ["off", "heat"]
 
 
+async def test_media_player_card_carries_state_and_controls(monkeypatch):
+    # #541: media_player gets a card with its transport state + control attrs
+    # (volume + what's playing) so the SPA can render the player variant.
+    states = {
+        "state": "playing",
+        "attributes": {
+            "friendly_name": "Wohnzimmer TV",
+            "volume_level": 0.4,
+            "media_title": "Tagesschau",
+            "media_artist": "ARD",
+        },
+    }
+    _stub(monkeypatch, states=states)
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+
+    await _tool("ha_get_state").handler({"entity_id": "media_player.living_tv"})
+
+    assert sink[0]["domain"] == "media_player"
+    assert sink[0]["state"] == "playing"
+    assert sink[0]["volume_level"] == 0.4
+    assert sink[0]["media_title"] == "Tagesschau"
+    assert sink[0]["media_artist"] == "ARD"
+
+
+def test_media_player_participates_in_room_grouping():
+    # #541: a media_player card groups by room alongside lights.
+    cards = [
+        {"entity_id": "light.l0", "state": "on", "domain": "light"},
+        {"entity_id": "light.l1", "state": "on", "domain": "light"},
+        {"entity_id": "light.l2", "state": "on", "domain": "light"},
+        {"entity_id": "media_player.tv", "state": "playing", "domain": "media_player"},
+        {"entity_id": "light.l3", "state": "on", "domain": "light"},
+    ]
+    area = {
+        "light.l0": "Küche",
+        "light.l1": "Küche",
+        "light.l2": "Wohnzimmer",
+        "media_player.tv": "Wohnzimmer",
+        "light.l3": "Wohnzimmer",
+    }
+    assert ha_mod.group_cards_by_room(cards, area) is True
+    assert cards[3]["room"] == "Wohnzimmer"
+
+
 async def test_card_omits_absent_control_attrs(monkeypatch):
     # A plain temperature sensor must not gain phase-3 control keys.
     states = {
@@ -486,6 +531,98 @@ async def test_no_sink_is_noop(monkeypatch):
 
     out = await _tool("ha_get_state").handler({"entity_id": "sensor.x"})
     assert '"state": "21"' in out
+
+
+def _light_cards():
+    return [
+        {"entity_id": "light.a", "state": "on", "domain": "light"},
+        {"entity_id": "light.b", "state": "off", "domain": "light"},
+        {"entity_id": "light.c", "state": "on", "domain": "light"},
+    ]
+
+
+def test_state_scoped_on_query_keeps_only_on_cards():
+    # "welche lichter sind an" -> only the ON lights get a card (#536).
+    kept = ha_mod.filter_cards_by_query_state(_light_cards(), "welche lichter sind an")
+    assert [c["entity_id"] for c in kept] == ["light.a", "light.c"]
+
+
+def test_state_scoped_off_query_keeps_only_off_cards():
+    kept = ha_mod.filter_cards_by_query_state(
+        _light_cards(), "welche lichter sind ausgeschaltet"
+    )
+    assert [c["entity_id"] for c in kept] == ["light.b"]
+
+
+def test_existence_query_keeps_the_full_set():
+    # "welche lichter gibt es" names no state -> all cards survive (#536).
+    cards = _light_cards()
+    kept = ha_mod.filter_cards_by_query_state(cards, "welche lichter gibt es")
+    assert kept == cards
+
+
+def test_open_state_scope_filters_covers():
+    cards = [
+        {"entity_id": "cover.a", "state": "open"},
+        {"entity_id": "cover.b", "state": "closed"},
+    ]
+    kept = ha_mod.filter_cards_by_query_state(cards, "welche rollos sind offen")
+    assert [c["entity_id"] for c in kept] == ["cover.a"]
+
+
+def _room_cards(n):
+    return [
+        {"entity_id": f"light.l{i}", "state": "on", "domain": "light"} for i in range(n)
+    ]
+
+
+def test_group_under_threshold_unchanged():
+    # ≤4 cards: no grouping, no room annotation (#537).
+    cards = _room_cards(4)
+    assert ha_mod.group_cards_by_room(cards, {"light.l0": "Küche"}) is False
+    assert all("room" not in c for c in cards)
+
+
+def test_group_when_every_room_has_two_plus():
+    # >4 cards across 2 rooms, ≥2 each -> grouped, each card carries its room.
+    cards = _room_cards(6)
+    area = {
+        "light.l0": "Küche",
+        "light.l1": "Küche",
+        "light.l2": "Küche",
+        "light.l3": "Bad",
+        "light.l4": "Bad",
+        "light.l5": "Bad",
+    }
+    assert ha_mod.group_cards_by_room(cards, area) is True
+    assert [c["room"] for c in cards] == ["Küche"] * 3 + ["Bad"] * 3
+
+
+def test_no_group_when_a_room_is_a_singleton():
+    # >4 cards but one room holds a single card -> no grouping; rooms annotated
+    # so the frontend labels each card instead (#537).
+    cards = _room_cards(5)
+    area = {
+        "light.l0": "Küche",
+        "light.l1": "Küche",
+        "light.l2": "Bad",
+        "light.l3": "Bad",
+        "light.l4": "Flur",
+    }
+    assert ha_mod.group_cards_by_room(cards, area) is False
+    assert cards[4]["room"] == "Flur"
+
+
+def test_single_room_groups_under_threshold():
+    # A room query (#540) cards one room's actuators -> one header even at ≤4.
+    cards = _room_cards(3)
+    area = {
+        "light.l0": "Wohnzimmer",
+        "light.l1": "Wohnzimmer",
+        "light.l2": "Wohnzimmer",
+    }
+    assert ha_mod.group_cards_by_room(cards, area) is True
+    assert [c["room"] for c in cards] == ["Wohnzimmer"] * 3
 
 
 def _stub_call(monkeypatch, *, new_state="on", post_status=200):
