@@ -304,7 +304,7 @@ def test_ha_card_phase3_controls_act_via_the_scoped_endpoint():
     # climate setpoint + hvac mode — all routed through /api/ha/call (no client
     # HA token), feature-gated by supported_features / colour modes.
     assert "function renderLightControls(card, c, brightHost)" in _HTML
-    assert "function renderCoverControls(card, c)" in _HTML
+    assert "function renderCoverControls(card, c, host)" in _HTML
     assert "function renderClimateCard(card, c, st)" in _HTML
     assert "function haCall(card, c, service, data)" in _HTML
     # light: brightness_pct slider + rgb_color picker, gated on colour modes.
