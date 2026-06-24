@@ -333,22 +333,43 @@ def entity_okf_path(conn: sqlite3.Connection, entity_id: str) -> str | None:
     return row["okf_path"] if row is not None else None
 
 
-def entity_facts(conn: sqlite3.Connection, entity_id: str) -> list[dict[str, Any]]:
+# The shared-data sentinel resident_uid (mirrors EngineProfile.default_uid).
+# A row owned by this uid is visible to every resident.
+SHARED_UID = "household"
+
+
+def entity_facts(
+    conn: sqlite3.Connection, entity_id: str, caller_uid: str
+) -> list[dict[str, Any]]:
+    """This entity's projected facts the caller may see (#576).
+
+    Per-owner scope (required `caller_uid`, no unscoped default — every read
+    threads an identity): only `resident_uid IN (caller, 'household')`. An
+    unknown/voice caller is `household`, so it sees only shared facts — never
+    another resident's personal fact."""
     rows = conn.execute(
         "SELECT predicate, value, confidence FROM facts"
-        " WHERE subject_entity_id = ? ORDER BY predicate, value",
-        (entity_id,),
+        " WHERE subject_entity_id = ? AND resident_uid IN (?, ?)"
+        " ORDER BY predicate, value",
+        (entity_id, caller_uid, SHARED_UID),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def entity_events(conn: sqlite3.Connection, entity_id: str) -> list[dict[str, Any]]:
-    """Events this entity participates in (newest first), with its role."""
+def entity_events(
+    conn: sqlite3.Connection, entity_id: str, caller_uid: str
+) -> list[dict[str, Any]]:
+    """Events this entity participates in (newest first), with its role.
+
+    Per-owner scope (required `caller_uid`, #576): only `resident_uid IN
+    (caller, 'household')`, so an event recorded under another resident never
+    surfaces for the caller."""
     rows = conn.execute(
         "SELECT ev.id, ev.ts, ev.kind, ee.role FROM event_entities ee"
         " JOIN events ev ON ev.id = ee.event_id"
-        " WHERE ee.entity_id = ? ORDER BY ev.ts DESC",
-        (entity_id,),
+        " WHERE ee.entity_id = ? AND ev.resident_uid IN (?, ?)"
+        " ORDER BY ev.ts DESC",
+        (entity_id, caller_uid, SHARED_UID),
     ).fetchall()
     return [dict(r) for r in rows]
 

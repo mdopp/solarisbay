@@ -14,9 +14,12 @@ Slugs may be hierarchical (`projekt/wintergarten`), so the match is on the
 exact slug, separated by a `/` boundary — `topic/projekt/wintergarten` matches
 slug `projekt/wintergarten`, not `projekt`.
 
-Per-resident isolation (D3): a resident sees their own topic's notes. A note
-records its writer in frontmatter `added_by: <uid>`; we filter to the caller's
-uid. Notes with no `added_by` (system/legacy) are treated as shared and shown.
+Per-resident isolation (D3 / #576): a resident sees their own notes plus shared
+household notes — never another resident's private note. A note records its
+writer in frontmatter `added_by: <uid>`; visibility is `added_by IN (caller,
+'household')`. Notes with no `added_by` (system/legacy) are treated as shared
+and shown. Default-deny: an unknown/unauthenticated caller (`household`) sees
+only shared notes, never a personal one.
 """
 
 from __future__ import annotations
@@ -26,6 +29,25 @@ from pathlib import Path
 from typing import Any
 
 _MAX_BYTES = 256 * 1024  # skip pathological files; notes are small markdown
+
+# The shared-data sentinel uid (mirrors EngineProfile.default_uid). A note owned
+# by this uid — or by no one — is visible to every resident.
+SHARED_UID = "household"
+
+
+def owner_of(text: str) -> str | None:
+    """The note's `added_by:` frontmatter uid, or None when unset (shared)."""
+    return _added_by(text)
+
+
+def is_visible(added_by: str | None, caller_uid: str) -> bool:
+    """Whether a note owned by `added_by` may surface for `caller_uid` (#576).
+
+    Access model: a resident sees their own (`added_by == caller_uid`) plus the
+    shared pool (`added_by` is the household sentinel or unset). An unknown
+    caller is `household`, so it sees only the shared pool — never a personal
+    note (default-deny against a cross-user leak)."""
+    return added_by in (None, SHARED_UID, caller_uid)
 
 
 def _topic_pattern(slug: str) -> re.Pattern[str]:
@@ -72,8 +94,7 @@ def notes_for_topic(
             continue
         if not pattern.search(text):
             continue
-        added_by = _added_by(text)
-        if added_by is not None and added_by != owner_uid:
+        if not is_visible(_added_by(text), owner_uid):
             continue
         out.append(
             {
@@ -112,8 +133,7 @@ def notes_mentioning(
             continue
         if not any(p.search(text) for p in patterns):
             continue
-        added_by = _added_by(text)
-        if added_by is not None and added_by != owner_uid:
+        if not is_visible(_added_by(text), owner_uid):
             continue
         out.append(
             {"path": str(path.relative_to(root)), "title": _title(text, path.stem)}
@@ -165,8 +185,7 @@ def notes_wikilinking(
             _wikilink_target(m).casefold() in wanted for m in _WIKILINK_RE.findall(text)
         ):
             continue
-        added_by = _added_by(text)
-        if added_by is not None and added_by != owner_uid:
+        if not is_visible(_added_by(text), owner_uid):
             continue
         out.append(
             {"path": str(path.relative_to(root)), "title": _title(text, path.stem)}

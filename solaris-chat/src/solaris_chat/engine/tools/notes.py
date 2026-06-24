@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from solaris_chat import notes_search
 from solaris_chat.engine.tools import Tool
 
 _MAX_BYTES = 256 * 1024
@@ -29,6 +30,10 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
         query = str(args.get("query") or "").strip()
         if not query or not root.is_dir():
             return "[]"
+        # Default-deny per-owner scope (#576): only the caller's own notes plus
+        # the shared household pool — never another resident's private note. An
+        # unknown caller resolves to `household`, so it sees the shared pool only.
+        caller_uid = uid_getter()
         terms = [t.lower() for t in query.split() if t]
         hits = []
         for path in sorted(root.rglob("*.md")):
@@ -37,6 +42,8 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
                     continue
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
+                continue
+            if not notes_search.is_visible(notes_search.owner_of(text), caller_uid):
                 continue
             lower = text.lower()
             if not all(t in lower for t in terms):

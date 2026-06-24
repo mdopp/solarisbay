@@ -1486,8 +1486,8 @@ def build_app(
                     view["title"] = ent.get("canonical_name") or entity_id
                     view["type"] = ent.get("type")
                     names = [view["title"], *projection.entity_aliases(conn, entity_id)]
-                    view["facts"] = projection.entity_facts(conn, entity_id)
-                    view["events"] = projection.entity_events(conn, entity_id)
+                    view["facts"] = projection.entity_facts(conn, entity_id, uid)
+                    view["events"] = projection.entity_events(conn, entity_id, uid)
                     okf_path = projection.entity_okf_path(conn, entity_id)
                     if okf_path:
                         view["source_docs"].append(
