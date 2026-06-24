@@ -20,6 +20,7 @@ from typing import Any
 
 import aiohttp
 
+from solaris_chat.engine.areas import AreaRegistry
 from solaris_chat.engine.tools import Tool
 
 # Per-turn sink for the read-only state cards a turn surfaces (#475). Each HA
@@ -275,6 +276,11 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
         "Authorization": f"Bearer {hass_token}",
         "Content-Type": "application/json",
     }
+    areas = AreaRegistry(hass_url, hass_token)
+
+    async def list_rooms(args: dict[str, Any]) -> str:
+        snap = await areas.snapshot()
+        return json.dumps({"rooms": snap.rooms}, ensure_ascii=False)
 
     async def call_service(args: dict[str, Any]) -> str:
         domain = str(args.get("domain") or "")
@@ -344,6 +350,8 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
         domain = str(args.get("domain") or "")
         want_class = str(args.get("device_class") or "").lower()
         name_q = str(args.get("name") or "").lower()
+        room_q = str(args.get("room") or "").lower()
+        snap = await areas.snapshot()
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
             async with client.get(f"{url}/api/states", headers=headers) as resp:
                 resp.raise_for_status()
@@ -363,9 +371,19 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
             name = attrs.get("friendly_name") or eid
             if name_q and name_q not in str(name).lower():
                 continue
+            room = snap.area_of(eid)
+            if room_q and room_q not in room.lower():
+                continue
             # No card here: a bulk scan would card every match (#499). The model
             # cards the subset it actually reports by ha_get_state-ing those.
-            out.append({"entity_id": eid, "state": s.get("state"), "name": name})
+            item: dict[str, Any] = {
+                "entity_id": eid,
+                "state": s.get("state"),
+                "name": name,
+            }
+            if room:
+                item["room"] = room
+            out.append(item)
             # Cap to bound the prompt; the filters keep targeted queries well under it.
             if len(out) >= 200:
                 truncated = True
@@ -540,12 +558,14 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
         Tool(
             name="ha_list_entities",
             description=(
-                "Listet Entities mit Live-Zustand — für read-only Geräte, die NICHT"
-                " in der Geräteliste des Prompts stehen (Sensoren etc.). Filter"
-                " kombinierbar: device_class (z.B. 'temperature', 'humidity',"
-                " 'power', 'energy', 'battery'), domain (z.B. 'sensor',"
-                " 'binary_sensor') und name (Teilstring, z.B. 'Küche'). Beispiel:"
-                " device_class='temperature' + name='Küche' für die Küchentemperatur."
+                "Listet Entities mit Live-Zustand und Raum — für read-only Geräte,"
+                " die NICHT in der Geräteliste des Prompts stehen (Sensoren etc.)."
+                " Filter kombinierbar: device_class (z.B. 'temperature',"
+                " 'humidity', 'power', 'energy', 'battery'), domain (z.B. 'sensor',"
+                " 'binary_sensor'), name (Teilstring, z.B. 'Küche') und room"
+                " (Raumname, z.B. 'Wohnzimmer'). Beispiel: device_class='temperature'"
+                " + name='Küche' für die Küchentemperatur. Nenne dem Nutzer immer den"
+                " Klartext-Namen (name) und ggf. den Raum, NIE die entity_id."
             ),
             parameters={
                 "type": "object",
@@ -553,9 +573,20 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
                     "domain": {"type": "string"},
                     "device_class": {"type": "string"},
                     "name": {"type": "string"},
+                    "room": {"type": "string"},
                 },
             },
             handler=list_entities,
+        ),
+        Tool(
+            name="ha_list_rooms",
+            description=(
+                "Listet alle Räume des Hauses (z.B. 'welche Räume hat das Haus')."
+                " Liefert die echten Raumnamen aus dem Home-Assistant-Bereichs-"
+                "register."
+            ),
+            parameters={"type": "object", "properties": {}},
+            handler=list_rooms,
         ),
         Tool(
             name="ha_state_history",

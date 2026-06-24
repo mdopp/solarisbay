@@ -18,6 +18,7 @@ from typing import Any
 
 import aiohttp
 
+from solaris_chat.engine.areas import AreaRegistry
 from solaris_chat.logging import log
 
 # Read-only domains we advertise for ON-DEMAND discovery instead of packing
@@ -71,6 +72,7 @@ class EntityRegistry:
     def __init__(self, hass_url: str, hass_token: str):
         self._url = hass_url.rstrip("/")
         self._token = hass_token
+        self._areas = AreaRegistry(hass_url, hass_token)
         self._block = ""
         self._fetched_at = 0.0
 
@@ -86,6 +88,7 @@ class EntityRegistry:
         except (aiohttp.ClientError, TimeoutError, OSError) as e:
             log.warn("engine.registry.unreachable", error=str(e))
             return self._block  # stale beats empty
+        areas = await self._areas.snapshot()
         lines = []
         domains: set[str] = set()
         cover_set_position = False
@@ -107,7 +110,7 @@ class EntityRegistry:
                         sensor_classes.add(device_class)
                 continue
             name = str(attrs.get("friendly_name") or entity_id)
-            area = str(attrs.get("area") or "")
+            area = areas.area_of(entity_id) or str(attrs.get("area") or "")
             line = f"{entity_id} | {name} | {area}".rstrip(" |")
             domains.add(domain)
             if domain == "cover":
@@ -122,12 +125,13 @@ class EntityRegistry:
             lines.append(line)
         lines.sort()
         parts = [
+            self._rooms_block(areas.rooms),
             "Steuerbare Geräte (entity_id | Name | Raum[ | Geräteklasse bei cover]):\n"
             + "\n".join(lines),
             self._actions_legend(domains, cover_set_position),
             self._discovery_legend(sorted(readonly_domains), sorted(sensor_classes)),
         ]
-        self._block = "\n".join(p for p in parts if p) if lines else ""
+        self._block = "\n".join(p for p in parts if p) if (lines or areas.rooms) else ""
         self._fetched_at = time.time()
         log.info(
             "engine.registry.refreshed",
@@ -135,6 +139,14 @@ class EntityRegistry:
             sensor_classes=len(sensor_classes),
         )
         return self._block
+
+    @staticmethod
+    def _rooms_block(rooms: list[str]) -> str:
+        """The house's rooms, so "welche Räume hat das Haus" is answerable from
+        the prompt directly (HA states carry no area, #535)."""
+        if not rooms:
+            return ""
+        return "Räume im Haus: " + ", ".join(rooms)
 
     @staticmethod
     def _discovery_legend(domains: list[str], classes: list[str]) -> str:
