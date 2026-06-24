@@ -13,8 +13,9 @@ So "welche Musik von <artist> habe ich" resolves from the central knowledge
 store and music becomes a research source. Films/audiobooks + playback are out
 of scope (slices 2/3).
 
-Per-library ownership (#576): the adapter enumerates the libraries
-(`GET /Library/MediaFolders`) and maps each library NAME to an owner uid (the
+Per-library ownership (#576): the adapter enumerates the music libraries
+(`GET /Users/{userId}/Views`, user-scoped so the read-only service user can read
+them — #581) and maps each library NAME to an owner uid (the
 `JELLYFIN_LIBRARY_OWNERS` config; default 'Music (cdopp)' -> cdopp, everything
 else -> household). A private library's concepts are written under the owner's
 path (`users/<owner>/okf/...`); shared libraries stay household. A band that
@@ -75,7 +76,7 @@ class JellyfinMusicClient(Protocol):
         ...
 
     async def libraries(self) -> list[tuple[str, str]]:
-        """The media libraries as `(id, name)` — `GET /Library/MediaFolders`.
+        """The music media libraries as `(id, name)` — `GET /Users/{userId}/Views`.
         The adapter maps a library NAME to an owner uid (#576 per-library)."""
         ...
 
@@ -144,18 +145,21 @@ class RestJellyfinMusicClient:
         self._user_id = str((payload.get("User") or {}).get("Id") or "")
 
     async def libraries(self) -> list[tuple[str, str]]:
+        # User-scoped Views (not admin-only /Library/MediaFolders, which 403s for
+        # the read-only service user, #581); keep only music collections so
+        # Playlists/non-music are excluded.
         await self.authenticate()
         headers = {"X-Emby-Token": self._token, "Accept": "application/json"}
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             async with client.get(
-                f"{self._base_url}/Library/MediaFolders", headers=headers
+                f"{self._base_url}/Users/{self._user_id}/Views", headers=headers
             ) as resp:
                 resp.raise_for_status()
                 payload = await resp.json()
         return [
             (_str(f, "Id"), _str(f, "Name"))
             for f in (payload.get("Items") or [])
-            if _str(f, "Id")
+            if _str(f, "Id") and _str(f, "CollectionType").casefold() == "music"
         ]
 
     async def iter_library(self, library_id: str) -> AsyncIterator[JellyfinItem]:

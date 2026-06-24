@@ -15,10 +15,12 @@ import asyncio
 import sqlite3
 from collections.abc import AsyncIterator
 
+import aiohttp
 import pytest
 
 from solaris_chat.engine.ingest import JellyfinMusicIngest
-from solaris_chat.engine.ingest.jellyfin import JellyfinItem
+from solaris_chat.engine.ingest import jellyfin as jellyfin_mod
+from solaris_chat.engine.ingest.jellyfin import JellyfinItem, RestJellyfinMusicClient
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.knowledge.writer import OkfWriter
 
@@ -337,6 +339,153 @@ def test_run_returns_high_water_cursor(env):
     b = _track(id="t2", name="Two", changed="2026-05-30T10:00:00")
     stats = _run(FakeJellyfinMusicClient([a, b]), writer)
     assert stats.cursor == "2026-05-30T10:00:00"
+
+
+# --- REST client: user-scoped library enumeration (#581) ---------------------
+
+
+class _Resp:
+    def __init__(self, *, json_body=None, status=200):
+        self._json = json_body
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise aiohttp.ClientResponseError(None, (), status=self.status)
+
+    async def json(self):
+        return self._json
+
+
+_VIEWS = {
+    "Items": [
+        {"Id": "v-music", "Name": "Music", "CollectionType": "music"},
+        {"Id": "v-cdopp", "Name": "Music (cdopp)", "CollectionType": "music"},
+        {"Id": "v-music2", "Name": "Music2", "CollectionType": "music"},
+        {"Id": "v-playlists", "Name": "Playlists", "CollectionType": "playlists"},
+        {"Id": "v-movies", "Name": "Filme", "CollectionType": "movies"},
+    ]
+}
+
+
+def test_libraries_uses_user_views_not_admin_mediafolders(monkeypatch):
+    # The read-only service user gets 403 on the admin /Library/MediaFolders but
+    # 200 on the user-scoped /Users/{userId}/Views (#581). libraries() must keep
+    # only the music collections (Playlists / non-music excluded).
+    requested: list[str] = []
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            return _Resp(json_body={"AccessToken": "tok", "User": {"Id": "u-solaris"}})
+
+        def get(self, url, *, headers=None, **k):
+            requested.append(url)
+            if "/Library/MediaFolders" in url:
+                return _Resp(status=403)
+            if "/Users/u-solaris/Views" in url:
+                return _Resp(json_body=_VIEWS)
+            raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+    libs = asyncio.run(client.libraries())
+
+    assert not any("/Library/MediaFolders" in u for u in requested)
+    assert any("/Users/u-solaris/Views" in u for u in requested)
+    assert libs == [
+        ("v-music", "Music"),
+        ("v-cdopp", "Music (cdopp)"),
+        ("v-music2", "Music2"),
+    ]
+
+
+def test_libraries_through_run_maps_per_library_owner(monkeypatch):
+    # End-to-end via the REST client: Views returns the music libs (no admin),
+    # the per-library owner mapping still applies (Music (cdopp) -> cdopp).
+    def _items(name):
+        return {
+            "Items": [
+                {
+                    "Id": f"{name}-t",
+                    "Type": "Audio",
+                    "Name": f"{name} song",
+                    "Artists": ["Adele" if "cdopp" in name else "Beatles"],
+                }
+            ],
+            "TotalRecordCount": 1,
+        }
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            return _Resp(json_body={"AccessToken": "tok", "User": {"Id": "u1"}})
+
+        def get(self, url, *, headers=None, params=None, **k):
+            if "/Library/MediaFolders" in url:
+                return _Resp(status=403)
+            if "/Users/u1/Views" in url:
+                return _Resp(json_body=_VIEWS)
+            if "/Items" in url:
+                pid = (params or {}).get("ParentId", "")
+                return _Resp(json_body=_items(pid))
+            raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    # tmp db/notes via a fresh writer
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db_path = f"{d}/solaris.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(_SCHEMA)
+        conn.commit()
+        conn.close()
+        writer = OkfWriter(db_path=db_path, notes_dir=f"{d}/notes")
+        client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+        ingest = JellyfinMusicIngest(
+            client,
+            writer,
+            ingesting_uid="household",
+            library_owners={"Music (cdopp)": "cdopp"},
+        )
+        asyncio.run(ingest.run())
+        conn = projection.open_conn(db_path)
+        rows = dict(
+            conn.execute(
+                "SELECT canonical_name, resident_uid FROM entities WHERE type = 'song'"
+            ).fetchall()
+        )
+        conn.close()
+    # All 3 music libs ingested (Playlists/movies excluded by libraries());
+    # only cdopp's library is private.
+    assert rows == {
+        "v-music song": "household",
+        "v-music2 song": "household",
+        "v-cdopp song": "cdopp",
+    }
 
 
 def test_bad_item_is_skipped_and_the_rest_still_ingest(env):
