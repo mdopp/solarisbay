@@ -161,11 +161,11 @@ def test_resolve_entity_is_per_resident(tmp_path):
 def test_facts_and_events_for_entity(tmp_path):
     conn = projection.open_conn(_db(tmp_path))
     try:
-        facts = projection.entity_facts(conn, "ent-anna")
+        facts = projection.entity_facts(conn, "ent-anna", "mdopp")
         assert facts == [
             {"predicate": "rolle", "value": "Schwester", "confidence": None}
         ]
-        events = projection.entity_events(conn, "ent-anna")
+        events = projection.entity_events(conn, "ent-anna", "mdopp")
         assert events[0]["kind"] == "birthday"
         assert events[0]["role"] == "celebrant"
     finally:

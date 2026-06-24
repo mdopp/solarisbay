@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from solaris_chat import notes_search
 from solaris_chat.engine.tools import Tool
 
 _MAX_BYTES = 256 * 1024
@@ -29,6 +30,10 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
         query = str(args.get("query") or "").strip()
         if not query or not root.is_dir():
             return "[]"
+        # Default-deny per-owner scope (#576): only the caller's own notes plus
+        # the shared household pool — never another resident's private note. An
+        # unknown caller resolves to `household`, so it sees the shared pool only.
+        caller_uid = uid_getter()
         terms = [t.lower() for t in query.split() if t]
         hits = []
         for path in sorted(root.rglob("*.md")):
@@ -37,6 +42,8 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
                     continue
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
+                continue
+            if not notes_search.is_visible(notes_search.owner_of(text), caller_uid):
                 continue
             lower = text.lower()
             if not all(t in lower for t in terms):
@@ -54,6 +61,11 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
         if not str(path).startswith(str(root.resolve())) or not path.is_file():
             return '{"error": "not found"}'
         text = path.read_text(encoding="utf-8", errors="replace")
+        # Per-owner scope (#576): a path is not a capability — a caller may only
+        # read their own or shared notes, never another resident's private note.
+        # Deny indistinguishably from a missing path (no content, no existence).
+        if not notes_search.is_visible(notes_search.owner_of(text), uid_getter()):
+            return '{"error": "not found"}'
         return json.dumps({"path": rel, "content": text[:8000]}, ensure_ascii=False)
 
     async def write(args: dict[str, Any]) -> str:
@@ -69,7 +81,13 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
             with path.open("a", encoding="utf-8") as f:
                 f.write("\n" + content.rstrip("\n") + "\n")
         else:
-            path.write_text(content.rstrip("\n") + "\n", encoding="utf-8")
+            # Stamp the caller as owner (#576): a model-written note belongs to
+            # the resident it was written for, not the shared pool. Without this
+            # the note is untagged and (None = shared) visible to everyone.
+            body = content.rstrip("\n") + "\n"
+            owner = uid_getter()
+            note = f"---\nadded_by: {owner}\n---\n\n{body}"
+            path.write_text(note, encoding="utf-8")
         return json.dumps({"written": rel})
 
     async def fact_store(args: dict[str, Any]) -> str:
