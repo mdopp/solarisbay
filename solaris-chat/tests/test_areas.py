@@ -121,6 +121,35 @@ async def test_area_registry_fail_open_on_ws_error(monkeypatch):
     assert snap.entity_area == {}
 
 
+async def test_area_registry_caches_empty_result(monkeypatch):
+    # #546: an HA with 0 configured areas yields an empty-but-valid snapshot;
+    # the TTL must still apply (cache on "have we fetched", not "is it
+    # non-empty") so a second turn reuses the cache instead of re-opening a WS.
+    connects = {"n": 0}
+
+    class _EmptyWS(_WS):
+        def __init__(self):
+            super().__init__()
+            connects["n"] += 1
+
+        async def send_json(self, msg):
+            self._sent.append(msg)
+            if msg.get("type") == "auth":
+                self._inbox.append({"type": "auth_ok"})
+                return
+            self._inbox.append(
+                {"id": msg["id"], "type": "result", "success": True, "result": []}
+            )
+
+    _stub_ws(monkeypatch, _EmptyWS)
+    reg = AreaRegistry("http://ha:8123", "tok")
+    first = await reg.snapshot()
+    second = await reg.snapshot()
+    assert first.rooms == [] and second.rooms == []
+    # only ONE WS connection across the two calls — the empty result is cached
+    assert connects["n"] == 1
+
+
 def test_ws_url_derivation():
     assert areas_mod._ws_url("http://ha:8123") == "ws://ha:8123/api/websocket"
     assert areas_mod._ws_url("https://ha/") == "wss://ha/api/websocket"
@@ -336,3 +365,130 @@ async def test_ha_room_cards_cards_every_actuator_of_the_room(monkeypatch):
     assert out["room"] == "Wohnzimmer"
     assert {a["entity_id"] for a in out["actuators"]} == {"light.wz_a", "switch.wz_b"}
     assert {c["entity_id"] for c in sink} == {"light.wz_a", "switch.wz_b"}
+
+
+async def test_ha_room_cards_substring_does_not_mix_rooms(monkeypatch):
+    # #547: "zimmer" is a substring of both Wohnzimmer and Schlafzimmer; the
+    # room query must resolve to a single room (here the deterministic first
+    # substring match in sorted order = Schlafzimmer) and never emit entities
+    # from the other room, so the reported room matches the cards.
+    states = [
+        {
+            "entity_id": "light.wohn_a",
+            "state": "on",
+            "attributes": {"friendly_name": "Wohn A"},
+        },
+        {
+            "entity_id": "light.schlaf_b",
+            "state": "off",
+            "attributes": {"friendly_name": "Schlaf B"},
+        },
+    ]
+    area = {"light.wohn_a": "Wohnzimmer", "light.schlaf_b": "Schlafzimmer"}
+    import solaris_chat.engine.areas as a_mod
+    import solaris_chat.engine.tools.ha as ha_mod
+    from solaris_chat.engine.areas import AreaSnapshot
+
+    class _Resp:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return states
+
+        def raise_for_status(self):
+            pass
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
+
+    async def _snap(self):
+        return AreaSnapshot(rooms=["Schlafzimmer", "Wohnzimmer"], entity_area=area)
+
+    monkeypatch.setattr(a_mod.AreaRegistry, "snapshot", _snap)
+
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+    tool = _ha_tool("ha_room_cards")
+    out = json.loads(await tool.handler({"room": "zimmer"}))
+
+    # exactly one room, and the cards all belong to it — no mix
+    assert out["room"] == "Schlafzimmer"
+    assert {a["entity_id"] for a in out["actuators"]} == {"light.schlaf_b"}
+    assert {c["entity_id"] for c in sink} == {"light.schlaf_b"}
+
+
+async def test_ha_room_cards_exact_match_preferred(monkeypatch):
+    # An exact (case/whitespace-insensitive) name wins over a substring match.
+    states = [
+        {
+            "entity_id": "light.bad_a",
+            "state": "on",
+            "attributes": {"friendly_name": "Bad A"},
+        },
+        {
+            "entity_id": "light.badezimmer_b",
+            "state": "on",
+            "attributes": {"friendly_name": "Bade B"},
+        },
+    ]
+    area = {"light.bad_a": "Bad", "light.badezimmer_b": "Badezimmer"}
+    import solaris_chat.engine.areas as a_mod
+    import solaris_chat.engine.tools.ha as ha_mod
+    from solaris_chat.engine.areas import AreaSnapshot
+
+    class _Resp:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return states
+
+        def raise_for_status(self):
+            pass
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
+
+    async def _snap(self):
+        return AreaSnapshot(rooms=["Bad", "Badezimmer"], entity_area=area)
+
+    monkeypatch.setattr(a_mod.AreaRegistry, "snapshot", _snap)
+
+    sink: list = []
+    ha_mod.card_sink.set(sink)
+    tool = _ha_tool("ha_room_cards")
+    out = json.loads(await tool.handler({"room": " bad "}))
+
+    assert out["room"] == "Bad"
+    assert {a["entity_id"] for a in out["actuators"]} == {"light.bad_a"}

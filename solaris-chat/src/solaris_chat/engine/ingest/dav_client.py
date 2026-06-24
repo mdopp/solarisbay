@@ -148,9 +148,12 @@ def parse_vevent(body: str, *, resource: str = "", etag: str = "") -> CalEvent |
             nesting += 1
             continue
         if name == "END":
-            nesting -= 1
+            # Clamp at 0: a stray/extra END (proprietary extensions, lenient
+            # servers) must not drive nesting negative, which would make
+            # `nesting > 0` falsy-vs-truthy slip and drop VEVENT props (#548).
+            nesting = max(0, nesting - 1)
             continue
-        if nesting:
+        if nesting > 0:
             continue
         if name == "UID":
             uid = value.strip()

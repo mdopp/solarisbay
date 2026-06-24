@@ -576,11 +576,18 @@ def _room_cards(n):
     ]
 
 
-def test_group_under_threshold_unchanged():
-    # ≤4 cards: no grouping, no room annotation (#537).
+def test_group_under_threshold_ungrouped_but_labelled():
+    # ≤4 multi-room cards: not grouped, but each still carries its room so the
+    # frontend labels every card (#545 — the per-card label path must run).
     cards = _room_cards(4)
-    assert ha_mod.group_cards_by_room(cards, {"light.l0": "Küche"}) is False
-    assert all("room" not in c for c in cards)
+    area = {
+        "light.l0": "Wohnzimmer",
+        "light.l1": "Küche",
+        "light.l2": "Bad",
+        "light.l3": "Flur",
+    }
+    assert ha_mod.group_cards_by_room(cards, area) is False
+    assert [c["room"] for c in cards] == ["Wohnzimmer", "Küche", "Bad", "Flur"]
 
 
 def test_group_when_every_room_has_two_plus():

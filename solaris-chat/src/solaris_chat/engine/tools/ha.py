@@ -141,15 +141,16 @@ def group_cards_by_room(
     room would hold ≥2 cards — then returns True (the frontend renders one group
     per room with a header). If grouping would leave a singleton room, returns
     False: the cards still carry their `room` so the frontend labels each card,
-    but renders them ungrouped. ≤4 mixed-room cards stay unchanged."""
+    but renders them ungrouped. ≤4 mixed-room cards also carry their `room` (so
+    each is labelled) but render ungrouped."""
     rooms = [entity_area.get(str(c.get("entity_id") or ""), "") for c in cards]
     single_room = len(cards) > 1 and len(set(rooms)) == 1 and rooms[0] != ""
-    if len(cards) <= _GROUP_THRESHOLD and not single_room:
-        return False
     counts: dict[str, int] = {}
     for c, room in zip(cards, rooms):
         c["room"] = room
         counts[room] = counts.get(room, 0) + 1
+    if len(cards) <= _GROUP_THRESHOLD and not single_room:
+        return False
     if single_room:
         return True
     return all(n >= 2 for n in counts.values())
@@ -472,31 +473,42 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
 
     async def room_cards(args: dict[str, Any]) -> str:
         """Card every actuator of a room (#540) — a room query shows them all."""
-        room_q = str(args.get("room") or "").lower()
+        room_q = " ".join(str(args.get("room") or "").split()).lower()
         if not room_q:
             return json.dumps({"error": "room required"})
         snap = await areas.snapshot()
+        # Resolve the query to ONE room before emitting, so a substring like
+        # "zimmer" can't mix Wohnzimmer + Schlafzimmer (#547): prefer a
+        # case/whitespace-insensitive exact match, else the first substring
+        # match in sorted order (deterministic, single room).
+        room_name = ""
+        for r in snap.rooms:
+            if " ".join(r.split()).lower() == room_q:
+                room_name = r
+                break
+        if not room_name:
+            for r in sorted(snap.rooms):
+                if room_q in " ".join(r.split()).lower():
+                    room_name = r
+                    break
+        if not room_name:
+            return json.dumps({"room": room_q, "actuators": []}, ensure_ascii=False)
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
             async with client.get(f"{url}/api/states", headers=headers) as resp:
                 resp.raise_for_status()
                 states = await resp.json()
-        room_name = ""
         out = []
         for s in states:
             eid = str(s.get("entity_id") or "")
             if eid.split(".", 1)[0] not in _ROOM_ACTUATOR_DOMAINS:
                 continue
-            room = snap.area_of(eid)
-            if room_q not in room.lower():
+            if snap.area_of(eid) != room_name:
                 continue
-            room_name = room
             attrs = s.get("attributes") or {}
             name = attrs.get("friendly_name") or eid
             _emit_card(eid, name, s.get("state"), attrs)
             out.append({"entity_id": eid, "name": name, "state": s.get("state")})
-        return json.dumps(
-            {"room": room_name or room_q, "actuators": out}, ensure_ascii=False
-        )
+        return json.dumps({"room": room_name, "actuators": out}, ensure_ascii=False)
 
     async def _resolve_entity_id(ref: str) -> str:
         """Resolve a model-supplied reference to a real entity_id, "" on no match.

@@ -361,6 +361,50 @@ def test_valarm_description_does_not_overwrite_event_description():
     assert ev.description == "Discuss Q3 roadmap"
 
 
+def test_nested_component_inside_valarm_keeps_vevent_properties():
+    # #548: a VALARM with its own nested sub-component must not drive the nesting
+    # counter negative; VEVENT-level DESCRIPTION/LOCATION/ATTENDEE after the
+    # VALARM must survive (the guard is `nesting > 0`, END clamps at 0).
+    ics = (
+        "BEGIN:VEVENT\r\n"
+        "UID:abc123\r\n"
+        "DTSTART:20260622T180000Z\r\n"
+        "SUMMARY:Team meeting\r\n"
+        "BEGIN:VALARM\r\n"
+        "TRIGGER:-PT15M\r\n"
+        "BEGIN:X-FOO\r\n"
+        "X-PROP:ignored\r\n"
+        "END:X-FOO\r\n"
+        "DESCRIPTION:alarm body\r\n"
+        "END:VALARM\r\n"
+        "DESCRIPTION:real event description\r\n"
+        "LOCATION:Room 5\r\n"
+        "ATTENDEE;CN=Anna:mailto:anna@example.com\r\n"
+        "END:VEVENT\r\n"
+    )
+    ev = parse_vevent(ics)
+    assert ev is not None
+    assert ev.description == "real event description"
+    assert ev.location == "Room 5"
+    assert ev.participants == ["Anna"]
+
+
+def test_extra_end_inside_event_does_not_drop_properties():
+    # A stray/unbalanced END inside the VEVENT must clamp at 0, not go negative
+    # (which would make `if nesting:` truthy and drop later props) (#548).
+    ics = (
+        "BEGIN:VEVENT\r\n"
+        "UID:abc123\r\n"
+        "SUMMARY:Meeting\r\n"
+        "END:X-STRAY\r\n"
+        "DESCRIPTION:still captured\r\n"
+        "END:VEVENT\r\n"
+    )
+    ev = parse_vevent(ics)
+    assert ev is not None
+    assert ev.description == "still captured"
+
+
 class _FakeResp:
     def __init__(self, *, text: str):
         self._text = text
