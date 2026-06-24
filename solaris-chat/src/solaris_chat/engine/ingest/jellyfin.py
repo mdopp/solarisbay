@@ -161,25 +161,34 @@ class RestJellyfinMusicClient:
         self, client: aiohttp.ClientSession, path: str, *, params: dict | None = None
     ) -> dict[str, Any]:
         """Authenticated GET that survives a mid-ingest token expiry: on a 401 it
-        re-authenticates once (fresh token + userId) and retries the SAME request.
-        A long ingest can outlive one token, so this lets pagination resume from
-        the same StartIndex with the new token instead of truncating the tail."""
-        for attempt in (0, 1):
-            async with client.get(
-                f"{self._base_url}{path}", params=params, headers=self._auth_headers()
-            ) as resp:
-                if (
-                    resp.status == 401
-                    and attempt == 0
-                    and self._reauths < self._MAX_REAUTH
-                ):
-                    self._reauths += 1
-                    log.info("engine.ingest.jellyfin_reauth", path=path)
-                    await self._reauthenticate()
-                    continue
-                resp.raise_for_status()
-                return await resp.json()
-        raise AssertionError("unreachable")  # pragma: no cover
+        re-authenticates (fresh token + userId) and retries the SAME request from
+        the same StartIndex, so pagination resumes with the new token instead of
+        truncating the tail. A long ingest can outlive several tokens, so it
+        re-auths on every 401 up to `_MAX_REAUTH` total across the run.
+
+        Jellyfin's 401 can surface two ways depending on the deployment/proxy: as
+        a returned `resp.status == 401`, or — when raise-on-status is in effect
+        somewhere in the client/proxy chain — as a raised
+        `aiohttp.ClientResponseError(status=401)`. u78 only handled the first and
+        never fired on the real box (#583); handle both."""
+        url = f"{self._base_url}{path}"
+        while True:
+            try:
+                async with client.get(
+                    url, params=params, headers=self._auth_headers()
+                ) as resp:
+                    if resp.status == 401:
+                        raise aiohttp.ClientResponseError(
+                            resp.request_info, resp.history, status=401
+                        )
+                    resp.raise_for_status()
+                    return await resp.json()
+            except aiohttp.ClientResponseError as e:
+                if e.status != 401 or self._reauths >= self._MAX_REAUTH:
+                    raise
+                self._reauths += 1
+                log.info("engine.ingest.jellyfin_reauth", path=path)
+                await self._reauthenticate()
 
     async def libraries(self) -> list[tuple[str, str]]:
         # User-scoped Views (not admin-only /Library/MediaFolders, which 403s for
@@ -380,8 +389,9 @@ class JellyfinMusicIngest:
             title=item.name or f"Track {item.id}",
             # Suffix the item id so two tracks with the same title don't collide
             # on the title-derived slug; re-ingest of the same track is stable.
-            # _slug_or_id falls back to the id when the title slugifies empty.
-            slug=f"{_slug_or_id(item.name, item.id)}-{safe_slug(item.id)}",
+            # Both halves go through the id-fallback so no slug source can raise
+            # at the throw site (#583).
+            slug=f"{_slug_or_id(item.name, item.id)}-{_slug_or_id(item.id, item.id)}",
             source=_SOURCE,
             external_id=f"audio/{item.id}",
             resident=owner,
