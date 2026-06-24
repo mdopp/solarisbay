@@ -76,6 +76,56 @@ async def test_notes_search_household_sees_only_shared(tmp_path):
     assert "cdopp_secret.md" not in paths
 
 
+# ---- notes_read tool (per-path read must enforce the owner filter, #576) -----
+
+
+def _tool_handler(vault, caller_uid: str, name: str):
+    for tool in build_notes_tools(vault, lambda: caller_uid):
+        if tool.name == name:
+            return tool.handler
+    raise AssertionError(f"{name} tool not built")
+
+
+async def test_notes_read_denies_other_residents_note(tmp_path):
+    # A path is not a capability: guessing/reusing cdopp's deterministic path
+    # must NOT leak its body — deny indistinguishably from a missing path.
+    vault = _vault(tmp_path)
+    for caller in ("mdopp", "household", "unknown-voice-uid"):
+        read = _tool_handler(vault, caller, "notes_read")
+        result = json.loads(await read({"path": "cdopp_secret.md"}))
+        assert result == {"error": "not found"}, caller
+
+
+async def test_notes_read_allows_shared_and_own(tmp_path):
+    vault = _vault(tmp_path)
+    # A shared (household) note is readable by anyone.
+    for caller in ("mdopp", "cdopp", "household"):
+        read = _tool_handler(vault, caller, "notes_read")
+        shared = json.loads(await read({"path": "shared.md"}))
+        assert shared["path"] == "shared.md"
+        assert "Geheimnis" in shared["content"]
+    # The owner can read their own note.
+    read_own = _tool_handler(vault, "cdopp", "notes_read")
+    own = json.loads(await read_own({"path": "cdopp_secret.md"}))
+    assert own["path"] == "cdopp_secret.md"
+    assert "Geheimnis" in own["content"]
+
+
+# ---- note_write tool (model-written notes must be owner-tagged, #576) ---------
+
+
+async def test_note_write_stamps_caller_as_owner(tmp_path):
+    root = tmp_path / "notes"
+    write = _tool_handler(str(root), "mdopp", "note_write")
+    await write({"path": "neu.md", "content": "Geheimnis Wintergarten Notiz."})
+    from solaris_chat import notes_search
+
+    text = (root / "neu.md").read_text(encoding="utf-8")
+    assert notes_search.owner_of(text) == "mdopp"
+    # And the body survives the frontmatter stamp.
+    assert "Geheimnis Wintergarten Notiz." in text
+
+
 # ---- research tool (fans out to the filtered notes path) ---------------------
 
 
