@@ -54,6 +54,7 @@ async def _run() -> None:
         context_window=context_window.value,
     )
     crons.start()
+
     # Populate the OKF store on boot (#517). Run in a dedicated worker thread
     # with its own event loop, NOT as a task on the chat server's loop: the
     # ingest does synchronous sqlite writes + per-asset embedding work, and on
