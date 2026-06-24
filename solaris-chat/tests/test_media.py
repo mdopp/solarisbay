@@ -10,7 +10,11 @@ from __future__ import annotations
 import json
 
 from solaris_chat.engine.tools import media as media_mod
-from solaris_chat.engine.tools.media import _newest_enclosure, build_media_tools
+from solaris_chat.engine.tools.media import (
+    _fyyd_resolve_feed,
+    _newest_enclosure,
+    build_media_tools,
+)
 
 
 class _Resp:
@@ -134,6 +138,46 @@ async def test_find_without_entity_resolves_only_no_play(monkeypatch):
     assert out["ok"] is True and out["played"] is False
     assert out["media_url"] == "https://cdn.example/100.mp3"
     assert posts == []  # no device => no HA call
+
+
+async def test_resolve_feed_picks_closest_title_over_top_hit(monkeypatch):
+    # fyyd ranks a near-miss first; the exact-ish match comes later in the list.
+    gets = _stub(
+        monkeypatch,
+        search={
+            "data": [
+                {"title": "Netropolitik Daily", "xmlURL": "https://feed/wrong.xml"},
+                {"title": "Netzpolitik", "xmlURL": "https://feed/netzpolitik.xml"},
+                {"title": "Something Else", "xmlURL": "https://feed/else.xml"},
+            ]
+        },
+    )
+    show = await _fyyd_resolve_feed("Netzpolitik")
+    assert show == {"title": "Netzpolitik", "feed": "https://feed/netzpolitik.xml"}
+    # requested more than one candidate so a best-match is possible
+    assert any("api.fyyd.de" in u and p.get("count") == 5 for u, p in gets)
+
+
+async def test_resolve_feed_falls_back_to_top_when_none_close(monkeypatch):
+    _stub(
+        monkeypatch,
+        search={
+            "data": [
+                {"title": "Totally Unrelated Show", "xmlURL": "https://feed/top.xml"},
+                {"title": "Another Random One", "xmlURL": "https://feed/b.xml"},
+            ]
+        },
+    )
+    show = await _fyyd_resolve_feed("Tim Pritlove")
+    assert show == {"title": "Totally Unrelated Show", "feed": "https://feed/top.xml"}
+
+
+def test_find_podcast_description_demands_verbatim_name():
+    desc = _tool().description
+    assert "WORTWÖRTLICH" in desc
+    # explicitly forbids rewriting/correcting/translating the name
+    assert "NIEMALS" in desc
+    assert "korrigierst" in desc and "übersetzt" in desc
 
 
 async def test_show_not_found_is_graceful(monkeypatch):

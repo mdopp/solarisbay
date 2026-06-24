@@ -14,6 +14,7 @@ internet) confirms live reachability.
 from __future__ import annotations
 
 import json
+from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from typing import Any
 from xml.etree import ElementTree
@@ -27,17 +28,41 @@ _FYYD_SEARCH = "https://api.fyyd.de/0.2/search/podcast"
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 
 
+def _pick_best(name: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Choose the candidate whose title is closest to `name`, else the top hit.
+
+    fyyd ranks by relevance, but a slightly-off query ("Netzpolitik" vs the
+    show's exact title) can rank a wrong show first. Score each by fuzzy title
+    similarity (casefold/strip-normalized) and prefer the closest; fall back to
+    fyyd's top result when nothing is meaningfully close.
+    """
+    target = name.casefold().strip()
+    best: tuple[float, dict[str, Any]] | None = None
+    for show in candidates:
+        title = str(show.get("title") or "").casefold().strip()
+        if not title:
+            continue
+        score = SequenceMatcher(None, target, title).ratio()
+        if best is None or score > best[0]:
+            best = (score, show)
+    if best is not None and best[0] >= 0.6:
+        return best[1]
+    return candidates[0] if candidates else None
+
+
 async def _fyyd_resolve_feed(name: str) -> dict[str, Any] | None:
     """Resolve a show name to its {title, feed} via fyyd's keyless search."""
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
-        async with client.get(_FYYD_SEARCH, params={"title": name, "count": 1}) as resp:
+        async with client.get(_FYYD_SEARCH, params={"title": name, "count": 5}) as resp:
             if resp.status >= 400:
                 return None
             body = await resp.json()
     data = body.get("data") if isinstance(body, dict) else None
     if not isinstance(data, list) or not data:
         return None
-    show = data[0]
+    show = _pick_best(name, [s for s in data if isinstance(s, dict)])
+    if show is None:
+        return None
     feed = str(show.get("xmlURL") or "").strip()
     if not feed.startswith("http"):
         return None
@@ -159,8 +184,14 @@ def build_media_tools(hass_url: str, hass_token: str) -> list[Tool]:
             name="media_find_podcast",
             description=(
                 "Findet einen Podcast über den freien Index fyyd.de und spielt die"
-                " neueste Folge auf einem Raum-Gerät. Übergib den Podcast-Namen als"
-                " 'name' und die media_player-Entität des Zielraums als 'entity_id'"
+                " neueste Folge auf einem Raum-Gerät. Übergib als 'name' GENAU den"
+                " Podcast- oder Personennamen, den der Nutzer gesagt hat — WORTWÖRTLICH."
+                " Du korrigierst, übersetzt, vervollständigst oder ersetzt den Namen"
+                " NIEMALS, auch wenn er dir unbekannt vorkommt oder wie ein Tippfehler"
+                " aussieht (z.B. bleibt 'tim pritlove' genau 'tim pritlove', wird NICHT"
+                " zu 'Tim Pratchett'; 'Netzpolitik' bleibt 'Netzpolitik'). Der Index"
+                " findet die richtige Sendung selbst per Fuzzy-Suche. Übergib die"
+                " media_player-Entität des Zielraums als 'entity_id'"
                 " (z.B. media_player.wohnzimmer). Ohne entity_id wird nur die"
                 " neueste Folge aufgelöst (frag dann nach dem Raum und ruf erneut)."
                 " Nutze es für 'Spiel die neueste Folge von <Podcast>'."
