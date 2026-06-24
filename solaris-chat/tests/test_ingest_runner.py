@@ -77,6 +77,9 @@ class FakeSettings:
     carddav_url: str = ""
     carddav_username: str = ""
     carddav_password: str = ""
+    jellyfin_url: str = ""
+    jellyfin_username: str = ""
+    jellyfin_password: str = ""
 
 
 @pytest.fixture
@@ -253,6 +256,66 @@ async def test_run_ingest_immich_skipped_when_unconfigured(env, monkeypatch):
 
     monkeypatch.setattr(runner, "RestImmichClient", _boom)
     # No creds -> Immich is skipped; no crash.
+    await runner.run_ingest(
+        FakeSettings(solaris_db_path=db_path, notes_dir=str(notes_dir))
+    )
+
+
+# --- Jellyfin: configured -> runs (mocked); unconfigured -> skipped ----------
+
+
+class _FakeJellyfin:
+    """Stands in for RestJellyfinMusicClient — no network."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def authenticate(self):
+        pass
+
+    async def iter_music(self):
+        from solaris_chat.engine.ingest.jellyfin import JellyfinItem
+
+        yield JellyfinItem(
+            id="t1",
+            kind="Audio",
+            name="Bohemian Rhapsody",
+            artist="Queen",
+            genre="Rock",
+            year="1975",
+            changed="2026-05-01",
+        )
+
+    def audio_uri(self, item_id: str) -> str:
+        return f"jellyfin://audio/{item_id}"
+
+
+async def test_run_ingest_jellyfin_runs_when_configured(env, monkeypatch):
+    db_path, notes_dir = env
+    monkeypatch.setattr(runner, "RestJellyfinMusicClient", _FakeJellyfin)
+    monkeypatch.setattr(runner, "_wait_for_health", _healthy)
+    await runner.run_ingest(
+        FakeSettings(
+            solaris_db_path=db_path,
+            notes_dir=str(notes_dir),
+            jellyfin_url="http://jellyfin",
+            jellyfin_username="u",
+            jellyfin_password="p",
+        )
+    )
+    # The mocked track produced a song concept + a band + projection rows.
+    assert _counts(db_path)["concepts"] >= 1
+    assert list((notes_dir / "okf" / "songs").glob("*.md"))
+
+
+async def test_run_ingest_jellyfin_skipped_when_unconfigured(env, monkeypatch):
+    db_path, notes_dir = env
+
+    def _boom(*a, **k):  # the client must never be built when unconfigured.
+        raise AssertionError("Jellyfin client built without config")
+
+    monkeypatch.setattr(runner, "RestJellyfinMusicClient", _boom)
+    # No JELLYFIN_URL -> skipped; no crash, no client built.
     await runner.run_ingest(
         FakeSettings(solaris_db_path=db_path, notes_dir=str(notes_dir))
     )
