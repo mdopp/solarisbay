@@ -273,3 +273,31 @@ def test_onoff_control_is_a_toggle_switch_not_a_label_button():
     assert "font-size: 0;" in _HTML
     assert ".on .hc-badge.hc-switch::after { transform: translateX(16px); }" in _HTML
     assert ".off .hc-badge.hc-switch {" in _HTML
+
+
+def test_media_player_card_has_power_toggle_and_source_picker():
+    # #561: the media_player card gets a power on/off toggle (gated on
+    # TURN_ON/TURN_OFF, reusing the #560 .hc-switch style, calling
+    # media_player.turn_on/turn_off) so an off TV is reachable, plus a
+    # source/app picker (gated on SELECT_SOURCE) that calls select_source —
+    # while keeping the transport + volume controls.
+    mp = re.search(
+        r"function renderMediaPlayerCard\(card, c, st\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
+    )
+    assert mp, "renderMediaPlayerCard not found"
+    mpb = mp.group(1)
+    # feature-gated power toggle, same switch style as the light/switch card.
+    assert "feat & MP_TURN_ON && feat & MP_TURN_OFF" in mpb
+    assert '"hc-badge hc-switch"' in mpb
+    assert 'card.classList.contains("on") ? "turn_off" : "turn_on"' in mpb
+    # feature-gated source picker calling select_source over the source_list.
+    assert "feat & MP_SELECT_SOURCE" in mpb
+    assert "c.source_list" in mpb
+    assert '"media_player.select_source", { source: sel.value }' in mpb
+    # transport + volume still present.
+    assert "makeButtons(compact," in mpb
+    assert "media_player.volume_set" in mpb
+    # the feature bits are defined.
+    assert "MP_TURN_ON = 128, MP_TURN_OFF = 256, MP_SELECT_SOURCE = 2048" in _HTML

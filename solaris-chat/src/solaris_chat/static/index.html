@@ -2011,6 +2011,8 @@
 
       // HA supported_features bits (only the ones the cards act on).
       var COVER_SET_POSITION = 4, CLIMATE_TARGET_TEMP = 1;
+      // media_player feature bits: turn_on / turn_off / select_source.
+      var MP_TURN_ON = 128, MP_TURN_OFF = 256, MP_SELECT_SOURCE = 2048;
       var COLOUR_MODES = ["rgb", "hs", "xy", "rgbw", "rgbww", "color_temp"];
 
       // Brightness slider (when the light is dimmable) + colour picker (when it
@@ -2124,17 +2126,43 @@
 
       // media_player (#541): state badge (playing/paused/...), what's playing,
       // a transport row (prev / play-pause / next) and a volume slider.
+      // #561: a power on/off toggle (turn_on/turn_off, gated on TURN_ON/OFF) so
+      // an off TV is reachable from the card, plus a source/app picker when the
+      // player supports select_source — reuses the #560 .hc-switch toggle style.
       function renderMediaPlayerCard(card, c, st) {
+        var on = st !== "off" && st !== "" && st !== "unavailable";
         var playing = st === "playing";
-        card.classList.add(playing ? "on" : "off");
-        var badge = document.createElement("span");
-        badge.className = "hc-badge";
-        badge.textContent = haStateLabel("media_player", st);
+        card.classList.add(on ? "on" : "off");
+        var feat = Number(c.supported_features || 0);
         // #550: the badge + the transport buttons share one compact row.
         var compact = document.createElement("div");
         compact.className = "hc-compact";
-        compact.appendChild(badge);
         card.appendChild(compact);
+        // #561: power toggle when the player can be turned on AND off; renders as
+        // the same sliding switch as a light/switch and flips via turn_on/off.
+        if (feat & MP_TURN_ON && feat & MP_TURN_OFF) {
+          var power = document.createElement("span");
+          power.className = "hc-badge hc-switch";
+          power.title = on ? "Ausschalten" : "Einschalten";
+          power.tabIndex = 0;
+          var togglePower = function () {
+            haCall(card, c, "media_player." + (card.classList.contains("on") ? "turn_off" : "turn_on"), {});
+            var nowOn = !card.classList.contains("on");
+            card.classList.toggle("on", nowOn);
+            card.classList.toggle("off", !nowOn);
+            power.title = nowOn ? "Ausschalten" : "Einschalten";
+          };
+          power.addEventListener("click", togglePower);
+          power.addEventListener("keydown", function (e) {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); togglePower(); }
+          });
+          compact.appendChild(power);
+        } else {
+          var badge = document.createElement("span");
+          badge.className = "hc-badge";
+          badge.textContent = haStateLabel("media_player", st);
+          compact.appendChild(badge);
+        }
         makeButtons(compact, [
           ["⏮", "media_previous_track", "Zurück"],
           [playing ? "⏸" : "▶", "media_play_pause", "Play/Pause"],
@@ -2142,6 +2170,22 @@
         ], function (b) {
           haCall(card, c, "media_player." + b[1], {});
         }, true);
+        // #561: source/app picker — only when SELECT_SOURCE is supported and a
+        // source_list is present; a compact dropdown that calls select_source.
+        if (feat & MP_SELECT_SOURCE && Array.isArray(c.source_list) && c.source_list.length) {
+          var sel = document.createElement("select");
+          sel.className = "hc-mode";
+          c.source_list.forEach(function (s) {
+            var opt = document.createElement("option");
+            opt.value = s; opt.textContent = s;
+            if (s === c.source) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          sel.addEventListener("change", function () {
+            haCall(card, c, "media_player.select_source", { source: sel.value });
+          });
+          card.appendChild(sel);
+        }
         if (c.media_title) {
           var nowp = document.createElement("div");
           nowp.className = "hc-now";
