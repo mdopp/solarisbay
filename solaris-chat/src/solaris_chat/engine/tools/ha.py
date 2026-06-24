@@ -79,6 +79,41 @@ def _emit_card(entity_id: str, name: str, state: Any, attrs: dict[str, Any]) -> 
     sink.append(spec)
 
 
+# State-scope detection (#536): when a query asks which entities are in a given
+# state ("welche lichter sind AN"), the cards should cover only the matching
+# entities, not every entity the model state-read. Each entry maps query cues to
+# the on-/off-style states a card's `state` may carry. A query that names no
+# state (e.g. "welche lichter gibt es") matches nothing here ⇒ no filtering.
+_STATE_SCOPES: tuple[tuple[frozenset[str], frozenset[str]], ...] = (
+    (frozenset({"an", "eingeschaltet", "on"}), frozenset({"on"})),
+    (frozenset({"aus", "ausgeschaltet", "off"}), frozenset({"off"})),
+    (frozenset({"offen", "geöffnet", "open"}), frozenset({"open"})),
+    (
+        frozenset({"geschlossen", "zu", "closed"}),
+        frozenset({"closed"}),
+    ),
+)
+_WORD_RE = re.compile(r"[a-zäöüß]+")
+
+
+def filter_cards_by_query_state(
+    cards: list[dict[str, Any]], query: str
+) -> list[dict[str, Any]]:
+    """Narrow a turn's cards to the state the query asked about (#536).
+
+    "welche lichter sind an" ⇒ keep only cards whose `state` is on; a query that
+    names no state ("welche lichter gibt es") is returned unchanged so existence
+    questions still show the full set."""
+    words = set(_WORD_RE.findall(query.lower()))
+    wanted: set[str] = set()
+    for cues, states in _STATE_SCOPES:
+        if words & cues:
+            wanted |= states
+    if not wanted:
+        return cards
+    return [c for c in cards if str(c.get("state") or "").lower() in wanted]
+
+
 def card_spec(
     entity_id: str, state: Any, attrs: dict[str, Any]
 ) -> dict[str, Any] | None:

@@ -488,6 +488,43 @@ async def test_no_sink_is_noop(monkeypatch):
     assert '"state": "21"' in out
 
 
+def _light_cards():
+    return [
+        {"entity_id": "light.a", "state": "on", "domain": "light"},
+        {"entity_id": "light.b", "state": "off", "domain": "light"},
+        {"entity_id": "light.c", "state": "on", "domain": "light"},
+    ]
+
+
+def test_state_scoped_on_query_keeps_only_on_cards():
+    # "welche lichter sind an" -> only the ON lights get a card (#536).
+    kept = ha_mod.filter_cards_by_query_state(_light_cards(), "welche lichter sind an")
+    assert [c["entity_id"] for c in kept] == ["light.a", "light.c"]
+
+
+def test_state_scoped_off_query_keeps_only_off_cards():
+    kept = ha_mod.filter_cards_by_query_state(
+        _light_cards(), "welche lichter sind ausgeschaltet"
+    )
+    assert [c["entity_id"] for c in kept] == ["light.b"]
+
+
+def test_existence_query_keeps_the_full_set():
+    # "welche lichter gibt es" names no state -> all cards survive (#536).
+    cards = _light_cards()
+    kept = ha_mod.filter_cards_by_query_state(cards, "welche lichter gibt es")
+    assert kept == cards
+
+
+def test_open_state_scope_filters_covers():
+    cards = [
+        {"entity_id": "cover.a", "state": "open"},
+        {"entity_id": "cover.b", "state": "closed"},
+    ]
+    kept = ha_mod.filter_cards_by_query_state(cards, "welche rollos sind offen")
+    assert [c["entity_id"] for c in kept] == ["cover.a"]
+
+
 def _stub_call(monkeypatch, *, new_state="on", post_status=200):
     """Stub aiohttp for call_service_scoped: record POSTs, GET returns new state."""
     posts: list[tuple[str, dict]] = []

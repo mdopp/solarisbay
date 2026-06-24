@@ -110,6 +110,14 @@ def _is_fabricated_device_claim(content: str) -> bool:
     return bool(_DEVICE_CLAIM.search(content or ""))
 
 
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    """The latest user turn's text — drives the state-scoped card filter (#536)."""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            return str(m.get("content") or "")
+    return ""
+
+
 # A trailing `FOLLOWUPS: a | b | c` line the SOUL invites the model to emit
 # (#498): tappable follow-up question chips. Parsed off the answer's tail so
 # the chips ride a per-turn event and the marker never shows in the bubble.
@@ -583,6 +591,10 @@ class EngineClient:
                 "assistant",
                 final_content,
                 reasoning=final_thinking,
+            )
+        if ha_cards:
+            ha_cards = ha_tools.filter_cards_by_query_state(
+                ha_cards, _last_user_text(messages)
             )
         if ha_cards:
             yield {"type": "ha_cards", "data": {"cards": ha_cards}}
