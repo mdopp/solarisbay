@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ... import notes_search
 from ...logging import log
 from ..knowledge import ConceptRecord, Relationship, projection, safe_slug
 from ..knowledge.records import domain_for, is_known_type
@@ -104,12 +105,16 @@ class ObsidianIngest:
             stats.skipped += 1
             return
         rels, body = self._relationships(note)
+        # A hand-written note under `users/<uid>/` is private to that resident —
+        # scope its structured projection to the same owner the read-side derives
+        # from the path (#576), so it can't leak as `household` via concept reads.
+        # No path match → "" → writer default (household).
         rec = ConceptRecord(
             type=concept_type,
             title=note.title,
             source=_SOURCE,
             external_id=note.relpath,
-            resident="",  # writer default = ingesting resident (§6).
+            resident=notes_search.resident_for_path(note.relpath) or "",
             timestamp=note.timestamp,
             tags=note.tags,
             body=body,

@@ -18,6 +18,7 @@ from typing import Any
 
 from solaris_chat import notes_search
 from solaris_chat.engine.tools import Tool
+from solaris_chat.notes_search import _USER_PATH_RE
 
 _MAX_BYTES = 256 * 1024
 _MAX_HITS = 8
@@ -80,15 +81,23 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
         content = str(args.get("content") or "")
         if not rel.endswith(".md") or not content.strip():
             return '{"error": "path must end in .md and content must be non-empty"}'
-        # Private-by-default (#576): a real resident's note lands under their own
-        # path unless the model explicitly targeted a shared area (a `users/`
-        # path of any kind). household keeps writing to the shared vault root.
+        # Private-by-default (#576): a real resident's writes ALWAYS land inside
+        # their own `users/<owner>/` subtree — a model-supplied `users/<other>/x`
+        # or a `../<other>/x` traversal must never reach another resident's space.
+        # Strip any leading `users/<anyuid>/`, neutralise `..`, then re-root under
+        # the caller; household keeps writing to the shared vault root.
         owner = uid_getter()
-        if owner != notes_search.SHARED_UID and not rel.startswith("users/"):
-            rel = f"users/{owner}/{rel}"
-        path = (root / rel).resolve()
-        if not str(path).startswith(str(root.resolve())):
-            return '{"error": "path outside the vault"}'
+        if owner != notes_search.SHARED_UID:
+            safe_rel = _USER_PATH_RE.sub("", rel)
+            base = (root / "users" / owner).resolve()
+            path = (base / safe_rel).resolve()
+            if not str(path).startswith(str(base) + "/"):
+                return '{"error": "path outside the vault"}'
+            rel = str(path.relative_to(root.resolve()))
+        else:
+            path = (root / rel).resolve()
+            if not str(path).startswith(str(root.resolve())):
+                return '{"error": "path outside the vault"}'
         path.parent.mkdir(parents=True, exist_ok=True)
         if bool(args.get("append")) and path.is_file():
             with path.open("a", encoding="utf-8") as f:

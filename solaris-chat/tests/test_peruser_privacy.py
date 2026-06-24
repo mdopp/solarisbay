@@ -208,6 +208,137 @@ async def test_fact_store_routes_under_caller_path(tmp_path):
     assert hout["stored"].startswith("facts/")
 
 
+# ---- note_write containment (#576: never write into another resident) --------
+
+
+async def test_note_write_redirects_other_users_path_into_caller(tmp_path):
+    # cdopp targets mdopp's private path — the write must NOT land in mdopp's
+    # space (redirected into cdopp's own subtree or rejected), and an existing
+    # mdopp note must survive untouched.
+    root = tmp_path / "notes"
+    _raw(root, "users/mdopp/x.md", "---\nadded_by: mdopp\n---\n\nMine.\n")
+    write = _tool_handler(str(root), "cdopp", "note_write")
+    out = json.loads(
+        await write({"path": "users/mdopp/x.md", "content": "Geheimnis Notiz."})
+    )
+    if "error" not in out:
+        assert out["written"].startswith("users/cdopp/")
+        assert not out["written"].startswith("users/mdopp/")
+    # mdopp's note is intact: cdopp never appended/overwrote it.
+    assert (root / "users" / "mdopp" / "x.md").read_text(encoding="utf-8") == (
+        "---\nadded_by: mdopp\n---\n\nMine.\n"
+    )
+
+
+async def test_note_write_traversal_contained_to_caller(tmp_path):
+    # A `../mdopp/x.md` traversal must not escape cdopp's subtree.
+    root = tmp_path / "notes"
+    _raw(root, "users/mdopp/x.md", "---\nadded_by: mdopp\n---\n\nMine.\n")
+    write = _tool_handler(str(root), "cdopp", "note_write")
+    out = json.loads(
+        await write({"path": "../mdopp/x.md", "content": "Geheimnis Notiz."})
+    )
+    if "error" not in out:
+        assert out["written"].startswith("users/cdopp/")
+    assert (root / "users" / "mdopp" / "x.md").read_text(encoding="utf-8") == (
+        "---\nadded_by: mdopp\n---\n\nMine.\n"
+    )
+
+
+async def test_note_write_bare_path_lands_under_caller(tmp_path):
+    root = tmp_path / "notes"
+    write = _tool_handler(str(root), "cdopp", "note_write")
+    out = json.loads(await write({"path": "x.md", "content": "Geheimnis."}))
+    assert out["written"] == "users/cdopp/x.md"
+
+
+async def test_note_write_household_uses_shared_path(tmp_path):
+    root = tmp_path / "notes"
+    write = _tool_handler(str(root), "household", "note_write")
+    out = json.loads(await write({"path": "shared.md", "content": "Wintergarten."}))
+    assert out["written"] == "shared.md"
+
+
+# ---- obsidian structured ingest scopes a users/<uid>/ note (#576) ------------
+
+
+_OKF_SCHEMA = """
+CREATE TABLE entities (
+  id TEXT PRIMARY KEY, type TEXT NOT NULL, canonical_name TEXT NOT NULL,
+  resident_uid TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE entity_aliases (
+  entity_id TEXT NOT NULL, alias TEXT NOT NULL,
+  PRIMARY KEY (entity_id, alias),
+  FOREIGN KEY (entity_id) REFERENCES entities (id));
+CREATE INDEX entity_aliases_alias_idx ON entity_aliases (alias);
+CREATE TABLE facts (
+  id TEXT PRIMARY KEY, subject_entity_id TEXT, resident_uid TEXT NOT NULL,
+  predicate TEXT NOT NULL, value TEXT NOT NULL, confidence REAL,
+  source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (subject_entity_id) REFERENCES entities (id));
+CREATE TABLE events (
+  id TEXT PRIMARY KEY, ts TEXT NOT NULL, resident_uid TEXT NOT NULL,
+  kind TEXT NOT NULL, source TEXT NOT NULL);
+CREATE TABLE event_entities (
+  event_id TEXT NOT NULL, entity_id TEXT NOT NULL, role TEXT NOT NULL,
+  PRIMARY KEY (event_id, entity_id, role));
+CREATE TABLE concepts (
+  id TEXT PRIMARY KEY, ref_id TEXT NOT NULL,
+  ref_kind TEXT NOT NULL CHECK (ref_kind IN ('entity', 'event')),
+  okf_path TEXT NOT NULL, embedding_id TEXT, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE ingest_log (
+  source TEXT NOT NULL, external_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+  ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (source, external_id));
+"""
+
+
+def test_obsidian_ingest_scopes_private_note_to_resident(tmp_path):
+    # A hand-written note under users/cdopp/ ingests with resident_uid=cdopp in
+    # the STRUCTURED store — not the household sentinel — so its projected
+    # entity/facts never leak to mdopp/voice via concept reads (#576 LEAK 1).
+    from solaris_chat.engine.ingest.obsidian import ObsidianIngest
+    from solaris_chat.engine.ingest.obsidian_reader import VaultObsidianReader
+    from solaris_chat.engine.knowledge.writer import OkfWriter
+
+    vault = tmp_path / "notes"
+    _raw(
+        vault,
+        "users/cdopp/anna.md",
+        "---\ntype: person\n---\n\nAnna ist nett. [[Berta]]\n",
+    )
+    db = str(tmp_path / "knowledge.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(_OKF_SCHEMA)
+    conn.commit()
+    conn.close()
+
+    writer = OkfWriter(db_path=db, notes_dir=str(vault))
+    reader = VaultObsidianReader(str(vault))
+    ObsidianIngest(reader, writer, db_path=db, ingesting_uid="household").run()
+
+    conn = projection.open_conn(db)
+    try:
+        rows = conn.execute("SELECT id, resident_uid FROM entities").fetchall()
+        assert rows, "ingest produced no entity"
+        assert {r["resident_uid"] for r in rows} == {"cdopp"}
+        # Facts/entities of the private note are invisible to mdopp.
+        ent_id = rows[0]["id"]
+        assert list(projection.entity_facts(conn, ent_id, "mdopp")) == []
+        cdopp_facts = list(projection.entity_facts(conn, ent_id, "cdopp"))
+        assert all(f["resident_uid"] == "cdopp" for f in cdopp_facts)
+        # The facts table itself carries resident_uid=cdopp.
+        fact_owners = {
+            r["resident_uid"]
+            for r in conn.execute("SELECT resident_uid FROM facts").fetchall()
+        }
+        assert fact_owners <= {"cdopp"}
+    finally:
+        conn.close()
+
+
 # ---- research tool (fans out to the filtered notes path) ---------------------
 
 

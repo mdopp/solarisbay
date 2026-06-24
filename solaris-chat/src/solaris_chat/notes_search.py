@@ -40,6 +40,16 @@ SHARED_UID = "household"
 _USER_PATH_RE = re.compile(r"^users/([^/]+)/")
 
 
+def resident_for_path(relpath: str) -> str | None:
+    """The uid a vault-relative path scopes to, or None when it's shared.
+
+    A note under `users/<uid>/...` belongs to `<uid>`; everything else is
+    shared. Path ownership only — no frontmatter (so the structured-ingest side
+    can scope a concept by its source path the same way reads do)."""
+    m = _USER_PATH_RE.match(relpath.replace("\\", "/"))
+    return m.group(1) if m else None
+
+
 def owner_of(relpath: str, text: str) -> str | None:
     """The note's owner uid, or None when unowned (shared).
 
@@ -47,9 +57,9 @@ def owner_of(relpath: str, text: str) -> str | None:
     frontmatter. Otherwise fall back to the frontmatter — `added_by:` first
     (model/hand-written notes), then `resident:` (OKF concept files; reading it
     closes the leak where a `resident: <uid>` OKF file surfaced via search)."""
-    m = _USER_PATH_RE.match(relpath.replace("\\", "/"))
-    if m:
-        return m.group(1)
+    path_owner = resident_for_path(relpath)
+    if path_owner is not None:
+        return path_owner
     return _added_by(text) or _resident(text)
 
 
