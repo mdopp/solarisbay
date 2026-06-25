@@ -244,6 +244,13 @@ def test_find_podcast_description_demands_verbatim_name():
     assert "korrigierst" in desc and "übersetzt" in desc
 
 
+def test_find_podcast_description_excludes_music(monkeypatch):
+    # Narrowed to podcasts-only so a music request steers to play_music (#604).
+    desc = _tool().description
+    assert "NUR für Podcasts" in desc
+    assert "play_music" in desc
+
+
 async def test_show_not_found_is_graceful(monkeypatch):
     _stub(monkeypatch, search={"data": []})
     out = json.loads(
