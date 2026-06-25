@@ -869,3 +869,53 @@ def test_client_lyrics_404_returns_none(monkeypatch):
     monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
     client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
     assert asyncio.run(client.lyrics("no-lyrics")) is None
+
+
+def test_client_lyrics_5xx_degrades_to_none(monkeypatch):
+    """A non-404 server error must not propagate and break the chat turn —
+    lyrics is a nice-to-have, so any fetch failure returns None."""
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            return _Resp(json_body={"AccessToken": "tok", "User": {"Id": "u1"}})
+
+        def get(self, url, *, headers=None, params=None, **k):
+            return _Resp(status=503)  # Jellyfin hiccup
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+    assert asyncio.run(client.lyrics("aud-1")) is None
+
+
+def test_client_lyrics_transport_error_degrades_to_none(monkeypatch):
+    """A transport error / timeout during the fetch degrades to None rather
+    than propagating out of the query."""
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            return _Resp(json_body={"AccessToken": "tok", "User": {"Id": "u1"}})
+
+        def get(self, url, *, headers=None, params=None, **k):
+            raise aiohttp.ClientConnectionError("connection reset")
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+    assert asyncio.run(client.lyrics("aud-1")) is None

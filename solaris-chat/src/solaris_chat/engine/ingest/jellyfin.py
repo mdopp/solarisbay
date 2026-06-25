@@ -34,6 +34,7 @@ metadata is a no-op. The run reports a high-water `cursor` (max item
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -234,16 +235,22 @@ class RestJellyfinMusicClient:
     async def lyrics(self, audio_id: str) -> str | None:
         """Fetch a track's lyrics live (#593): `GET /Audio/{id}/Lyrics`, authed
         as the read-only service user with the same re-auth-on-401 path as the
-        ingest GETs. A track with no lyrics 404s → ``None``; any other transport
-        error degrades to ``None`` so a query never crashes on a missing track."""
+        ingest GETs (a 401 still re-auths inside ``_get_json``). Lyrics are a
+        nice-to-have: a track with no lyrics 404s → ``None``, and any other fetch
+        failure (a non-404 ``ClientResponseError``, a transport error, or a
+        timeout) also degrades to ``None`` so a Jellyfin hiccup returns "no
+        lyrics" instead of breaking the chat turn."""
         await self.authenticate()
-        async with aiohttp.ClientSession(timeout=self._timeout) as client:
-            try:
+        try:
+            async with aiohttp.ClientSession(timeout=self._timeout) as client:
                 payload = await self._get_json(client, f"/Audio/{audio_id}/Lyrics")
-            except aiohttp.ClientResponseError as e:
-                if e.status == 404:
-                    return None
-                raise
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            log.info(
+                "engine.ingest.jellyfin_lyrics_unavailable",
+                audio_id=audio_id,
+                error=repr(e),
+            )
+            return None
         return _lyric_text(payload)
 
     async def libraries(self) -> list[tuple[str, str]]:
