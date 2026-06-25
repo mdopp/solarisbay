@@ -23,11 +23,13 @@ from solaris_chat.engine.tools import Tool
 from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.engine.tools.web import _ddgs_search, _tavily_search
 
-# Lower number = more trusted. Household notes outrank the web for slice 1;
-# slices 2+ insert OKF structured facts / HA live state above the web here.
+# Lower number = more trusted. The structured OKF store (entities/facts, e.g. the
+# music library via music_query, #588) is exact and household-owned, so it
+# outranks the notes grep and the web; notes still outrank the web.
 _TRUST_RANK = {
-    "notes": 1,
-    "web": 2,
+    "okf": 1,
+    "notes": 2,
+    "web": 3,
 }
 
 _MAX_SOURCES = 8

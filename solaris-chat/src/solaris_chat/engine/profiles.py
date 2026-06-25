@@ -30,6 +30,7 @@ from solaris_chat.engine.tools.choices import build_choice_tools
 from solaris_chat.engine.tools.ha import build_ha_tools
 from solaris_chat.engine.tools.mcp_tools import CombinedToolbox, McpToolbox
 from solaris_chat.engine.tools.media import build_media_tools
+from solaris_chat.engine.tools.music_query import build_music_query_tools
 from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.engine.tools.onboarding_approval import (
     build_onboarding_approval_tools,
@@ -121,6 +122,10 @@ def build_engine_clients(
         household_tools += build_media_tools(hass_url, hass_token)
     if notes_dir:
         household_tools += build_notes_tools(notes_dir, _current_uid)
+    # Structured music-library queries (#588): household + deep share this list,
+    # so both get music_query; guest (its own list below) is withheld.
+    if db_path:
+        household_tools += build_music_query_tools(db_path, _current_uid)
     # First-run/owner self-enrolment (#396): with zero enrolments an unknown
     # speaker resolves to `household`, not `guest`, so the guest-onboarding path
     # can never bootstrap the first voice profile. Give the household profile the
