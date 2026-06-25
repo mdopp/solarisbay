@@ -44,6 +44,12 @@ _STEP_FIELDS = (
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    # WAL + busy_timeout so a trace persist that overlaps a chat turn or the
+    # ingest writer waits for the lock instead of raising "database is
+    # locked" (#600). WAL is persisted in the db header; busy_timeout is
+    # per-connection.
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
