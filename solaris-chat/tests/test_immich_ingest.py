@@ -15,6 +15,7 @@ import asyncio
 import sqlite3
 from collections.abc import AsyncIterator
 
+import aiohttp
 import pytest
 
 from solaris_chat.engine.ingest import ImmichIngest
@@ -283,6 +284,155 @@ def test_run_returns_high_water_cursor(env):
     a2 = _asset(id="a2", checksum="c2", when="2026-05-30T10:00:00")
     stats = _run(FakeImmichClient([a1, a2]), writer)
     assert stats.cursor == "2026-05-30T10:00:00"
+
+
+# --- transport: per-page retry on a keep-alive drop (#597) -------------------
+
+
+class _RetryResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    async def json(self):
+        return self._payload
+
+
+class _RetrySession:
+    """A fake aiohttp session whose POST raises ServerDisconnectedError on the
+    first `fail` attempts of every page, then returns a one-page payload."""
+
+    def __init__(self, *, fail: int):
+        self._fail = fail
+        self.posts = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def post(self, url, *, json, headers):
+        self.posts += 1
+        if self.posts <= self._fail:
+            import aiohttp as _a
+
+            raise _a.ServerDisconnectedError("keep-alive drop")
+        # A single page with no nextPage -> the iterator stops after it.
+        return _RetryResp({"assets": {"items": [{"id": "a1"}], "nextPage": None}})
+
+
+def _drain(client):
+    async def go():
+        return [a async for a in client.iter_assets()]
+
+    return asyncio.run(go())
+
+
+def test_iter_assets_retries_a_disconnected_page(monkeypatch):
+    from solaris_chat.engine.ingest import immich_client as mod
+
+    session = _RetrySession(fail=1)  # first attempt drops, retry recovers.
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", lambda *a, **k: session)
+
+    async def _no_sleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
+    client = mod.RestImmichClient("http://immich", "k")
+    assets = _drain(client)
+    # The page was still yielded (no abort) and the POST was retried once.
+    assert [a.id for a in assets] == ["a1"]
+    assert session.posts == 2
+
+
+def test_iter_assets_raises_after_retries_exhausted(monkeypatch):
+    from solaris_chat.engine.ingest import immich_client as mod
+
+    session = _RetrySession(fail=999)  # never recovers.
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", lambda *a, **k: session)
+
+    async def _no_sleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(mod.asyncio, "sleep", _no_sleep)
+    client = mod.RestImmichClient("http://immich", "k")
+    with pytest.raises(aiohttp.ClientError):
+        _drain(client)
+    # First try + the bounded retries, then it gives up.
+    assert session.posts == len(mod._PAGE_RETRY_BACKOFF) + 1
+
+
+# --- cursor checkpoint: partial progress persists mid-run (#597) -------------
+
+
+def test_run_checkpoints_cursor_on_partial_progress():
+    # A client that yields several assets then raises mid-stream; the run must
+    # have invoked the checkpoint with a cursor > the start, so the next boot
+    # resumes from there instead of re-paging from page 1.
+    saved: list[str] = []
+
+    class _AbortingClient:
+        def asset_uri(self, asset_id):
+            return f"immich://{asset_id}"
+
+        async def iter_assets(self, *, updated_after=""):
+            for i in range(1, ImmichIngest._CHECKPOINT_EVERY + 1):
+                yield _asset(
+                    id=f"a{i}",
+                    checksum=f"c{i}",
+                    when=f"2026-05-{(i % 28) + 1:02d}T00:00:00",
+                )
+            raise aiohttp.ServerDisconnectedError("dropped mid-run")
+
+    import sqlite3
+    import tempfile
+
+    tmp = tempfile.mkdtemp()
+    db_path = f"{tmp}/solaris.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    conn.close()
+    writer = OkfWriter(db_path=db_path, notes_dir=f"{tmp}/notes")
+    ingest = ImmichIngest(_AbortingClient(), writer, ingesting_uid="mdopp")
+
+    async def go():
+        await ingest.run(updated_after="", checkpoint=saved.append)
+
+    with pytest.raises(aiohttp.ServerDisconnectedError):
+        asyncio.run(go())
+    # A checkpoint fired on partial progress -> cursor advanced past the start.
+    assert saved and saved[-1] > ""
+
+
+def test_run_does_not_checkpoint_without_progress():
+    # A short run (fewer than _CHECKPOINT_EVERY assets) completes without ever
+    # checkpointing mid-stream (the caller still saves the final cursor).
+    saved: list[str] = []
+
+    import sqlite3
+    import tempfile
+
+    tmp = tempfile.mkdtemp()
+    db_path = f"{tmp}/solaris.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    conn.close()
+    writer = OkfWriter(db_path=db_path, notes_dir=f"{tmp}/notes")
+    client = FakeImmichClient([_asset()])
+    ingest = ImmichIngest(client, writer, ingesting_uid="mdopp")
+    asyncio.run(ingest.run(checkpoint=saved.append))
+    assert saved == []
 
 
 def test_same_place_dedups_across_assets(env):

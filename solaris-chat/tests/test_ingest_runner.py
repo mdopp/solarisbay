@@ -143,12 +143,12 @@ async def test_run_ingest_enqueues_concept_embeddings(env, tmp_path):
     await runner.run_ingest(
         FakeSettings(solaris_db_path=db_path, notes_dir=str(notes_dir))
     )
-    # The runner uses the durable PendingEmbeddingQueue -> a sidecar with > 0.
-    queue = tmp_path / "okf_embedding_queue.json"
+    # The runner uses the durable PendingEmbeddingQueue -> an append-only JSONL
+    # sidecar with > 0 lines.
+    queue = tmp_path / "okf_embedding_queue.jsonl"
     assert queue.is_file()
-    import json
-
-    assert len(json.loads(queue.read_text())) >= 2
+    lines = [ln for ln in queue.read_text().splitlines() if ln]
+    assert len(lines) >= 2
 
 
 # --- Immich: configured -> runs (mocked); unconfigured -> skipped ------------

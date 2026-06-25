@@ -104,8 +104,11 @@ async def _run_immich(settings: Settings, writer: OkfWriter, uid: str) -> None:
     try:
         cursor = _load_cursor(settings, "immich")
         client = RestImmichClient(settings.immich_base_url, settings.immich_api_key)
+        # Checkpoint the cursor mid-run so a disconnect after N pages still
+        # advances the high-water mark and the next boot resumes (#597).
         stats = await ImmichIngest(client, writer, ingesting_uid=uid).run(
-            updated_after=cursor
+            updated_after=cursor,
+            checkpoint=lambda c: _save_cursor(settings, "immich", c),
         )
         _save_cursor(settings, "immich", stats.cursor)
         log.info(

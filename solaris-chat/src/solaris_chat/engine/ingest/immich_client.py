@@ -12,11 +12,18 @@ quirks; a fake client returns the same dataclasses directly.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import aiohttp
+
+from ...logging import log
+
+# A keep-alive drop mid-paging must not kill a 76k-asset run (#597): re-issue the
+# SAME page with exponential backoff before giving up.
+_PAGE_RETRY_BACKOFF = (0.5, 1.0, 2.0, 4.0)  # seconds — 4 retries after the first try.
 
 
 @dataclass(frozen=True)
@@ -118,13 +125,7 @@ class RestImmichClient:
                 body: dict[str, Any] = {"page": page, "size": self._PAGE_SIZE}
                 if updated_after:
                     body["updatedAfter"] = updated_after
-                async with client.post(
-                    f"{self._base_url}/api/search/metadata",
-                    json=body,
-                    headers=self._headers,
-                ) as resp:
-                    resp.raise_for_status()
-                    payload = await resp.json()
+                payload = await self._fetch_page(client, body, page)
                 items = (payload.get("assets") or {}).get("items") or []
                 for raw in items:
                     yield self._asset(raw)
@@ -132,6 +133,34 @@ class RestImmichClient:
                 if not next_page:
                     return
                 page = int(next_page)
+
+    async def _fetch_page(
+        self, client: aiohttp.ClientSession, body: dict[str, Any], page: int
+    ) -> dict[str, Any]:
+        """POST one search page, retrying the SAME page on a transient transport
+        failure (keep-alive drop / timeout) before giving up (#597)."""
+        last_exc: Exception | None = None
+        for attempt in range(len(_PAGE_RETRY_BACKOFF) + 1):
+            try:
+                async with client.post(
+                    f"{self._base_url}/api/search/metadata",
+                    json=body,
+                    headers=self._headers,
+                ) as resp:
+                    resp.raise_for_status()
+                    return await resp.json()
+            except (aiohttp.ClientError, TimeoutError) as e:
+                last_exc = e
+                if attempt < len(_PAGE_RETRY_BACKOFF):
+                    log.info(
+                        "engine.ingest.immich_page_retry",
+                        page=page,
+                        attempt=attempt + 1,
+                        error=str(e),
+                    )
+                    await asyncio.sleep(_PAGE_RETRY_BACKOFF[attempt])
+        assert last_exc is not None
+        raise last_exc
 
     def _asset(self, raw: dict[str, Any]) -> ImmichAsset:
         exif = raw.get("exifInfo") or {}

@@ -24,6 +24,7 @@ uses a persisted sync cursor so re-runs only pull new/changed assets.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ...logging import log
@@ -58,14 +59,30 @@ class ImmichIngest:
         self._writer = writer
         self._uid = ingesting_uid
 
-    async def run(self, *, updated_after: str = "") -> ImmichIngestStats:
+    # Checkpoint the high-water cursor every N assets so a mid-run disconnect
+    # still advances it and the next boot RESUMES instead of re-paging all ~76k
+    # assets from page 1 (#597).
+    _CHECKPOINT_EVERY = 250
+
+    async def run(
+        self,
+        *,
+        updated_after: str = "",
+        checkpoint: Callable[[str], None] | None = None,
+    ) -> ImmichIngestStats:
         """Ingest every asset since `updated_after`; return run stats.
 
         The caller persists the returned high-water cursor (max asset `when`)
         so the next run only pulls newer assets — incremental on top of the
         per-asset content_hash idempotency.
+
+        If a `checkpoint` callback is given it is invoked with the current
+        high-water cursor every `_CHECKPOINT_EVERY` assets, so a mid-run abort
+        (e.g. a transport disconnect that exhausts the page retries) still
+        persists progress and the next boot resumes from there.
         """
         stats = ImmichIngestStats(cursor=updated_after)
+        last_checkpointed = stats.cursor
         async for asset in self._client.iter_assets(updated_after=updated_after):
             try:
                 self._ingest_asset(asset, stats)
@@ -82,6 +99,13 @@ class ImmichIngest:
                 if asset.when > stats.cursor:
                     stats.cursor = asset.when
             stats.assets += 1
+            if (
+                checkpoint is not None
+                and stats.assets % self._CHECKPOINT_EVERY == 0
+                and stats.cursor != last_checkpointed
+            ):
+                checkpoint(stats.cursor)
+                last_checkpointed = stats.cursor
         return stats
 
     def _ingest_asset(self, asset: ImmichAsset, stats: ImmichIngestStats) -> None:
