@@ -264,12 +264,50 @@ def test_reingest_changed_reembeds_and_updates_hash(env):
     log = conn.execute("SELECT content_hash FROM ingest_log").fetchone()
     assert log["content_hash"] == res.content_hash
     conn.close()
-    # The pending-embedding sidecar carries the (re-)embedding work, no dup key.
-    queue_file = tmp_path / "okf_embedding_queue.json"
-    pending = json.loads(queue_file.read_text())
-    assert len(pending) == 1
-    (entry,) = pending.values()
-    assert entry["model"] == "nomic-embed-text"
+    # The append-only JSONL sidecar carries the (re-)embedding work: two lines
+    # (initial + re-embed) for the one embedding_id; the drain worker dedups by
+    # keeping the last line per embedding_id (#597).
+    queue_file = tmp_path / "okf_embedding_queue.jsonl"
+    lines = [json.loads(ln) for ln in queue_file.read_text().splitlines() if ln]
+    assert len({e["embedding_id"] for e in lines}) == 1
+    assert lines[-1]["model"] == "nomic-embed-text"
+
+
+# --- embedding enqueue is O(1) (append-only, no whole-file rewrite) (#597) ---
+
+
+def test_enqueue_is_append_only_no_full_read(tmp_path, monkeypatch):
+    # enqueue must NOT read/serialize the whole sidecar (the old O(n^2) bug):
+    # make any whole-file read explode, then prove N enqueues still succeed and
+    # each appends exactly one line without re-reading prior entries.
+    from pathlib import Path as _P
+
+    queue = PendingEmbeddingQueue(str(tmp_path / "solaris.db"))
+
+    def _boom(self, *a, **k):
+        raise AssertionError("enqueue re-read the whole sidecar (not O(1))")
+
+    monkeypatch.setattr(_P, "read_text", _boom)
+    for i in range(50):
+        queue.enqueue(concept_id=f"c{i}", embedding_id=f"e{i}", text="t")
+    monkeypatch.undo()  # restore read_text for the verification read below.
+    path = tmp_path / "okf_embedding_queue.jsonl"
+    lines = [ln for ln in path.read_text().splitlines() if ln]
+    assert len(lines) == 50
+    assert json.loads(lines[0])["embedding_id"] == "e0"
+
+
+def test_enqueue_rotates_legacy_dict_sidecar_aside(tmp_path):
+    # An old whole-file dict-format .json (pre-#597) is rotated to .legacy on
+    # first construction, since nothing drains it; the JSONL path starts clean.
+    legacy = tmp_path / "okf_embedding_queue.json"
+    legacy.write_text('{"e-old": {"concept_id": "c", "model": "m", "text": "t"}}')
+    queue = PendingEmbeddingQueue(str(tmp_path / "solaris.db"))
+    queue.enqueue(concept_id="c1", embedding_id="e1", text="t")
+    assert not legacy.exists()
+    assert (tmp_path / "okf_embedding_queue.json.legacy").exists()
+    lines = (tmp_path / "okf_embedding_queue.jsonl").read_text().splitlines()
+    assert [json.loads(ln)["embedding_id"] for ln in lines if ln] == ["e1"]
 
 
 def test_default_scope_is_ingesting_resident(env):
