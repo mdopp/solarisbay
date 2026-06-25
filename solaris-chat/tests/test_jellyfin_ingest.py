@@ -171,6 +171,50 @@ def test_artist_maps_to_band_concept(env):
     assert band_path.is_file()
 
 
+def test_artist_writes_genre_and_bio_facts(env):
+    # A MusicArtist carrying Genres + Overview projects genre/bio FACTS on the
+    # band concept (#592) — so artist_info('Queen') can surface them.
+    writer, db_path, tmp_path = env
+    artist = _artist(genres="Rock, Pop", overview="British rock band formed in 1970.")
+    _run(FakeJellyfinMusicClient([artist]), writer)
+    conn = projection.open_conn(db_path)
+    band = conn.execute("SELECT id FROM entities WHERE type = 'band'").fetchone()
+    facts = {
+        r["predicate"]: r["value"]
+        for r in conn.execute(
+            "SELECT predicate, value FROM facts WHERE subject_entity_id = ?",
+            (band["id"],),
+        )
+    }
+    conn.close()
+    assert facts["genre"] == "Rock, Pop"
+    assert facts["bio"] == "British rock band formed in 1970."
+    band_text = (tmp_path / "notes" / "okf" / "bands" / "queen.md").read_text()
+    assert "genre: Rock, Pop" in band_text
+    assert "bio: British rock band formed in 1970." in band_text
+
+
+def test_artist_enrichment_survives_prior_bare_track_write(env):
+    # A track (no enrichment) writing the band first must NOT block the later
+    # MusicArtist write that carries genre/bio.
+    writer, db_path, _ = env
+    track = _track()  # writes the 'Queen' band bare
+    artist = _artist(genres="Rock", overview="Bio.")
+    _run(FakeJellyfinMusicClient([track, artist]), writer)
+    conn = projection.open_conn(db_path)
+    band = conn.execute("SELECT id FROM entities WHERE type = 'band'").fetchone()
+    facts = {
+        r["predicate"]
+        for r in conn.execute(
+            "SELECT predicate FROM facts WHERE subject_entity_id = ? AND predicate"
+            " IN ('genre', 'bio')",
+            (band["id"],),
+        )
+    }
+    conn.close()
+    assert facts == {"genre", "bio"}
+
+
 def test_track_maps_to_song_with_metadata_and_by_edge(env):
     writer, db_path, tmp_path = env
     stats = _run(FakeJellyfinMusicClient([_track()]), writer)

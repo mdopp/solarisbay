@@ -66,6 +66,9 @@ class JellyfinItem:
     genre: str = ""
     year: str = ""
     changed: str = ""
+    # MusicArtist enrichment: genres (joined) + the bio Overview (#592).
+    genres: str = ""
+    overview: str = ""
 
 
 class JellyfinMusicClient(Protocol):
@@ -97,6 +100,11 @@ def _str(d: dict[str, Any], key: str) -> str:
 def _first(d: dict[str, Any], key: str) -> str:
     vals = d.get(key) or []
     return str(vals[0]).strip() if vals else ""
+
+
+def _join(d: dict[str, Any], key: str) -> str:
+    vals = d.get(key) or []
+    return ", ".join(str(v).strip() for v in vals if str(v).strip())
 
 
 class RestJellyfinMusicClient:
@@ -212,7 +220,7 @@ class RestJellyfinMusicClient:
                     "ParentId": library_id,
                     "IncludeItemTypes": "MusicArtist,Audio",
                     "Recursive": "true",
-                    "Fields": "Genres,AlbumArtist,ProductionYear,DateCreated",
+                    "Fields": "Genres,AlbumArtist,ProductionYear,DateCreated,Overview",
                     "StartIndex": str(start),
                     "Limit": str(self._PAGE_SIZE),
                 }
@@ -238,6 +246,8 @@ class RestJellyfinMusicClient:
             genre=_first(raw, "Genres"),
             year=str(year) if year is not None else "",
             changed=_str(raw, "DateLastMediaAdded") or _str(raw, "DateCreated"),
+            genres=_join(raw, "Genres"),
+            overview=_str(raw, "Overview"),
         )
 
 
@@ -264,6 +274,16 @@ def _slug_or_id(name: str, item_id: str) -> str:
         return safe_slug(f"item-{item_id}")
 
 
+def _band_facts(item: JellyfinItem) -> list[tuple[str, str]]:
+    """The (predicate, value) facts a MusicArtist carries: genre + bio (#592)."""
+    facts: list[tuple[str, str]] = []
+    if item.genres:
+        facts.append(("genre", item.genres))
+    if item.overview:
+        facts.append(("bio", item.overview))
+    return facts
+
+
 class JellyfinMusicIngest:
     def __init__(
         self,
@@ -284,6 +304,9 @@ class JellyfinMusicIngest:
         }
         # Bands written this run, so a track's artist isn't re-written per track.
         self._seen_bands: set[str] = set()
+        # Bands written WITH their genre/bio facts (#592), so a later bare
+        # track-write doesn't clobber the enrichment.
+        self._enriched_bands: set[str] = set()
         # Bands seen in a SHARED library: a band there stays household even if it
         # also appears in a private library (shared artists stay shared).
         self._shared_bands: set[str] = set()
@@ -329,7 +352,7 @@ class JellyfinMusicIngest:
         self, item: JellyfinItem, owner: str, stats: JellyfinIngestStats
     ) -> None:
         if item.kind == "MusicArtist":
-            self._write_band(item.name, item.id, owner, stats)
+            self._write_band(item.name, item.id, owner, stats, facts=_band_facts(item))
         elif item.kind == "Audio":
             rels: list[Relationship] = []
             if item.artist:
@@ -340,7 +363,13 @@ class JellyfinMusicIngest:
             self._write_song(item, owner, rels, stats)
 
     def _write_band(
-        self, name: str, item_id: str, owner: str, stats: JellyfinIngestStats
+        self,
+        name: str,
+        item_id: str,
+        owner: str,
+        stats: JellyfinIngestStats,
+        *,
+        facts: list[tuple[str, str]] | None = None,
     ) -> str:
         slug = _slug_or_id(name, item_id)
         # Shared wins: once a band is shared it never gets re-scoped to a user.
@@ -348,9 +377,15 @@ class JellyfinMusicIngest:
             self._shared_bands.add(slug)
         elif slug in self._shared_bands:
             owner = _SHARED
-        if slug in self._seen_bands:
+        # A bare (track-derived) write doesn't block the later enriched
+        # MusicArtist write; once enriched, re-writes are short-circuited. So
+        # genre/bio land regardless of artist-vs-track iteration order.
+        enrich = facts or []
+        if slug in self._seen_bands and (not enrich or slug in self._enriched_bands):
             return slug
         self._seen_bands.add(slug)
+        if enrich:
+            self._enriched_bands.add(slug)
         rec = ConceptRecord(
             type="band",
             title=name,
@@ -361,6 +396,7 @@ class JellyfinMusicIngest:
             external_id=f"artist/{slug}",
             resident=owner,
             resource=f"jellyfin://artist/{slug}",
+            facts=enrich,
         )
         if not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
             stats.bands_written += 1
