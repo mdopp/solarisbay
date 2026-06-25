@@ -919,3 +919,56 @@ def test_client_lyrics_transport_error_degrades_to_none(monkeypatch):
     monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
     client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
     assert asyncio.run(client.lyrics("aud-1")) is None
+
+
+# ---- stream_url() — castable HTTP URL for play_music (#604) ------------------
+
+
+def test_stream_url_builds_castable_url_after_auth(monkeypatch):
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            return _Resp(json_body={"AccessToken": "tok123", "User": {"Id": "u-sol"}})
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+    url = asyncio.run(client.stream_url("aud-1"))
+    # /Audio/{id}/universal with the auth in the query string (a Cast device
+    # can't send the X-Emby-Token header).
+    assert url == (
+        "http://jf/Audio/aud-1/universal?api_key=tok123&UserId=u-sol"
+        "&Container=mp3&AudioCodec=mp3&TranscodingProtocol=http"
+    )
+
+
+def test_stream_url_none_without_token(monkeypatch):
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            return _Resp(json_body={})  # no AccessToken
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+    assert asyncio.run(client.stream_url("aud-1")) is None
+
+
+def test_audio_uri_unchanged():
+    # audio_uri stays the internal jellyfin:// scheme used by ingest (#604).
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+    assert client.audio_uri("aud-1") == "jellyfin://audio/aud-1"

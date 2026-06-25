@@ -36,12 +36,15 @@ from solaris_chat.engine.fuzzy import (
 )
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools import Tool
+from solaris_chat.engine.tools.ha import call_service_scoped
 
 
 class LyricsClient(Protocol):
-    """The slice of the Jellyfin client `song_lyrics` needs (live fetch)."""
+    """The slice of the Jellyfin client `song_lyrics`/`play_music` need (live)."""
 
     async def lyrics(self, audio_id: str) -> str | None: ...
+
+    async def stream_url(self, audio_id: str) -> str | None: ...
 
 
 _SONG_CAP = 50
@@ -83,8 +86,21 @@ def _audio_id(resource: str) -> str:
     return resource[len(prefix) :] if resource.startswith(prefix) else ""
 
 
+def _song_audio_id(conn, song_id: str, caller: str) -> str:
+    """The Jellyfin audio id from a song's scoped `resource` fact, "" when none."""
+    for f in projection.entity_facts(conn, song_id, caller):
+        if f["predicate"] == "resource":
+            return _audio_id(f["value"])
+    return ""
+
+
 def build_music_query_tools(
-    db_path: str, uid_getter, jellyfin_client: LyricsClient | None = None
+    db_path: str,
+    uid_getter,
+    jellyfin_client: LyricsClient | None = None,
+    *,
+    hass_url: str = "",
+    hass_token: str = "",
 ) -> list[Tool]:
     def _caller() -> str:
         return uid_getter() or projection.SHARED_UID
@@ -213,12 +229,7 @@ def build_music_query_tools(
                 )
                 if rows:
                     artist_name = rows[0]["canonical_name"]
-            resource = ""
-            for f in projection.entity_facts(conn, song_id, caller):
-                if f["predicate"] == "resource":
-                    resource = f["value"]
-                    break
-            audio_id = _audio_id(resource)
+            audio_id = _song_audio_id(conn, song_id, caller)
         finally:
             conn.close()
         lyrics = None
@@ -369,7 +380,89 @@ def build_music_query_tools(
             ensure_ascii=False,
         )
 
-    return [
+    def _band_first_castable(conn, artist: str, caller: str) -> tuple[str, str] | None:
+        # The band's first song with a resolvable audio id: (canonical_name,
+        # audio_id). Scoped to caller (resident_uid IN (caller, household)) —
+        # another resident's private track is never enumerated.
+        band_id = _resolve_band_id(conn, artist, caller)
+        if band_id is None:
+            return None
+        okf_path = projection.entity_okf_path(conn, band_id)
+        if okf_path is None:
+            return None
+        value = _band_value(okf_path)
+        rows = projection.fetch_all(
+            conn,
+            "SELECT e.id, e.canonical_name FROM facts f"
+            " JOIN entities e ON e.id = f.subject_entity_id"
+            " WHERE f.predicate = 'by' AND f.value = ?"
+            " AND e.type = 'song' AND e.resident_uid IN (?, ?)"
+            " ORDER BY e.canonical_name",
+            (value, caller, projection.SHARED_UID),
+        )
+        for row in rows:
+            audio_id = _song_audio_id(conn, row["id"], caller)
+            if audio_id:
+                return row["canonical_name"], audio_id
+        return None
+
+    async def play_music(args: dict[str, Any]) -> str:
+        title = str(args.get("title") or "").strip()
+        artist = str(args.get("artist") or "").strip()
+        entity_id = str(args.get("entity_id") or "").strip()
+        if not entity_id:
+            return json.dumps({"ok": False, "reason": "missing_device"})
+        caller = _caller()
+        conn = projection.open_conn(db_path)
+        try:
+            if title:
+                song_id = _resolve_song_id(conn, title, artist, caller)
+                if song_id is None:
+                    return json.dumps(
+                        {"ok": False, "reason": "not_found", "query": title},
+                        ensure_ascii=False,
+                    )
+                song = projection.entity_row(conn, song_id)
+                clean = song["canonical_name"]
+                audio_id = _song_audio_id(conn, song_id, caller)
+            elif artist:
+                hit = _band_first_castable(conn, artist, caller)
+                if hit is None:
+                    return json.dumps({"ok": False, "reason": "artist_not_found"})
+                clean, audio_id = hit
+            else:
+                return json.dumps({"ok": False, "reason": "not_found", "query": ""})
+        finally:
+            conn.close()
+        if jellyfin_client is None or not audio_id:
+            return json.dumps({"ok": False, "reason": "no_stream"})
+        url = await jellyfin_client.stream_url(audio_id)
+        if not url:
+            return json.dumps({"ok": False, "reason": "no_stream"})
+        result = await call_service_scoped(
+            hass_url,
+            hass_token,
+            entity_id,
+            "media_player.play_media",
+            {"media_content_type": "music", "media_content_id": url},
+        )
+        if not result.get("ok"):
+            return json.dumps(
+                {"ok": False, "reason": "play_failed", "title": clean},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "title": clean,
+                "artist": artist or "",
+                "entity_id": entity_id,
+                "played": True,
+            },
+            ensure_ascii=False,
+        )
+
+    tools = [
         Tool(
             name="music_query",
             description=(
@@ -409,3 +502,34 @@ def build_music_query_tools(
             handler=music_query,
         ),
     ]
+    # A distinct tool name (not another music_query op) steers far better: the
+    # model reaches for play_music on "spiele Musik von X" instead of
+    # media_find_podcast (#604). Registered only with a live Jellyfin client +
+    # HA creds — without them there's nothing to cast.
+    if jellyfin_client is not None and hass_url and hass_token:
+        tools.append(
+            Tool(
+                name="play_music",
+                description=(
+                    "Spielt einen Song oder die Musik eines Künstlers aus der"
+                    " EIGENEN Bibliothek (Jellyfin) auf einem Raum-Gerät. IMMER"
+                    " für 'Spiele Musik/Song von <Künstler>', 'Spiel <Songtitel>',"
+                    " 'Lass Musik von <X> laufen' — NICHT media_find_podcast."
+                    " title=<Songtitel> ODER artist=<Künstler>; entity_id = das"
+                    " media_player-Gerät des Raums aus der Geräteliste (z.B."
+                    " media_player.kuche). Melde NUR den vom Tool im Feld 'title'"
+                    " zurückgegebenen Titel — erfinde nie einen."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "artist": {"type": "string"},
+                        "entity_id": {"type": "string"},
+                    },
+                    "required": ["entity_id"],
+                },
+                handler=play_music,
+            )
+        )
+    return tools

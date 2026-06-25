@@ -138,7 +138,16 @@ def build_engine_clients(
             if jellyfin_url
             else None
         )
-        household_tools += build_music_query_tools(db_path, _current_uid, lyrics_client)
+        # play_music (#604) casts a library track via the same scoped HA
+        # play_media path; it registers only when a Jellyfin client + HA creds
+        # are present, so on household+deep (not guest) and not when unconfigured.
+        household_tools += build_music_query_tools(
+            db_path,
+            _current_uid,
+            lyrics_client,
+            hass_url=hass_url,
+            hass_token=hass_token,
+        )
     # First-run/owner self-enrolment (#396): with zero enrolments an unknown
     # speaker resolves to `household`, not `guest`, so the guest-onboarding path
     # can never bootstrap the first voice profile. Give the household profile the

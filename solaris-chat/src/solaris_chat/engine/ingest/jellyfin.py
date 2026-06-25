@@ -98,6 +98,13 @@ class JellyfinMusicClient(Protocol):
         has none (404/empty). Fetched live — no bulk ingest (#593)."""
         ...
 
+    async def stream_url(self, audio_id: str) -> str | None:
+        """A castable HTTP stream URL for the track, or ``None`` with no token.
+
+        Auth in the query string (a Cast device can't send the X-Emby-Token
+        header), so a media_player.play_media can stream it (#604)."""
+        ...
+
 
 def _str(d: dict[str, Any], key: str) -> str:
     return str(d.get(key) or "").strip()
@@ -252,6 +259,21 @@ class RestJellyfinMusicClient:
             )
             return None
         return _lyric_text(payload)
+
+    async def stream_url(self, audio_id: str) -> str | None:
+        """A castable HTTP stream URL with auth in the query string (#604).
+
+        A Cast device fetches the URL itself and can't send the X-Emby-Token
+        header, so the token rides the query. ``None`` when authentication
+        yields no token."""
+        await self.authenticate()
+        if not self._token:
+            return None
+        return (
+            f"{self._base_url}/Audio/{audio_id}/universal"
+            f"?api_key={self._token}&UserId={self._user_id}"
+            "&Container=mp3&AudioCodec=mp3&TranscodingProtocol=http"
+        )
 
     async def libraries(self) -> list[tuple[str, str]]:
         # User-scoped Views (not admin-only /Library/MediaFolders, which 403s for

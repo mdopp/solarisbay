@@ -231,7 +231,8 @@ def build_media_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 " neueste Folge aufgelöst (frag dann nach dem Raum und ruf erneut)."
                 " Nutze es für 'Spiel die neueste Folge von <Podcast>' und auch für"
                 " 'Podcasts von <Person>' — der Index findet auch Sendungen über den"
-                " Host-/Autorennamen."
+                " Host-/Autorennamen. NUR für Podcasts/Folgen — NICHT für 'Musik'"
+                " oder einen Song eines Künstlers (dafür play_music)."
             ),
             parameters={
                 "type": "object",

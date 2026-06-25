@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from solaris_chat.engine.tools import music_query as music_query_mod
 from solaris_chat.engine.tools.music_query import build_music_query_tools
 
 # Migration 0016 subset (entities/facts/concepts) replayed locally — no alembic.
@@ -84,6 +85,23 @@ class _FakeLyrics:
     async def lyrics(self, audio_id: str):
         self.calls.append(audio_id)
         return self._by_id.get(audio_id)
+
+
+class _FakeJellyfin:
+    """A fake Jellyfin client for play_music: stream_url builds a castable URL."""
+
+    def __init__(self, *, no_stream=False):
+        self._no_stream = no_stream
+        self.stream_calls: list[str] = []
+
+    async def lyrics(self, audio_id: str):
+        return None
+
+    async def stream_url(self, audio_id: str):
+        self.stream_calls.append(audio_id)
+        if self._no_stream:
+            return None
+        return f"http://jf/Audio/{audio_id}/universal?api_key=tok"
 
 
 def _db(tmp_path) -> str:
@@ -526,3 +544,186 @@ async def test_song_lyrics_description_steers(tmp_path):
     desc = _tool(db, "mdopp").description
     assert "song_lyrics" in desc
     assert "Lyrics" in desc
+
+
+# ---- play_music (#604): cast a library track on a media_player --------------
+
+
+def _play_tool(db, uid, client):
+    """The play_music tool (registered only with a client + HA creds)."""
+    tools = build_music_query_tools(
+        db, lambda: uid, client, hass_url="http://ha", hass_token="tok"
+    )
+    (play,) = [t for t in tools if t.name == "play_music"]
+    return play
+
+
+def _stub_play(monkeypatch, *, ok=True):
+    """Record media_player.play_media calls in place of call_service_scoped."""
+    calls: list[tuple] = []
+
+    async def _fake(hass_url, hass_token, entity_id, service, data):
+        calls.append((hass_url, hass_token, entity_id, service, data))
+        return {"ok": ok, "state": "playing" if ok else None}
+
+    monkeypatch.setattr(music_query_mod, "call_service_scoped", _fake)
+    return calls
+
+
+async def _call_play(db, uid, args, client, monkeypatch, *, ok=True):
+    calls = _stub_play(monkeypatch, ok=ok)
+    out = json.loads(await _play_tool(db, uid, client).handler(args))
+    return out, calls
+
+
+async def test_play_music_registered_only_with_client_and_creds(tmp_path):
+    db = _db(tmp_path)
+    # No HA creds -> only music_query, no play_music.
+    names = {
+        t.name for t in build_music_query_tools(db, lambda: "mdopp", _FakeJellyfin())
+    }
+    assert names == {"music_query"}
+    # Client + creds -> play_music registers.
+    names = {
+        t.name
+        for t in build_music_query_tools(
+            db, lambda: "mdopp", _FakeJellyfin(), hass_url="http://ha", hass_token="t"
+        )
+    }
+    assert "play_music" in names
+
+
+async def test_play_music_title_casts_stream_url(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"title": "Bohemian Rhapsody", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+    )
+    assert out == {
+        "ok": True,
+        "title": "Bohemian Rhapsody",
+        "artist": "",
+        "entity_id": "media_player.kuche",
+        "played": True,
+    }
+    # The HA call is media_player.play_media with content_type=music + the stream URL.
+    (_, _, entity_id, service, data) = calls[0]
+    assert service == "media_player.play_media"
+    assert entity_id == "media_player.kuche"
+    assert data["media_content_type"] == "music"
+    assert data["media_content_id"] == "http://jf/Audio/aud-boh/universal?api_key=tok"
+
+
+async def test_play_music_artist_plays_first_real_track(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"artist": "Queen", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+    )
+    assert out["ok"] is True and out["played"] is True
+    # Bohemian Rhapsody sorts first AND has an audio id; Radio Ga Ga lacks one.
+    assert out["title"] == "Bohemian Rhapsody"
+    assert calls[0][4]["media_content_id"].endswith("/aud-boh/universal?api_key=tok")
+
+
+async def test_play_music_missing_device_no_ha_call(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    out, calls = await _call_play(
+        db, "mdopp", {"title": "Bohemian Rhapsody"}, _FakeJellyfin(), monkeypatch
+    )
+    assert out == {"ok": False, "reason": "missing_device"}
+    assert calls == []
+
+
+async def test_play_music_no_match_no_cast(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # An unresolvable title NEVER falls back to another track/podcast (#604).
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"title": "Xqzptv Nonsense", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+    )
+    assert out == {"ok": False, "reason": "not_found", "query": "Xqzptv Nonsense"}
+    assert calls == []  # anti-podcast-fallback: no play_media POST
+
+
+async def test_play_music_artist_not_found_no_cast(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"artist": "Nirvana", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+    )
+    assert out == {"ok": False, "reason": "artist_not_found"}
+    assert calls == []
+
+
+async def test_play_music_per_user_scoping(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # cdopp's private "Secret Queen Track" must not be playable for mdopp/household.
+    for uid in ("mdopp", "household"):
+        out, calls = await _call_play(
+            db,
+            uid,
+            {"title": "Secret Queen Track", "entity_id": "media_player.kuche"},
+            _FakeJellyfin(),
+            monkeypatch,
+        )
+        assert out["ok"] is False and out["reason"] == "not_found"
+        assert calls == []
+    # The owner CAN play her own private track.
+    out, calls = await _call_play(
+        db,
+        "cdopp",
+        {"title": "Secret Queen Track", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+    )
+    assert out["ok"] is True and out["title"] == "Secret Queen Track"
+    assert len(calls) == 1
+
+
+async def test_play_music_no_stream_when_url_none(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"title": "Bohemian Rhapsody", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(no_stream=True),
+        monkeypatch,
+    )
+    assert out == {"ok": False, "reason": "no_stream"}
+    assert calls == []
+
+
+async def test_play_music_play_failed_never_played(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"title": "Bohemian Rhapsody", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+        ok=False,
+    )
+    assert out == {"ok": False, "reason": "play_failed", "title": "Bohemian Rhapsody"}
+    assert "played" not in out  # truthful: never claim played on a failed cast
+    assert len(calls) == 1
+
+
+async def test_play_music_description_steers_music_not_podcast(tmp_path):
+    db = _db(tmp_path)
+    desc = _play_tool(db, "mdopp", _FakeJellyfin()).description
+    assert "play_music" not in desc  # describes itself, doesn't name itself
+    assert "Spiele Musik" in desc
+    assert "NICHT media_find_podcast" in desc
