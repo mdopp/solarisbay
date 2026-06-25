@@ -1821,6 +1821,14 @@
           quickRepliesEl.appendChild(b);
         });
         quickRepliesEl.hidden = !quickRepliesEl.children.length;
+        // Pre-fill the composer with the favorite (first) option so the user
+        // can just press Enter/Send — but never clobber text they already typed.
+        var favorite = String(options[0] == null ? "" : options[0]).trim();
+        if (favorite && !input.value.trim()) {
+          input.value = favorite;
+          autosize();
+          input.focus();
+        }
       }
 
       // Auto-surfaced #/@ anchor chips (#501): each chip filters the chat to its

@@ -1799,7 +1799,9 @@ def build_app(
                 text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
             )
             persist_mentions(uid, session_id, text, ephemeral=ephemeral)
-            stream = client.chat_stream(session_id, turn_text, images, effort)
+            stream = client.chat_stream(
+                session_id, turn_text, images, effort, suggest_answers=True
+            )
             async for event in _heartbeat(stream, resp):
                 if cancel.is_set():
                     # Closing the upstream generator aborts the Hermes/Ollama
