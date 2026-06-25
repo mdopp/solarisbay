@@ -793,3 +793,79 @@ def test_get_json_reauth_is_bounded(monkeypatch):
         asyncio.run(_collect())
     # One initial auth + at most _MAX_REAUTH forced re-auths, never unbounded.
     assert auth_calls["n"] <= client._MAX_REAUTH + 1
+
+
+# ---- lyrics() — on-demand live lyrics (#593) --------------------------------
+
+
+def test_lyric_text_joins_timed_lines():
+    payload = {
+        "Lyrics": [
+            {"Text": "Is this the real life?", "Start": 0},
+            {"Text": "Is this just fantasy?", "Start": 30000000},
+        ]
+    }
+    assert jellyfin_mod._lyric_text(payload) == (
+        "Is this the real life?\nIs this just fantasy?"
+    )
+
+
+def test_lyric_text_nested_lyrics_shape():
+    payload = {"Lyrics": {"Lyrics": [{"Text": "Mama,"}, {"Text": "just killed a man"}]}}
+    assert jellyfin_mod._lyric_text(payload) == "Mama,\njust killed a man"
+
+
+def test_lyric_text_plain_string_and_empty():
+    assert jellyfin_mod._lyric_text("plain lyrics") == "plain lyrics"
+    assert jellyfin_mod._lyric_text({"Lyrics": []}) is None
+    assert jellyfin_mod._lyric_text({}) is None
+    assert jellyfin_mod._lyric_text("") is None
+
+
+def test_client_lyrics_fetches_and_joins(monkeypatch):
+    requested: list[str] = []
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            return _Resp(json_body={"AccessToken": "tok", "User": {"Id": "u1"}})
+
+        def get(self, url, *, headers=None, params=None, **k):
+            requested.append(url)
+            return _Resp(json_body={"Lyrics": [{"Text": "line one"}, {"Text": "two"}]})
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+    out = asyncio.run(client.lyrics("aud-1"))
+    assert out == "line one\ntwo"
+    assert any("/Audio/aud-1/Lyrics" in u for u in requested)
+
+
+def test_client_lyrics_404_returns_none(monkeypatch):
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            return _Resp(json_body={"AccessToken": "tok", "User": {"Id": "u1"}})
+
+        def get(self, url, *, headers=None, params=None, **k):
+            return _Resp(status=404)  # track has no lyrics
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
+    assert asyncio.run(client.lyrics("no-lyrics")) is None

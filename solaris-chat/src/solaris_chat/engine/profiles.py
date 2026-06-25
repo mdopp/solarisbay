@@ -23,6 +23,7 @@ from solaris_chat import settings_store
 from solaris_chat.engine import client as engine_client
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.client import EngineClient, EngineProfile
+from solaris_chat.engine.ingest.jellyfin import RestJellyfinMusicClient
 from solaris_chat.engine.ollama import OllamaChat
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.tools import Tool, Toolbox
@@ -87,6 +88,9 @@ def build_engine_clients(
     gatekeeper_token: str = "",
     context_window: int | None = None,
     default_uid: str = "household",
+    jellyfin_url: str = "",
+    jellyfin_username: str = "",
+    jellyfin_password: str = "",
 ) -> tuple[
     EngineClient, EngineClient, EngineClient, EngineClient, TraceRecorder, SessionBus
 ]:
@@ -123,9 +127,18 @@ def build_engine_clients(
     if notes_dir:
         household_tools += build_notes_tools(notes_dir, _current_uid)
     # Structured music-library queries (#588): household + deep share this list,
-    # so both get music_query; guest (its own list below) is withheld.
+    # so both get music_query; guest (its own list below) is withheld. A live
+    # Jellyfin client (built once, the same read-only creds the ingest uses) is
+    # passed in so on-demand lyrics (#593) can fetch /Audio/{id}/Lyrics at query
+    # time; when Jellyfin is unconfigured the other ops still register and
+    # song_lyrics degrades gracefully ("keine Lyrics verfügbar").
     if db_path:
-        household_tools += build_music_query_tools(db_path, _current_uid)
+        lyrics_client = (
+            RestJellyfinMusicClient(jellyfin_url, jellyfin_username, jellyfin_password)
+            if jellyfin_url
+            else None
+        )
+        household_tools += build_music_query_tools(db_path, _current_uid, lyrics_client)
     # First-run/owner self-enrolment (#396): with zero enrolments an unknown
     # speaker resolves to `household`, not `guest`, so the guest-onboarding path
     # can never bootstrap the first voice profile. Give the household profile the

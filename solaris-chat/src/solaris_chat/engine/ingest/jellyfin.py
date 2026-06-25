@@ -92,6 +92,11 @@ class JellyfinMusicClient(Protocol):
         """The canonical Jellyfin URI for an audio track (`resource`)."""
         ...
 
+    async def lyrics(self, audio_id: str) -> str | None:
+        """The track's lyrics as one joined string, or ``None`` when the track
+        has none (404/empty). Fetched live — no bulk ingest (#593)."""
+        ...
+
 
 def _str(d: dict[str, Any], key: str) -> str:
     return str(d.get(key) or "").strip()
@@ -105,6 +110,34 @@ def _first(d: dict[str, Any], key: str) -> str:
 def _join(d: dict[str, Any], key: str) -> str:
     vals = d.get(key) or []
     return ", ".join(str(v).strip() for v in vals if str(v).strip())
+
+
+def _lyric_text(payload: Any) -> str | None:
+    """Join a Jellyfin LyricResponse into one plain-text string, or ``None``.
+
+    The endpoint returns lyric *lines* under `Lyrics` — a list of
+    `{"Text": "...", "Start": ...}` (timed) — but the shape varies by
+    deployment: the list may sit one level deeper (`Lyrics.Lyrics`), the lines
+    may be bare strings, or the whole body may be a plain string. Pull out the
+    `Text` of each line (or the bare string), drop empties, and join with
+    newlines; return ``None`` when nothing usable is present."""
+    if isinstance(payload, str):
+        text = payload.strip()
+        return text or None
+    if isinstance(payload, dict):
+        lines = payload.get("Lyrics")
+        if isinstance(lines, dict):
+            lines = lines.get("Lyrics")
+        if isinstance(lines, list):
+            parts: list[str] = []
+            for line in lines:
+                if isinstance(line, dict):
+                    parts.append(str(line.get("Text") or "").strip())
+                else:
+                    parts.append(str(line).strip())
+            text = "\n".join(p for p in parts if p)
+            return text or None
+    return None
 
 
 class RestJellyfinMusicClient:
@@ -197,6 +230,21 @@ class RestJellyfinMusicClient:
                 self._reauths += 1
                 log.info("engine.ingest.jellyfin_reauth", path=path)
                 await self._reauthenticate()
+
+    async def lyrics(self, audio_id: str) -> str | None:
+        """Fetch a track's lyrics live (#593): `GET /Audio/{id}/Lyrics`, authed
+        as the read-only service user with the same re-auth-on-401 path as the
+        ingest GETs. A track with no lyrics 404s → ``None``; any other transport
+        error degrades to ``None`` so a query never crashes on a missing track."""
+        await self.authenticate()
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            try:
+                payload = await self._get_json(client, f"/Audio/{audio_id}/Lyrics")
+            except aiohttp.ClientResponseError as e:
+                if e.status == 404:
+                    return None
+                raise
+        return _lyric_text(payload)
 
     async def libraries(self) -> list[tuple[str, str]]:
         # User-scoped Views (not admin-only /Library/MediaFolders, which 403s for
@@ -440,6 +488,10 @@ class JellyfinMusicIngest:
                 f" genre {item.genre}, year {item.year})."
             ),
             extra=extra,
+            # The Jellyfin URI as a scoped fact so on-demand lyrics (#593) can
+            # resolve a song → its audio id from the per-owner facts table,
+            # without re-reading the OKF file or leaking the id elsewhere.
+            facts=[("resource", uri)],
             relationships=rels,
         )
         if self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:

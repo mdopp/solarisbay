@@ -55,7 +55,7 @@ def _band(conn, ent_id, name, slug, owner, *, okf_prefix="okf", facts=()):
         )
 
 
-def _song(conn, ent_id, title, band_slug, owner):
+def _song(conn, ent_id, title, band_slug, owner, *, audio_id=None):
     conn.execute(
         "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
         " content_hash) VALUES (?, 'song', ?, ?, 'jellyfin', 'h')",
@@ -66,6 +66,24 @@ def _song(conn, ent_id, title, band_slug, owner):
         " source) VALUES (?, ?, ?, 'by', ?, 'jellyfin')",
         (f"f-{ent_id}", ent_id, owner, f"bands/{band_slug}"),
     )
+    # The resource fact carries the Jellyfin audio id song_lyrics resolves to.
+    conn.execute(
+        "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate, value,"
+        " source) VALUES (?, ?, ?, 'resource', ?, 'jellyfin')",
+        (f"r-{ent_id}", ent_id, owner, f"jellyfin://audio/{audio_id or ent_id}"),
+    )
+
+
+class _FakeLyrics:
+    """A fake Jellyfin client: known audio ids return text, the rest None."""
+
+    def __init__(self, by_id):
+        self._by_id = by_id
+        self.calls: list[str] = []
+
+    async def lyrics(self, audio_id: str):
+        self.calls.append(audio_id)
+        return self._by_id.get(audio_id)
 
 
 def _db(tmp_path) -> str:
@@ -81,7 +99,14 @@ def _db(tmp_path) -> str:
         "household",
         facts=[("genre", "Rock"), ("bio", "British rock band formed in 1970.")],
     )
-    _song(conn, "s-bohemian", "Bohemian Rhapsody", "queen", "household")
+    _song(
+        conn,
+        "s-bohemian",
+        "Bohemian Rhapsody",
+        "queen",
+        "household",
+        audio_id="aud-boh",
+    )
     _song(conn, "s-radio", "Radio Ga Ga", "queen", "household")
     _band(
         conn,
@@ -104,6 +129,16 @@ def _db(tmp_path) -> str:
     _song(conn, "s-piano", "Piano Man", "billy-joel", "household")
     _band(conn, "b-beatles", "The Beatles", "the-beatles", "household")
     _song(conn, "s-hey", "Hey Jude", "the-beatles", "household")
+    # Two bands each with a song SHARING the title "Shared Title" — to
+    # disambiguate song_lyrics by artist (each has its own audio id/lyrics).
+    _band(conn, "b-echo-a", "Echo Alpha", "echo-alpha", "household")
+    _band(conn, "b-echo-b", "Echo Beta", "echo-beta", "household")
+    _song(
+        conn, "s-dup-a", "Shared Title", "echo-alpha", "household", audio_id="aud-dup-a"
+    )
+    _song(
+        conn, "s-dup-b", "Shared Title", "echo-beta", "household", audio_id="aud-dup-b"
+    )
     # A cdopp-private band+song (a private Jellyfin library, users/cdopp/okf/...).
     _band(
         conn,
@@ -139,6 +174,11 @@ def _tool(db, uid):
 
 async def _call(db, uid, args):
     return json.loads(await _tool(db, uid).handler(args))
+
+
+async def _call_lyrics(db, uid, args, client):
+    (t,) = build_music_query_tools(db, lambda: uid, client)
+    return json.loads(await t.handler(args))
 
 
 # ---- exact resolve: Queen != Queens of the Stone Age -------------------------
@@ -388,3 +428,101 @@ async def test_bad_op(tmp_path):
     db = _db(tmp_path)
     out = await _call(db, "mdopp", {"op": "nonsense"})
     assert "error" in out
+
+
+# ---- song_lyrics (#593): on-demand live lyrics ------------------------------
+
+
+async def test_song_lyrics_returns_lyrics(tmp_path):
+    db = _db(tmp_path)
+    client = _FakeLyrics({"aud-boh": "Is this the real life?\nIs this just fantasy?"})
+    out = await _call_lyrics(
+        db, "mdopp", {"op": "song_lyrics", "title": "Bohemian Rhapsody"}, client
+    )
+    assert out["title"] == "Bohemian Rhapsody"
+    assert out["artist"] == "Queen"
+    assert out["lyrics"].startswith("Is this the real life?")
+    assert client.calls == ["aud-boh"]
+
+
+async def test_song_lyrics_fuzzy_title_resolves(tmp_path):
+    db = _db(tmp_path)
+    client = _FakeLyrics({"aud-boh": "Mama, just killed a man"})
+    # A near-miss title fuzzy-resolves to Bohemian Rhapsody.
+    out = await _call_lyrics(
+        db, "mdopp", {"op": "song_lyrics", "title": "Bohemian Rapsody"}, client
+    )
+    assert out["title"] == "Bohemian Rhapsody"
+    assert out["lyrics"] == "Mama, just killed a man"
+
+
+async def test_song_lyrics_artist_disambiguates_duplicate_title(tmp_path):
+    db = _db(tmp_path)
+    client = _FakeLyrics({"aud-dup-a": "alpha words", "aud-dup-b": "beta words"})
+    # Two "Shared Title" songs; artist='Echo Beta' must pick the Beta one.
+    out = await _call_lyrics(
+        db,
+        "mdopp",
+        {"op": "song_lyrics", "title": "Shared Title", "artist": "Echo Beta"},
+        client,
+    )
+    assert out["title"] == "Shared Title"
+    assert out["artist"] == "Echo Beta"
+    assert out["lyrics"] == "beta words"
+    assert client.calls == ["aud-dup-b"]
+
+
+async def test_song_lyrics_no_lyrics_graceful(tmp_path):
+    db = _db(tmp_path)
+    # The known song has no lyrics on the server (client returns None).
+    client = _FakeLyrics({})
+    out = await _call_lyrics(
+        db, "mdopp", {"op": "song_lyrics", "title": "Bohemian Rhapsody"}, client
+    )
+    assert out["title"] == "Bohemian Rhapsody"
+    assert out["lyrics"] is None
+    assert out["note"] == "keine Lyrics verfügbar"
+
+
+async def test_song_lyrics_song_not_found(tmp_path):
+    db = _db(tmp_path)
+    client = _FakeLyrics({"aud-boh": "x"})
+    out = await _call_lyrics(
+        db, "mdopp", {"op": "song_lyrics", "title": "Xqzptv Nonsense"}, client
+    )
+    assert out == {"found": False}
+    assert client.calls == []  # no song resolved -> no live fetch
+
+
+async def test_song_lyrics_per_user_scoping(tmp_path):
+    db = _db(tmp_path)
+    # cdopp's private "Pure Vernunft" must not be fetchable for mdopp/household.
+    client = _FakeLyrics({"s-priv": "Privater Text"})
+    for uid in ("mdopp", "household"):
+        out = await _call_lyrics(
+            db, uid, {"op": "song_lyrics", "title": "Pure Vernunft"}, client
+        )
+        assert out == {"found": False}
+    assert client.calls == []
+    # The owner DOES get her private song's lyrics.
+    out = await _call_lyrics(
+        db, "cdopp", {"op": "song_lyrics", "title": "Pure Vernunft"}, client
+    )
+    assert out["title"] == "Pure Vernunft"
+    assert out["lyrics"] == "Privater Text"
+
+
+async def test_song_lyrics_degrades_without_client(tmp_path):
+    db = _db(tmp_path)
+    # Jellyfin unconfigured (no client): the song resolves but lyrics degrade.
+    out = await _call(db, "mdopp", {"op": "song_lyrics", "title": "Bohemian Rhapsody"})
+    assert out["title"] == "Bohemian Rhapsody"
+    assert out["lyrics"] is None
+    assert out["note"] == "keine Lyrics verfügbar"
+
+
+async def test_song_lyrics_description_steers(tmp_path):
+    db = _db(tmp_path)
+    desc = _tool(db, "mdopp").description
+    assert "song_lyrics" in desc
+    assert "Lyrics" in desc
