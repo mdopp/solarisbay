@@ -9,10 +9,14 @@ correct — a band is `entities.type='band'`, a song is `type='song'` with a
 
 This adds ONE token-lean `music_query` tool over that store:
 
-  - `op="songs_by_artist"`: resolve the BAND exactly (EXACT canonical_name first,
-    only then a `LIKE 'name%'` prefix — NEVER a bare `%name%` substring, so Queen
-    never matches Queens of the Stone Age), follow its `by` edge to the songs,
-    return clean `canonical_name` titles (never the hash slug), capped + a total.
+  - `op="songs_by_artist"`: resolve the BAND — EXACT canonical_name (case-
+    insensitive) first and it ALWAYS wins (Queen → Queen, never fuzzed to Queens
+    of the Stone Age); only when nothing matches exactly does a RANKED FUZZY pass
+    over the caller+household bands run (whole-word containment + typo edit-ratio,
+    so "Joel" finds "Billy Joel" and "Beatls" finds "The Beatles", returning
+    not-found below a threshold rather than a random band) — then follow its `by`
+    edge to the songs, return clean `canonical_name` titles (never the hash
+    slug), capped + a total.
   - `op="list_artists"`: the type='band' entities, optional name prefix.
 
 Every query is per-owner scoped: `resident_uid IN (caller, 'household')` (caller
@@ -23,6 +27,8 @@ shared library — never another resident's private one).
 from __future__ import annotations
 
 import json
+import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from solaris_chat.engine.knowledge import projection
@@ -30,6 +36,46 @@ from solaris_chat.engine.tools import Tool
 
 _SONG_CAP = 50
 _ARTIST_CAP = 50
+
+# Fuzzy band-resolve weights/threshold (only reached when NO exact match exists).
+# Three signals blend: (a) WHOLE-WORD containment — a query token is a whole word
+# in the name ('joel' in 'Billy Joel', 'queens' in 'Queens of the Stone Age');
+# this dominates and keeps 'Queens' on QOTSA, not a typo-near 'Queen'. (b) the
+# best per-token edit-ratio against the name's words catches typos ('Beatls' →
+# 'Beatles' word of 'The Beatles'). (c) a small full-string ratio + prefix bonus
+# break near-ties. The best score must clear the threshold or we return
+# not-found rather than a random band.
+_FUZZY_WORD_WEIGHT = 0.45
+_FUZZY_TOKEN_WEIGHT = 0.45
+_FUZZY_FULL_WEIGHT = 0.1
+_FUZZY_PREFIX_BONUS = 0.05
+_FUZZY_THRESHOLD = 0.45
+
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _tokens(text: str) -> list[str]:
+    return _WORD_RE.findall(text.lower())
+
+
+def _fuzzy_score(query: str, candidate: str) -> float:
+    q_tokens = _tokens(query)
+    c_tokens = _tokens(candidate)
+    if not q_tokens or not c_tokens:
+        return 0.0
+    c_set = set(c_tokens)
+    word_frac = sum(1 for t in q_tokens if t in c_set) / len(q_tokens)
+    per_token = sum(
+        max(SequenceMatcher(None, t, w).ratio() for w in c_tokens) for t in q_tokens
+    ) / len(q_tokens)
+    full = SequenceMatcher(None, query.lower(), candidate.lower()).ratio()
+    prefix = _FUZZY_PREFIX_BONUS if candidate.lower().startswith(query.lower()) else 0.0
+    return (
+        _FUZZY_WORD_WEIGHT * word_frac
+        + _FUZZY_TOKEN_WEIGHT * per_token
+        + _FUZZY_FULL_WEIGHT * full
+        + prefix
+    )
 
 
 def _escape_like(value: str) -> str:
@@ -82,16 +128,24 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
         ).fetchone()
         if row is not None:
             return row["id"]
-        # ...only then a PREFIX (`name%`), never a bare `%name%` substring, so
-        # "Queen" can never match "Queens of the Stone Age".
-        row = conn.execute(
-            "SELECT id FROM entities"
+        # ...only then RANKED FUZZY over the caller+household bands (scoped fetch,
+        # ranked in Python) so "Joel" finds "Billy Joel" and "Beatls" finds "The
+        # Beatles" — but an exact match above already short-circuited, so "Queen"
+        # never fuzzes to "Queens of the Stone Age". A fuzzy match must never
+        # surface another resident's private band, hence the same resident scope.
+        candidates = conn.execute(
+            "SELECT id, canonical_name FROM entities"
             " WHERE type = 'band' AND resident_uid IN (?, ?)"
-            " AND canonical_name LIKE ? || '%' ESCAPE '\\' COLLATE NOCASE"
-            " ORDER BY canonical_name LIMIT 1",
-            (caller, projection.SHARED_UID, _escape_like(artist)),
-        ).fetchone()
-        return row["id"] if row is not None else None
+            " ORDER BY canonical_name",
+            (caller, projection.SHARED_UID),
+        ).fetchall()
+        best_id: str | None = None
+        best_score = 0.0
+        for cand in candidates:
+            score = _fuzzy_score(artist, cand["canonical_name"])
+            if score > best_score:
+                best_score, best_id = score, cand["id"]
+        return best_id if best_score >= _FUZZY_THRESHOLD else None
 
     async def songs_by_artist(artist: str, limit: int) -> str:
         artist = artist.strip()
@@ -182,8 +236,8 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
                 " op='songs_by_artist' mit artist=<Name>: welche Songs/Lieder"
                 " von <Künstler> habe ich. op='list_artists' (optional prefix):"
                 " welche Künstler/Bands habe ich in der Bibliothek. Liefert"
-                " saubere Titel, kein Substring-Treffer (Queen ≠ Queens of the"
-                " Stone Age)."
+                " saubere Titel. Exakter Treffer gewinnt (Queen ≠ Queens of the"
+                " Stone Age); sonst unscharf (Joel → Billy Joel)."
             ),
             parameters={
                 "type": "object",

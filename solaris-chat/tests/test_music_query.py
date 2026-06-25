@@ -78,6 +78,12 @@ def _db(tmp_path) -> str:
         "household",
     )
     _song(conn, "s-nomone", "No One Knows", "queens-of-the-stone-age", "household")
+    # Bands resolved only by FUZZY: a multi-word name (token match) and one that
+    # exercises a typo edit-ratio.
+    _band(conn, "b-joel", "Billy Joel", "billy-joel", "household")
+    _song(conn, "s-piano", "Piano Man", "billy-joel", "household")
+    _band(conn, "b-beatles", "The Beatles", "the-beatles", "household")
+    _song(conn, "s-hey", "Hey Jude", "the-beatles", "household")
     # A cdopp-private band+song (a private Jellyfin library, users/cdopp/okf/...).
     _band(
         conn,
@@ -146,6 +152,83 @@ async def test_songs_by_artist_unknown(tmp_path):
     db = _db(tmp_path)
     out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "Nirvana"})
     assert out == {"artist": "Nirvana", "total": 0, "songs": []}
+
+
+# ---- ranked fuzzy resolve (only when NO exact match) -------------------------
+
+
+async def test_exact_lowercase_wins_over_fuzzy(tmp_path):
+    db = _db(tmp_path)
+    # 'queen' (lowercase) is an EXACT case-insensitive band — must resolve to
+    # Queen, never fuzz to Queens of the Stone Age.
+    out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "queen"})
+    assert out["artist"] == "Queen"
+    assert set(out["songs"]) == {"Bohemian Rhapsody", "Radio Ga Ga"}
+
+
+async def test_fuzzy_token_resolves_billy_joel(tmp_path):
+    db = _db(tmp_path)
+    # 'Joel' is a whole word in 'Billy Joel' — no exact match, so fuzzy finds it.
+    out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "Joel"})
+    assert out["artist"] == "Billy Joel"
+    assert out["songs"] == ["Piano Man"]
+
+
+async def test_fuzzy_full_name_resolves_billy_joel(tmp_path):
+    db = _db(tmp_path)
+    out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "billy joel"})
+    assert out["artist"] == "Billy Joel"
+    assert out["songs"] == ["Piano Man"]
+
+
+async def test_fuzzy_does_not_override_exact_queen(tmp_path):
+    db = _db(tmp_path)
+    # 'Queen' is exact -> Queen, NEVER fuzzed to QOTSA even though QOTSA contains
+    # the word 'Queens'.
+    out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "Queen"})
+    assert out["artist"] == "Queen"
+    assert "No One Knows" not in out["songs"]
+
+
+async def test_fuzzy_queens_resolves_qotsa(tmp_path):
+    db = _db(tmp_path)
+    # 'Queens' (plural) has no exact band; whole-word containment keeps it on
+    # QOTSA, not a typo-near 'Queen'.
+    out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "Queens"})
+    assert out["artist"] == "Queens of the Stone Age"
+    assert out["songs"] == ["No One Knows"]
+
+
+async def test_fuzzy_typo_resolves_beatles(tmp_path):
+    db = _db(tmp_path)
+    # 'Beatls' is a typo of the 'Beatles' word in 'The Beatles' — edit-ratio.
+    out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "Beatls"})
+    assert out["artist"] == "The Beatles"
+    assert out["songs"] == ["Hey Jude"]
+
+
+async def test_fuzzy_nonsense_returns_not_found(tmp_path):
+    db = _db(tmp_path)
+    # Nothing clears the threshold -> not-found, never a random band.
+    out = await _call(
+        db, "mdopp", {"op": "songs_by_artist", "artist": "xqzptv nonsense"}
+    )
+    assert out["total"] == 0
+    assert out["songs"] == []
+
+
+async def test_fuzzy_does_not_leak_private_band(tmp_path):
+    db = _db(tmp_path)
+    # A fuzzy query for the cdopp-private 'Tocotronic' must NOT surface it for
+    # mdopp or household (scoping holds on the fuzzy path too)...
+    for uid in ("mdopp", "household"):
+        out = await _call(db, uid, {"op": "songs_by_artist", "artist": "Tocotron"})
+        assert out["total"] == 0
+        assert out["songs"] == []
+    # ...but the owner DOES get a fuzzy match on their own private band.
+    out = await _call(db, "cdopp", {"op": "songs_by_artist", "artist": "Tocotron"})
+    assert out["artist"] == "Tocotronic"
+    assert out["songs"] == ["Pure Vernunft"]
 
 
 # ---- list_artists ------------------------------------------------------------
