@@ -319,6 +319,7 @@ class EngineClient:
         text: str,
         images: list[str] | None = None,
         reasoning_effort: str = "none",
+        suggest_answers: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         owner = store.session_owner(self._db_path, session_id)
         if owner is None:
@@ -326,7 +327,7 @@ class EngineClient:
         token = current_uid.set(owner)
         try:
             async for event in self._run_turn(
-                session_id, text, images, reasoning_effort
+                session_id, text, images, reasoning_effort, suggest_answers
             ):
                 yield event
         except OllamaError as e:
@@ -347,6 +348,7 @@ class EngineClient:
         text: str,
         images: list[str] | None,
         reasoning_effort: str,
+        suggest_answers: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         store.append_message(
             self._db_path, session_id, "user", text, images=images or None
@@ -371,7 +373,12 @@ class EngineClient:
         # or another browser) renders the user bubble as soon as it lands.
         self._mirror(session_id, owner, "mirror_user", {"text": text})
         async for event in self._loop(
-            messages, think=think, session_id=session_id, persist=True, uid=owner
+            messages,
+            think=think,
+            session_id=session_id,
+            persist=True,
+            uid=owner,
+            suggest_answers=suggest_answers,
         ):
             self._mirror(session_id, owner, "mirror_event", event)
             yield event
@@ -515,6 +522,44 @@ class EngineClient:
             ensure_ascii=False,
         )
 
+    async def _suggest_answers(self, question: str) -> list[str]:
+        """Generate 2-4 likely user answers to a question (u87 chat fallback).
+
+        A tight, non-thinking secondary completion: the model returns a JSON
+        array of short answers, most-likely first. Fail-open — any error (bad
+        JSON, model down) returns []. Cleaned with the same rules as
+        offer_choices so the chips render identically."""
+        sys_prompt = (
+            "Gib 2-4 sehr kurze, wahrscheinliche Antworten des Nutzers auf die"
+            " folgende Frage als JSON-Array zurück, die wahrscheinlichste zuerst."
+            " Nur das JSON."
+        )
+        msgs = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": question},
+        ]
+        try:
+            result = None
+            async for kind, payload in self._ollama.stream(
+                self._model(),
+                msgs,
+                tools=None,
+                think=False,
+                options={"num_predict": 64, "temperature": 0.0},
+            ):
+                if kind == "done":
+                    result = payload
+            if result is None:
+                return []
+            raw = result.content.strip()
+            start, end = raw.find("["), raw.rfind("]")
+            if start == -1 or end == -1 or end < start:
+                return []
+            parsed = json.loads(raw[start : end + 1])
+        except (OllamaError, ValueError, TypeError):
+            return []
+        return choice_tools._clean(parsed)
+
     async def _loop(
         self,
         messages: list[dict[str, Any]],
@@ -524,6 +569,7 @@ class EngineClient:
         persist: bool,
         uid: str = "",
         pending_key: str | None | _Unset = _UNSET,
+        suggest_answers: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """The agent loop: stream, dispatch tools, feed results back, repeat.
 
@@ -777,6 +823,17 @@ class EngineClient:
                 snap = await self._profile.registry.area_snapshot()
                 grouped = ha_tools.group_cards_by_room(ha_cards, snap.entity_area)
             yield {"type": "ha_cards", "data": {"cards": ha_cards, "grouped": grouped}}
+        # Reliability fallback (u87): gemma4:e4b calls offer_choices only
+        # sometimes, so a question often shows no chips. When the answer is a
+        # question and the model offered none, suggest 2-4 likely answers via a
+        # cheap secondary call — CHAT ONLY (suggest_answers), never the voice
+        # path, where it would add latency. Fail-open: any error leaves it empty.
+        if (
+            suggest_answers
+            and not quick_replies
+            and final_content.rstrip().endswith("?")
+        ):
+            quick_replies = await self._suggest_answers(final_content)
         if quick_replies:
             yield {"type": "quick_replies", "data": {"options": quick_replies}}
         if suggestions:

@@ -126,6 +126,120 @@ async def test_turn_without_offer_emits_no_quick_replies(db, soul):
     assert not any(e["type"] == "quick_replies" for e in events)
 
 
+# -- engine: the ?-question answer fallback (u87) -------------------------
+
+
+@pytest.mark.asyncio
+async def test_fallback_suggests_answers_for_a_question(db, soul):
+    # The model ended with a "?" and offered no chips: the chat path runs a
+    # cheap secondary completion (second scripted result) that returns a JSON
+    # array, and those become the quick_replies.
+    results = [
+        ChatResult(content="Welche Farbe magst du?"),
+        ChatResult(content='["Blau", "Grün", "Rot"]'),
+    ]
+    client, fake = _client(db, soul, results, tools=build_choice_tools())
+    sid = await client.create_session("anna")
+    events = [
+        e async for e in client.chat_stream(sid, "Frag mich was", suggest_answers=True)
+    ]
+    qr = [e for e in events if e["type"] == "quick_replies"]
+    assert len(qr) == 1
+    assert qr[0]["data"]["options"] == ["Blau", "Grün", "Rot"]
+    # The secondary call is non-thinking and bounded.
+    secondary = fake.calls[-1]
+    assert secondary["think"] is False
+    assert secondary["tools"] is None
+    assert secondary["options"]["num_predict"] == 64
+
+
+@pytest.mark.asyncio
+async def test_fallback_does_not_fire_when_offer_choices_filled(db, soul):
+    # offer_choices already populated quick_replies -> the model's options win,
+    # no secondary call, no fallback override.
+    results = [
+        ChatResult(
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "offer_choices",
+                        "arguments": {"options": ["ja", "nein"]},
+                    }
+                }
+            ],
+        ),
+        ChatResult(content="Soll ich die Garage öffnen?"),
+    ]
+    client, fake = _client(db, soul, results, tools=build_choice_tools())
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Garage", suggest_answers=True)]
+    qr = [e for e in events if e["type"] == "quick_replies"]
+    assert len(qr) == 1
+    assert qr[0]["data"]["options"] == ["ja", "nein"]
+    # Exactly the two scripted turn calls — no third (secondary) completion.
+    assert len(fake.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fallback_does_not_fire_without_a_question(db, soul):
+    client, fake = _client(
+        db, soul, [ChatResult(content="Alles klar.")], tools=build_choice_tools()
+    )
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Danke", suggest_answers=True)]
+    assert not any(e["type"] == "quick_replies" for e in events)
+    assert len(fake.calls) == 1  # no secondary call
+
+
+@pytest.mark.asyncio
+async def test_fallback_does_not_fire_on_voice_path(db, soul):
+    # suggest_answers defaults False (the facade/voice path leaves it so): a
+    # question without offer_choices yields no chips and no secondary call.
+    client, fake = _client(
+        db,
+        soul,
+        [ChatResult(content="Welche Farbe magst du?")],
+        tools=build_choice_tools(),
+    )
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Frag mich was")]
+    assert not any(e["type"] == "quick_replies" for e in events)
+    assert len(fake.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_fallback_malformed_secondary_stays_empty(db, soul):
+    # A secondary result that isn't a JSON array -> fail-open, no chips (today's
+    # behavior), and the turn still completes.
+    results = [
+        ChatResult(content="Welche Farbe magst du?"),
+        ChatResult(content="Hmm, schwer zu sagen."),
+    ]
+    client, _ = _client(db, soul, results, tools=build_choice_tools())
+    sid = await client.create_session("anna")
+    events = [
+        e async for e in client.chat_stream(sid, "Frag mich was", suggest_answers=True)
+    ]
+    assert not any(e["type"] == "quick_replies" for e in events)
+    assert any(e["type"] == "run.completed" for e in events)
+
+
+# -- SPA: composer pre-fill (u87) -----------------------------------------
+
+
+def test_quick_replies_prefill_composer_with_favorite():
+    fn = re.search(
+        r"function renderQuickReplies\(options\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    body = fn.group(1)
+    # Pre-fill the favorite (first option) only when the composer is empty, then
+    # focus so the user can press Enter/Send.
+    assert "options[0]" in body
+    assert "!input.value.trim()" in body
+    assert "input.value = favorite;" in body
+    assert "input.focus();" in body
+
+
 def test_dispatch_unknown_args_is_safe():
     # The Toolbox swallows a bad-shaped call into a model-facing error, never a
     # turn-killer — the sink stays empty.

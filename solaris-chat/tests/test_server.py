@@ -132,7 +132,14 @@ class _FakeHermes:
         self.efforts.append(reasoning_effort)
         return f"echo: {text}"
 
-    async def chat_stream(self, session_id, text, images=None, reasoning_effort="none"):
+    async def chat_stream(
+        self,
+        session_id,
+        text,
+        images=None,
+        reasoning_effort="none",
+        suggest_answers=False,
+    ):
         self.turns.append((session_id, text))
         self.images.append(images or [])
         self.efforts.append(reasoning_effort)
@@ -2776,7 +2783,12 @@ async def test_cancel_interrupts_active_stream(aiohttp_client):
 
     class _SlowHermes(_FakeHermes):
         async def chat_stream(
-            self, session_id, text, images=None, reasoning_effort="none"
+            self,
+            session_id,
+            text,
+            images=None,
+            reasoning_effort="none",
+            suggest_answers=False,
         ):
             self.turns.append((session_id, text))
             while True:
