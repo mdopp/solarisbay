@@ -29,10 +29,17 @@ from __future__ import annotations
 import json
 import re
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Protocol
 
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools import Tool
+
+
+class LyricsClient(Protocol):
+    """The slice of the Jellyfin client `song_lyrics` needs (live fetch)."""
+
+    async def lyrics(self, audio_id: str) -> str | None: ...
+
 
 _SONG_CAP = 50
 _ARTIST_CAP = 50
@@ -103,7 +110,16 @@ def _band_value(okf_path: str) -> str:
     return rel
 
 
-def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
+def _audio_id(resource: str) -> str:
+    """The Jellyfin audio id from a song's `resource` fact
+    (`jellyfin://audio/<id>` → `<id>`); empty when not a jellyfin audio URI."""
+    prefix = "jellyfin://audio/"
+    return resource[len(prefix) :] if resource.startswith(prefix) else ""
+
+
+def build_music_query_tools(
+    db_path: str, uid_getter, jellyfin_client: LyricsClient | None = None
+) -> list[Tool]:
     def _caller() -> str:
         return uid_getter() or projection.SHARED_UID
 
@@ -146,6 +162,115 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
             if score > best_score:
                 best_score, best_id = score, cand["id"]
         return best_id if best_score >= _FUZZY_THRESHOLD else None
+
+    def _song_by_value(conn, song_id: str, caller: str) -> str | None:
+        # The song's `by` edge value (`bands/<slug>`), scoped to the caller.
+        row = conn.execute(
+            "SELECT value FROM facts"
+            " WHERE subject_entity_id = ? AND predicate = 'by'"
+            " AND resident_uid IN (?, ?) LIMIT 1",
+            (song_id, caller, projection.SHARED_UID),
+        ).fetchone()
+        return row["value"] if row is not None else None
+
+    def _resolve_song_id(conn, title: str, artist: str, caller: str) -> str | None:
+        # Exact canonical_name (case-insensitive) over the caller+household songs
+        # first; only then a ranked fuzzy pass over the same scoped rows. When an
+        # artist is given, prefer (among the exact, else among the top fuzzy ties)
+        # the song whose `by` band matches that artist — so two songs sharing a
+        # title disambiguate to the right artist's.
+        want_value: str | None = None
+        if artist:
+            band_id = _resolve_band_id(conn, artist, caller)
+            if band_id is not None:
+                okf_path = projection.entity_okf_path(conn, band_id)
+                if okf_path is not None:
+                    want_value = _band_value(okf_path)
+        exact = conn.execute(
+            "SELECT id FROM entities"
+            " WHERE type = 'song' AND resident_uid IN (?, ?)"
+            " AND canonical_name = ? COLLATE NOCASE"
+            " ORDER BY canonical_name",
+            (caller, projection.SHARED_UID, title),
+        ).fetchall()
+        if exact:
+            ids = [r["id"] for r in exact]
+            if want_value is not None:
+                for sid in ids:
+                    if _song_by_value(conn, sid, caller) == want_value:
+                        return sid
+            return ids[0]
+        candidates = conn.execute(
+            "SELECT id, canonical_name FROM entities"
+            " WHERE type = 'song' AND resident_uid IN (?, ?)"
+            " ORDER BY canonical_name",
+            (caller, projection.SHARED_UID),
+        ).fetchall()
+        best_id: str | None = None
+        best_score = 0.0
+        for cand in candidates:
+            score = _fuzzy_score(title, cand["canonical_name"])
+            # An artist match breaks fuzzy ties toward the right artist's song.
+            if (
+                want_value is not None
+                and _song_by_value(conn, cand["id"], caller) == want_value
+            ):
+                score += _FUZZY_PREFIX_BONUS
+            if score > best_score:
+                best_score, best_id = score, cand["id"]
+        return best_id if best_score >= _FUZZY_THRESHOLD else None
+
+    async def song_lyrics(title: str, artist: str) -> str:
+        title = title.strip()
+        artist = artist.strip()
+        if not title:
+            return json.dumps({"error": "title required"}, ensure_ascii=False)
+        caller = _caller()
+        conn = projection.open_conn(db_path)
+        try:
+            song_id = _resolve_song_id(conn, title, artist, caller)
+            if song_id is None:
+                return json.dumps({"found": False}, ensure_ascii=False)
+            song = projection.entity_row(conn, song_id)
+            clean_title = song["canonical_name"]
+            band_value = _song_by_value(conn, song_id, caller)
+            artist_name = ""
+            if band_value:
+                rows = projection.fetch_all(
+                    conn,
+                    "SELECT e.canonical_name FROM concepts c"
+                    " JOIN entities e ON e.id = c.ref_id"
+                    " WHERE c.ref_kind = 'entity' AND e.type = 'band'"
+                    " AND e.resident_uid IN (?, ?)"
+                    " AND (c.okf_path LIKE '%okf/' || ? || '.md')",
+                    (caller, projection.SHARED_UID, band_value),
+                )
+                if rows:
+                    artist_name = rows[0]["canonical_name"]
+            resource = ""
+            for f in projection.entity_facts(conn, song_id, caller):
+                if f["predicate"] == "resource":
+                    resource = f["value"]
+                    break
+            audio_id = _audio_id(resource)
+        finally:
+            conn.close()
+        lyrics = None
+        if jellyfin_client is not None and audio_id:
+            lyrics = await jellyfin_client.lyrics(audio_id)
+        if lyrics:
+            out: dict[str, Any] = {"title": clean_title, "lyrics": lyrics}
+            if artist_name:
+                out["artist"] = artist_name
+            return json.dumps(out, ensure_ascii=False)
+        result: dict[str, Any] = {
+            "title": clean_title,
+            "lyrics": None,
+            "note": "keine Lyrics verfügbar",
+        }
+        if artist_name:
+            result["artist"] = artist_name
+        return json.dumps(result, ensure_ascii=False)
 
     async def songs_by_artist(artist: str, limit: int) -> str:
         artist = artist.strip()
@@ -266,8 +391,15 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
             )
         if op == "artist_info":
             return await artist_info(str(args.get("artist") or ""))
+        if op == "song_lyrics":
+            return await song_lyrics(
+                str(args.get("title") or ""), str(args.get("artist") or "")
+            )
         return json.dumps(
-            {"error": "op must be songs_by_artist, list_artists or artist_info"},
+            {
+                "error": "op must be songs_by_artist, list_artists,"
+                " artist_info or song_lyrics"
+            },
             ensure_ascii=False,
         )
 
@@ -282,18 +414,27 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
                 " welche Künstler/Bands habe ich in der Bibliothek."
                 " op='artist_info' mit artist=<Name>: was weiß ich über"
                 " <Künstler/Band>, erzähl mir was über <Band>, welches Genre"
-                " ist <Band> — liefert Genre, Kurzbio und Songanzahl. Liefert"
-                " saubere Titel. Exakter Treffer gewinnt (Queen ≠ Queens of the"
-                " Stone Age); sonst unscharf (Joel → Billy Joel)."
+                " ist <Band> — liefert Genre, Kurzbio und Songanzahl."
+                " op='song_lyrics' mit title=<Songtitel> (optional artist):"
+                " zeig mir die Lyrics von <Song>, Songtext von <Song> — holt"
+                " den Liedtext live aus der Bibliothek. Liefert saubere Titel."
+                " Exakter Treffer gewinnt (Queen ≠ Queens of the Stone Age);"
+                " sonst unscharf (Joel → Billy Joel)."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "op": {
                         "type": "string",
-                        "enum": ["songs_by_artist", "list_artists", "artist_info"],
+                        "enum": [
+                            "songs_by_artist",
+                            "list_artists",
+                            "artist_info",
+                            "song_lyrics",
+                        ],
                     },
                     "artist": {"type": "string"},
+                    "title": {"type": "string"},
                     "prefix": {"type": "string"},
                     "limit": {"type": "integer"},
                 },

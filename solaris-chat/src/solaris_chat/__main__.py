@@ -38,6 +38,9 @@ async def _run() -> None:
         gatekeeper_token=settings.gatekeeper_token,
         context_window=context_window.value,
         default_uid=settings.default_uid,
+        jellyfin_url=settings.jellyfin_url,
+        jellyfin_username=settings.jellyfin_username,
+        jellyfin_password=settings.jellyfin_password,
     )
     scheduler = TimerScheduler(
         settings.solaris_db_path,
