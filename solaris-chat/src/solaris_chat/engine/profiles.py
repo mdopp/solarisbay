@@ -89,6 +89,7 @@ def build_engine_clients(
     context_window: int | None = None,
     default_uid: str = "household",
     jellyfin_url: str = "",
+    jellyfin_cast_url: str = "",
     jellyfin_username: str = "",
     jellyfin_password: str = "",
 ) -> tuple[
@@ -134,7 +135,12 @@ def build_engine_clients(
     # song_lyrics degrades gracefully ("keine Lyrics verfügbar").
     if db_path:
         lyrics_client = (
-            RestJellyfinMusicClient(jellyfin_url, jellyfin_username, jellyfin_password)
+            RestJellyfinMusicClient(
+                jellyfin_url,
+                jellyfin_username,
+                jellyfin_password,
+                cast_base_url=jellyfin_cast_url or None,
+            )
             if jellyfin_url
             else None
         )

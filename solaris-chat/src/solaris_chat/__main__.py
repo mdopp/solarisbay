@@ -39,6 +39,7 @@ async def _run() -> None:
         context_window=context_window.value,
         default_uid=settings.default_uid,
         jellyfin_url=settings.jellyfin_url,
+        jellyfin_cast_url=settings.jellyfin_cast_url,
         jellyfin_username=settings.jellyfin_username,
         jellyfin_password=settings.jellyfin_password,
     )

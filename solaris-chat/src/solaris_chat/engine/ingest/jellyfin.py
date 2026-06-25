@@ -170,9 +170,14 @@ class RestJellyfinMusicClient:
         username: str,
         password: str,
         *,
+        cast_base_url: str | None = None,
         timeout: float = 30.0,
     ):
         self._base_url = base_url.rstrip("/")
+        # A Cast device fetches the stream URL itself over the LAN and can't reach
+        # the engine's localhost base, so stream_url() uses this device-reachable
+        # base (#604). Falsy ⇒ fall back to base_url (no-op for other callers).
+        self._cast_base_url = (cast_base_url or base_url).rstrip("/")
         self._username = username
         self._password = password
         self._timeout = aiohttp.ClientTimeout(total=timeout)
@@ -270,7 +275,7 @@ class RestJellyfinMusicClient:
         if not self._token:
             return None
         return (
-            f"{self._base_url}/Audio/{audio_id}/universal"
+            f"{self._cast_base_url}/Audio/{audio_id}/universal"
             f"?api_key={self._token}&UserId={self._user_id}"
             "&Container=mp3&AudioCodec=mp3&TranscodingProtocol=http"
         )

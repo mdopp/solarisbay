@@ -949,6 +949,119 @@ def test_stream_url_builds_castable_url_after_auth(monkeypatch):
     )
 
 
+def test_stream_url_uses_cast_base_when_set(monkeypatch):
+    # The Cast device fetches the URL on the LAN, so stream_url uses the
+    # device-reachable cast base, not the engine's localhost base_url (#604).
+    posted_to: list[str] = []
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            posted_to.append(url)
+            return _Resp(json_body={"AccessToken": "tok123", "User": {"Id": "u-sol"}})
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    client = RestJellyfinMusicClient(
+        "http://127.0.0.1:8096",
+        "solaris",
+        "pw",
+        cast_base_url="http://192.168.178.100:8096",
+    )
+    url = asyncio.run(client.stream_url("aud-1"))
+    assert url == (
+        "http://192.168.178.100:8096/Audio/aud-1/universal"
+        "?api_key=tok123&UserId=u-sol"
+        "&Container=mp3&AudioCodec=mp3&TranscodingProtocol=http"
+    )
+    # authenticate() (and so ingest/lyrics) still hit the local API base_url.
+    assert posted_to == ["http://127.0.0.1:8096/Users/AuthenticateByName"]
+
+
+def test_stream_url_falls_back_to_base_when_cast_unset(monkeypatch):
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, *, json=None, headers=None, **k):
+            return _Resp(json_body={"AccessToken": "tok123", "User": {"Id": "u-sol"}})
+
+    monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
+    # cast_base_url None (and "" via the or-fallback) ⇒ uses base_url, no regression.
+    for cast in (None, ""):
+        client = RestJellyfinMusicClient(
+            "http://jf", "solaris", "pw", cast_base_url=cast
+        )
+        url = asyncio.run(client.stream_url("aud-1"))
+        assert url == (
+            "http://jf/Audio/aud-1/universal?api_key=tok123&UserId=u-sol"
+            "&Container=mp3&AudioCodec=mp3&TranscodingProtocol=http"
+        )
+
+
+def test_cast_base_url_does_not_affect_api_base(monkeypatch):
+    # The engine's own GET base (ingest/auth) is base_url regardless of cast base.
+    paths: list[str] = []
+
+    class _Resp2:
+        def __init__(self):
+            self.status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return {}
+
+        def raise_for_status(self):
+            pass
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, url, *, params=None, headers=None, **k):
+            paths.append(url)
+            return _Resp2()
+
+    client = RestJellyfinMusicClient(
+        "http://127.0.0.1:8096",
+        "solaris",
+        "pw",
+        cast_base_url="http://192.168.178.100:8096",
+    )
+    client._token = "tok"  # skip auth
+
+    async def _go():
+        async with _Session() as c:
+            await client._get_json(c, "/Items")
+
+    asyncio.run(_go())
+    assert paths == ["http://127.0.0.1:8096/Items"]
+
+
 def test_stream_url_none_without_token(monkeypatch):
     class _Session:
         def __init__(self, *a, **k):
