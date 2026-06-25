@@ -188,6 +188,48 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
         finally:
             conn.close()
 
+    async def artist_info(artist: str) -> str:
+        artist = artist.strip()
+        if not artist:
+            return json.dumps({"error": "artist required"}, ensure_ascii=False)
+        caller = _caller()
+        conn = projection.open_conn(db_path)
+        try:
+            band_id = _resolve_band_id(conn, artist, caller)
+            if band_id is None:
+                return json.dumps(
+                    {"artist": artist, "found": False}, ensure_ascii=False
+                )
+            band = projection.entity_row(conn, band_id)
+            # Caller-scoped facts (resident_uid IN (caller, 'household')) — a
+            # private band's genre/bio never surfaces to another resident.
+            facts = projection.entity_facts(conn, band_id, caller)
+            by_predicate = {f["predicate"]: f["value"] for f in facts}
+            okf_path = projection.entity_okf_path(conn, band_id)
+            song_count = 0
+            if okf_path is not None:
+                value = _band_value(okf_path)
+                rows = projection.fetch_all(
+                    conn,
+                    "SELECT COUNT(*) AS n FROM facts f"
+                    " JOIN entities e ON e.id = f.subject_entity_id"
+                    " WHERE f.predicate = 'by' AND f.value = ?"
+                    " AND e.type = 'song' AND e.resident_uid IN (?, ?)",
+                    (value, caller, projection.SHARED_UID),
+                )
+                song_count = rows[0]["n"]
+            return json.dumps(
+                {
+                    "artist": band["canonical_name"],
+                    "genre": by_predicate.get("genre", ""),
+                    "bio": by_predicate.get("bio", ""),
+                    "song_count": song_count,
+                },
+                ensure_ascii=False,
+            )
+        finally:
+            conn.close()
+
     async def list_artists(prefix: str, limit: int) -> str:
         caller = _caller()
         conn = projection.open_conn(db_path)
@@ -222,8 +264,10 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
             return await list_artists(
                 str(args.get("prefix") or "").strip(), min(cap, _ARTIST_CAP)
             )
+        if op == "artist_info":
+            return await artist_info(str(args.get("artist") or ""))
         return json.dumps(
-            {"error": "op must be songs_by_artist or list_artists"},
+            {"error": "op must be songs_by_artist, list_artists or artist_info"},
             ensure_ascii=False,
         )
 
@@ -235,7 +279,10 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
                 " strukturierten Wissensspeicher (nicht notes_search)."
                 " op='songs_by_artist' mit artist=<Name>: welche Songs/Lieder"
                 " von <Künstler> habe ich. op='list_artists' (optional prefix):"
-                " welche Künstler/Bands habe ich in der Bibliothek. Liefert"
+                " welche Künstler/Bands habe ich in der Bibliothek."
+                " op='artist_info' mit artist=<Name>: was weiß ich über"
+                " <Künstler/Band>, erzähl mir was über <Band>, welches Genre"
+                " ist <Band> — liefert Genre, Kurzbio und Songanzahl. Liefert"
                 " saubere Titel. Exakter Treffer gewinnt (Queen ≠ Queens of the"
                 " Stone Age); sonst unscharf (Joel → Billy Joel)."
             ),
@@ -244,7 +291,7 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
                 "properties": {
                     "op": {
                         "type": "string",
-                        "enum": ["songs_by_artist", "list_artists"],
+                        "enum": ["songs_by_artist", "list_artists", "artist_info"],
                     },
                     "artist": {"type": "string"},
                     "prefix": {"type": "string"},

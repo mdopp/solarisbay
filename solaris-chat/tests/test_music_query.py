@@ -36,7 +36,7 @@ CREATE TABLE concepts (
 """
 
 
-def _band(conn, ent_id, name, slug, owner, *, okf_prefix="okf"):
+def _band(conn, ent_id, name, slug, owner, *, okf_prefix="okf", facts=()):
     conn.execute(
         "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
         " content_hash) VALUES (?, 'band', ?, ?, 'jellyfin', 'h')",
@@ -47,6 +47,12 @@ def _band(conn, ent_id, name, slug, owner, *, okf_prefix="okf"):
         " VALUES (?, ?, 'entity', ?, 'h')",
         (f"c-{ent_id}", ent_id, f"{okf_prefix}/bands/{slug}.md"),
     )
+    for i, (predicate, value) in enumerate(facts):
+        conn.execute(
+            "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate,"
+            " value, source) VALUES (?, ?, ?, ?, ?, 'jellyfin')",
+            (f"af-{ent_id}-{i}", ent_id, owner, predicate, value),
+        )
 
 
 def _song(conn, ent_id, title, band_slug, owner):
@@ -67,7 +73,14 @@ def _db(tmp_path) -> str:
     conn = sqlite3.connect(path)
     conn.executescript(_SCHEMA)
     # Two household bands whose names collide on a substring.
-    _band(conn, "b-queen", "Queen", "queen", "household")
+    _band(
+        conn,
+        "b-queen",
+        "Queen",
+        "queen",
+        "household",
+        facts=[("genre", "Rock"), ("bio", "British rock band formed in 1970.")],
+    )
     _song(conn, "s-bohemian", "Bohemian Rhapsody", "queen", "household")
     _song(conn, "s-radio", "Radio Ga Ga", "queen", "household")
     _band(
@@ -80,7 +93,14 @@ def _db(tmp_path) -> str:
     _song(conn, "s-nomone", "No One Knows", "queens-of-the-stone-age", "household")
     # Bands resolved only by FUZZY: a multi-word name (token match) and one that
     # exercises a typo edit-ratio.
-    _band(conn, "b-joel", "Billy Joel", "billy-joel", "household")
+    _band(
+        conn,
+        "b-joel",
+        "Billy Joel",
+        "billy-joel",
+        "household",
+        facts=[("genre", "Pop, Rock"), ("bio", "American pianist and singer.")],
+    )
     _song(conn, "s-piano", "Piano Man", "billy-joel", "household")
     _band(conn, "b-beatles", "The Beatles", "the-beatles", "household")
     _song(conn, "s-hey", "Hey Jude", "the-beatles", "household")
@@ -92,6 +112,7 @@ def _db(tmp_path) -> str:
         "tocotronic",
         "cdopp",
         okf_prefix="users/cdopp/okf",
+        facts=[("genre", "Indie"), ("bio", "Hamburger Band.")],
     )
     _song(conn, "s-priv", "Pure Vernunft", "tocotronic", "cdopp")
     # cdopp-private band ALSO named "Queen", whose song shares the SAME
@@ -310,6 +331,57 @@ async def test_wildcard_arg_not_substring(tmp_path):
     # "%eens" must not wildcard-match Queens of the Stone Age.
     out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "%eens"})
     assert out["total"] == 0
+
+
+# ---- artist_info (#592): genre + bio + song_count ----------------------------
+
+
+async def test_artist_info_returns_facts_and_song_count(tmp_path):
+    db = _db(tmp_path)
+    out = await _call(db, "mdopp", {"op": "artist_info", "artist": "Queen"})
+    assert out["artist"] == "Queen"
+    assert out["genre"] == "Rock"
+    assert out["bio"] == "British rock band formed in 1970."
+    assert out["song_count"] == 2
+    # Clean output — no hash ids/slugs.
+    assert "id" not in out and "slug" not in out
+
+
+async def test_artist_info_fuzzy_resolves_billy_joel(tmp_path):
+    db = _db(tmp_path)
+    # 'Joel' (no exact band) reuses the same fuzzy resolver as songs_by_artist.
+    out = await _call(db, "mdopp", {"op": "artist_info", "artist": "Joel"})
+    assert out["artist"] == "Billy Joel"
+    assert out["genre"] == "Pop, Rock"
+    assert out["bio"] == "American pianist and singer."
+    assert out["song_count"] == 1
+
+
+async def test_artist_info_unknown_not_found(tmp_path):
+    db = _db(tmp_path)
+    out = await _call(db, "mdopp", {"op": "artist_info", "artist": "Nirvana"})
+    assert out == {"artist": "Nirvana", "found": False}
+
+
+async def test_artist_info_private_facts_withheld_from_others(tmp_path):
+    db = _db(tmp_path)
+    # cdopp's private band's facts must NOT surface for mdopp or household...
+    for uid in ("mdopp", "household"):
+        out = await _call(db, uid, {"op": "artist_info", "artist": "Tocotronic"})
+        assert out == {"artist": "Tocotronic", "found": False}
+    # ...but the owner DOES get its genre/bio + song_count.
+    out = await _call(db, "cdopp", {"op": "artist_info", "artist": "Tocotronic"})
+    assert out["artist"] == "Tocotronic"
+    assert out["genre"] == "Indie"
+    assert out["bio"] == "Hamburger Band."
+    assert out["song_count"] == 1
+
+
+async def test_artist_info_description_steers_was_weiss_ich(tmp_path):
+    db = _db(tmp_path)
+    desc = _tool(db, "mdopp").description
+    assert "artist_info" in desc
+    assert "was weiß ich über" in desc
 
 
 async def test_bad_op(tmp_path):

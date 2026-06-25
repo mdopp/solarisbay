@@ -67,6 +67,8 @@ def _frontmatter(record: ConceptRecord, *, entity_id: str) -> list[str]:
                 lines.append(f"  - {_scalar(item)}")
         else:
             lines.append(f"{key}: {_scalar(value)}")
+    for predicate, value in record.facts:
+        lines.append(f"{predicate}: {_scalar(value)}")
     if record.aliases:
         lines.append("aliases:")
         for alias in record.aliases:

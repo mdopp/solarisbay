@@ -83,6 +83,10 @@ class ConceptRecord:
     extra: dict[str, Any] = field(default_factory=dict)
     aliases: list[str] = field(default_factory=list)
     relationships: list[Relationship] = field(default_factory=list)
+    # Free-text attribute facts (predicate, value) projected to `facts` and
+    # rendered into frontmatter — for non-link facts a `## Relationships` link
+    # can't carry (a band's genre / bio).
+    facts: list[tuple[str, str]] = field(default_factory=list)
     # event-only: ISO timestamp + kind for the `events` row.
     event_ts: str = ""
     event_kind: str = ""

@@ -151,6 +151,7 @@ class OkfWriter:
             aliases=record.aliases,
         )
         facts = [(r.rel, r.path, None) for r in record.relationships]
+        facts += [(predicate, value, None) for predicate, value in record.facts]
         projection.replace_facts(
             conn,
             subject_entity_id=entity_id,
