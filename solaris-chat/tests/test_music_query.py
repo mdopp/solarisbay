@@ -88,6 +88,18 @@ def _db(tmp_path) -> str:
         okf_prefix="users/cdopp/okf",
     )
     _song(conn, "s-priv", "Pure Vernunft", "tocotronic", "cdopp")
+    # cdopp-private band ALSO named "Queen", whose song shares the SAME
+    # `bands/queen` by-edge value as the household Queen — the by-edge alone
+    # would leak it cross-owner; only the resident_uid scope keeps it private.
+    _band(
+        conn,
+        "b-queen-cdopp",
+        "Queen",
+        "queen",
+        "cdopp",
+        okf_prefix="users/cdopp/okf",
+    )
+    _song(conn, "s-queen-cdopp", "Secret Queen Track", "queen", "cdopp")
     conn.commit()
     conn.close()
     return path
@@ -184,6 +196,37 @@ async def test_unknown_caller_sees_household_only(tmp_path):
     out = await _call(db, "", {"op": "list_artists"})  # unknown -> household
     assert "Queen" in out["artists"]
     assert "Tocotronic" not in out["artists"]
+
+
+async def test_songs_by_value_no_cross_owner_collision(tmp_path):
+    db = _db(tmp_path)
+    # household/mdopp ask for "Queen": the by-edge value `bands/queen` is shared
+    # with a cdopp-private "Queen", but the resident_uid scope on the song must
+    # withhold the private track.
+    for uid in ("mdopp", "household"):
+        out = await _call(db, uid, {"op": "songs_by_artist", "artist": "Queen"})
+        assert set(out["songs"]) == {"Bohemian Rhapsody", "Radio Ga Ga"}
+        assert "Secret Queen Track" not in out["songs"]
+    # cdopp resolves to its OWN private Queen and sees its private track.
+    out = await _call(db, "cdopp", {"op": "songs_by_artist", "artist": "Queen"})
+    assert "Secret Queen Track" in out["songs"]
+
+
+async def test_wildcard_arg_not_substring(tmp_path):
+    db = _db(tmp_path)
+    # A bare "%" must NOT expand into a wildcard that matches every band.
+    out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "%"})
+    assert out["total"] == 0
+    out = await _call(db, "mdopp", {"op": "list_artists", "prefix": "%"})
+    assert out["artists"] == []
+    # "Q%" stays a literal prefix — there is no band literally named "Q%...".
+    out = await _call(db, "mdopp", {"op": "list_artists", "prefix": "Q%"})
+    assert out["artists"] == []
+    out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "Q%"})
+    assert out["total"] == 0
+    # "%eens" must not wildcard-match Queens of the Stone Age.
+    out = await _call(db, "mdopp", {"op": "songs_by_artist", "artist": "%eens"})
+    assert out["total"] == 0
 
 
 async def test_bad_op(tmp_path):

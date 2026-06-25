@@ -32,6 +32,15 @@ _SONG_CAP = 50
 _ARTIST_CAP = 50
 
 
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so a model-supplied prefix stays a literal prefix.
+
+    `%`/`_` in the arg would otherwise expand into wildcards, coercing the
+    anchored-prefix LIKE back into a substring match (Queen → Queens-of-...).
+    Used with `ESCAPE '\\'`; `\\` itself is escaped first."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _band_value(okf_path: str) -> str:
     """The `by`-fact value (`bands/<slug>`) a band's okf_path projects to.
 
@@ -78,9 +87,9 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
         row = conn.execute(
             "SELECT id FROM entities"
             " WHERE type = 'band' AND resident_uid IN (?, ?)"
-            " AND canonical_name LIKE ? || '%' COLLATE NOCASE"
+            " AND canonical_name LIKE ? || '%' ESCAPE '\\' COLLATE NOCASE"
             " ORDER BY canonical_name LIMIT 1",
-            (caller, projection.SHARED_UID, artist),
+            (caller, projection.SHARED_UID, _escape_like(artist)),
         ).fetchone()
         return row["id"] if row is not None else None
 
@@ -135,8 +144,8 @@ def build_music_query_tools(db_path: str, uid_getter) -> list[Tool]:
             )
             params: list[Any] = [caller, projection.SHARED_UID]
             if prefix:
-                sql += " AND canonical_name LIKE ? || '%' COLLATE NOCASE"
-                params.append(prefix)
+                sql += " AND canonical_name LIKE ? || '%' ESCAPE '\\' COLLATE NOCASE"
+                params.append(_escape_like(prefix))
             sql += " ORDER BY canonical_name"
             rows = projection.fetch_all(conn, sql, tuple(params))
             names = [r["canonical_name"] for r in rows]
