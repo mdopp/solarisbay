@@ -17,11 +17,35 @@ from pathlib import Path
 from typing import Any
 
 from solaris_chat import notes_search
+from solaris_chat.engine.fuzzy import fuzzy_score, tokens
 from solaris_chat.engine.tools import Tool
 from solaris_chat.notes_search import _USER_PATH_RE
 
 _MAX_BYTES = 256 * 1024
 _MAX_HITS = 8
+
+# Ranked-search blend (#591): the short title is fuzzily matched (typos clear),
+# the body contributes a cheap whole-word coverage of the query terms (NO
+# SequenceMatcher over full bodies). `_MIN_SCORE` is tuned so a note carrying all
+# query terms as body words always clears it (today's exact-AND matches stay a
+# superset at the top); only strong partials additionally leak through.
+_TITLE_WEIGHT = 0.6
+_BODY_WEIGHT = 0.4
+_ALL_TERMS_BONUS = 0.1
+_MIN_SCORE = 0.2
+
+
+def _snippet(text: str, present_terms: list[str]) -> str:
+    """A ~240-char excerpt anchored on the first present query term, else start."""
+    lower = text.lower()
+    idx = -1
+    for term in present_terms:
+        idx = lower.find(term)
+        if idx != -1:
+            break
+    if idx == -1:
+        idx = 0
+    return text[max(0, idx - 80) : idx + 160].replace("\n", " ")
 
 
 def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
@@ -35,8 +59,10 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
         # the shared household pool — never another resident's private note. An
         # unknown caller resolves to `household`, so it sees the shared pool only.
         caller_uid = uid_getter()
-        terms = [t.lower() for t in query.split() if t]
-        hits = []
+        terms = tokens(query)
+        if not terms:
+            return "[]"
+        scored: list[tuple[float, dict[str, Any]]] = []
         for path in sorted(root.rglob("*.md")):
             try:
                 if not path.is_file() or path.stat().st_size > _MAX_BYTES:
@@ -45,19 +71,38 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
             except OSError:
                 continue
             rel = str(path.relative_to(root))
+            # Scope BEFORE scoring (#576): never score what the caller can't see.
             if not notes_search.is_visible(
                 notes_search.owner_of(rel, text), caller_uid
             ):
                 continue
-            lower = text.lower()
-            if not all(t in lower for t in terms):
+            title = notes_search._title(text, path.stem)
+            # Body contribution: whole-word coverage of the query terms over a SET
+            # of the body's word-tokens — cheap, no SequenceMatcher over the body.
+            body_words = set(tokens(text))
+            present = [t for t in terms if t in body_words]
+            body_coverage = len(present) / len(terms)
+            if len(present) == len(terms):
+                body_coverage += _ALL_TERMS_BONUS
+            score = _TITLE_WEIGHT * fuzzy_score(query, title) + _BODY_WEIGHT * (
+                body_coverage
+            )
+            if score < _MIN_SCORE:
                 continue
-            idx = lower.find(terms[0])
-            snippet = text[max(0, idx - 80) : idx + 160].replace("\n", " ")
-            hits.append({"path": rel, "snippet": snippet})
-            if len(hits) >= _MAX_HITS:
-                break
-        return json.dumps(hits, ensure_ascii=False)
+            snippet = _snippet(text, present)
+            scored.append(
+                (
+                    score,
+                    {
+                        "path": rel,
+                        "title": title,
+                        "snippet": snippet,
+                        "score": round(score, 4),
+                    },
+                )
+            )
+        scored.sort(key=lambda s: s[0], reverse=True)
+        return json.dumps([h for _, h in scored[:_MAX_HITS]], ensure_ascii=False)
 
     async def read(args: dict[str, Any]) -> str:
         rel = str(args.get("path") or "")

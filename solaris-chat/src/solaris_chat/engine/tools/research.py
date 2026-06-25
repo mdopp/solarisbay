@@ -74,6 +74,7 @@ def build_research_tools(
                     "title": path,
                     "ref": path,
                     "snippet": str(h.get("snippet") or "").strip(),
+                    "score": float(h.get("score") or 0.0),
                 }
             )
         return out
@@ -120,7 +121,9 @@ def build_research_tools(
             seen.add(ref)
             ranked.append({"rank": _TRUST_RANK[hit["kind"]], **hit})
 
-        ranked.sort(key=lambda h: h["rank"])
+        # Trust tier first (cross-tier stays trust-first); within a tier the
+        # notes' relevance score (#591) breaks the tie, higher first.
+        ranked.sort(key=lambda h: (h["rank"], -float(h.get("score") or 0.0)))
         return json.dumps(
             {"sources": ranked[:_MAX_SOURCES], "note": _NOTE},
             ensure_ascii=False,

@@ -76,8 +76,8 @@ async def test_fans_out_trust_ranks_and_cites(monkeypatch):
     assert sources[0]["rank"] < sources[1]["rank"]
     assert sources[0]["ref"] == "facts/glas.md"
     assert sources[1]["ref"] == "https://example.com/wg"
-    # Cited JSON shape.
-    assert set(sources[0]) == {"rank", "kind", "title", "ref", "snippet"}
+    # Cited JSON shape (notes carry a relevance score; #591).
+    assert set(sources[0]) == {"rank", "kind", "title", "ref", "snippet", "score"}
     assert "zitiere" in out["note"]
 
 
@@ -113,6 +113,22 @@ async def test_caps_total_sources(monkeypatch):
 
     out = json.loads(await handler({"query": "x"}))
     assert len(out["sources"]) <= 8
+
+
+async def test_notes_score_breaks_tie_within_tier(monkeypatch):
+    calls: dict = {}
+    # Two notes (same trust tier); the higher-scored one must rank first (#591).
+    notes_raw = json.dumps(
+        [
+            {"path": "low.md", "snippet": "x", "score": 0.3},
+            {"path": "high.md", "snippet": "x", "score": 0.9},
+        ]
+    )
+    handler = _tool(monkeypatch, notes_raw=notes_raw, web_raw="{}", calls=calls)
+
+    out = json.loads(await handler({"query": "x"}))
+    refs = [s["ref"] for s in out["sources"]]
+    assert refs == ["high.md", "low.md"]
 
 
 async def test_empty_query_returns_cited_shape(monkeypatch):

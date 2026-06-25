@@ -27,10 +27,13 @@ shared library — never another resident's private one).
 from __future__ import annotations
 
 import json
-import re
-from difflib import SequenceMatcher
 from typing import Any, Protocol
 
+from solaris_chat.engine.fuzzy import (
+    _FUZZY_PREFIX_BONUS,
+    FUZZY_THRESHOLD,
+    fuzzy_score,
+)
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools import Tool
 
@@ -45,44 +48,7 @@ _SONG_CAP = 50
 _ARTIST_CAP = 50
 
 # Fuzzy band-resolve weights/threshold (only reached when NO exact match exists).
-# Three signals blend: (a) WHOLE-WORD containment — a query token is a whole word
-# in the name ('joel' in 'Billy Joel', 'queens' in 'Queens of the Stone Age');
-# this dominates and keeps 'Queens' on QOTSA, not a typo-near 'Queen'. (b) the
-# best per-token edit-ratio against the name's words catches typos ('Beatls' →
-# 'Beatles' word of 'The Beatles'). (c) a small full-string ratio + prefix bonus
-# break near-ties. The best score must clear the threshold or we return
-# not-found rather than a random band.
-_FUZZY_WORD_WEIGHT = 0.45
-_FUZZY_TOKEN_WEIGHT = 0.45
-_FUZZY_FULL_WEIGHT = 0.1
-_FUZZY_PREFIX_BONUS = 0.05
-_FUZZY_THRESHOLD = 0.45
-
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
-
-
-def _tokens(text: str) -> list[str]:
-    return _WORD_RE.findall(text.lower())
-
-
-def _fuzzy_score(query: str, candidate: str) -> float:
-    q_tokens = _tokens(query)
-    c_tokens = _tokens(candidate)
-    if not q_tokens or not c_tokens:
-        return 0.0
-    c_set = set(c_tokens)
-    word_frac = sum(1 for t in q_tokens if t in c_set) / len(q_tokens)
-    per_token = sum(
-        max(SequenceMatcher(None, t, w).ratio() for w in c_tokens) for t in q_tokens
-    ) / len(q_tokens)
-    full = SequenceMatcher(None, query.lower(), candidate.lower()).ratio()
-    prefix = _FUZZY_PREFIX_BONUS if candidate.lower().startswith(query.lower()) else 0.0
-    return (
-        _FUZZY_WORD_WEIGHT * word_frac
-        + _FUZZY_TOKEN_WEIGHT * per_token
-        + _FUZZY_FULL_WEIGHT * full
-        + prefix
-    )
+# The scorer is shared with notes search; see `engine/fuzzy.py` for the blend.
 
 
 def _escape_like(value: str) -> str:
@@ -158,10 +124,10 @@ def build_music_query_tools(
         best_id: str | None = None
         best_score = 0.0
         for cand in candidates:
-            score = _fuzzy_score(artist, cand["canonical_name"])
+            score = fuzzy_score(artist, cand["canonical_name"])
             if score > best_score:
                 best_score, best_id = score, cand["id"]
-        return best_id if best_score >= _FUZZY_THRESHOLD else None
+        return best_id if best_score >= FUZZY_THRESHOLD else None
 
     def _song_by_value(conn, song_id: str, caller: str) -> str | None:
         # The song's `by` edge value (`bands/<slug>`), scoped to the caller.
@@ -209,7 +175,7 @@ def build_music_query_tools(
         best_id: str | None = None
         best_score = 0.0
         for cand in candidates:
-            score = _fuzzy_score(title, cand["canonical_name"])
+            score = fuzzy_score(title, cand["canonical_name"])
             # An artist match breaks fuzzy ties toward the right artist's song.
             if (
                 want_value is not None
@@ -218,7 +184,7 @@ def build_music_query_tools(
                 score += _FUZZY_PREFIX_BONUS
             if score > best_score:
                 best_score, best_id = score, cand["id"]
-        return best_id if best_score >= _FUZZY_THRESHOLD else None
+        return best_id if best_score >= FUZZY_THRESHOLD else None
 
     async def song_lyrics(title: str, artist: str) -> str:
         title = title.strip()
