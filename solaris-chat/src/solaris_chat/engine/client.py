@@ -173,9 +173,11 @@ def compact_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     question and the assistant answer TEXT verbatim, but for messages BEFORE the
     current turn (everything up to the LAST user message):
       - a tool-role message's full JSON `content` becomes `[tool <name>] <gist>`
-        (tool name + a 1-line, length-capped gist — salient, never empty), and
-      - an assistant message's `tool_calls` args are stripped to just the tool
-        name(s) (the model doesn't need the past full arguments).
+        (tool name + a 1-line, length-capped gist — salient, never empty).
+    Past assistant `tool_calls` are kept INTACT (args are small; the bloat is the
+    verbose RESULTS, gisted above). They MUST NOT be reduced to empty-args calls:
+    a small model imitates an `arguments: {}` pattern in its context and then
+    emits argument-less tool calls itself ("invalid domain or service name").
     The CURRENT turn (the last user message and everything after it — this
     turn's fresh tool calls and their results) is left FULL, since the model
     needs those to answer now. Pure: returns a new list, never mutates input."""
@@ -208,18 +210,6 @@ def compact_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             new = dict(m)
             label = f"[tool {name}] " if name else "[tool] "
             new["content"] = f"{label}{_gist(str(m.get('content') or ''))}"
-            out.append(new)
-        elif role == "assistant" and m.get("tool_calls"):
-            new = dict(m)
-            new["tool_calls"] = [
-                {
-                    "function": {
-                        "name": ((tc.get("function") or {}).get("name") or ""),
-                        "arguments": {},
-                    }
-                }
-                for tc in m["tool_calls"]
-            ]
             out.append(new)
         else:
             out.append(m)

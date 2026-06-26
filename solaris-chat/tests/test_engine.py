@@ -698,15 +698,31 @@ def test_compact_history_preserves_user_and_assistant_text_verbatim():
     assert out[5]["content"] == "Und das Wohnzimmer?"
 
 
-def test_compact_history_strips_past_assistant_tool_call_args_to_names():
+def test_compact_history_preserves_past_assistant_tool_call_args():
+    # #636: past tool_calls args MUST stay intact. Reducing them to empty
+    # `arguments: {}` made e4b imitate the pattern and emit argument-less calls.
     msgs = _multi_tool_history()
     out = compact_history(msgs)
     past_call = out[2]["tool_calls"][0]["function"]
     assert past_call["name"] == "ha_get_state"
-    assert past_call["arguments"] == {}  # past args dropped
-    # the current turn's assistant tool_calls keep their full args.
+    assert past_call["arguments"] == {
+        "entity_id": "sensor.kueche_temp",
+        "verbose": True,
+    }  # past args preserved, NOT emptied
+    # the current turn's assistant tool_calls keep their full args too.
     cur_call = out[6]["tool_calls"][0]["function"]
     assert cur_call["arguments"] == {"entity_id": "sensor.wohnzimmer_temp"}
+
+
+def test_compact_history_never_emits_empty_args_tool_call():
+    # #636 regression: no assistant message in the compacted history may carry a
+    # tool_call with empty `arguments: {}` — that pattern is the imitation hazard.
+    msgs = _multi_tool_history()
+    out = compact_history(msgs)
+    for m in out:
+        for tc in m.get("tool_calls") or []:
+            args = (tc.get("function") or {}).get("arguments")
+            assert args, f"empty-args tool_call leaked into compacted history: {tc}"
 
 
 def test_compact_history_reduces_size_and_is_pure():
