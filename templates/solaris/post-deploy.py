@@ -274,6 +274,90 @@ def install_unit(unit: str, content: str) -> bool:
     return True
 
 
+# STT health probe (#610). A wedged CUDA context (cudaErrorInvalidDevice)
+# leaves the whisper container "Up" while every transcription fails — the
+# process never exits, so Restart= never fires and nothing exercises STT, so
+# the box shows green while voice is dead. This probe runs a real ~1s Wyoming
+# transcription against the local listener and exits non-zero if no transcript
+# comes back; the unit's HealthCmd runs it and HealthOnFailure=kill kills the
+# container on repeated failure so systemd restarts it fresh (re-injecting
+# CDI). Stdlib-only so it runs unchanged in either whisper image.
+STT_HEALTHCHECK = """import socket, json, struct, math, sys, time
+
+HOST, PORT = "127.0.0.1", 10300
+_NL = chr(10)
+
+
+def _send(sock, etype, data=None, payload=None):
+    hdr = {"type": etype}
+    if data is not None:
+        hdr["data"] = data
+    if payload is not None:
+        hdr["payload_length"] = len(payload)
+    sock.sendall((json.dumps(hdr) + _NL).encode("utf-8"))
+    if payload is not None:
+        sock.sendall(payload)
+
+
+def main():
+    rate = 16000
+    pcm = b"".join(
+        struct.pack("<h", int(8000 * math.sin(2 * math.pi * 220 * i / rate)))
+        for i in range(rate)
+    )
+    try:
+        sock = socket.create_connection((HOST, PORT), timeout=10)
+    except OSError:
+        return 1
+    sock.settimeout(30)
+    try:
+        _send(sock, "transcribe", {"language": "de"})
+        _send(
+            sock,
+            "audio-start",
+            {"rate": rate, "width": 2, "channels": 1, "timestamp": 0},
+        )
+        for off in range(0, len(pcm), 4000):
+            _send(
+                sock,
+                "audio-chunk",
+                {"rate": rate, "width": 2, "channels": 1, "timestamp": off},
+                pcm[off : off + 4000],
+            )
+        _send(sock, "audio-stop", {"timestamp": 1000})
+        buf = b""
+        nl = bytes([10])
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            data = sock.recv(65536)
+            if not data:
+                break
+            buf += data
+            while nl in buf:
+                line, buf = buf.split(nl, 1)
+                if not line.strip():
+                    continue
+                try:
+                    evt = json.loads(line.decode("utf-8"))
+                except ValueError:
+                    continue
+                if evt.get("type") == "transcript":
+                    return 0
+        return 1
+    except OSError:
+        return 1
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""
+
+
 def render_whisper_unit(data_dir: str, model: str, language: str, gpu: bool) -> str:
     """Render the voice-whisper `.container` Quadlet (pure). GPU path uses the
     linuxserver faster-whisper:gpu image with the CDI device + SELinux
@@ -302,7 +386,19 @@ def render_whisper_unit(data_dir: str, model: str, language: str, gpu: bool) -> 
             "SecurityLabelDisable=true\n"
             "# linuxserver image keeps its model cache under /config.\n"
             f"Volume={data_dir}/voice/whisper-gpu:/config:Z\n"
+            f"Volume={data_dir}/voice/stt_healthcheck.py:/stt_healthcheck.py:ro,Z\n"
             "AutoUpdate=registry\n"
+            "# STT health probe (#610): a wedged CUDA context leaves the\n"
+            "# container Up while every transcription throws invalid-device, so\n"
+            "# Restart= never fires. Run a real Wyoming transcription; on\n"
+            "# repeated failure kill the container so systemd restarts it fresh\n"
+            "# (re-injecting CDI).\n"
+            "HealthCmd=python3 /stt_healthcheck.py\n"
+            "HealthInterval=3m\n"
+            "HealthTimeout=40s\n"
+            "HealthStartPeriod=5m\n"
+            "HealthRetries=3\n"
+            "HealthOnFailure=kill\n"
             "\n"
             "[Service]\n"
             "Restart=on-failure\n"
@@ -324,7 +420,16 @@ def render_whisper_unit(data_dir: str, model: str, language: str, gpu: bool) -> 
         f"Exec=--model {model} --language {language}"
         " --data-dir /data --uri tcp://0.0.0.0:10300\n"
         f"Volume={data_dir}/voice/whisper:/data:Z\n"
+        f"Volume={data_dir}/voice/stt_healthcheck.py:/stt_healthcheck.py:ro,Z\n"
         "AutoUpdate=registry\n"
+        "# STT health probe (#610): restart whisper when a transcription\n"
+        "# round-trip fails (mirrors the GPU path).\n"
+        "HealthCmd=python3 /stt_healthcheck.py\n"
+        "HealthInterval=3m\n"
+        "HealthTimeout=40s\n"
+        "HealthStartPeriod=5m\n"
+        "HealthRetries=3\n"
+        "HealthOnFailure=kill\n"
         "\n"
         "[Service]\n"
         "Restart=on-failure\n"
@@ -382,6 +487,16 @@ def install_whisper_unit(data_dir: str) -> bool:
     except OSError as e:
         jlog("warn", "voice-unit", "whisper: could not create cache dir", error=str(e))
         return False
+    # Drop the STT health probe next to the cache dir; the Quadlet mounts it
+    # read-only and runs it as HealthCmd (#610). Best-effort — a missing probe
+    # would just leave the container without its self-heal, never block install.
+    probe_path = os.path.join(data_dir, "voice", "stt_healthcheck.py")
+    try:
+        with open(probe_path, "w", encoding="utf-8") as f:
+            f.write(STT_HEALTHCHECK)
+        os.chmod(probe_path, 0o644)
+    except OSError as e:
+        jlog("warn", "voice-unit", "whisper: could not write STT probe", error=str(e))
     jlog(
         "info",
         "voice-unit",
