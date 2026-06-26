@@ -46,6 +46,13 @@ def test_whisper_gpu_unit_has_cdi_device_and_selinux_relax(pd):
     assert "Network=host" in unit
     # GPU image keeps its model cache under /config.
     assert "Volume=/mnt/data/voice/whisper-gpu:/config:Z" in unit
+    # STT health probe + self-heal (#610): a wedged CUDA context keeps the
+    # container Up while every transcription fails, so the only way it heals is
+    # a healthcheck that exercises STT and kills the container on failure.
+    assert "Volume=/mnt/data/voice/stt_healthcheck.py:/stt_healthcheck.py:ro,Z" in unit
+    assert "HealthCmd=python3 /stt_healthcheck.py" in unit
+    assert "HealthOnFailure=kill" in unit
+    assert "HealthRetries=3" in unit
 
 
 def test_whisper_cpu_unit_uses_cpu_image_and_wyoming_port(pd):
@@ -57,6 +64,10 @@ def test_whisper_cpu_unit_uses_cpu_image_and_wyoming_port(pd):
     assert "--uri tcp://0.0.0.0:10300" in unit
     assert "--model base-int8 --language de" in unit
     assert "Volume=/mnt/data/voice/whisper:/data:Z" in unit
+    # The STT self-heal probe applies to the CPU path too (#610).
+    assert "Volume=/mnt/data/voice/stt_healthcheck.py:/stt_healthcheck.py:ro,Z" in unit
+    assert "HealthCmd=python3 /stt_healthcheck.py" in unit
+    assert "HealthOnFailure=kill" in unit
 
 
 def test_install_whisper_unit_picks_gpu_model_default_on_cdi(pd, monkeypatch, tmp_path):
@@ -75,6 +86,10 @@ def test_install_whisper_unit_picks_gpu_model_default_on_cdi(pd, monkeypatch, tm
     # base-int8 default + GPU box ⇒ auto-upgrade to medium-int8.
     assert rendered == {"model": "medium-int8", "gpu": True}
     assert (tmp_path / "voice" / "whisper-gpu").is_dir()
+    # The STT health probe is dropped next to the cache dir (#610).
+    probe = tmp_path / "voice" / "stt_healthcheck.py"
+    assert probe.is_file()
+    assert "transcript" in probe.read_text()
 
 
 def test_install_whisper_unit_keeps_explicit_model_on_cpu(pd, monkeypatch, tmp_path):
@@ -96,6 +111,14 @@ def test_install_whisper_unit_keeps_explicit_model_on_cpu(pd, monkeypatch, tmp_p
     assert pd.install_whisper_unit(str(tmp_path)) is True
     assert rendered == {"model": "small-int8", "gpu": False}
     assert (tmp_path / "voice" / "whisper").is_dir()
+
+
+def test_stt_healthcheck_probe_is_valid_python(pd):
+    # The probe is shipped as a string and executed inside the whisper
+    # container; a syntax error would silently disable the self-heal (#610).
+    compile(pd.STT_HEALTHCHECK, "stt_healthcheck.py", "exec")
+    assert "transcript" in pd.STT_HEALTHCHECK
+    assert "10300" in pd.STT_HEALTHCHECK
 
 
 # -- Kokoro-Martin TTS + bridge ----------------------------------------------
