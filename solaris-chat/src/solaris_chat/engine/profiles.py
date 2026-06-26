@@ -141,6 +141,7 @@ def build_engine_clients(
                 _current_uid,
                 room_getter=_current_room,
                 room_resolver=registry.media_player_for_room,
+                area_fallback=registry.media_player_fallbacks,
             )
     if notes_dir:
         household_tools += build_notes_tools(notes_dir, _current_uid)
@@ -172,6 +173,7 @@ def build_engine_clients(
             hass_token=hass_token,
             room_getter=_current_room,
             room_resolver=registry.media_player_for_room,
+            area_fallback=registry.media_player_fallbacks,
             notes_dir=notes_dir,
         )
     # First-run/owner self-enrolment (#396): with zero enrolments an unknown

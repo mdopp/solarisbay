@@ -20,6 +20,7 @@ from solaris_chat.engine.tools.radio import (
     _write_default_device,
     _write_favorite,
     build_radio_tools,
+    is_cast_500,
 )
 
 
@@ -320,6 +321,105 @@ def test_default_device_note_roundtrips(tmp_path):
     assert _read_default_device(notes, "mdopp") == "media_player.kuche"
     fav = Path(notes) / "users" / "mdopp" / "preferences" / "default-device.md"
     assert fav.is_file()
+
+
+# -- group-cast fallback (#638): a 500 on a Cast group → a same-area device ----
+
+
+def test_is_cast_500_only_5xx():
+    # 5xx (group rejects URL) → fallback; ok / 4xx / transport error → not.
+    assert is_cast_500({"ok": False, "error": "HA 500: Internal Server Error"})
+    assert is_cast_500({"ok": False, "error": "HA 503: down"})
+    assert not is_cast_500({"ok": True, "state": "playing"})
+    assert not is_cast_500({"ok": False, "error": "HA 404: not found"})
+    assert not is_cast_500({"ok": False, "error": "invalid entity_id"})
+
+
+def _stub_seq(monkeypatch, results):
+    """call_service_scoped returning a queued sequence, recording (entity_id,…)."""
+    monkeypatch.setattr(radio_mod, "RadioBrowserClient", lambda *a, **k: None)
+    calls: list[tuple] = []
+    seq = list(results)
+
+    async def _fake_cast(hass_url, hass_token, entity_id, service, data):
+        calls.append((entity_id, data))
+        return seq[min(len(calls) - 1, len(seq) - 1)]
+
+    monkeypatch.setattr(radio_mod, "call_service_scoped", _fake_cast)
+    return calls
+
+
+def _tool_with_fallback(notes_dir, uid, fallbacks):
+    async def _area_fallback(entity_id):
+        return list(fallbacks)
+
+    (play,) = build_radio_tools(
+        notes_dir,
+        "http://ha",
+        "tok",
+        lambda: uid,
+        area_fallback=_area_fallback,
+    )
+    return play
+
+
+async def test_radio_group_500_falls_back_to_same_area_device(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _write_favorite(notes, "mdopp", "WDR 2", "http://stream/wdr2")
+    # The Cast group 500s; the same-area Voice PE plays.
+    calls = _stub_seq(
+        monkeypatch,
+        [
+            {"ok": False, "error": "HA 500: group reject"},
+            {"ok": True, "state": "playing"},
+        ],
+    )
+    play = _tool_with_fallback(
+        notes, "mdopp", ["media_player.home_assistant_voice_0907c9_media_player"]
+    )
+    out = json.loads(await play.handler({"entity_id": "media_player.wohnzimmer"}))
+    assert out["ok"] is True and out["played"] is True
+    # Reports the device that ACTUALLY played, not the failed group.
+    assert out["entity_id"] == "media_player.home_assistant_voice_0907c9_media_player"
+    assert calls[0][0] == "media_player.wohnzimmer"
+    assert calls[1][0] == "media_player.home_assistant_voice_0907c9_media_player"
+
+
+async def test_radio_group_500_no_candidate_returns_original(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _write_favorite(notes, "mdopp", "WDR 2", "http://stream/wdr2")
+    calls = _stub_seq(monkeypatch, [{"ok": False, "error": "HA 500: group reject"}])
+    play = _tool_with_fallback(notes, "mdopp", [])  # no same-area device
+    out = json.loads(await play.handler({"entity_id": "media_player.wohnzimmer"}))
+    # Honest failure — no fake success, no extra cast.
+    assert out["ok"] is False and out["reason"] == "play_failed"
+    assert out["detail"] == "HA 500: group reject"
+    assert len(calls) == 1
+
+
+async def test_radio_non_500_failure_no_fallback(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _write_favorite(notes, "mdopp", "WDR 2", "http://stream/wdr2")
+    # A 404 (not a 500-class) must NOT trigger the same-area fallback.
+    calls = _stub_seq(monkeypatch, [{"ok": False, "error": "HA 404: not found"}])
+    play = _tool_with_fallback(
+        notes, "mdopp", ["media_player.home_assistant_voice_0907c9_media_player"]
+    )
+    out = json.loads(await play.handler({"entity_id": "media_player.wohnzimmer"}))
+    assert out["ok"] is False and out["reason"] == "play_failed"
+    assert len(calls) == 1  # only the original target, no fallback cast
+
+
+async def test_radio_single_device_success_no_fallback(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _write_favorite(notes, "mdopp", "WDR 2", "http://stream/wdr2")
+    calls = _stub_seq(monkeypatch, [{"ok": True, "state": "playing"}])
+    play = _tool_with_fallback(
+        notes, "mdopp", ["media_player.home_assistant_voice_0907c9_media_player"]
+    )
+    out = json.loads(await play.handler({"entity_id": "media_player.kuche"}))
+    assert out["ok"] is True and out["entity_id"] == "media_player.kuche"
+    assert len(calls) == 1  # the Küche single device plays directly, no fallback
 
 
 def test_write_favorite_sanitizes_newline_injection(tmp_path):

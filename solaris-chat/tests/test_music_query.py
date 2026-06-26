@@ -1102,6 +1102,140 @@ async def test_play_music_need_device_when_no_entity(tmp_path, monkeypatch):
     assert calls == []
 
 
+# -- group-cast fallback (#638): a 500 on a Cast group → a same-area device ----
+
+
+def _play_tool_fallback(db, uid, client, fallbacks):
+    async def _area_fallback(entity_id):
+        return list(fallbacks)
+
+    tools = build_music_query_tools(
+        db,
+        lambda: uid,
+        client,
+        hass_url="http://ha",
+        hass_token="tok",
+        area_fallback=_area_fallback,
+    )
+    (play,) = [t for t in tools if t.name == "play_music"]
+    return play
+
+
+def _seq_play_by_entity(monkeypatch, fn):
+    """call_service_scoped delegating to fn(entity_id, url), recording calls."""
+    calls: list[tuple] = []
+
+    async def _fake(hass_url, hass_token, entity_id, service, data):
+        calls.append((entity_id, data["media_content_id"]))
+        return fn(entity_id, data["media_content_id"])
+
+    monkeypatch.setattr(music_query_mod, "call_service_scoped", _fake)
+    monkeypatch.setattr(music_query_mod.asyncio, "sleep", _noop_sleep)
+    return calls
+
+
+async def test_play_music_group_500_falls_back_to_voice_pe(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    voice = "media_player.home_assistant_voice_0907c9_media_player"
+
+    # The Cast group 500s on every form; the same-area Voice PE plays.
+    def _fake(entity_id, _url):
+        if entity_id == "media_player.wohnzimmer":
+            return {"ok": False, "error": "HA 500: group reject"}
+        return {"ok": True, "state": "playing"}
+
+    calls = _seq_play_by_entity(monkeypatch, _fake)
+    play = _play_tool_fallback(
+        db, "mdopp", _FakeJellyfin(), [voice, "media_player.wohnzimmer_sonos"]
+    )
+    out = json.loads(
+        await play.handler(
+            {"title": "Bohemian Rhapsody", "entity_id": "media_player.wohnzimmer"}
+        )
+    )
+    assert out["ok"] is True and out["played"] is True
+    # Reports the Voice PE that actually played (preferred candidate), not the group.
+    assert out["entity_id"] == voice
+    assert calls[0][0] == "media_player.wohnzimmer"  # the group tried first
+    assert any(c[0] == voice for c in calls)
+
+
+async def test_play_music_group_500_no_candidate_returns_play_failed(
+    tmp_path, monkeypatch
+):
+    db = _db(tmp_path)
+    calls = _seq_play(monkeypatch, [{"ok": False, "error": "HA 500: group reject"}])
+    play = _play_tool_fallback(db, "mdopp", _FakeJellyfin(), [])  # no same-area device
+    out = json.loads(
+        await play.handler(
+            {"title": "Bohemian Rhapsody", "entity_id": "media_player.wohnzimmer"}
+        )
+    )
+    # Honest failure — no fake success.
+    assert out["ok"] is False and out["reason"] == "play_failed"
+    assert out["detail"] == "HA 500: group reject"
+    # Only the original target's static+universal retries, no fallback cast.
+    assert all(c[2] == "media_player.wohnzimmer" for c in calls)
+
+
+async def test_play_music_not_found_does_not_trigger_fallback(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # A track-not-found never reaches a cast → the fallback can't fire (no 500).
+    calls = _seq_play(monkeypatch, [{"ok": True, "state": "playing"}])
+    fallback_calls: list[str] = []
+
+    async def _area_fallback(entity_id):
+        fallback_calls.append(entity_id)
+        return ["media_player.home_assistant_voice_0907c9_media_player"]
+
+    tools = build_music_query_tools(
+        db,
+        lambda: "mdopp",
+        _FakeJellyfin(),
+        hass_url="http://ha",
+        hass_token="tok",
+        area_fallback=_area_fallback,
+    )
+    (play,) = [t for t in tools if t.name == "play_music"]
+    out = json.loads(
+        await play.handler(
+            {"title": "Xqzptv Nonsense", "entity_id": "media_player.wohnzimmer"}
+        )
+    )
+    assert out["ok"] is False and out["reason"] == "not_found"
+    assert calls == []  # no cast at all
+    assert fallback_calls == []  # fallback never consulted
+
+
+async def test_play_music_single_device_success_no_fallback(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    calls = _seq_play(monkeypatch, [{"ok": True, "state": "playing"}])
+    fallback_calls: list[str] = []
+
+    async def _area_fallback(entity_id):
+        fallback_calls.append(entity_id)
+        return ["media_player.home_assistant_voice_0907c9_media_player"]
+
+    tools = build_music_query_tools(
+        db,
+        lambda: "mdopp",
+        _FakeJellyfin(),
+        hass_url="http://ha",
+        hass_token="tok",
+        area_fallback=_area_fallback,
+    )
+    (play,) = [t for t in tools if t.name == "play_music"]
+    out = json.loads(
+        await play.handler(
+            {"title": "Bohemian Rhapsody", "entity_id": "media_player.kuche"}
+        )
+    )
+    # Küche plays directly on the first cast → no fallback consulted.
+    assert out["ok"] is True and out["entity_id"] == "media_player.kuche"
+    assert fallback_calls == []
+    assert len(calls) == 1
+
+
 async def test_play_music_description_states_filler_rule(tmp_path):
     db = _db(tmp_path)
     desc = _play_tool(db, "mdopp", _FakeJellyfin()).description

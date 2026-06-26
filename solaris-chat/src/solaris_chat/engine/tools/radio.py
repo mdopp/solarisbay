@@ -18,6 +18,7 @@ reachability.
 from __future__ import annotations
 
 import json
+import re
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Protocol
@@ -30,6 +31,49 @@ from solaris_chat.engine.tools.ha import call_service_scoped
 
 _MIRROR = "https://de1.api.radio-browser.info"
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
+
+# A Cast GROUP rejects URL play_media with an HA 500 (#638); when a play on such
+# a target fails we retry on a single device in the same area, but only on a
+# 500-class server error — not on a normal not-found / need_device. Cap the
+# fallback attempts so we never start an audible multi-cast storm.
+_FALLBACK_MAX = 2
+
+
+def is_cast_500(result: dict[str, Any]) -> bool:
+    """Whether a play_media result is a 500-class HA failure (#638).
+
+    call_service_scoped surfaces an HA error as {ok:false, error:'HA <status>:
+    …'}; a 5xx means the server rejected the cast (a Cast group can't play a
+    URL), which is what the area fallback retries — a 4xx (bad request) or a
+    transport error is NOT retried on another speaker."""
+    if result.get("ok"):
+        return False
+    error = str(result.get("error") or "")
+    m = re.match(r"HA (\d{3})\b", error)
+    return m is not None and 500 <= int(m.group(1)) < 600
+
+
+async def cast_with_fallback(cast, entity_id, area_fallback):
+    """Cast on `entity_id`; on a 500-class failure retry once per same-area device.
+
+    `cast(target) -> result` performs the actual play_media (with its own bounded
+    flakiness retry); `area_fallback(entity_id) -> list[str]` yields the other
+    media_players in the same area, best candidate first (the room's Voice PE /
+    esphome single speaker preferred). Returns (result, used_entity_id): on a
+    fallback success `used_entity_id` is the device that actually played; when no
+    candidate is found or none succeeds, the ORIGINAL failure is returned honestly
+    (no fake success). At most `_FALLBACK_MAX` candidates are tried — one cast
+    each, no unbounded loop / multi-cast storm."""
+    result = await cast(entity_id)
+    if result.get("ok") or not is_cast_500(result):
+        return result, entity_id
+    original = result
+    candidates = (await area_fallback(entity_id)) if area_fallback is not None else []
+    for target in candidates[:_FALLBACK_MAX]:
+        alt = await cast(target)
+        if alt.get("ok"):
+            return alt, target
+    return original, entity_id
 
 
 def _user_agent() -> str:
@@ -176,6 +220,7 @@ def build_radio_tools(
     *,
     room_getter=None,
     room_resolver=None,
+    area_fallback=None,
 ) -> list[Tool]:
     resolver: StationResolver = RadioBrowserClient()
 
@@ -217,13 +262,18 @@ def build_radio_tools(
                 return json.dumps({"ok": False, "reason": "no_favorite"})
             name, url = fav["name"], fav["stream_url"]
 
-        result = await call_service_scoped(
-            hass_url,
-            hass_token,
-            entity_id,
-            "media_player.play_media",
-            {"media_content_type": "music", "media_content_id": url},
-        )
+        async def _cast(target: str) -> dict[str, Any]:
+            return await call_service_scoped(
+                hass_url,
+                hass_token,
+                target,
+                "media_player.play_media",
+                {"media_content_type": "music", "media_content_id": url},
+            )
+
+        # A Cast GROUP 500s on URL play_media (#638); on that, retry once on a
+        # single device in the same area (the room's Voice PE preferred).
+        result, used = await cast_with_fallback(_cast, entity_id, area_fallback)
         if not result.get("ok"):
             return json.dumps(
                 {
@@ -238,7 +288,7 @@ def build_radio_tools(
             {
                 "ok": True,
                 "station": name,
-                "entity_id": entity_id,
+                "entity_id": used,
                 "played": True,
             },
             ensure_ascii=False,
