@@ -79,11 +79,19 @@ def _authorized(request: web.Request, api_key: str) -> bool:
 
 # HA's `ollama` conversation integration derives `continue_conversation` purely
 # from whether the assistant's reply text ends in a question mark (chat_log.py
-# continue_conversation ← util.py). So when THIS turn offered a follow-up via
-# offer_choices (the `quick_replies` event), the spoken text must end in `?` for
-# the Voice PE to re-open the mic without a re-wake (#566). A normal statement
-# answer must NOT, so the loop stops.
+# continue_conversation ← util.py). So when THIS turn has a QUESTION PENDING the
+# spoken text must end in `?` for the Voice PE to re-open the mic without a
+# re-wake (#566, #627). A question is pending when offer_choices fired (the
+# `quick_replies` event) OR the reply text already CONTAINS a `?` somewhere — the
+# latter catches the common case where the model asks then APPENDS statements
+# (so the `?` isn't last) and the confirm-gate / play need_device|no_favorite
+# replies, which all end up phrasing a question (#627). A plain statement with no
+# `?` and no chips is NOT a question, so the loop stops.
 _QUESTION_MARKS = ("?", "？", ";")
+
+
+def _question_pending(text: str, offered_choices: bool) -> bool:
+    return offered_choices or any(q in text for q in _QUESTION_MARKS)
 
 
 def _as_question(text: str) -> str:
@@ -252,7 +260,7 @@ def add_facade_routes(
                 return web.json_response({"error": "engine unavailable"}, status=502)
             persist_trace()
             answer = _strip_wikilinks(answer)
-            if offered_choices and answer:
+            if answer and _question_pending(answer, offered_choices):
                 answer = _as_question(answer)
             return web.Response(
                 body=_chunk(model, answer, done=True),
@@ -287,12 +295,12 @@ def add_facade_routes(
             if tail:
                 streamed += tail
                 await resp.write(_chunk(model, tail, done=False))
-            # A follow-up turn (offer_choices) must end in `?` so HA keeps the
-            # mic open for the answer without a re-wake (#566). Deltas already
+            # A turn with a question pending must end in `?` so HA keeps the mic
+            # open for the answer without a re-wake (#566, #627). Deltas already
             # went out verbatim — append the missing `?` as a trailing chunk.
             if (
-                offered_choices
-                and streamed.strip()
+                streamed.strip()
+                and _question_pending(streamed, offered_choices)
                 and not streamed.rstrip().endswith(_QUESTION_MARKS)
             ):
                 await resp.write(_chunk(model, "?", done=False))

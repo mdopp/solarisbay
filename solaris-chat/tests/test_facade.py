@@ -398,6 +398,120 @@ async def test_statement_turn_does_not_get_forced_question_mark(
     assert not body["message"]["content"].rstrip().endswith("?")
 
 
+async def test_mid_text_question_then_statement_gets_trailing_question_mark(
+    aiohttp_client, db, soul
+):
+    # The model asks a question but APPENDS statements after it, so the `?` is
+    # mid-reply and the text doesn't end in `?` (#627). A question IS pending —
+    # force the trailing `?` so HA keeps the mic open for the answer.
+    app, _ = _app(
+        db,
+        soul,
+        [
+            ChatResult(
+                content="Welche Farbe möchtest du? Ich habe Rot und Blau parat.",
+                prompt_tokens=5,
+                completion_tokens=3,
+            )
+        ],
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Mach Licht an"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["message"]["content"].rstrip().endswith("?")
+
+
+async def test_mid_text_question_then_statement_stream(aiohttp_client, db, soul):
+    app, _ = _app(
+        db,
+        soul,
+        [
+            ChatResult(
+                content="Soll ich das Garagentor öffnen? Es ist gerade geschlossen.",
+                prompt_tokens=5,
+                completion_tokens=3,
+            )
+        ],
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "messages": [{"role": "user", "content": "Garagentor"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    lines = [json.loads(line) for line in (await resp.text()).strip().splitlines()]
+    content = "".join(line["message"]["content"] for line in lines)
+    assert content.rstrip().endswith("?")
+
+
+async def test_quick_replies_without_trailing_question_still_continues(
+    aiohttp_client, db, soul
+):
+    # offer_choices fired but the spoken text neither ends nor contains a `?` —
+    # a question is still pending (the chips are the answer options), so force
+    # the trailing `?` to keep the mic open (#566).
+    household, _ = _engine(db, soul, _offer_then_say("Wähle eine Option"))
+    household._profile.toolbox = Toolbox(_offer_tool())
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    app = build_app(
+        hermes=household,
+        hermes_deep=deep,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Optionen"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["message"]["content"].rstrip().endswith("?")
+
+
+async def test_bare_confirmation_does_not_continue(aiohttp_client, db, soul):
+    # A bare confirmation with no `?` and no chips is not a question — the mic
+    # must close (continue_conversation=False).
+    app, _ = _app(
+        db,
+        soul,
+        [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)],
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Mach das"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["message"]["content"] == "Klar."
+    assert not body["message"]["content"].rstrip().endswith("?")
+
+
 async def test_chat_unknown_model_404(aiohttp_client, db, soul):
     app, _ = _app(db, soul, [])
     client = await aiohttp_client(app)
