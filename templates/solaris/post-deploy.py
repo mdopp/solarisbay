@@ -660,6 +660,72 @@ def adopt_ha_long_lived_token(data_dir: str) -> str | None:
     return token
 
 
+def _patched_cast_url_yaml(src: str, cast_url: str) -> tuple[str, int]:
+    """Stamp the JELLYFIN_CAST_URL env value in the pod manifest text (pure).
+
+    Returns (new_text, n_replacements). Same `- name: …\\n value: …` patch
+    shape adopt_ha_long_lived_token uses for HASS_TOKEN."""
+    return re.subn(
+        r'(- name: JELLYFIN_CAST_URL\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
+        lambda m: m.group(1) + '"' + cast_url + '"',
+        src,
+    )
+
+
+def stamp_jellyfin_cast_url(data_dir: str) -> str | None:
+    """Derive JELLYFIN_CAST_URL from the box LAN IP when it's left empty (#607).
+
+    Casting a Jellyfin track to a Chromecast needs a base the device can reach
+    on the LAN, not the engine's loopback JELLYFIN_URL. ServiceBay exposes the
+    box LAN IP to the post-deploy as the LAN_IP env var, so an empty
+    JELLYFIN_CAST_URL is stamped to `http://<lanIp>:8096` in the deployed
+    solaris.yml (the restart at the end of main() picks it up) — durable on
+    reinstall, no hardcoded IP, no operator knob. Already-set value is left as
+    is; an absent LAN_IP leaves it empty (the engine config falls back to
+    JELLYFIN_URL). Returns the stamped URL, or None when nothing was changed."""
+    if env("JELLYFIN_CAST_URL").strip():
+        return None
+    lan_ip = env("LAN_IP").strip()
+    if not lan_ip:
+        jlog(
+            "info",
+            "jellyfin",
+            "no LAN_IP — JELLYFIN_CAST_URL stays empty (engine falls back to "
+            "JELLYFIN_URL)",
+        )
+        return None
+    cast_url = f"http://{lan_ip}:8096"
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog("warn", "jellyfin", "solaris.yml not found at expected path", path=pod_yml)
+        return None
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "jellyfin", "could not read solaris.yml", error=str(e))
+        return None
+    new, n = _patched_cast_url_yaml(src, cast_url)
+    if n == 0:
+        jlog(
+            "warn",
+            "jellyfin",
+            "JELLYFIN_CAST_URL env entry not found in solaris.yml — not stamped",
+            path=pod_yml,
+        )
+        return None
+    if new == src:
+        return cast_url
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "jellyfin", "could not write patched solaris.yml", error=str(e))
+        return None
+    jlog("info", "jellyfin", "stamped JELLYFIN_CAST_URL from LAN_IP", cast_url=cast_url)
+    return cast_url
+
+
 def _ha_get(path: str, token: str, timeout: float = 10.0) -> tuple[int, object]:
     """GET against HA's API with the long-lived token. 0 on connection failure."""
     req = urllib.request.Request(
@@ -1584,6 +1650,9 @@ def main() -> int:
 
     # ── 2. Home Assistant ────────────────────────────────────────────────────
     ship_alarm_sound(data_dir)
+    # Derive the LAN-reachable cast base from the box LAN IP when left empty
+    # (#607) — patches the deployed solaris.yml, the restart below picks it up.
+    stamp_jellyfin_cast_url(data_dir)
     ha_token = adopt_ha_long_lived_token(data_dir)
     if ha_token:
         ensure_ha_jellyfin_integration(
