@@ -20,6 +20,7 @@ hardware.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -81,6 +82,51 @@ def _chunk(model: str, content: str, done: bool, done_reason: str = "") -> bytes
     if done:
         body["done_reason"] = done_reason or "stop"
     return (json.dumps(body, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+# The SOUL invites the model to wrap entities inline as `[[X]]` / `[[X|label]]`
+# cross-links; the browser/SPA path renders those as tap-through links, but the
+# voice/facade path hands the reply text straight to HA's TTS, which would speak
+# the brackets ("klammer klammer Anna", #616). Strip the markup to its plain
+# spoken form here — voice path only; the browser path (client.py / server.py)
+# keeps the `[[ ]]`.
+_WIKILINK = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+
+
+def _strip_wikilinks(text: str) -> str:
+    """`[[X]]` → `X`, `[[X|label]]` → `label`; non-link text unchanged."""
+    return _WIKILINK.sub(lambda m: (m.group(2) or m.group(1)).strip(), text)
+
+
+class WikilinkStripper:
+    """Streaming-safe `_strip_wikilinks`: feed deltas, get plain-text deltas.
+
+    Holds back any trailing fragment that could be the start of an unclosed
+    `[[…` so a wikilink split across deltas is still normalized whole; `flush`
+    releases whatever remains at turn end.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def feed(self, delta: str) -> str:
+        self._buf += delta
+        # Hold back from the last unclosed `[[` (or a lone trailing `[` that
+        # could still become one): everything before it can't be mid-wikilink.
+        safe_upto = len(self._buf)
+        start = self._buf.rfind("[[")
+        if start != -1 and "]]" not in self._buf[start:]:
+            safe_upto = start
+        elif self._buf.endswith("[") and not self._buf.endswith("]]"):
+            safe_upto = len(self._buf) - 1
+        out = _strip_wikilinks(self._buf[:safe_upto])
+        self._buf = self._buf[safe_upto:]
+        return out
+
+    def flush(self) -> str:
+        out = _strip_wikilinks(self._buf)
+        self._buf = ""
+        return out
 
 
 def add_facade_routes(
@@ -178,6 +224,7 @@ def add_facade_routes(
                 persist_trace()
                 return web.json_response({"error": "engine unavailable"}, status=502)
             persist_trace()
+            answer = _strip_wikilinks(answer)
             if offered_choices and answer:
                 answer = _as_question(answer)
             return web.Response(
@@ -189,13 +236,16 @@ def add_facade_routes(
         await resp.prepare(request)
         streamed = ""
         offered_choices = False
+        stripper = WikilinkStripper()
         try:
             async for event in turns():
                 if event["type"] == "assistant.delta":
                     delta = str(event["data"].get("delta") or "")
                     if delta:
-                        streamed += delta
-                        await resp.write(_chunk(model, delta, done=False))
+                        spoken = stripper.feed(delta)
+                        if spoken:
+                            streamed += spoken
+                            await resp.write(_chunk(model, spoken, done=False))
                 elif event["type"] == "quick_replies":
                     offered_choices = True
                 elif event["type"] == "run.completed":
@@ -203,8 +253,13 @@ def add_facade_routes(
                     # A tool turn can finish with no streamed deltas — surface
                     # the final answer as one late chunk (the #258 pattern).
                     if final and not streamed.strip():
+                        final = _strip_wikilinks(final)
                         streamed = final
                         await resp.write(_chunk(model, final, done=False))
+            tail = stripper.flush()
+            if tail:
+                streamed += tail
+                await resp.write(_chunk(model, tail, done=False))
             # A follow-up turn (offer_choices) must end in `?` so HA keeps the
             # mic open for the answer without a re-wake (#566). Deltas already
             # went out verbatim — append the missing `?` as a trailing chunk.
