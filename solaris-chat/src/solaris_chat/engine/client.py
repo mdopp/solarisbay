@@ -17,6 +17,7 @@ activity bubble (#347); `_normalize` folds it to a `step` browser event.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import re
@@ -56,6 +57,12 @@ current_room: contextvars.ContextVar[str] = contextvars.ContextVar(
 # Tool-call passes per turn: enough for list->act->confirm chains plus a
 # retry, small enough that a confused model can't spin.
 _MAX_PASSES = 6
+
+# A turn that emits many tool calls (e.g. 'alle Lichter' -> ha_get_state per
+# entity) dispatches them concurrently with this bound, instead of awaiting
+# each in turn. Order is still preserved (results appended in emitted order);
+# the bound keeps a burst from hammering HA/MCP all at once.
+_MAX_PARALLEL_TOOLS = 5
 
 
 class _Unset:
@@ -743,6 +750,14 @@ class EngineClient:
                     "tool_calls": result.tool_calls,
                 }
             )
+            # GATE-CHECK PASS (#624/#570): classify every call FIRST, before any
+            # dispatch, so a sensitive ha_call_service can never slip past the
+            # gate via parallelism. A gated call is held (stash + ja/nein chips +
+            # needs_confirmation result) and NOT run; the rest are dispatched
+            # concurrently below. The gate runs serially here — it is cheap, and
+            # serial gating is what guarantees two sensitive calls don't both
+            # stash or race.
+            dispatch_plan: list[dict[str, Any]] = []
             for tc in result.tool_calls:
                 fn = tc.get("function") or {}
                 name = str(fn.get("name") or "")
@@ -753,49 +768,64 @@ class EngineClient:
                     except ValueError:
                         args = {}
                 tool_dispatched = True
-                yield {"type": "tool.started", "data": {"tool": name}}
-                # Re-pin the turn's resident here, IN the dispatching task:
-                # the SSE heartbeat runs each generator step in its own task,
-                # which inherits the handler context without the turn's
-                # set() — tools would otherwise see the default uid from
-                # pass 2 on (timers/facts written ownerless).
-                if uid:
-                    current_uid.set(uid)
-                # Re-pin the sink too: the heartbeat task may not inherit the
-                # _loop set() (same reason as current_uid above), so a card read
-                # during dispatch would otherwise land nowhere (#475).
-                ha_tools.card_sink.set(ha_cards)
-                choice_tools.choice_sink.set(quick_replies)
-                # Confirmation gate (#570): a sensitive ha_call_service the model
-                # issues without prior confirmation is NOT executed. Hold it,
-                # offer ja/nein chips, and feed the model a needs_confirmation
-                # result so it relays the question instead of a fake "done".
+                held: str | None = None
                 if name == "ha_call_service" and isinstance(args, dict):
                     held = await self._gate_sensitive(
                         args, confirmed, pending_key, quick_replies
                     )
-                    if held is not None:
-                        yield {
-                            "type": "tool.completed",
-                            "data": {"tool": name, "wall_s": 0.0},
-                        }
-                        if persist:
-                            store.append_message(
-                                self._db_path, session_id, "tool", held
-                            )
-                        messages.append(
-                            {"role": "tool", "content": held, "tool_name": name}
-                        )
-                        continue
-                t0 = time.monotonic()
-                output = await self._profile.toolbox.dispatch(name, args)
-                tool_wall_s = time.monotonic() - t0
-                self._recorder.record_tool(
-                    session_id=session_id,
-                    profile=self._profile.name,
-                    tool_name=name,
-                    wall_s=tool_wall_s,
+                dispatch_plan.append({"name": name, "args": args, "held": held})
+
+            # Emit tool.started for every call in emitted order.
+            for item in dispatch_plan:
+                yield {"type": "tool.started", "data": {"tool": item["name"]}}
+
+            # CONCURRENT DISPATCH: run the non-gated calls together under a
+            # bounded semaphore (gather preserves order). Per-tool errors are
+            # isolated by Toolbox.dispatch (it returns an error JSON, never
+            # raises), so one failure can't abort the batch. A gated call is not
+            # dispatched — its needs_confirmation result is already its output.
+            sem = asyncio.Semaphore(_MAX_PARALLEL_TOOLS)
+
+            async def _run(name: str, args: Any) -> tuple[str, float]:
+                # Re-pin the turn's resident + sinks IN this dispatch task: the
+                # SSE heartbeat runs each generator step (and thus gather) in a
+                # fresh task that doesn't inherit the turn's set() — tools would
+                # otherwise see the default uid (timers/facts written ownerless)
+                # and card reads (#475) would land nowhere.
+                if uid:
+                    current_uid.set(uid)
+                ha_tools.card_sink.set(ha_cards)
+                choice_tools.choice_sink.set(quick_replies)
+                async with sem:
+                    t0 = time.monotonic()
+                    out = await self._profile.toolbox.dispatch(name, args)
+                    return out, time.monotonic() - t0
+
+            outputs = await asyncio.gather(
+                *(
+                    _run(item["name"], item["args"])
+                    for item in dispatch_plan
+                    if item["held"] is None
                 )
+            )
+
+            # Stitch results back in EMITTED ORDER (gated -> its held result,
+            # non-gated -> the next gathered output), emitting tool.completed
+            # and appending the tool message per call in order.
+            next_output = iter(outputs)
+            for item in dispatch_plan:
+                name = item["name"]
+                if item["held"] is not None:
+                    output = item["held"]
+                    tool_wall_s = 0.0
+                else:
+                    output, tool_wall_s = next(next_output)
+                    self._recorder.record_tool(
+                        session_id=session_id,
+                        profile=self._profile.name,
+                        tool_name=name,
+                        wall_s=tool_wall_s,
+                    )
                 yield {
                     "type": "tool.completed",
                     "data": {"tool": name, "wall_s": tool_wall_s},
