@@ -1095,6 +1095,119 @@ async def test_identified_resident_runs_as_their_uid_not_guest(
     assert guest_fake.calls == []
 
 
+# -- #616: strip [[ ]] cross-links to plain text on the voice/facade path ----
+
+
+def test_strip_wikilinks_renders_plain_spoken_text():
+    from solaris_chat.engine.facade import _strip_wikilinks
+
+    assert _strip_wikilinks("[[Anna]] kommt") == "Anna kommt"
+    assert _strip_wikilinks("[[Buero-Licht|das Licht]] ist an") == "das Licht ist an"
+    # Several links in one string, mixed plain/labelled.
+    assert (
+        _strip_wikilinks("[[Anna]] und [[bob|der Bob]] sind [[da]]")
+        == "Anna und der Bob sind da"
+    )
+    # No links -> unchanged.
+    assert _strip_wikilinks("Alles erledigt.") == "Alles erledigt."
+
+
+def test_wikilink_stripper_handles_link_split_across_deltas():
+    # A labelled link contains a space, so the streaming source splits it across
+    # two deltas — the stripper must still render the whole link, never leak a
+    # stray `[[`/`[`.
+    from solaris_chat.engine.facade import WikilinkStripper
+
+    s = WikilinkStripper()
+    out = s.feed("[[Buero-Licht|das ") + s.feed("Licht]] an") + s.flush()
+    assert out == "das Licht an"
+    assert "[" not in out
+
+
+async def test_facade_strips_wikilinks_non_stream(aiohttp_client, db, soul):
+    # A non-stream voice turn (the gatekeeper's surface) whose reply wraps an
+    # entity returns plain text for clean TTS — no brackets/pipe.
+    app, _ = _app(
+        db,
+        soul,
+        [
+            ChatResult(
+                content="[[Anna]] hat das [[Buero-Licht|Licht]] an gelassen.",
+                prompt_tokens=5,
+                completion_tokens=3,
+            )
+        ],
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Wer war das"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    content = (await resp.json())["message"]["content"]
+    assert content == "Anna hat das Licht an gelassen."
+    assert "[[" not in content
+
+
+async def test_facade_strips_wikilinks_stream(aiohttp_client, db, soul):
+    app, _ = _app(
+        db,
+        soul,
+        [
+            ChatResult(
+                content="[[Anna]] hat das [[Buero-Licht|Licht]] an gelassen.",
+                prompt_tokens=5,
+                completion_tokens=3,
+            )
+        ],
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "messages": [{"role": "user", "content": "Wer war das"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    lines = [json.loads(line) for line in (await resp.text()).strip().splitlines()]
+    content = "".join(line["message"]["content"] for line in lines)
+    assert content.strip() == "Anna hat das Licht an gelassen."
+    assert "[[" not in content
+
+
+async def test_browser_path_keeps_wikilinks(aiohttp_client, db, soul):
+    # The browser/SPA path (server.py /api/chat/stream -> client.chat_stream) is
+    # a DIFFERENT route from the facade and must keep `[[ ]]` so the SPA renders
+    # tap-through links — the strip is voice-only.
+    household, _ = _engine(
+        db,
+        soul,
+        [ChatResult(content="[[Anna]] kommt.", prompt_tokens=5, completion_tokens=2)],
+    )
+    app = build_app(
+        hermes=household,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/api/chat/stream",
+        json={"input": "Wer kommt"},
+        headers={"Remote-User": "michael"},
+    )
+    body = await resp.text()
+    assert resp.status == 200
+    assert "[[Anna]]" in body
+
+
 async def test_chat_latest_suffix_resolves(aiohttp_client, db, soul):
     app, _ = _app(
         db, soul, [ChatResult(content="ok", prompt_tokens=1, completion_tokens=1)]
