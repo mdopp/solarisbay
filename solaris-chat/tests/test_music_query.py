@@ -567,7 +567,12 @@ def _stub_play(monkeypatch, *, ok=True):
         return {"ok": ok, "state": "playing" if ok else None}
 
     monkeypatch.setattr(music_query_mod, "call_service_scoped", _fake)
+    monkeypatch.setattr(music_query_mod.asyncio, "sleep", _noop_sleep)
     return calls
+
+
+async def _noop_sleep(_seconds):
+    return None
 
 
 async def _call_play(db, uid, args, client, monkeypatch, *, ok=True):
@@ -637,7 +642,7 @@ async def test_play_music_missing_device_no_ha_call(tmp_path, monkeypatch):
     out, calls = await _call_play(
         db, "mdopp", {"title": "Bohemian Rhapsody"}, _FakeJellyfin(), monkeypatch
     )
-    assert out == {"ok": False, "reason": "missing_device"}
+    assert out == {"ok": False, "reason": "need_device"}
     assert calls == []
 
 
@@ -716,9 +721,154 @@ async def test_play_music_play_failed_never_played(tmp_path, monkeypatch):
         monkeypatch,
         ok=False,
     )
-    assert out == {"ok": False, "reason": "play_failed", "title": "Bohemian Rhapsody"}
+    assert out["ok"] is False and out["reason"] == "play_failed"
+    assert out["title"] == "Bohemian Rhapsody"
     assert "played" not in out  # truthful: never claim played on a failed cast
+    # All retries exhausted -> one initial + _PLAY_RETRIES attempts.
+    assert len(calls) == music_query_mod._PLAY_RETRIES + 1
+
+
+# ---- u92 (#604): filler-title parse, random play, error-detail + retry -------
+
+
+def _seq_play(monkeypatch, results):
+    """call_service_scoped returning a queued sequence of dicts, recording calls."""
+    calls: list[tuple] = []
+    seq = list(results)
+
+    async def _fake(hass_url, hass_token, entity_id, service, data):
+        calls.append((hass_url, hass_token, entity_id, service, data))
+        return seq[min(len(calls) - 1, len(seq) - 1)]
+
+    monkeypatch.setattr(music_query_mod, "call_service_scoped", _fake)
+    # No real backoff sleeps in tests.
+    monkeypatch.setattr(music_query_mod.asyncio, "sleep", _noop_sleep)
+    return calls
+
+
+async def test_play_music_filler_title_strips_to_artist(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # The model stuffed "ein Song von Queen" into title (no artist). It must be
+    # parsed as artist=Queen, title empty -> a REAL Queen track, never the filler.
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"title": "ein Song von Queen", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+    )
+    assert out["ok"] is True and out["played"] is True
+    assert out["title"] == "Bohemian Rhapsody"  # never the filler phrase
+    assert calls[0][4]["media_content_id"].endswith("/aud-boh/universal?api_key=tok")
+
+
+async def test_play_music_filler_musik_von(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"title": "Musik von Queen", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+    )
+    assert out["ok"] is True
+    assert out["title"] == "Bohemian Rhapsody"
+
+
+async def test_play_music_random_when_empty(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # Both empty -> a random castable track (one with an audio id) plays.
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+    )
+    assert out["ok"] is True and out["played"] is True
+    assert out["title"]  # a real title, reported
     assert len(calls) == 1
+    assert "/universal?api_key=tok" in calls[0][4]["media_content_id"]
+
+
+async def test_play_music_random_scoped_no_private_leak(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # A household caller's random pick must NEVER be a cdopp-private track.
+    private_titles = {"Pure Vernunft", "Secret Queen Track"}
+    for _ in range(40):  # random.choice -> sample repeatedly
+        out, _ = await _call_play(
+            db,
+            "household",
+            {"entity_id": "media_player.kuche"},
+            _FakeJellyfin(),
+            monkeypatch,
+        )
+        assert out["ok"] is True
+        assert out["title"] not in private_titles
+
+
+async def test_play_music_artist_fallback_on_unresolved_title(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # A title that does NOT resolve but an artist is present -> fall back to the
+    # artist's first castable track (never echo the unresolved title).
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {
+            "title": "Xqzptv Nonsense",
+            "artist": "Queen",
+            "entity_id": "media_player.kuche",
+        },
+        _FakeJellyfin(),
+        monkeypatch,
+    )
+    assert out["ok"] is True
+    assert out["title"] == "Bohemian Rhapsody"  # not the unresolved title
+
+
+async def test_play_music_play_failed_surfaces_detail(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    calls = _seq_play(monkeypatch, [{"ok": False, "error": "HA 500: boom"}])
+    out = json.loads(
+        await _play_tool(db, "mdopp", _FakeJellyfin()).handler(
+            {"title": "Bohemian Rhapsody", "entity_id": "media_player.kuche"}
+        )
+    )
+    assert out["ok"] is False and out["reason"] == "play_failed"
+    assert out["detail"] == "HA 500: boom"  # the HA error is surfaced, not swallowed
+    assert len(calls) == music_query_mod._PLAY_RETRIES + 1  # retried
+
+
+async def test_play_music_retry_then_success(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # Fail once, then succeed -> ok:true after the retry (Cast flakiness #573).
+    calls = _seq_play(
+        monkeypatch,
+        [{"ok": False, "error": "HA 500: flaky"}, {"ok": True, "state": "playing"}],
+    )
+    out = json.loads(
+        await _play_tool(db, "mdopp", _FakeJellyfin()).handler(
+            {"title": "Bohemian Rhapsody", "entity_id": "media_player.kuche"}
+        )
+    )
+    assert out["ok"] is True and out["played"] is True
+    assert len(calls) == 2  # one fail + one retry that succeeded
+
+
+async def test_play_music_need_device_when_no_entity(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    out, calls = await _call_play(
+        db, "mdopp", {"artist": "Queen"}, _FakeJellyfin(), monkeypatch
+    )
+    assert out == {"ok": False, "reason": "need_device"}
+    assert calls == []
+
+
+async def test_play_music_description_states_filler_rule(tmp_path):
+    db = _db(tmp_path)
+    desc = _play_tool(db, "mdopp", _FakeJellyfin()).description
+    assert "SONGTITEL ALLEINE" in desc
+    assert "Zufallssong" in desc
 
 
 async def test_play_music_description_steers_music_not_podcast(tmp_path):

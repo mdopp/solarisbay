@@ -26,7 +26,10 @@ shared library — never another resident's private one).
 
 from __future__ import annotations
 
+import asyncio
 import json
+import random
+import re
 from typing import Any, Protocol
 
 from solaris_chat.engine.fuzzy import (
@@ -49,6 +52,21 @@ class LyricsClient(Protocol):
 
 _SONG_CAP = 50
 _ARTIST_CAP = 50
+
+# Cast play_media is intermittently flaky (#573 — structurally identical devices,
+# one casts, the other returns play_failed), so retry a failing play a bounded
+# number of times with a short backoff before surfacing the HA error.
+_PLAY_RETRIES = 2
+_PLAY_BACKOFF_S = 0.5
+
+# The model stuffs filler ("ein Song von …", "Musik von …") into `title` instead
+# of `artist` (#604). A title matching this is not a real title: capture the
+# trailing name as the artist and clear the title.
+_FILLER_TITLE_RE = re.compile(
+    r"^(?:spiel(?:e)?\s+)?(?:mir\s+)?(?:ein(?:e|en)?\s+)?"
+    r"(?:song|lied|musik|stück|stueck|etwas)\s+von\s+(?P<artist>.+)$",
+    re.IGNORECASE,
+)
 
 # Fuzzy band-resolve weights/threshold (only reached when NO exact match exists).
 # The scorer is shared with notes search; see `engine/fuzzy.py` for the blend.
@@ -406,32 +424,91 @@ def build_music_query_tools(
                 return row["canonical_name"], audio_id
         return None
 
+    def _random_castable(conn, caller: str) -> tuple[str, str] | None:
+        # A random castable song from the caller's scope (resident_uid IN (caller,
+        # household)) — never another resident's private track. One scoped query,
+        # one pick (no retry loop): pick over the rows that already carry a
+        # jellyfin audio resource, so the chosen song is always castable.
+        rows = conn.execute(
+            "SELECT e.id, e.canonical_name FROM entities e"
+            " JOIN facts f ON f.subject_entity_id = e.id AND f.predicate = 'resource'"
+            " WHERE e.type = 'song' AND e.resident_uid IN (?, ?)"
+            " AND f.value LIKE 'jellyfin://audio/%'",
+            (caller, projection.SHARED_UID),
+        ).fetchall()
+        if not rows:
+            return None
+        pick = random.choice(rows)
+        audio_id = _song_audio_id(conn, pick["id"], caller)
+        if not audio_id:
+            return None
+        return pick["canonical_name"], audio_id
+
+    async def _cast(entity_id: str, url: str) -> dict[str, Any]:
+        # Cast play_media is intermittently flaky (#573); retry a bounded number
+        # of times with a short backoff and surface the last HA error on failure.
+        result: dict[str, Any] = {}
+        for attempt in range(_PLAY_RETRIES + 1):
+            result = await call_service_scoped(
+                hass_url,
+                hass_token,
+                entity_id,
+                "media_player.play_media",
+                {"media_content_type": "music", "media_content_id": url},
+            )
+            if result.get("ok"):
+                return result
+            if attempt < _PLAY_RETRIES:
+                await asyncio.sleep(_PLAY_BACKOFF_S)
+        return result
+
     async def play_music(args: dict[str, Any]) -> str:
         title = str(args.get("title") or "").strip()
         artist = str(args.get("artist") or "").strip()
         entity_id = str(args.get("entity_id") or "").strip()
+        # Strip a filler-phrase title ("ein Song von Queen") the model wrongly put
+        # in `title`: the trailing name is the artist, the title is empty.
+        if title and not artist:
+            m = _FILLER_TITLE_RE.match(title)
+            if m:
+                artist = m.group("artist").strip()
+                title = ""
         if not entity_id:
-            return json.dumps({"ok": False, "reason": "missing_device"})
+            return json.dumps({"ok": False, "reason": "need_device"})
         caller = _caller()
         conn = projection.open_conn(db_path)
         try:
             if title:
                 song_id = _resolve_song_id(conn, title, artist, caller)
-                if song_id is None:
+                if song_id is not None:
+                    song = projection.entity_row(conn, song_id)
+                    clean = song["canonical_name"]
+                    audio_id = _song_audio_id(conn, song_id, caller)
+                elif artist:
+                    # An unresolved title with an artist falls back to that artist's
+                    # first castable track — never echo the unresolved title.
+                    hit = _band_first_castable(conn, artist, caller)
+                    if hit is None:
+                        return json.dumps(
+                            {"ok": False, "reason": "not_found", "query": title},
+                            ensure_ascii=False,
+                        )
+                    clean, audio_id = hit
+                else:
                     return json.dumps(
                         {"ok": False, "reason": "not_found", "query": title},
                         ensure_ascii=False,
                     )
-                song = projection.entity_row(conn, song_id)
-                clean = song["canonical_name"]
-                audio_id = _song_audio_id(conn, song_id, caller)
             elif artist:
                 hit = _band_first_castable(conn, artist, caller)
                 if hit is None:
                     return json.dumps({"ok": False, "reason": "artist_not_found"})
                 clean, audio_id = hit
             else:
-                return json.dumps({"ok": False, "reason": "not_found", "query": ""})
+                hit = _random_castable(conn, caller)
+                if hit is None:
+                    return json.dumps({"ok": False, "reason": "no_stream"})
+                clean, audio_id = hit
         finally:
             conn.close()
         if jellyfin_client is None or not audio_id:
@@ -439,16 +516,15 @@ def build_music_query_tools(
         url = await jellyfin_client.stream_url(audio_id)
         if not url:
             return json.dumps({"ok": False, "reason": "no_stream"})
-        result = await call_service_scoped(
-            hass_url,
-            hass_token,
-            entity_id,
-            "media_player.play_media",
-            {"media_content_type": "music", "media_content_id": url},
-        )
+        result = await _cast(entity_id, url)
         if not result.get("ok"):
             return json.dumps(
-                {"ok": False, "reason": "play_failed", "title": clean},
+                {
+                    "ok": False,
+                    "reason": "play_failed",
+                    "title": clean,
+                    "detail": result.get("error", ""),
+                },
                 ensure_ascii=False,
             )
         return json.dumps(
@@ -515,10 +591,17 @@ def build_music_query_tools(
                     " EIGENEN Bibliothek (Jellyfin) auf einem Raum-Gerät. IMMER"
                     " für 'Spiele Musik/Song von <Künstler>', 'Spiel <Songtitel>',"
                     " 'Lass Musik von <X> laufen' — NICHT media_find_podcast."
-                    " title=<Songtitel> ODER artist=<Künstler>; entity_id = das"
-                    " media_player-Gerät des Raums aus der Geräteliste (z.B."
-                    " media_player.kuche). Melde NUR den vom Tool im Feld 'title'"
-                    " zurückgegebenen Titel — erfinde nie einen."
+                    " title = der SONGTITEL ALLEINE; artist = der Künstler."
+                    " '(spiele) einen/ein Song von <X>', 'etwas von <X>', 'Musik"
+                    " von <X>', 'Lied von <X>' ⇒ artist=<X> und title LEER"
+                    " (irgendein Song von X). 'Spiele Musik' ohne alles ⇒ BEIDE"
+                    " leer (Zufallssong). Beispiele: 'Spiele einen Song von Queen'"
+                    " → {artist:\"Queen\"}; 'Spiele Bohemian Rhapsody' →"
+                    " {title:\"Bohemian Rhapsody\"}; 'Spiele Musik' → {}. Schreibe"
+                    " NIE Wörter wie Song/ein/eine/einen/von/Musik/Lied in title."
+                    " entity_id = das media_player-Gerät des Raums aus der"
+                    " Geräteliste (z.B. media_player.kuche). Melde NUR den vom Tool"
+                    " im Feld 'title' zurückgegebenen Titel — erfinde keinen."
                 ),
                 parameters={
                     "type": "object",
