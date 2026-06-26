@@ -105,7 +105,7 @@
   "JELLYFIN_PASSWORD": {
     "type": "secret",
     "noAutoGenerate": true,
-    "description": "Optional: password for JELLYFIN_USERNAME. The HA `jellyfin` config flow treats it as optional (blank is accepted for passwordless Jellyfin users). Only used to auto-install the HA Jellyfin integration."
+    "description": "Post-deploy-managed — you need NOT set this. The post-deploy converges the `solaris` Jellyfin service-user credential on every deploy (#626): it persists a managed password under DATA_DIR, resets the lldap `solaris` user to it, and stamps it into the deployed pod env, so a template re-render no longer zeroes it and breaks music auth. Set a value only to pin your own password for a Jellyfin account other than the managed `solaris` user."
   },
   "GATEKEEPER_IMAGE": {
     "type": "text",

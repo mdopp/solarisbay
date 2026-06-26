@@ -57,6 +57,16 @@ GATEKEEPER_CONTAINER = os.environ.get("GATEKEEPER_CONTAINER", "solaris-gatekeepe
 ADMIN_TOKEN_NAME = "admin-soul"
 ADMIN_MCP_SCOPES = ["read", "lifecycle", "mutate"]
 
+# Jellyfin service-user credential converge (#626). The engine authenticates to
+# Jellyfin as the read-only `solaris` lldap user via JELLYFIN_PASSWORD, but that
+# var is a `noAutoGenerate` secret absent from SB installedSecrets, so every
+# template render zeroes it → AuthenticateByName 401 → music down. The
+# post-deploy owns a persisted password and converges it on both sides.
+LLDAP_CONTAINER = os.environ.get("LLDAP_CONTAINER", "auth-lldap")
+LLDAP_ADMIN_USER = "admin"
+LLDAP_PORT = 17170
+JELLYFIN_SOLARIS_USER = "solaris"
+
 PIPELINE_NAME = "Solaris"
 CONVERSATION_AGENT_NAME = "Solaris"
 ENGINE_MODEL = "solaris"
@@ -943,6 +953,175 @@ def ensure_ha_jellyfin_integration(
     return False
 
 
+# ── Jellyfin service-user credential converge (#626) ─────────────────────────
+# JELLYFIN_PASSWORD is a `noAutoGenerate` secret that SB never stored, so every
+# `sb stacks install`/template render writes it back to "" → the engine's
+# AuthenticateByName as the read-only `solaris` lldap user 401s → music down
+# (happened live 2026-06-26). The fix converges the credential on every deploy:
+# (1) persist a managed password under DATA_DIR (generate once, reuse after),
+# (2) reset the lldap `solaris` user's password to it via the lldap admin (the
+#     same `lldap_set_password` path the SSO smoke test uses), and
+# (3) patch the deployed solaris.yml pod env JELLYFIN_PASSWORD to it — the
+#     restart at the end of main() makes the engine pick it up.
+# Same value each deploy ⇒ a no-op after the first; idempotent + best-effort so
+# a hiccup never blocks the deploy. Kept out of git/logs (file is 0600; the
+# value is never logged).
+
+
+def _persisted_jellyfin_password(data_dir: str) -> str | None:
+    """Read/mint the managed Jellyfin password for the `solaris` service user,
+    persisted at <data_dir>/solarisbay/.jellyfin-solaris-password (0600).
+
+    Generates a strong URL-safe value once if absent (so a first deploy seeds
+    it), reuses the persisted value afterwards (so every later render reapplies
+    the SAME password — no churn). Returns None only when the dir can't be
+    written. Never logs the value."""
+    path = os.path.join(data_dir, "solarisbay", ".jellyfin-solaris-password")
+    try:
+        with open(path, encoding="utf-8") as f:
+            existing = f.read().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    password = _secrets.token_urlsafe(24)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(password + "\n")
+        os.chmod(path, 0o600)
+    except OSError as e:
+        jlog("warn", "jellyfin", "could not persist Jellyfin password", error=str(e))
+        return None
+    jlog("info", "jellyfin", "minted managed Jellyfin service-user password")
+    return password
+
+
+def _lldap_admin_token() -> str:
+    """Log in to lldap as `admin` (password read from the auth-lldap container
+    env, the same source the SSO smoke test uses) and return the JWT, or ''."""
+    admin_pass = _container_env(LLDAP_CONTAINER, "LLDAP_LDAP_USER_PASS")
+    if not admin_pass:
+        jlog("info", "jellyfin", "no lldap admin password — skipping cred reset")
+        return ""
+    status, body = post_json(
+        f"http://127.0.0.1:{LLDAP_PORT}/auth/simple/login",
+        {"username": LLDAP_ADMIN_USER, "password": admin_pass},
+        timeout=10,
+    )
+    token = body.get("token") if isinstance(body, dict) else None
+    if status != 200 or not isinstance(token, str) or not token:
+        jlog("warn", "jellyfin", "lldap admin login failed", status=status)
+        return ""
+    return token
+
+
+def reset_lldap_solaris_password(password: str) -> bool:
+    """Reset the lldap `solaris` user's password to `password` via the
+    in-container `lldap_set_password` binary (the SSO smoke-test path).
+    Best-effort — returns False on any miss without raising. The value is
+    passed as an argv element and never logged."""
+    token = _lldap_admin_token()
+    if not token:
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                "podman",
+                "exec",
+                LLDAP_CONTAINER,
+                "/app/lldap_set_password",
+                "-u",
+                JELLYFIN_SOLARIS_USER,
+                "-p",
+                password,
+                "--base-url",
+                f"http://localhost:{LLDAP_PORT}",
+                "--token",
+                token,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        jlog("warn", "jellyfin", "lldap_set_password did not run", error=str(e))
+        return False
+    if proc.returncode != 0:
+        jlog(
+            "warn",
+            "jellyfin",
+            "lldap_set_password failed",
+            user=JELLYFIN_SOLARIS_USER,
+            stderr=proc.stderr[:200],
+        )
+        return False
+    jlog("info", "jellyfin", "reset lldap solaris password", user=JELLYFIN_SOLARIS_USER)
+    return True
+
+
+def _patched_jellyfin_password_yaml(src: str, password: str) -> tuple[str, int]:
+    """Stamp the JELLYFIN_PASSWORD env value in the pod manifest text (pure).
+
+    Returns (new_text, n_replacements). Same `- name: …\\n value: …` patch
+    shape adopt_ha_long_lived_token uses for HASS_TOKEN."""
+    return re.subn(
+        r'(- name: JELLYFIN_PASSWORD\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
+        lambda m: m.group(1) + '"' + password + '"',
+        src,
+    )
+
+
+def apply_jellyfin_password_to_engine(password: str) -> bool:
+    """Patch JELLYFIN_PASSWORD into the deployed solaris.yml so the engine reads
+    the managed value (the template render zeroed it). The restart at the end of
+    main() picks it up. Best-effort. Returns True when the manifest now carries
+    the value."""
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog("warn", "jellyfin", "solaris.yml not found at expected path", path=pod_yml)
+        return False
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "jellyfin", "could not read solaris.yml", error=str(e))
+        return False
+    new, n = _patched_jellyfin_password_yaml(src, password)
+    if n == 0:
+        jlog(
+            "warn",
+            "jellyfin",
+            "JELLYFIN_PASSWORD env entry not found in solaris.yml — not stamped",
+            path=pod_yml,
+        )
+        return False
+    if new == src:
+        return True
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "jellyfin", "could not write patched solaris.yml", error=str(e))
+        return False
+    jlog("info", "jellyfin", "stamped managed JELLYFIN_PASSWORD into solaris.yml")
+    return True
+
+
+def converge_jellyfin_credential(data_dir: str) -> str | None:
+    """Self-heal the Jellyfin `solaris` service-user credential (#626): persist a
+    managed password, reset the lldap user to it, and stamp it into the deployed
+    pod env so a template render no longer zeroes auth. Idempotent + best-effort.
+    Returns the password (so the caller can wire the HA integration with the same
+    value), or None when no password could be persisted."""
+    password = _persisted_jellyfin_password(data_dir)
+    if not password:
+        return None
+    reset_lldap_solaris_password(password)
+    apply_jellyfin_password_to_engine(password)
+    return password
+
+
 # ── voice pipeline ───────────────────────────────────────────────────────────
 
 
@@ -1768,13 +1947,20 @@ def main() -> int:
     # Derive the LAN-reachable cast base from the box LAN IP when left empty
     # (#607) — patches the deployed solaris.yml, the restart below picks it up.
     stamp_jellyfin_cast_url(data_dir)
+    # Self-heal the Jellyfin `solaris` service-user credential (#626): persist a
+    # managed password, reset the lldap user to it, and stamp it into the pod env
+    # (the template render zeroed JELLYFIN_PASSWORD → AuthenticateByName 401).
+    # The HA jellyfin integration below logs in with the same managed value.
+    jellyfin_password = converge_jellyfin_credential(data_dir) or env(
+        "JELLYFIN_PASSWORD"
+    )
     ha_token = adopt_ha_long_lived_token(data_dir)
     if ha_token:
         ensure_ha_jellyfin_integration(
             ha_token,
             env("JELLYFIN_URL"),
-            env("JELLYFIN_USERNAME"),
-            env("JELLYFIN_PASSWORD"),
+            env("JELLYFIN_USERNAME") or JELLYFIN_SOLARIS_USER,
+            jellyfin_password,
         )
         wire_voice_pipeline(ha_token, chat_port, api_key, data_dir)
 
