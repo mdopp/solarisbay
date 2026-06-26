@@ -940,10 +940,14 @@ def test_stream_url_builds_castable_url_after_auth(monkeypatch):
 
     monkeypatch.setattr(jellyfin_mod.aiohttp, "ClientSession", _Session)
     client = RestJellyfinMusicClient("http://jf", "solaris", "pw")
-    url = asyncio.run(client.stream_url("aud-1"))
-    # /Audio/{id}/universal with the auth in the query string (a Cast device
-    # can't send the X-Emby-Token header).
-    assert url == (
+    # Default (static=True): the DIRECT/original-file form, no transcode — a Cast
+    # GROUP plays it where the /universal transcode 500s (#573/#604).
+    assert asyncio.run(client.stream_url("aud-1")) == (
+        "http://jf/Audio/aud-1/stream?static=true&api_key=tok123"
+    )
+    # static=False: the /universal transcode form (the on-failure fallback), with
+    # the auth in the query string (a Cast device can't send the header).
+    assert asyncio.run(client.stream_url("aud-1", static=False)) == (
         "http://jf/Audio/aud-1/universal?api_key=tok123&UserId=u-sol"
         "&Container=mp3&AudioCodec=mp3&TranscodingProtocol=http"
     )
@@ -975,8 +979,11 @@ def test_stream_url_uses_cast_base_when_set(monkeypatch):
         "pw",
         cast_base_url="http://192.168.178.100:8096",
     )
-    url = asyncio.run(client.stream_url("aud-1"))
-    assert url == (
+    # Both forms use the device-reachable cast base, not the localhost base_url.
+    assert asyncio.run(client.stream_url("aud-1")) == (
+        "http://192.168.178.100:8096/Audio/aud-1/stream?static=true&api_key=tok123"
+    )
+    assert asyncio.run(client.stream_url("aud-1", static=False)) == (
         "http://192.168.178.100:8096/Audio/aud-1/universal"
         "?api_key=tok123&UserId=u-sol"
         "&Container=mp3&AudioCodec=mp3&TranscodingProtocol=http"
@@ -1005,10 +1012,8 @@ def test_stream_url_falls_back_to_base_when_cast_unset(monkeypatch):
         client = RestJellyfinMusicClient(
             "http://jf", "solaris", "pw", cast_base_url=cast
         )
-        url = asyncio.run(client.stream_url("aud-1"))
-        assert url == (
-            "http://jf/Audio/aud-1/universal?api_key=tok123&UserId=u-sol"
-            "&Container=mp3&AudioCodec=mp3&TranscodingProtocol=http"
+        assert asyncio.run(client.stream_url("aud-1")) == (
+            "http://jf/Audio/aud-1/stream?static=true&api_key=tok123"
         )
 
 

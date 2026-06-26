@@ -88,19 +88,25 @@ class _FakeLyrics:
 
 
 class _FakeJellyfin:
-    """A fake Jellyfin client for play_music: stream_url builds a castable URL."""
+    """A fake Jellyfin client for play_music: stream_url builds a castable URL.
+
+    static=True (default) is the direct/original-file form
+    (`/Audio/{id}/stream?static=true`); static=False is the /universal transcode
+    fallback — so a test can assert the static-first cast order (#604)."""
 
     def __init__(self, *, no_stream=False):
         self._no_stream = no_stream
-        self.stream_calls: list[str] = []
+        self.stream_calls: list[tuple[str, bool]] = []
 
     async def lyrics(self, audio_id: str):
         return None
 
-    async def stream_url(self, audio_id: str):
-        self.stream_calls.append(audio_id)
+    async def stream_url(self, audio_id: str, *, static: bool = True):
+        self.stream_calls.append((audio_id, static))
         if self._no_stream:
             return None
+        if static:
+            return f"http://jf/Audio/{audio_id}/stream?static=true&api_key=tok"
         return f"http://jf/Audio/{audio_id}/universal?api_key=tok"
 
 
@@ -619,7 +625,11 @@ async def test_play_music_title_casts_stream_url(tmp_path, monkeypatch):
     assert service == "media_player.play_media"
     assert entity_id == "media_player.kuche"
     assert data["media_content_type"] == "music"
-    assert data["media_content_id"] == "http://jf/Audio/aud-boh/universal?api_key=tok"
+    # Static (direct/original-file) URL is cast FIRST (group-friendly, #604).
+    assert (
+        data["media_content_id"]
+        == "http://jf/Audio/aud-boh/stream?static=true&api_key=tok"
+    )
 
 
 async def test_play_music_artist_plays_first_real_track(tmp_path, monkeypatch):
@@ -634,7 +644,9 @@ async def test_play_music_artist_plays_first_real_track(tmp_path, monkeypatch):
     assert out["ok"] is True and out["played"] is True
     # Bohemian Rhapsody sorts first AND has an audio id; Radio Ga Ga lacks one.
     assert out["title"] == "Bohemian Rhapsody"
-    assert calls[0][4]["media_content_id"].endswith("/aud-boh/universal?api_key=tok")
+    assert calls[0][4]["media_content_id"].endswith(
+        "/aud-boh/stream?static=true&api_key=tok"
+    )
 
 
 async def test_play_music_missing_device_no_ha_call(tmp_path, monkeypatch):
@@ -724,8 +736,8 @@ async def test_play_music_play_failed_never_played(tmp_path, monkeypatch):
     assert out["ok"] is False and out["reason"] == "play_failed"
     assert out["title"] == "Bohemian Rhapsody"
     assert "played" not in out  # truthful: never claim played on a failed cast
-    # All retries exhausted -> one initial + _PLAY_RETRIES attempts.
-    assert len(calls) == music_query_mod._PLAY_RETRIES + 1
+    # Both URL forms (static then universal) each exhaust their bounded retry.
+    assert len(calls) == 2 * (music_query_mod._PLAY_RETRIES + 1)
 
 
 # ---- u92 (#604): filler-title parse, random play, error-detail + retry -------
@@ -759,7 +771,9 @@ async def test_play_music_filler_title_strips_to_artist(tmp_path, monkeypatch):
     )
     assert out["ok"] is True and out["played"] is True
     assert out["title"] == "Bohemian Rhapsody"  # never the filler phrase
-    assert calls[0][4]["media_content_id"].endswith("/aud-boh/universal?api_key=tok")
+    assert calls[0][4]["media_content_id"].endswith(
+        "/aud-boh/stream?static=true&api_key=tok"
+    )
 
 
 async def test_play_music_filler_musik_von(tmp_path, monkeypatch):
@@ -788,7 +802,7 @@ async def test_play_music_random_when_empty(tmp_path, monkeypatch):
     assert out["ok"] is True and out["played"] is True
     assert out["title"]  # a real title, reported
     assert len(calls) == 1
-    assert "/universal?api_key=tok" in calls[0][4]["media_content_id"]
+    assert "/stream?static=true&api_key=tok" in calls[0][4]["media_content_id"]
 
 
 async def test_play_music_random_scoped_no_private_leak(tmp_path, monkeypatch):
@@ -836,7 +850,8 @@ async def test_play_music_play_failed_surfaces_detail(tmp_path, monkeypatch):
     )
     assert out["ok"] is False and out["reason"] == "play_failed"
     assert out["detail"] == "HA 500: boom"  # the HA error is surfaced, not swallowed
-    assert len(calls) == music_query_mod._PLAY_RETRIES + 1  # retried
+    # Both forms retried: static (group-friendly) then universal (transcode).
+    assert len(calls) == 2 * (music_query_mod._PLAY_RETRIES + 1)
 
 
 async def test_play_music_retry_then_success(tmp_path, monkeypatch):
@@ -853,6 +868,48 @@ async def test_play_music_retry_then_success(tmp_path, monkeypatch):
     )
     assert out["ok"] is True and out["played"] is True
     assert len(calls) == 2  # one fail + one retry that succeeded
+
+
+async def test_play_music_static_fails_then_universal_succeeds(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # The Cast GROUP 500s on the static/direct URL for a non-Cast-native container,
+    # so play_music falls back to the /universal transcode form, which plays (#604).
+    calls: list[tuple] = []
+
+    async def _fake(hass_url, hass_token, entity_id, service, data):
+        calls.append((hass_url, hass_token, entity_id, service, data))
+        url = data["media_content_id"]
+        if "static=true" in url:
+            return {"ok": False, "error": "HA 500: group static reject"}
+        return {"ok": True, "state": "playing"}
+
+    monkeypatch.setattr(music_query_mod, "call_service_scoped", _fake)
+    monkeypatch.setattr(music_query_mod.asyncio, "sleep", _noop_sleep)
+    out = json.loads(
+        await _play_tool(db, "mdopp", _FakeJellyfin()).handler(
+            {"title": "Bohemian Rhapsody", "entity_id": "media_player.wohnzimmer"}
+        )
+    )
+    assert out["ok"] is True and out["played"] is True
+    # Static was tried first (its retries exhausted), then universal cast + won.
+    static_calls = [c for c in calls if "static=true" in c[4]["media_content_id"]]
+    universal_calls = [c for c in calls if "/universal?" in c[4]["media_content_id"]]
+    assert static_calls and universal_calls
+    assert universal_calls[-1] is calls[-1]  # universal is the winning final cast
+
+
+async def test_play_music_both_forms_fail_surfaces_detail(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    # Both static AND universal 500 -> ok:false with the last HA error surfaced.
+    calls = _seq_play(monkeypatch, [{"ok": False, "error": "HA 500: both"}])
+    out = json.loads(
+        await _play_tool(db, "mdopp", _FakeJellyfin()).handler(
+            {"title": "Bohemian Rhapsody", "entity_id": "media_player.wohnzimmer"}
+        )
+    )
+    assert out["ok"] is False and out["reason"] == "play_failed"
+    assert out["detail"] == "HA 500: both"
+    assert len(calls) == 2 * (music_query_mod._PLAY_RETRIES + 1)
 
 
 async def test_play_music_need_device_when_no_entity(tmp_path, monkeypatch):
