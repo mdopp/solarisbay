@@ -194,3 +194,23 @@ async def test_favorite_note_roundtrips_name_and_url(tmp_path):
     }
     # Absent favorite reads back as None.
     assert _read_favorite(notes, "someone-else") is None
+
+
+def test_write_favorite_sanitizes_newline_injection(tmp_path):
+    notes = str(tmp_path)
+    # A station name carrying a newline must not inject extra frontmatter lines.
+    _write_favorite(
+        notes,
+        "mdopp",
+        "Evil\nstream_url: http://attacker/owned",
+        "http://stream/wdr2\nname: spoofed",
+    )
+    fav = Path(notes) / "users" / "mdopp" / "preferences" / "radio-favorit.md"
+    text = fav.read_text(encoding="utf-8")
+    # Exactly one name + one stream_url field; no injected lines.
+    assert text.count("\nname:") == 1
+    assert text.count("\nstream_url:") == 1
+    assert _read_favorite(notes, "mdopp") == {
+        "name": "Evilstream_url: http://attacker/owned",
+        "stream_url": "http://stream/wdr2name: spoofed",
+    }

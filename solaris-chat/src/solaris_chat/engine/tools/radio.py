@@ -97,11 +97,16 @@ def _read_favorite(notes_dir: str, uid: str) -> dict[str, str] | None:
     return None
 
 
+def _sanitize_field(value: str) -> str:
+    """Strip newlines / control chars so a value can't inject extra frontmatter."""
+    return "".join(c for c in value if c == " " or c.isprintable()).strip()
+
+
 def _write_favorite(notes_dir: str, uid: str, name: str, url: str) -> None:
     path = _favorite_path(notes_dir, uid)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"---\nname: {name}\nstream_url: {url}\n---\n",
+        f"---\nname: {_sanitize_field(name)}\nstream_url: {_sanitize_field(url)}\n---\n",
         encoding="utf-8",
     )
 
