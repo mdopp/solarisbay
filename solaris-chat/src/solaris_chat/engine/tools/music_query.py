@@ -40,7 +40,7 @@ from solaris_chat.engine.fuzzy import (
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools import Tool
 from solaris_chat.engine.tools.ha import call_service_scoped
-from solaris_chat.engine.tools.radio import resolve_play_device
+from solaris_chat.engine.tools.radio import cast_with_fallback, resolve_play_device
 
 
 class LyricsClient(Protocol):
@@ -122,6 +122,7 @@ def build_music_query_tools(
     hass_token: str = "",
     room_getter=None,
     room_resolver=None,
+    area_fallback=None,
     notes_dir: str = "",
 ) -> list[Tool]:
     def _caller() -> str:
@@ -551,8 +552,12 @@ def build_music_query_tools(
         # No castable URL at all (no token) -> honest no_stream, not play_failed.
         if not await jellyfin_client.stream_url(audio_id, static=True):
             return json.dumps({"ok": False, "reason": "no_stream"})
-        # Cast static-first, /universal on failure (the group-friendly order).
-        result = await _cast(entity_id, audio_id)
+        # Cast static-first, /universal on failure (the group-friendly order);
+        # if that 500s (a Cast GROUP can't play a URL, #638) retry once on a
+        # single device in the same area (the room's Voice PE preferred).
+        result, used = await cast_with_fallback(
+            lambda target: _cast(target, audio_id), entity_id, area_fallback
+        )
         if not result.get("ok"):
             return json.dumps(
                 {
@@ -568,7 +573,7 @@ def build_music_query_tools(
                 "ok": True,
                 "title": clean,
                 "artist": artist or "",
-                "entity_id": entity_id,
+                "entity_id": used,
                 "played": True,
             },
             ensure_ascii=False,

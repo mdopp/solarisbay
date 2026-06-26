@@ -13,7 +13,7 @@ import json
 
 from solaris_chat.engine import areas as areas_mod
 from solaris_chat.engine.areas import AreaRegistry, _build_snapshot
-from solaris_chat.engine.registry import EntityRegistry
+from solaris_chat.engine.registry import EntityRegistry, rank_fallback_players
 from solaris_chat.engine.tools.ha import build_ha_tools
 
 _AREAS = [
@@ -544,3 +544,62 @@ async def test_media_player_for_room_unknown_is_none(monkeypatch):
     assert await reg.media_player_for_room("Keller") is None
     # an empty/blank room is None too (never a stray cast)
     assert await reg.media_player_for_room("") is None
+
+
+# -- media_player_fallbacks (#638): same-area single-device fallback -----------
+
+
+def test_rank_fallback_players_prefers_voice_pe_then_single_then_group():
+    ranked = rank_fallback_players(
+        [
+            "media_player.wohnzimmer_group",
+            "media_player.wohnzimmer_sonos",
+            "media_player.home_assistant_voice_0907c9_media_player",
+        ]
+    )
+    # Voice PE / esphome single first, a plain single device next, group last.
+    assert ranked == [
+        "media_player.home_assistant_voice_0907c9_media_player",
+        "media_player.wohnzimmer_sonos",
+        "media_player.wohnzimmer_group",
+    ]
+
+
+def test_rank_fallback_players_ties_keep_sorted_id_order():
+    assert rank_fallback_players(["media_player.b_sonos", "media_player.a_sonos"]) == [
+        "media_player.a_sonos",
+        "media_player.b_sonos",
+    ]
+
+
+async def test_media_player_fallbacks_same_area_excludes_failed_prefers_voice(
+    monkeypatch,
+):
+    reg = _registry_with_areas(
+        monkeypatch,
+        {
+            "media_player.wohnzimmer": "Wohnzimmer",  # the failed Cast group
+            "media_player.home_assistant_voice_0907c9_media_player": "Wohnzimmer",
+            "media_player.wohnzimmer_sonos": "Wohnzimmer",
+            "media_player.kuche": "Küche",  # different area, never offered
+        },
+    )
+    out = await reg.media_player_fallbacks("media_player.wohnzimmer")
+    assert out == [
+        "media_player.home_assistant_voice_0907c9_media_player",
+        "media_player.wohnzimmer_sonos",
+    ]
+    # the failed entity itself + other-area players are excluded
+    assert "media_player.wohnzimmer" not in out
+    assert "media_player.kuche" not in out
+
+
+async def test_media_player_fallbacks_none_when_no_peers(monkeypatch):
+    reg = _registry_with_areas(
+        monkeypatch,
+        {"media_player.wohnzimmer": "Wohnzimmer", "media_player.kuche": "Küche"},
+    )
+    # only the failed entity in its area → no candidate; unknown entity → none too
+    assert await reg.media_player_fallbacks("media_player.wohnzimmer") == []
+    assert await reg.media_player_fallbacks("media_player.unknown") == []
+    assert await reg.media_player_fallbacks("") == []

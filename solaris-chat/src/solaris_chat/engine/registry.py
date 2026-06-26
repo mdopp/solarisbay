@@ -68,6 +68,25 @@ _DOMAIN_SERVICES = {
 _COVER_SET_POSITION = 4
 
 
+def rank_fallback_players(players: list[str]) -> list[str]:
+    """Order media_player entity_ids for the group-cast fallback (#638), best-first.
+
+    A Voice PE / esphome single speaker (`home_assistant_voice` in the id) wins —
+    it's the device the resident is speaking to and plays a URL stream reliably.
+    An entity id with `group` in it is an obvious whole-house Cast group and goes
+    last (those 500 on URL play_media); everything else is a plausible single
+    device in the middle. Ties stay in sorted-id order for determinism."""
+
+    def rank(eid: str) -> int:
+        if "home_assistant_voice" in eid:
+            return 0
+        if "group" in eid:
+            return 2
+        return 1
+
+    return sorted(sorted(players), key=rank)
+
+
 class EntityRegistry:
     def __init__(self, hass_url: str, hass_token: str):
         self._url = hass_url.rstrip("/")
@@ -129,6 +148,32 @@ class EntityRegistry:
             return None
         non_group = [eid for eid in players if "group" not in eid]
         return non_group[0] if non_group else players[0]
+
+    async def media_player_fallbacks(self, entity_id: str) -> list[str]:
+        """Other media_players in the same area as `entity_id`, best-first.
+
+        A Cast GROUP rejects URL play_media (HA 500, #638), so when a play on
+        such a target fails the caller retries on a single device in the SAME
+        area. The room's Voice PE / esphome single speaker (the device the
+        person is speaking to) is preferred, then any other non-group single
+        device; the failed entity itself is excluded. Group membership isn't
+        exposed, so the practical ranking keys on the id (esphome first, obvious
+        group names last) — see `rank_fallback_players`."""
+        entity_id = entity_id.strip()
+        if not entity_id:
+            return []
+        snap = await self._areas.snapshot()
+        area = snap.area_of(entity_id)
+        if not area:
+            return []
+        peers = [
+            eid
+            for eid, eid_area in snap.entity_area.items()
+            if eid.startswith("media_player.")
+            and eid != entity_id
+            and eid_area.casefold() == area.casefold()
+        ]
+        return rank_fallback_players(peers)
 
     async def prompt_block(self) -> str:
         """The registry block for the system prompt; "" when HA is absent or
