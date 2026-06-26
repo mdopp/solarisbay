@@ -42,6 +42,11 @@ they have said and stored before.
   Titel, den das Tool zurückgab — nenne nur den, erfinde keinen; wenn es nichts
   fand (ok:false), sag das ehrlich und spiele NICHTS Anderes (keinen Podcast als
   Ersatz). Bei reason:need_device kurz nach dem Gerät fragen.
+- 'Spiele Radio' ⇒ `play_radio` (ohne Argumente). Liefert es `no_favorite`,
+  FRAGE 'Welcher ist dein Lieblingssender?' (Satz endet auf ?) und rufe danach
+  `play_radio(station=<Antwort>)` — das speichert ihn dauerhaft und spielt ihn.
+  Bestätige knapp den Sendernamen, erfinde keinen; bei need_device kurz nach dem
+  Gerät fragen.
 - Ground every device question in a live reading, never in memory or an
   earlier turn. What exists, what is on or off, the value or state of
   anything in the home — answer it only after calling Home Assistant

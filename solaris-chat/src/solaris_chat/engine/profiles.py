@@ -36,6 +36,7 @@ from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.engine.tools.onboarding_approval import (
     build_onboarding_approval_tools,
 )
+from solaris_chat.engine.tools.radio import build_radio_tools
 from solaris_chat.engine.tools.register import build_register_tools
 from solaris_chat.engine.tools.research import build_research_tools
 from solaris_chat.engine.tools.skill_promotion import build_skill_promotion_tools
@@ -125,6 +126,13 @@ def build_engine_clients(
     household_tools += choice_tools
     if hass_url and hass_token:
         household_tools += build_media_tools(hass_url, hass_token)
+        # play_radio (#u94): casts a resident's favorite station via the same
+        # scoped HA play_media path; the favorite is a per-user note, so it needs
+        # the vault as well. Household + deep share this list (not guest).
+        if notes_dir:
+            household_tools += build_radio_tools(
+                notes_dir, hass_url, hass_token, _current_uid
+            )
     if notes_dir:
         household_tools += build_notes_tools(notes_dir, _current_uid)
     # Structured music-library queries (#588): household + deep share this list,
