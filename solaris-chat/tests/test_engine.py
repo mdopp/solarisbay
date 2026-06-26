@@ -21,6 +21,7 @@ from solaris_chat.engine.client import (
     _is_fabricated_device_claim,
     _split_anchors,
     _split_followups,
+    compact_history,
 )
 from solaris_chat.engine.ollama import ChatResult
 from solaris_chat.engine.registry import EntityRegistry
@@ -612,6 +613,147 @@ def test_split_anchors_keeps_prefixed_tokens_and_caps_at_three():
     plain, none = _split_anchors("Klar.")
     assert plain == "Klar."
     assert none == []
+
+
+# -- history compaction (#623) -------------------------------------------
+
+
+def _multi_tool_history() -> list[dict]:
+    """A 2-turn convo: a PAST turn that read living-room + kitchen temps via two
+    tools (verbose JSON), then the CURRENT turn ('und das Wohnzimmer?') whose own
+    tool call + full result are appended."""
+    big = json.dumps(
+        {"state": "21.4", "attributes": {"unit": "°C", "friendly_name": "Küche"}}
+        | {f"extra_{i}": "padding-value" for i in range(20)},
+        ensure_ascii=False,
+    )
+    return [
+        {"role": "system", "content": "Du bist Solaris."},
+        {"role": "user", "content": "Wie warm ist die Küche?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "ha_get_state",
+                        "arguments": {
+                            "entity_id": "sensor.kueche_temp",
+                            "verbose": True,
+                        },
+                    }
+                }
+            ],
+        },
+        {"role": "tool", "content": big, "tool_name": "ha_get_state"},
+        {"role": "assistant", "content": "In der Küche sind es 21,4 °C."},
+        # current turn:
+        {"role": "user", "content": "Und das Wohnzimmer?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "ha_get_state",
+                        "arguments": {"entity_id": "sensor.wohnzimmer_temp"},
+                    }
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": json.dumps({"state": "22.8", "friendly_name": "Wohnzimmer"}),
+            "tool_name": "ha_get_state",
+        },
+    ]
+
+
+def test_compact_history_compacts_past_tool_message_to_named_gist():
+    msgs = _multi_tool_history()
+    out = compact_history(msgs)
+    past_tool = out[3]
+    assert past_tool["role"] == "tool"
+    assert past_tool["content"].startswith("[tool ha_get_state] ")
+    gist = past_tool["content"].removeprefix("[tool ha_get_state] ")
+    assert gist  # non-empty: a follow-up can still resolve against it
+    assert len(past_tool["content"]) < len(msgs[3]["content"])
+
+
+def test_compact_history_keeps_current_turn_tool_result_full():
+    msgs = _multi_tool_history()
+    out = compact_history(msgs)
+    # the current turn's tool result (last message) is untouched — the model
+    # needs it to answer THIS turn.
+    assert out[-1]["content"] == msgs[-1]["content"]
+    assert "22.8" in out[-1]["content"]
+    assert not out[-1]["content"].startswith("[tool")
+
+
+def test_compact_history_preserves_user_and_assistant_text_verbatim():
+    msgs = _multi_tool_history()
+    out = compact_history(msgs)
+    assert out[1]["content"] == "Wie warm ist die Küche?"
+    assert out[4]["content"] == "In der Küche sind es 21,4 °C."
+    assert out[5]["content"] == "Und das Wohnzimmer?"
+
+
+def test_compact_history_strips_past_assistant_tool_call_args_to_names():
+    msgs = _multi_tool_history()
+    out = compact_history(msgs)
+    past_call = out[2]["tool_calls"][0]["function"]
+    assert past_call["name"] == "ha_get_state"
+    assert past_call["arguments"] == {}  # past args dropped
+    # the current turn's assistant tool_calls keep their full args.
+    cur_call = out[6]["tool_calls"][0]["function"]
+    assert cur_call["arguments"] == {"entity_id": "sensor.wohnzimmer_temp"}
+
+
+def test_compact_history_reduces_size_and_is_pure():
+    msgs = _multi_tool_history()
+    before = sum(len(json.dumps(m, ensure_ascii=False)) for m in msgs)
+    snapshot = json.dumps(msgs, ensure_ascii=False)
+    out = compact_history(msgs)
+    after = sum(len(json.dumps(m, ensure_ascii=False)) for m in out)
+    assert after < before  # measurable char reduction
+    assert json.dumps(msgs, ensure_ascii=False) == snapshot  # input not mutated
+
+
+async def test_compact_history_applied_in_loop_before_model_call(db, soul):
+    """End-to-end: a session with a verbose PAST tool turn sends a COMPACTED
+    history to the model, while the new turn's user text rides full."""
+
+    async def handler(args):
+        return '{"state": "ok"}'
+
+    tool = Tool(
+        name="ha_get_state",
+        description="x",
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+    results = [ChatResult(content="Klar.", prompt_tokens=10, completion_tokens=2)]
+    client, fake = _client(db, soul, results, tools=[tool])
+    sid = await client.create_session("anna")
+    big = json.dumps({"state": "21.4"} | {f"p{i}": "x" * 10 for i in range(30)})
+    store.append_message(db, sid, "user", "Wie warm ist die Küche?")
+    store.append_message(
+        db,
+        sid,
+        "assistant",
+        "",
+        tool_calls=[{"function": {"name": "ha_get_state", "arguments": {"e": 1}}}],
+    )
+    store.append_message(db, sid, "tool", big)
+    store.append_message(db, sid, "assistant", "21,4 °C.")
+    [_ async for _ in client.chat_stream(sid, "Und das Wohnzimmer?")]
+    sent = fake.calls[0]["messages"]
+    past_tool = next(m for m in sent if m["role"] == "tool")
+    assert past_tool["content"].startswith("[tool ha_get_state] ")
+    assert len(past_tool["content"]) < len(big)
+    assert any(
+        m["role"] == "user" and m["content"] == "Und das Wohnzimmer?" for m in sent
+    )
 
 
 async def test_claim_passes_through_without_tools(db, soul):
