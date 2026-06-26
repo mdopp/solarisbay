@@ -609,16 +609,6 @@
     .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 22px -6px rgba(249, 115, 22, 0.5); }
     .btn-primary:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
 
-    /* Always-on context-window fill ring around the send button (#488): the
-       conic-gradient sweeps --ctx-fill (0..1) of the perimeter in --ctx-colour,
-       the rest stays a faint track; a 3px inset mask leaves the button face. */
-    .send-wrap {
-      position: relative; display: inline-flex; padding: 3px; border-radius: calc(var(--radius) + 3px);
-      background: conic-gradient(var(--ctx-colour, #22c55e) calc(var(--ctx-fill, 0) * 360deg), var(--line) 0);
-      transition: background .3s var(--ease);
-    }
-    .send-wrap > .btn-primary { display: inline-flex; align-items: center; }
-
     /* Slash-command autocomplete overlay (anchored above the composer). */
     #composer { position: relative; }
     .slash-menu {
@@ -1122,7 +1112,7 @@
             <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
           </div>
           <textarea id="input" rows="1" placeholder="type message or /help" autofocus></textarea>
-          <span class="send-wrap" id="send-wrap" title="Context window fill"><button id="send" class="btn-primary" type="submit" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button></span>
+          <button id="send" class="btn-primary" type="submit" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
           <button id="stop" class="composer-icon stop" type="button" title="Antwort stoppen" aria-label="Antwort stoppen" hidden><svg class="ic"><use href="#i-stop"></use></svg></button>
           <input id="file-input" type="file" accept="image/*" hidden />
         </form>
@@ -1661,20 +1651,6 @@
         if (inT == null && outT == null) return "";
         var total = (inT || 0) + (outT || 0);
         return total + " tok";
-      }
-
-      // Context-window fill ring around the send button (#488): fill = the last
-      // turn's prompt_tokens ÷ context_window (how full the window is going into
-      // the next turn), using the REAL Ollama tokens already on the trace steps.
-      // Colour ramps green → amber → red toward 100%.
-      function setContextRing(promptTokens) {
-        var wrap = document.getElementById("send-wrap");
-        if (!wrap) return;
-        var fill = contextWindow ? Math.min(1, (promptTokens || 0) / contextWindow) : 0;
-        var colour = fill < 0.6 ? "#22c55e" : fill < 0.85 ? "#f59e0b" : "#ef4444";
-        wrap.style.setProperty("--ctx-fill", fill.toFixed(3));
-        wrap.style.setProperty("--ctx-colour", colour);
-        wrap.title = "Context window " + Math.round(fill * 100) + "% full";
       }
 
       // One unified per-turn step list (#406). `steps` is the ordered list of a
@@ -2514,13 +2490,6 @@
                 if (anchorsEl) bubble.insertBefore(anchorsEl, meta);
               }
             });
-            // The ring reflects the most recent turn's prompt size: scan all
-            // steps and keep the last one that reported real prompt_tokens.
-            var lastPrompt = 0;
-            (j.steps || []).forEach(function (s) {
-              if (s.prompt_tokens != null) lastPrompt = s.prompt_tokens;
-            });
-            setContextRing(lastPrompt);
           })
           .catch(function () {});
       }
@@ -3531,7 +3500,7 @@
             if (s.message_count != null) lines.push("- Messages: " + fmt(s.message_count));
             if (s.estimated_cost_usd != null) lines.push("- Est. cost: $" + Number(s.estimated_cost_usd).toFixed(4));
             lines.push("");
-            lines.push("_These are the engine's per-session token totals. The ring around the send button shows the live context-window fill (last turn's prompt ÷ window)._");
+            lines.push("_These are the engine's per-session token totals._");
             addInfo(lines.join("\n"));
           })
           .catch(function () { addText("system", "Couldn't read context info."); });
@@ -3861,7 +3830,6 @@
         sessionId = null;
         pendingTopic = "";
         clearLog();
-        setContextRing(0);
         loadSessions();
         loadTagCloud();
         closeRail();
