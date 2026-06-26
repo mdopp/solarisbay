@@ -40,6 +40,7 @@ from solaris_chat.engine.fuzzy import (
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools import Tool
 from solaris_chat.engine.tools.ha import call_service_scoped
+from solaris_chat.engine.tools.radio import resolve_play_device
 
 
 class LyricsClient(Protocol):
@@ -121,6 +122,7 @@ def build_music_query_tools(
     hass_token: str = "",
     room_getter=None,
     room_resolver=None,
+    notes_dir: str = "",
 ) -> list[Tool]:
     def _caller() -> str:
         return uid_getter() or projection.SHARED_UID
@@ -490,15 +492,25 @@ def build_music_query_tools(
             if m:
                 artist = m.group("artist").strip()
                 title = ""
-        # No named device: default to the originating room's media_player (u99).
-        # Only when no current room is known either does it stay need_device.
-        if not entity_id:
-            room = room_getter() if room_getter else ""
-            if room and room_resolver is not None:
-                entity_id = (await room_resolver(room)) or ""
-        if not entity_id:
-            return json.dumps({"ok": False, "reason": "need_device"})
         caller = _caller()
+        # Precedence (option C, #622): explicit device > current room (u99) >
+        # stored per-user default > ask (need_default_device). A first explicit
+        # device with no default yet is stored as the default.
+        room = room_getter() if (not entity_id and room_getter) else ""
+        room_device = (
+            (await room_resolver(room)) or ""
+            if room and room_resolver is not None
+            else ""
+        )
+        entity_id, reason = resolve_play_device(
+            notes_dir,
+            caller,
+            entity_id,
+            room=room,
+            resolved_room_device=room_device,
+        )
+        if reason is not None:
+            return json.dumps({"ok": False, "reason": reason})
         conn = projection.open_conn(db_path)
         try:
             if title:
@@ -626,7 +638,11 @@ def build_music_query_tools(
                     " entity_id = das media_player-Gerät des Raums aus der"
                     " Geräteliste (z.B. media_player.kuche) — NUR setzen, wenn der"
                     " Nutzer ein Gerät/einen Raum NENNT; sonst WEGLASSEN, dann"
-                    " spielt es automatisch im aktuellen Raum. Melde NUR den vom"
+                    " spielt es im aktuellen Raum oder auf dem gespeicherten"
+                    " Standardgerät. Liefert es reason:need_default_device, frag"
+                    " 'Auf welchem Gerät soll ich standardmäßig spielen?' und ruf"
+                    " mit 'entity_id=<Antwort>' erneut auf — das spielt UND merkt"
+                    " sich das Gerät als Standard. Melde NUR den vom"
                     " Tool im Feld 'title' zurückgegebenen Titel — erfinde keinen."
                 ),
                 parameters={

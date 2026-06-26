@@ -79,36 +79,93 @@ class RadioBrowserClient:
         return str(best.get("name") or query), str(best["url_resolved"]).strip()
 
 
-def _favorite_path(notes_dir: str, uid: str) -> Path:
-    return Path(notes_dir) / "users" / uid / "preferences" / "radio-favorit.md"
-
-
-def _read_favorite(notes_dir: str, uid: str) -> dict[str, str] | None:
-    path = _favorite_path(notes_dir, uid)
-    if not path.is_file():
-        return None
-    fields: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        key, sep, value = line.partition(":")
-        if sep and key.strip() in ("name", "stream_url"):
-            fields[key.strip()] = value.strip()
-    if "name" in fields and "stream_url" in fields:
-        return {"name": fields["name"], "stream_url": fields["stream_url"]}
-    return None
-
-
 def _sanitize_field(value: str) -> str:
     """Strip newlines / control chars so a value can't inject extra frontmatter."""
     return "".join(c for c in value if c == " " or c.isprintable()).strip()
 
 
-def _write_favorite(notes_dir: str, uid: str, name: str, url: str) -> None:
-    path = _favorite_path(notes_dir, uid)
+def _pref_path(notes_dir: str, uid: str, name: str) -> Path:
+    """A resident-scoped preference note (`users/<uid>/preferences/<name>.md`).
+
+    Read and written only for the calling resident (#576) — caller B never sees
+    resident A's preference."""
+    return Path(notes_dir) / "users" / uid / "preferences" / f"{name}.md"
+
+
+def _read_pref(
+    notes_dir: str, uid: str, name: str, keys: tuple[str, ...]
+) -> dict[str, str]:
+    """Frontmatter fields of a resident's preference note, limited to `keys`."""
+    path = _pref_path(notes_dir, uid, name)
+    if not path.is_file():
+        return {}
+    fields: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip() in keys:
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def _write_pref(notes_dir: str, uid: str, name: str, fields: dict[str, str]) -> None:
+    """Write a resident's preference note as sanitized frontmatter."""
+    path = _pref_path(notes_dir, uid, name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        f"---\nname: {_sanitize_field(name)}\nstream_url: {_sanitize_field(url)}\n---\n",
-        encoding="utf-8",
-    )
+    body = "".join(f"{k}: {_sanitize_field(v)}\n" for k, v in fields.items())
+    path.write_text(f"---\n{body}---\n", encoding="utf-8")
+
+
+def _read_favorite(notes_dir: str, uid: str) -> dict[str, str] | None:
+    fields = _read_pref(notes_dir, uid, "radio-favorit", ("name", "stream_url"))
+    if "name" in fields and "stream_url" in fields:
+        return {"name": fields["name"], "stream_url": fields["stream_url"]}
+    return None
+
+
+def _write_favorite(notes_dir: str, uid: str, name: str, url: str) -> None:
+    _write_pref(notes_dir, uid, "radio-favorit", {"name": name, "stream_url": url})
+
+
+def _read_default_device(notes_dir: str, uid: str) -> str | None:
+    """The resident's stored default playback device (entity_id), None if unset."""
+    entity_id = _read_pref(
+        notes_dir, uid, "default-device", ("entity_id", "label")
+    ).get("entity_id", "")
+    return entity_id or None
+
+
+def _write_default_device(notes_dir: str, uid: str, entity_id: str) -> None:
+    _write_pref(notes_dir, uid, "default-device", {"entity_id": entity_id})
+
+
+def resolve_play_device(
+    notes_dir: str,
+    uid: str,
+    entity_id: str,
+    *,
+    room: str = "",
+    resolved_room_device: str = "",
+) -> tuple[str, str | None]:
+    """The target media_player for a play call + the reason when none resolves.
+
+    Precedence (option C, #622): an explicitly-named device > the originating
+    room's device (u99) > the resident's stored default. With no device and no
+    room, the stored default is used; with none of these the reason is
+    `need_default_device` so the model asks for one. When an explicit device is
+    named and the resident has no default yet, that first device is STORED as the
+    default (the one-off case — a default already exists — never overwrites it).
+    """
+    if entity_id:
+        if notes_dir and _read_default_device(notes_dir, uid) is None:
+            _write_default_device(notes_dir, uid, entity_id)
+        return entity_id, None
+    if room and resolved_room_device:
+        return resolved_room_device, None
+    if notes_dir:
+        stored = _read_default_device(notes_dir, uid)
+        if stored:
+            return stored, None
+    return "", "need_default_device"
 
 
 def build_radio_tools(
@@ -125,14 +182,25 @@ def build_radio_tools(
     async def play_radio(args: dict[str, Any]) -> str:
         entity_id = str(args.get("entity_id") or "").strip()
         station = str(args.get("station") or "").strip()
-        # No named device: default to the originating room's media_player (u99).
-        if not entity_id:
-            room = room_getter() if room_getter else ""
-            if room and room_resolver is not None:
-                entity_id = (await room_resolver(room)) or ""
-        if not entity_id:
-            return json.dumps({"ok": False, "reason": "need_device"})
         caller = uid_getter()
+        # Precedence (option C, #622): explicit device > current room (u99) >
+        # stored per-user default > ask (need_default_device). A first explicit
+        # device with no default yet is stored as the default.
+        room = room_getter() if (not entity_id and room_getter) else ""
+        room_device = (
+            (await room_resolver(room)) or ""
+            if room and room_resolver is not None
+            else ""
+        )
+        entity_id, reason = resolve_play_device(
+            notes_dir,
+            caller,
+            entity_id,
+            room=room,
+            resolved_room_device=room_device,
+        )
+        if reason is not None:
+            return json.dumps({"ok": False, "reason": reason})
 
         if station:
             resolved = await resolver.resolve_station(station)
@@ -189,7 +257,11 @@ def build_radio_tools(
                 " Lieblingssender und spielt ihn. 'entity_id' = die media_player-"
                 " Entität des Zielraums (z.B. media_player.wohnzimmer) — NUR"
                 " setzen, wenn der Nutzer ein Gerät/einen Raum NENNT; sonst"
-                " WEGLASSEN, dann spielt es automatisch im aktuellen Raum."
+                " WEGLASSEN, dann spielt es im aktuellen Raum oder auf dem"
+                " gespeicherten Standardgerät. Liefert es reason:need_default_device,"
+                " frag 'Auf welchem Gerät soll ich standardmäßig spielen?' und ruf"
+                " mit 'entity_id=<Antwort>' erneut auf — das spielt UND merkt sich"
+                " das Gerät als Standard."
                 " Bestätige nur den zurückgegebenen Sendernamen, erfinde"
                 " keinen. NUR für Radiosender — NICHT für Musik (play_music) oder"
                 " Podcasts (media_find_podcast)."

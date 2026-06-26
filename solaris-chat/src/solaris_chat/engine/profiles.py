@@ -172,6 +172,7 @@ def build_engine_clients(
             hass_token=hass_token,
             room_getter=_current_room,
             room_resolver=registry.media_player_for_room,
+            notes_dir=notes_dir,
         )
     # First-run/owner self-enrolment (#396): with zero enrolments an unknown
     # speaker resolves to `household`, not `guest`, so the guest-onboarding path
