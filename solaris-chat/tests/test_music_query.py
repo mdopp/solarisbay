@@ -710,6 +710,75 @@ async def test_play_music_per_user_scoping(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
+# -- u99: device-less play defaults to the originating room's media_player ----
+
+
+def _play_tool_with_room(db, uid, client, *, room, resolver):
+    tools = build_music_query_tools(
+        db,
+        lambda: uid,
+        client,
+        hass_url="http://ha",
+        hass_token="tok",
+        room_getter=lambda: room,
+        room_resolver=resolver,
+    )
+    (play,) = [t for t in tools if t.name == "play_music"]
+    return play
+
+
+async def test_play_music_defaults_to_current_room(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    calls = _stub_play(monkeypatch)
+
+    async def _resolver(room):
+        return "media_player.kuche" if room == "Küche" else None
+
+    play = _play_tool_with_room(
+        db, "mdopp", _FakeJellyfin(), room="Küche", resolver=_resolver
+    )
+    out = json.loads(await play.handler({"title": "Bohemian Rhapsody"}))
+    # No entity_id named, but a current room is known → cast there.
+    assert out["ok"] is True
+    assert out["entity_id"] == "media_player.kuche"
+    assert calls[0][2] == "media_player.kuche"
+
+
+async def test_play_music_named_device_wins_over_room(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    calls = _stub_play(monkeypatch)
+
+    async def _resolver(room):
+        return "media_player.kuche"
+
+    play = _play_tool_with_room(
+        db, "mdopp", _FakeJellyfin(), room="Küche", resolver=_resolver
+    )
+    out = json.loads(
+        await play.handler(
+            {"title": "Bohemian Rhapsody", "entity_id": "media_player.bad"}
+        )
+    )
+    assert out["entity_id"] == "media_player.bad"
+    assert calls[0][2] == "media_player.bad"
+
+
+async def test_play_music_no_room_no_device_need_device(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    calls = _stub_play(monkeypatch)
+
+    async def _resolver(room):
+        return None
+
+    # No entity_id AND no current room → need_device (unchanged behavior).
+    play = _play_tool_with_room(
+        db, "mdopp", _FakeJellyfin(), room="", resolver=_resolver
+    )
+    out = json.loads(await play.handler({"title": "Bohemian Rhapsody"}))
+    assert out == {"ok": False, "reason": "need_device"}
+    assert calls == []
+
+
 async def test_play_music_no_stream_when_url_none(tmp_path, monkeypatch):
     db = _db(tmp_path)
     out, calls = await _call_play(

@@ -119,6 +119,8 @@ def build_music_query_tools(
     *,
     hass_url: str = "",
     hass_token: str = "",
+    room_getter=None,
+    room_resolver=None,
 ) -> list[Tool]:
     def _caller() -> str:
         return uid_getter() or projection.SHARED_UID
@@ -488,6 +490,12 @@ def build_music_query_tools(
             if m:
                 artist = m.group("artist").strip()
                 title = ""
+        # No named device: default to the originating room's media_player (u99).
+        # Only when no current room is known either does it stay need_device.
+        if not entity_id:
+            room = room_getter() if room_getter else ""
+            if room and room_resolver is not None:
+                entity_id = (await room_resolver(room)) or ""
         if not entity_id:
             return json.dumps({"ok": False, "reason": "need_device"})
         caller = _caller()
@@ -616,8 +624,10 @@ def build_music_query_tools(
                     " {title:\"Bohemian Rhapsody\"}; 'Spiele Musik' → {}. Schreibe"
                     " NIE Wörter wie Song/ein/eine/einen/von/Musik/Lied in title."
                     " entity_id = das media_player-Gerät des Raums aus der"
-                    " Geräteliste (z.B. media_player.kuche). Melde NUR den vom Tool"
-                    " im Feld 'title' zurückgegebenen Titel — erfinde keinen."
+                    " Geräteliste (z.B. media_player.kuche) — NUR setzen, wenn der"
+                    " Nutzer ein Gerät/einen Raum NENNT; sonst WEGLASSEN, dann"
+                    " spielt es automatisch im aktuellen Raum. Melde NUR den vom"
+                    " Tool im Feld 'title' zurückgegebenen Titel — erfinde keinen."
                 ),
                 parameters={
                     "type": "object",
@@ -626,7 +636,6 @@ def build_music_query_tools(
                         "artist": {"type": "string"},
                         "entity_id": {"type": "string"},
                     },
-                    "required": ["entity_id"],
                 },
                 handler=play_music,
             )

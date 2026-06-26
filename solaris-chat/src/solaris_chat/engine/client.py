@@ -46,6 +46,13 @@ current_uid: contextvars.ContextVar[str] = contextvars.ContextVar(
     "engine_uid", default=""
 )
 
+# The current turn's room — the area the voice command came from, injected by
+# the gatekeeper/HA as a `[room: X]` prefix (parsed in the facade). Lets a
+# device-less "spiele Musik" default to the originating room's media_player.
+current_room: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "engine_room", default=""
+)
+
 # Tool-call passes per turn: enough for list->act->confirm chains plus a
 # retry, small enough that a confused model can't spin.
 _MAX_PASSES = 6

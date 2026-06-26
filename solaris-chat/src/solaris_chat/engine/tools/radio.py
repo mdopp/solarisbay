@@ -112,13 +112,24 @@ def _write_favorite(notes_dir: str, uid: str, name: str, url: str) -> None:
 
 
 def build_radio_tools(
-    notes_dir: str, hass_url: str, hass_token: str, uid_getter
+    notes_dir: str,
+    hass_url: str,
+    hass_token: str,
+    uid_getter,
+    *,
+    room_getter=None,
+    room_resolver=None,
 ) -> list[Tool]:
     resolver: StationResolver = RadioBrowserClient()
 
     async def play_radio(args: dict[str, Any]) -> str:
         entity_id = str(args.get("entity_id") or "").strip()
         station = str(args.get("station") or "").strip()
+        # No named device: default to the originating room's media_player (u99).
+        if not entity_id:
+            room = room_getter() if room_getter else ""
+            if room and room_resolver is not None:
+                entity_id = (await room_resolver(room)) or ""
         if not entity_id:
             return json.dumps({"ok": False, "reason": "need_device"})
         caller = uid_getter()
@@ -175,10 +186,11 @@ def build_radio_tools(
                 " reason:no_favorite, frag den Nutzer nach seinem Lieblingssender"
                 " und ruf erneut mit 'station=<Antwort>' auf — das löst den Sender"
                 " über radio-browser.info auf, SPEICHERT ihn dauerhaft als"
-                " Lieblingssender und spielt ihn. Übergib die media_player-Entität"
-                " des Zielraums als 'entity_id' (z.B. media_player.wohnzimmer);"
-                " ohne entity_id kommt reason:need_device — frag dann nach dem"
-                " Gerät. Bestätige nur den zurückgegebenen Sendernamen, erfinde"
+                " Lieblingssender und spielt ihn. 'entity_id' = die media_player-"
+                " Entität des Zielraums (z.B. media_player.wohnzimmer) — NUR"
+                " setzen, wenn der Nutzer ein Gerät/einen Raum NENNT; sonst"
+                " WEGLASSEN, dann spielt es automatisch im aktuellen Raum."
+                " Bestätige nur den zurückgegebenen Sendernamen, erfinde"
                 " keinen. NUR für Radiosender — NICHT für Musik (play_music) oder"
                 " Podcasts (media_find_podcast)."
             ),

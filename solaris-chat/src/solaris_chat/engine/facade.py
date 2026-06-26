@@ -31,7 +31,7 @@ from aiohttp import web
 
 from solaris_chat import trace_store
 from solaris_chat.engine import store
-from solaris_chat.engine.client import EngineClient, EngineError
+from solaris_chat.engine.client import EngineClient, EngineError, current_room
 from solaris_chat.logging import log
 from solaris_chat.voice_uid_stash import consume_uid
 
@@ -39,6 +39,24 @@ from solaris_chat.voice_uid_stash import consume_uid
 # matched to no enrolled resident (an attempted-but-unknown speaker, #351).
 # It is not a real resident: the turn runs the ephemeral guest profile (#353).
 GUEST_UID = "guest"
+
+
+# The gatekeeper (and an HA Voice PE per-device system prompt) prefixes the user
+# utterance with `[room: <area>]\n` to name the originating room (#313). The
+# facade parses it into the `current_room` contextvar so a device-less "spiele
+# Musik" defaults to that room's media_player, then strips it so the model never
+# sees the marker. The newline is optional (a per-device prompt may omit it).
+_ROOM_PREFIX = re.compile(r"^\[room:\s*(?P<room>[^\]]*)\]\s*", re.IGNORECASE)
+
+
+def _split_room(text: str) -> tuple[str, str]:
+    """`[room: Küche]\\nspiele Musik` → ("Küche", "spiele Musik").
+
+    Returns ("", text) when there is no `[room: …]` prefix."""
+    m = _ROOM_PREFIX.match(text)
+    if not m:
+        return "", text
+    return m.group("room").strip(), text[m.end() :]
 
 
 def _model_entry(name: str) -> dict[str, Any]:
@@ -169,7 +187,16 @@ def add_facade_routes(
         # stashed {transcript -> resolved resident uid} (#350, approach b).
         # Resolve the speaking resident by that transcript; fall back to the
         # body's `user` (HA sends `household`) on a miss. Consume-once.
-        transcript = _last_user(messages)
+        # An originating-room prefix (`[room: X]`) injected by the gatekeeper or
+        # an HA Voice PE per-device prompt is parsed out HERE: the room rides a
+        # contextvar so a device-less play defaults to it, and the marker is
+        # stripped from both the transcript and the replayed message so the model
+        # (and the uid-stash lookup, keyed on the raw whisper transcript) never
+        # sees it.
+        room, transcript = _split_room(_last_user(messages))
+        if room:
+            _strip_room_from_messages(messages)
+        current_room.set(room)
         uid = consume_uid(solaris_db_path, transcript) or str(
             body.get("user") or default_uid
         )
@@ -323,6 +350,17 @@ def _persist_voice_trace(
             trace_store.persist_trace(db_path, session_id, trace_id, uid, steps)
     except Exception as e:  # noqa: BLE001 — trace persistence is best-effort
         log.warn("engine.facade.trace_persist_error", uid=uid, error=str(e))
+
+
+def _strip_room_from_messages(messages: list[Any]) -> None:
+    """Strip a `[room: X]` prefix off the latest user message in place, so the
+    ephemeral `respond` path (which replays the caller's message list) never
+    feeds the marker to the model."""
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user" and msg.get("content"):
+            _, stripped = _split_room(str(msg["content"]))
+            msg["content"] = stripped
+            return
 
 
 def _last_user(messages: list[Any]) -> str:
