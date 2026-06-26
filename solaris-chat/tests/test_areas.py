@@ -492,3 +492,55 @@ async def test_ha_room_cards_exact_match_preferred(monkeypatch):
 
     assert out["room"] == "Bad"
     assert {a["entity_id"] for a in out["actuators"]} == {"light.bad_a"}
+
+
+# -- media_player_for_room (u99): a room → its cast target ---------------------
+
+
+def _registry_with_areas(monkeypatch, entity_area):
+    from solaris_chat.engine.areas import AreaSnapshot
+
+    reg = EntityRegistry("http://ha:8123", "tok")
+
+    async def _snap():
+        return AreaSnapshot(
+            rooms=sorted(set(entity_area.values())), entity_area=entity_area
+        )
+
+    monkeypatch.setattr(reg._areas, "snapshot", _snap)
+    return reg
+
+
+async def test_media_player_for_room_resolves_case_insensitive(monkeypatch):
+    reg = _registry_with_areas(
+        monkeypatch,
+        {
+            "media_player.kuche": "Küche",
+            "light.kuche": "Küche",
+            "media_player.wohnzimmer": "Wohnzimmer",
+        },
+    )
+    # case-insensitive room match → the room's media_player (not the light)
+    assert await reg.media_player_for_room("küche") == "media_player.kuche"
+    assert await reg.media_player_for_room("Wohnzimmer") == "media_player.wohnzimmer"
+
+
+async def test_media_player_for_room_prefers_non_group(monkeypatch):
+    reg = _registry_with_areas(
+        monkeypatch,
+        {
+            "media_player.wohnzimmer_group": "Wohnzimmer",
+            "media_player.wohnzimmer_sonos": "Wohnzimmer",
+        },
+    )
+    # a group player loses to the room's primary (non-group) speaker
+    assert (
+        await reg.media_player_for_room("Wohnzimmer") == "media_player.wohnzimmer_sonos"
+    )
+
+
+async def test_media_player_for_room_unknown_is_none(monkeypatch):
+    reg = _registry_with_areas(monkeypatch, {"media_player.kuche": "Küche"})
+    assert await reg.media_player_for_room("Keller") is None
+    # an empty/blank room is None too (never a stray cast)
+    assert await reg.media_player_for_room("") is None

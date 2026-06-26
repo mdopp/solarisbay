@@ -167,6 +167,49 @@ async def test_need_device_when_no_entity(tmp_path, monkeypatch):
     assert calls == []
 
 
+# -- u99: device-less radio defaults to the originating room's media_player ---
+
+
+def _tool_with_room(notes_dir, uid, *, room, resolver):
+    (play,) = build_radio_tools(
+        notes_dir,
+        "http://ha",
+        "tok",
+        lambda: uid,
+        room_getter=lambda: room,
+        room_resolver=resolver,
+    )
+    return play
+
+
+async def test_radio_defaults_to_current_room(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _, calls = _stub(monkeypatch, {"WDR 2": ("WDR 2", "http://stream/wdr2")})
+
+    async def _resolver(room):
+        return "media_player.kuche" if room == "Küche" else None
+
+    play = _tool_with_room(notes, "mdopp", room="Küche", resolver=_resolver)
+    out = json.loads(await play.handler({"station": "WDR 2"}))
+    # No entity_id named, but a current room is known → cast there.
+    assert out["ok"] is True
+    assert out["entity_id"] == "media_player.kuche"
+    assert calls[0][2] == "media_player.kuche"
+
+
+async def test_radio_no_room_no_device_need_device(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _, calls = _stub(monkeypatch, {"WDR 2": ("WDR 2", "http://stream/wdr2")})
+
+    async def _resolver(room):
+        return None
+
+    play = _tool_with_room(notes, "mdopp", room="", resolver=_resolver)
+    out = json.loads(await play.handler({"station": "WDR 2"}))
+    assert out == {"ok": False, "reason": "need_device"}
+    assert calls == []
+
+
 async def test_play_failed_never_played(tmp_path, monkeypatch):
     notes = str(tmp_path)
     out, _, calls = await _call(

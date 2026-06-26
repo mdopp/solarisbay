@@ -108,6 +108,28 @@ class EntityRegistry:
         (#537). Shares the registry's cached `AreaRegistry`."""
         return await self._areas.snapshot()
 
+    async def media_player_for_room(self, room: str) -> str | None:
+        """The room's `media_player.*` entity, or None when none/unresolvable.
+
+        Resolves the originating room of a device-less "spiele Musik" (u99) to a
+        cast target: match the area name case-insensitively in the area
+        snapshot, then return its first media_player. A non-group player wins
+        over a group (the area's primary speaker, not a whole-house cast);
+        otherwise the first by entity_id."""
+        room = room.strip()
+        if not room:
+            return None
+        snap = await self._areas.snapshot()
+        players = sorted(
+            eid
+            for eid, area in snap.entity_area.items()
+            if eid.startswith("media_player.") and area.casefold() == room.casefold()
+        )
+        if not players:
+            return None
+        non_group = [eid for eid in players if "group" not in eid]
+        return non_group[0] if non_group else players[0]
+
     async def prompt_block(self) -> str:
         """The registry block for the system prompt; "" when HA is absent or
         unreachable (the prompt simply omits the device list — fail-open)."""

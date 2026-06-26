@@ -1222,3 +1222,69 @@ async def test_chat_latest_suffix_resolves(aiohttp_client, db, soul):
         },
     )
     assert resp.status == 200
+
+
+# -- u99: a `[room: X]` prefix sets current_room + is stripped from the text --
+
+
+def test_split_room_parses_and_strips_prefix():
+    from solaris_chat.engine.facade import _split_room
+
+    assert _split_room("[room: Küche]\nspiele Musik") == ("Küche", "spiele Musik")
+    # case-insensitive marker, optional whitespace, no newline
+    assert _split_room("[ROOM: Bad] Licht an") == ("Bad", "Licht an")
+    # no prefix → untouched
+    assert _split_room("spiele Musik") == ("", "spiele Musik")
+
+
+async def test_chat_strips_room_prefix_and_sets_current_room(aiohttp_client, db, soul):
+    from solaris_chat.engine.client import current_room
+
+    seen = {}
+
+    async def _capture(args):
+        seen["room"] = current_room.get()
+        return "ok"
+
+    capture = Tool(
+        name="capture",
+        description="capture the current room",
+        parameters={"type": "object", "properties": {}},
+        handler=_capture,
+    )
+    # Pass 1 calls the capturing tool; pass 2 answers.
+    results = [
+        ChatResult(
+            content="",
+            tool_calls=[{"function": {"name": "capture", "arguments": {}}}],
+            prompt_tokens=5,
+        ),
+        ChatResult(content="Läuft.", prompt_tokens=6, completion_tokens=2),
+    ]
+    household, fake = _engine(db, soul, results, tools=[capture])
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    app = build_app(
+        hermes=household,
+        hermes_deep=deep,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "[room: Küche]\nspiele Musik"}],
+            "user": "household",
+        },
+    )
+    assert resp.status == 200
+    # The room was threaded to the tool via the contextvar...
+    assert seen["room"] == "Küche"
+    # ...and the model never saw the `[room:` marker (stripped from the user turn).
+    user_msgs = [m["content"] for m in fake.calls[0]["messages"] if m["role"] == "user"]
+    assert user_msgs
+    assert all("[room:" not in c for c in user_msgs)
+    assert any(c.rstrip().endswith("spiele Musik") for c in user_msgs)

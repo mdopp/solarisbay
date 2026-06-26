@@ -49,6 +49,10 @@ def _current_uid() -> str:
     return engine_client.current_uid.get()
 
 
+def _current_room() -> str:
+    return engine_client.current_room.get()
+
+
 def _skills_prompt(skills_dir: str) -> str:
     """Concatenated SKILL.md bodies (frontmatter stripped) — the prompt-
     assembly form of a skill pack."""
@@ -131,7 +135,12 @@ def build_engine_clients(
         # the vault as well. Household + deep share this list (not guest).
         if notes_dir:
             household_tools += build_radio_tools(
-                notes_dir, hass_url, hass_token, _current_uid
+                notes_dir,
+                hass_url,
+                hass_token,
+                _current_uid,
+                room_getter=_current_room,
+                room_resolver=registry.media_player_for_room,
             )
     if notes_dir:
         household_tools += build_notes_tools(notes_dir, _current_uid)
@@ -161,6 +170,8 @@ def build_engine_clients(
             lyrics_client,
             hass_url=hass_url,
             hass_token=hass_token,
+            room_getter=_current_room,
+            room_resolver=registry.media_player_for_room,
         )
     # First-run/owner self-enrolment (#396): with zero enrolments an unknown
     # speaker resolves to `household`, not `guest`, so the guest-onboarding path
