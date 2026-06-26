@@ -58,6 +58,11 @@ current_room: contextvars.ContextVar[str] = contextvars.ContextVar(
 # retry, small enough that a confused model can't spin.
 _MAX_PASSES = 6
 
+# Max chars kept of a PAST turn's tool result when compacting the history
+# (#623): a 1-line gist that still carries the salient value so a follow-up
+# ('und das Wohnzimmer?') can resolve against it — short, never empty.
+_GIST_CHARS = 120
+
 # A turn that emits many tool calls (e.g. 'alle Lichter' -> ha_get_state per
 # entity) dispatches them concurrently with this bound, instead of awaiting
 # each in turn. Order is still preserved (results appended in emitted order);
@@ -146,6 +151,79 @@ def _last_user_text(messages: list[dict[str, Any]]) -> str:
         if m.get("role") == "user":
             return str(m.get("content") or "")
     return ""
+
+
+def _gist(content: str) -> str:
+    """A 1-line, length-capped gist of a verbose tool result (#623).
+
+    Whitespace-collapsed and truncated to `_GIST_CHARS` so a past turn's full
+    JSON shrinks to a readable summary that still carries the salient value
+    (a follow-up referencing it can resolve). Never empty for non-empty input."""
+    flat = " ".join((content or "").split())
+    if len(flat) > _GIST_CHARS:
+        return flat[:_GIST_CHARS].rstrip() + "…"
+    return flat
+
+
+def compact_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compact the verbose tool args/results of PRIOR turns (#623).
+
+    The small household model carries every past turn's full MCP tool params +
+    JSON results — bloat that grows the prefill. This pass keeps the user
+    question and the assistant answer TEXT verbatim, but for messages BEFORE the
+    current turn (everything up to the LAST user message):
+      - a tool-role message's full JSON `content` becomes `[tool <name>] <gist>`
+        (tool name + a 1-line, length-capped gist — salient, never empty), and
+      - an assistant message's `tool_calls` args are stripped to just the tool
+        name(s) (the model doesn't need the past full arguments).
+    The CURRENT turn (the last user message and everything after it — this
+    turn's fresh tool calls and their results) is left FULL, since the model
+    needs those to answer now. Pure: returns a new list, never mutates input."""
+    boundary = len(messages)
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            boundary = i
+            break
+
+    # Tool names for the result rows: the store's reloaded history drops
+    # `tool_name` (it persists only role/content/tool_calls), so recover the
+    # name from each preceding assistant tool_calls — the i-th tool result
+    # answers the i-th call in the run's emission order.
+    out: list[dict[str, Any]] = []
+    pending_names: list[str] = []
+    for i, m in enumerate(messages):
+        if i >= boundary:
+            out.append(m)
+            continue
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            pending_names = [
+                str((tc.get("function") or {}).get("name") or "")
+                for tc in m["tool_calls"]
+            ]
+        if role == "tool":
+            name = str(m.get("tool_name") or "") or (
+                pending_names.pop(0) if pending_names else ""
+            )
+            new = dict(m)
+            label = f"[tool {name}] " if name else "[tool] "
+            new["content"] = f"{label}{_gist(str(m.get('content') or ''))}"
+            out.append(new)
+        elif role == "assistant" and m.get("tool_calls"):
+            new = dict(m)
+            new["tool_calls"] = [
+                {
+                    "function": {
+                        "name": ((tc.get("function") or {}).get("name") or ""),
+                        "arguments": {},
+                    }
+                }
+                for tc in m["tool_calls"]
+            ]
+            out.append(new)
+        else:
+            out.append(m)
+    return out
 
 
 # A trailing `FOLLOWUPS: a | b | c` line the SOUL invites the model to emit
@@ -682,8 +760,13 @@ class EngineClient:
         model = self._model()
         for _ in range(_MAX_PASSES):
             result = None
+            # Trim the verbose tool args/results of PRIOR turns before the model
+            # sees them (#623) — this turn's own tool results stay full. Recompute
+            # each pass: a freshly appended tool result is "current" until the
+            # next user turn, so the boundary is always the last user message.
+            sent = compact_history(messages)
             async for kind, payload in self._ollama.stream(
-                model, messages, tools=tools, think=think, options=options
+                model, sent, tools=tools, think=think, options=options
             ):
                 if kind == "delta":
                     yield {"type": "assistant.delta", "data": {"delta": payload}}
@@ -694,7 +777,7 @@ class EngineClient:
                 session_id=session_id,
                 profile=self._profile.name,
                 model=model,
-                messages=messages,
+                messages=sent,
                 tools=tools,
                 content=result.content,
                 thinking=result.thinking,
