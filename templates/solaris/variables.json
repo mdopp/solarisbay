@@ -44,8 +44,8 @@
   },
   "THOROUGH_MODEL": {
     "type": "text",
-    "description": "The engine's thorough model \u2014 \"Solaris Gr\u00fcndlich\" chats, the admin persona and the night crons (thinks by default). `gemma4:12b` is the larger, more capable model for explanations and multi-step reasoning.",
-    "default": "gemma4:12b"
+    "description": "The engine's thorough/\"thinking\" model \u2014 \"Solaris Gr\u00fcndlich\" chats, the admin persona and the night crons (thinks by default). Defaults to `gemma4:e4b` \u2014 the SAME tag as FAST_MODEL \u2014 so a single resident LLM serves both the fast and the thinking paths. On the box's 16 GB GPU a warm `gemma4:12b` (8 GB) alongside `gemma4:e4b` (3.3 GB) plus Whisper STT + TTS overflows VRAM and starves Whisper (cudaError out of memory \u2192 voice fails, #610); keeping one resident LLM leaves headroom. Point this at `gemma4:12b` only if you free GPU memory elsewhere (e.g. Whisper on CPU).",
+    "default": "gemma4:e4b"
   },
   "TTS_VOICES": {
     "type": "text",

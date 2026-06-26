@@ -172,8 +172,11 @@ def test_variables_renamed_to_engine_era(variables):
 
 
 def test_model_map_defaults(variables):
+    # Both the fast and thinking paths default to gemma4:e4b — a single
+    # resident LLM so the 16 GB GPU keeps headroom for Whisper STT + TTS
+    # (a warm gemma4:12b alongside e4b overflows VRAM, #610).
     assert variables["FAST_MODEL"]["default"] == "gemma4:e4b"
-    assert variables["THOROUGH_MODEL"]["default"] == "gemma4:12b"
+    assert variables["THOROUGH_MODEL"]["default"] == "gemma4:e4b"
 
 
 def test_post_deploy_is_engine_era(post_deploy_src):
