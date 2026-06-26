@@ -15,7 +15,9 @@ from pathlib import Path
 
 from solaris_chat.engine.tools import radio as radio_mod
 from solaris_chat.engine.tools.radio import (
+    _read_default_device,
     _read_favorite,
+    _write_default_device,
     _write_favorite,
     build_radio_tools,
 )
@@ -155,7 +157,8 @@ async def test_station_not_found_does_not_cast(tmp_path, monkeypatch):
     assert calls == []
 
 
-async def test_need_device_when_no_entity(tmp_path, monkeypatch):
+async def test_need_default_device_when_no_entity_no_room(tmp_path, monkeypatch):
+    # No device, no room, no stored default → ask for the default device (#622).
     out, _, calls = await _call(
         str(tmp_path),
         "mdopp",
@@ -163,7 +166,7 @@ async def test_need_device_when_no_entity(tmp_path, monkeypatch):
         monkeypatch,
         {"WDR 2": ("WDR 2", "http://stream/wdr2")},
     )
-    assert out == {"ok": False, "reason": "need_device"}
+    assert out == {"ok": False, "reason": "need_default_device"}
     assert calls == []
 
 
@@ -197,7 +200,7 @@ async def test_radio_defaults_to_current_room(tmp_path, monkeypatch):
     assert calls[0][2] == "media_player.kuche"
 
 
-async def test_radio_no_room_no_device_need_device(tmp_path, monkeypatch):
+async def test_radio_no_room_no_device_need_default_device(tmp_path, monkeypatch):
     notes = str(tmp_path)
     _, calls = _stub(monkeypatch, {"WDR 2": ("WDR 2", "http://stream/wdr2")})
 
@@ -206,7 +209,7 @@ async def test_radio_no_room_no_device_need_device(tmp_path, monkeypatch):
 
     play = _tool_with_room(notes, "mdopp", room="", resolver=_resolver)
     out = json.loads(await play.handler({"station": "WDR 2"}))
-    assert out == {"ok": False, "reason": "need_device"}
+    assert out == {"ok": False, "reason": "need_default_device"}
     assert calls == []
 
 
@@ -237,6 +240,86 @@ async def test_favorite_note_roundtrips_name_and_url(tmp_path):
     }
     # Absent favorite reads back as None.
     assert _read_favorite(notes, "someone-else") is None
+
+
+# -- u103 (#622): learned per-user default playback device -------------------
+
+
+async def test_radio_explicit_device_stores_default(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    # First explicit device with no default yet → casts there AND stores it.
+    out, _, calls = await _call(
+        notes,
+        "mdopp",
+        {"station": "WDR 2", "entity_id": "media_player.kuche"},
+        monkeypatch,
+        {"WDR 2": ("WDR 2", "http://stream/wdr2")},
+    )
+    assert out["ok"] is True and out["entity_id"] == "media_player.kuche"
+    assert calls[0][2] == "media_player.kuche"
+    assert _read_default_device(notes, "mdopp") == "media_player.kuche"
+
+
+async def test_radio_deviceless_reuses_stored_default(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _write_default_device(notes, "mdopp", "media_player.bad")
+    _write_favorite(notes, "mdopp", "WDR 2", "http://stream/wdr2")
+    # No device, no room, but a stored default → cast there (no need_default_device).
+    out, _, calls = await _call(notes, "mdopp", {}, monkeypatch, {})
+    assert out["ok"] is True
+    assert out["entity_id"] == "media_player.bad"
+    assert calls[0][2] == "media_player.bad"
+
+
+async def test_radio_explicit_device_oneoff_keeps_stored_default(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _write_default_device(notes, "mdopp", "media_player.bad")
+    # An explicit device when a default already exists is a one-off; default stays.
+    out, _, calls = await _call(
+        notes,
+        "mdopp",
+        {"station": "WDR 2", "entity_id": "media_player.kuche"},
+        monkeypatch,
+        {"WDR 2": ("WDR 2", "http://stream/wdr2")},
+    )
+    assert out["entity_id"] == "media_player.kuche"
+    assert calls[0][2] == "media_player.kuche"
+    assert _read_default_device(notes, "mdopp") == "media_player.bad"
+
+
+async def test_radio_room_wins_over_stored_default(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _write_default_device(notes, "mdopp", "media_player.bad")
+    _, calls = _stub(monkeypatch, {"WDR 2": ("WDR 2", "http://stream/wdr2")})
+
+    async def _resolver(room):
+        return "media_player.kuche" if room == "Küche" else None
+
+    play = _tool_with_room(notes, "mdopp", room="Küche", resolver=_resolver)
+    out = json.loads(await play.handler({"station": "WDR 2"}))
+    # Current room takes precedence over the stored default.
+    assert out["entity_id"] == "media_player.kuche"
+    assert calls[0][2] == "media_player.kuche"
+    assert _read_default_device(notes, "mdopp") == "media_player.bad"
+
+
+async def test_radio_default_device_is_per_user(tmp_path, monkeypatch):
+    notes = str(tmp_path)
+    _write_default_device(notes, "alice", "media_player.alice")
+    # Caller B has no default of their own and must NOT read A's.
+    out, _, calls = await _call(notes, "bob", {}, monkeypatch, {})
+    assert out == {"ok": False, "reason": "need_default_device"}
+    assert calls == []
+    assert _read_default_device(notes, "bob") is None
+
+
+def test_default_device_note_roundtrips(tmp_path):
+    notes = str(tmp_path)
+    assert _read_default_device(notes, "mdopp") is None
+    _write_default_device(notes, "mdopp", "media_player.kuche")
+    assert _read_default_device(notes, "mdopp") == "media_player.kuche"
+    fav = Path(notes) / "users" / "mdopp" / "preferences" / "default-device.md"
+    assert fav.is_file()
 
 
 def test_write_favorite_sanitizes_newline_injection(tmp_path):

@@ -10,9 +10,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 from solaris_chat.engine.tools import music_query as music_query_mod
 from solaris_chat.engine.tools.music_query import build_music_query_tools
+from solaris_chat.engine.tools.radio import (
+    _read_default_device,
+    _write_default_device,
+)
 
 # Migration 0016 subset (entities/facts/concepts) replayed locally — no alembic.
 _SCHEMA = """
@@ -555,10 +560,15 @@ async def test_song_lyrics_description_steers(tmp_path):
 # ---- play_music (#604): cast a library track on a media_player --------------
 
 
-def _play_tool(db, uid, client):
+def _play_tool(db, uid, client, *, notes_dir=""):
     """The play_music tool (registered only with a client + HA creds)."""
     tools = build_music_query_tools(
-        db, lambda: uid, client, hass_url="http://ha", hass_token="tok"
+        db,
+        lambda: uid,
+        client,
+        hass_url="http://ha",
+        hass_token="tok",
+        notes_dir=notes_dir,
     )
     (play,) = [t for t in tools if t.name == "play_music"]
     return play
@@ -581,9 +591,11 @@ async def _noop_sleep(_seconds):
     return None
 
 
-async def _call_play(db, uid, args, client, monkeypatch, *, ok=True):
+async def _call_play(db, uid, args, client, monkeypatch, *, ok=True, notes_dir=""):
     calls = _stub_play(monkeypatch, ok=ok)
-    out = json.loads(await _play_tool(db, uid, client).handler(args))
+    out = json.loads(
+        await _play_tool(db, uid, client, notes_dir=notes_dir).handler(args)
+    )
     return out, calls
 
 
@@ -654,7 +666,7 @@ async def test_play_music_missing_device_no_ha_call(tmp_path, monkeypatch):
     out, calls = await _call_play(
         db, "mdopp", {"title": "Bohemian Rhapsody"}, _FakeJellyfin(), monkeypatch
     )
-    assert out == {"ok": False, "reason": "need_device"}
+    assert out == {"ok": False, "reason": "need_default_device"}
     assert calls == []
 
 
@@ -713,7 +725,7 @@ async def test_play_music_per_user_scoping(tmp_path, monkeypatch):
 # -- u99: device-less play defaults to the originating room's media_player ----
 
 
-def _play_tool_with_room(db, uid, client, *, room, resolver):
+def _play_tool_with_room(db, uid, client, *, room, resolver, notes_dir=""):
     tools = build_music_query_tools(
         db,
         lambda: uid,
@@ -722,6 +734,7 @@ def _play_tool_with_room(db, uid, client, *, room, resolver):
         hass_token="tok",
         room_getter=lambda: room,
         room_resolver=resolver,
+        notes_dir=notes_dir,
     )
     (play,) = [t for t in tools if t.name == "play_music"]
     return play
@@ -763,20 +776,119 @@ async def test_play_music_named_device_wins_over_room(tmp_path, monkeypatch):
     assert calls[0][2] == "media_player.bad"
 
 
-async def test_play_music_no_room_no_device_need_device(tmp_path, monkeypatch):
+async def test_play_music_no_room_no_device_need_default_device(tmp_path, monkeypatch):
     db = _db(tmp_path)
     calls = _stub_play(monkeypatch)
 
     async def _resolver(room):
         return None
 
-    # No entity_id AND no current room → need_device (unchanged behavior).
+    # No entity_id AND no current room AND no stored default → need_default_device.
     play = _play_tool_with_room(
-        db, "mdopp", _FakeJellyfin(), room="", resolver=_resolver
+        db,
+        "mdopp",
+        _FakeJellyfin(),
+        room="",
+        resolver=_resolver,
+        notes_dir=str(tmp_path),
     )
     out = json.loads(await play.handler({"title": "Bohemian Rhapsody"}))
-    assert out == {"ok": False, "reason": "need_device"}
+    assert out == {"ok": False, "reason": "need_default_device"}
     assert calls == []
+
+
+# -- u103 (#622): learned per-user default playback device -------------------
+
+
+async def test_play_music_explicit_device_stores_default(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    notes = str(tmp_path)
+    # First explicit device with no default yet -> casts there AND stores it.
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"title": "Bohemian Rhapsody", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+        notes_dir=notes,
+    )
+    assert out["ok"] is True and out["entity_id"] == "media_player.kuche"
+    assert calls[0][2] == "media_player.kuche"
+    assert _read_default_device(notes, "mdopp") == "media_player.kuche"
+
+
+async def test_play_music_deviceless_reuses_stored_default(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    notes = str(tmp_path)
+    _write_default_device(notes, "mdopp", "media_player.bad")
+    # No device, no room, but a stored default -> cast there (no need_default_device).
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"title": "Bohemian Rhapsody"},
+        _FakeJellyfin(),
+        monkeypatch,
+        notes_dir=notes,
+    )
+    assert out["ok"] is True and out["entity_id"] == "media_player.bad"
+    assert calls[0][2] == "media_player.bad"
+
+
+async def test_play_music_explicit_oneoff_keeps_stored_default(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    notes = str(tmp_path)
+    _write_default_device(notes, "mdopp", "media_player.bad")
+    # An explicit device when a default already exists is a one-off; default stays.
+    out, calls = await _call_play(
+        db,
+        "mdopp",
+        {"title": "Bohemian Rhapsody", "entity_id": "media_player.kuche"},
+        _FakeJellyfin(),
+        monkeypatch,
+        notes_dir=notes,
+    )
+    assert out["entity_id"] == "media_player.kuche"
+    assert calls[0][2] == "media_player.kuche"
+    assert _read_default_device(notes, "mdopp") == "media_player.bad"
+
+
+async def test_play_music_room_wins_over_stored_default(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    notes = str(tmp_path)
+    _write_default_device(notes, "mdopp", "media_player.bad")
+    calls = _stub_play(monkeypatch)
+
+    async def _resolver(room):
+        return "media_player.kuche" if room == "Küche" else None
+
+    play = _play_tool_with_room(
+        db, "mdopp", _FakeJellyfin(), room="Küche", resolver=_resolver, notes_dir=notes
+    )
+    out = json.loads(await play.handler({"title": "Bohemian Rhapsody"}))
+    # Current room takes precedence over the stored default.
+    assert out["entity_id"] == "media_player.kuche"
+    assert calls[0][2] == "media_player.kuche"
+    assert _read_default_device(notes, "mdopp") == "media_player.bad"
+
+
+async def test_play_music_default_device_is_per_user(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    notes = str(tmp_path)
+    _write_default_device(notes, "alice", "media_player.alice")
+    # Caller B has no default of their own and must NOT read A's.
+    out, calls = await _call_play(
+        db,
+        "bob",
+        {"title": "Bohemian Rhapsody"},
+        _FakeJellyfin(),
+        monkeypatch,
+        notes_dir=notes,
+    )
+    assert out == {"ok": False, "reason": "need_default_device"}
+    assert calls == []
+    assert _read_default_device(notes, "bob") is None
+    fav = Path(notes) / "users" / "alice" / "preferences" / "default-device.md"
+    assert fav.is_file()  # A's note untouched
 
 
 async def test_play_music_no_stream_when_url_none(tmp_path, monkeypatch):
@@ -986,7 +1098,7 @@ async def test_play_music_need_device_when_no_entity(tmp_path, monkeypatch):
     out, calls = await _call_play(
         db, "mdopp", {"artist": "Queen"}, _FakeJellyfin(), monkeypatch
     )
-    assert out == {"ok": False, "reason": "need_device"}
+    assert out == {"ok": False, "reason": "need_default_device"}
     assert calls == []
 
 
