@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/mdopp/solarisbay/compare/v0.17.0...v0.18.0) (2026-06-26)
+
+
+### Features
+
+* **chat:** fall back to a single room device when a Cast-group play 500s ([b74c8f8](https://github.com/mdopp/solarisbay/commit/b74c8f804f31cdb49b196800bf16273b83924929))
+
+
+### Bug Fixes
+
+* **chat:** group-cast fallback — retry a 500 on a single same-area device ([d5809fb](https://github.com/mdopp/solarisbay/commit/d5809fbfdb3a74aba9166a8f998e3ac4ea8edae1)), closes [#638](https://github.com/mdopp/solarisbay/issues/638)
+
 ## [0.17.0](https://github.com/mdopp/solarisbay/compare/v0.16.0...v0.17.0) (2026-06-26)
 
 
