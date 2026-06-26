@@ -98,11 +98,17 @@ class JellyfinMusicClient(Protocol):
         has none (404/empty). Fetched live — no bulk ingest (#593)."""
         ...
 
-    async def stream_url(self, audio_id: str) -> str | None:
+    async def stream_url(self, audio_id: str, *, static: bool = True) -> str | None:
         """A castable HTTP stream URL for the track, or ``None`` with no token.
 
         Auth in the query string (a Cast device can't send the X-Emby-Token
-        header), so a media_player.play_media can stream it (#604)."""
+        header), so a media_player.play_media can stream it (#604).
+
+        ``static=True`` (default) returns the DIRECT file form
+        (`/Audio/{id}/stream?static=true`) — no transcode, which Cast GROUPS
+        play where the on-the-fly transcode 500s (#573); ``static=False``
+        returns the `/universal` transcode form (the group-unfriendly fallback
+        for any container Cast can't play directly)."""
         ...
 
 
@@ -265,15 +271,26 @@ class RestJellyfinMusicClient:
             return None
         return _lyric_text(payload)
 
-    async def stream_url(self, audio_id: str) -> str | None:
+    async def stream_url(self, audio_id: str, *, static: bool = True) -> str | None:
         """A castable HTTP stream URL with auth in the query string (#604).
 
         A Cast device fetches the URL itself and can't send the X-Emby-Token
         header, so the token rides the query. ``None`` when authentication
-        yields no token."""
+        yields no token.
+
+        ``static=True`` (default) is the DIRECT/original-file form
+        (`/Audio/{id}/stream?static=true`) — no transcode; a Cast GROUP plays it
+        where the `/universal` transcode returns HA 500 (#573). ``static=False``
+        is the `/universal` transcode form, used as the on-failure fallback for a
+        container Cast can't play directly."""
         await self.authenticate()
         if not self._token:
             return None
+        if static:
+            return (
+                f"{self._cast_base_url}/Audio/{audio_id}/stream"
+                f"?static=true&api_key={self._token}"
+            )
         return (
             f"{self._cast_base_url}/Audio/{audio_id}/universal"
             f"?api_key={self._token}&UserId={self._user_id}"

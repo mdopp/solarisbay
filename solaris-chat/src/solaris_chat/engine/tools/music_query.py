@@ -47,7 +47,7 @@ class LyricsClient(Protocol):
 
     async def lyrics(self, audio_id: str) -> str | None: ...
 
-    async def stream_url(self, audio_id: str) -> str | None: ...
+    async def stream_url(self, audio_id: str, *, static: bool = True) -> str | None: ...
 
 
 _SONG_CAP = 50
@@ -444,7 +444,7 @@ def build_music_query_tools(
             return None
         return pick["canonical_name"], audio_id
 
-    async def _cast(entity_id: str, url: str) -> dict[str, Any]:
+    async def _cast_url(entity_id: str, url: str) -> dict[str, Any]:
         # Cast play_media is intermittently flaky (#573); retry a bounded number
         # of times with a short backoff and surface the last HA error on failure.
         result: dict[str, Any] = {}
@@ -460,6 +460,21 @@ def build_music_query_tools(
                 return result
             if attempt < _PLAY_RETRIES:
                 await asyncio.sleep(_PLAY_BACKOFF_S)
+        return result
+
+    async def _cast(entity_id: str, audio_id: str) -> dict[str, Any]:
+        # Try the STATIC (direct/original-file) stream FIRST — no transcode, so a
+        # Cast GROUP plays it where the /universal transcode 500s (#573/#604) — and
+        # only fall back to the /universal (transcode) form if static play fails
+        # (a container Cast can't play directly). Each form gets the bounded retry.
+        result: dict[str, Any] = {}
+        for static in (True, False):
+            url = await jellyfin_client.stream_url(audio_id, static=static)
+            if not url:
+                continue
+            result = await _cast_url(entity_id, url)
+            if result.get("ok"):
+                return result
         return result
 
     async def play_music(args: dict[str, Any]) -> str:
@@ -513,10 +528,11 @@ def build_music_query_tools(
             conn.close()
         if jellyfin_client is None or not audio_id:
             return json.dumps({"ok": False, "reason": "no_stream"})
-        url = await jellyfin_client.stream_url(audio_id)
-        if not url:
+        # No castable URL at all (no token) -> honest no_stream, not play_failed.
+        if not await jellyfin_client.stream_url(audio_id, static=True):
             return json.dumps({"ok": False, "reason": "no_stream"})
-        result = await _cast(entity_id, url)
+        # Cast static-first, /universal on failure (the group-friendly order).
+        result = await _cast(entity_id, audio_id)
         if not result.get("ok"):
             return json.dumps(
                 {
