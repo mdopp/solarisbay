@@ -244,6 +244,10 @@ spec:
     # empty JELLYFIN_URL disables the adapter.
     - name: JELLYFIN_URL
       value: "{{JELLYFIN_URL}}"
+    # A castable stream URL must use a base the Cast device can reach on the LAN,
+    # not the engine's localhost JELLYFIN_URL (#604). Empty reuses JELLYFIN_URL.
+    - name: JELLYFIN_CAST_URL
+      value: "{{JELLYFIN_CAST_URL}}"
     - name: JELLYFIN_USERNAME
       value: "{{JELLYFIN_USERNAME}}"
     - name: JELLYFIN_PASSWORD

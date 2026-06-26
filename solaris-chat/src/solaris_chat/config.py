@@ -69,6 +69,7 @@ class Settings:
     carddav_username: str
     carddav_password: str
     jellyfin_url: str
+    jellyfin_cast_url: str
     jellyfin_username: str
     jellyfin_password: str
     jellyfin_library_owners: dict[str, str]
@@ -205,6 +206,13 @@ class Settings:
             # band/song concepts. Reuses the existing JELLYFIN_* stack vars
             # (username/password, not an API key). Empty JELLYFIN_URL ⇒ skipped.
             jellyfin_url=os.environ.get("JELLYFIN_URL", "").strip(),
+            # A castable stream URL must use a base the Cast device can reach on
+            # the LAN, not the engine's localhost (#604). Defaults to JELLYFIN_URL
+            # when unset, so the engine's own (fast, local) API calls are unchanged.
+            jellyfin_cast_url=(
+                os.environ.get("JELLYFIN_CAST_URL", "").strip()
+                or os.environ.get("JELLYFIN_URL", "").strip()
+            ),
             jellyfin_username=os.environ.get("JELLYFIN_USERNAME", "").strip(),
             jellyfin_password=os.environ.get("JELLYFIN_PASSWORD", "").strip(),
             # Per-library music ownership (#576): a Jellyfin library NAME -> the
