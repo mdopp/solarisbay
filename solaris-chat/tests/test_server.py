@@ -1945,11 +1945,9 @@ def test_shipped_pack_groups_into_the_four_kinds():
     }
     assert by_kind["hook"] == {
         "media-ingestion-multimodal",
-        "guest-onboarding",
         "topic-suggester",
         "room-enrollment",
-        "resident-registration",
-        "self-enrollment",
+        "enrollment",
     }
     assert by_kind["skill"] == {
         "status",
