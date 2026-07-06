@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import numpy as np
 import pytest
 
 from solaris_chat.engine.tools.notes import build_notes_tools
@@ -39,6 +40,10 @@ CREATE TABLE concepts (
   id TEXT PRIMARY KEY, ref_id TEXT NOT NULL,
   ref_kind TEXT NOT NULL CHECK (ref_kind IN ('entity', 'event')),
   okf_path TEXT NOT NULL, embedding_id TEXT, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE okf_vectors (
+  embedding_id TEXT PRIMARY KEY, concept_id TEXT NOT NULL, model TEXT NOT NULL,
+  dim INTEGER NOT NULL, vector BLOB NOT NULL,
   updated TEXT NOT NULL DEFAULT (datetime('now')));
 """
 
@@ -81,15 +86,17 @@ def _add_entity(db_path, ent_id, name, resident, aliases, okf_path):
     conn.close()
 
 
-def _search_tool(root, db_path, uid):
-    for tool in build_notes_tools(str(root), lambda: uid, db_path=db_path):
+def _search_tool(root, db_path, uid, ollama=None):
+    for tool in build_notes_tools(
+        str(root), lambda: uid, db_path=db_path, ollama=ollama
+    ):
         if tool.name == "notes_search":
             return tool
     raise AssertionError("notes_search tool missing")
 
 
-async def _search(root, db_path, uid, query, **kw):
-    tool = _search_tool(root, db_path, uid)
+async def _search(root, db_path, uid, query, ollama=None, **kw):
+    tool = _search_tool(root, db_path, uid, ollama)
     return json.loads(await tool.handler({"query": query, **kw}))
 
 
@@ -178,3 +185,77 @@ async def test_topic_anchor_boosts_ordering(env):
     hits = await _search(root, db_path, "household", "urlaub #urlaub")
     order = [h["path"] for h in hits]
     assert order.index("tagged.md") < order.index("plain.md")
+
+
+# ---- semantic branch (PR 2) --------------------------------------------------
+
+
+class _FakeOllama:
+    def __init__(self, vector, delay=0.0):
+        self._vector = vector
+        self._delay = delay
+
+    async def embed(self, model, inputs):
+        import asyncio
+
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return [self._vector]
+
+
+def _add_vector(db_path, embedding_id, ref_id, ref_kind, vector):
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE concepts SET embedding_id = ? WHERE ref_id = ? AND ref_kind = ?",
+        (embedding_id, ref_id, ref_kind),
+    )
+    conn.execute(
+        "INSERT INTO okf_vectors (embedding_id, concept_id, model, dim, vector)"
+        " VALUES (?, ?, 'nomic-embed-text', ?, ?)",
+        (
+            embedding_id,
+            ref_id,
+            len(vector),
+            np.asarray(vector, dtype=np.float32).tobytes(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+async def test_semantic_hit_when_fuzzy_sparse(env):
+    db_path, root = env
+    _okf_file(root, "okf/people/anna.md", "Anna")
+    _add_entity(db_path, "e1", "Anna", "household", [], "okf/people/anna.md")
+    _add_vector(db_path, "emb1", "e1", "entity", [1.0, 0.0, 0.0])
+    ollama = _FakeOllama([1.0, 0.0, 0.0])
+    # 'kletterfreundin' matches nothing fuzzy/alias → semantic branch runs.
+    hits = await _search(root, db_path, "household", "kletterfreundin", ollama=ollama)
+    assert any(h["path"] == "okf/people/anna.md" for h in hits)
+
+
+async def test_semantic_skipped_when_enough_fuzzy_hits(env):
+    db_path, root = env
+    for i in range(3):
+        (root / f"n{i}.md").write_text(f"# Urlaub {i}\n\nurlaub urlaub urlaub\n")
+    _okf_file(root, "okf/people/anna.md", "Anna")
+    _add_entity(db_path, "e1", "Anna", "household", [], "okf/people/anna.md")
+    _add_vector(db_path, "emb1", "e1", "entity", [1.0, 0.0, 0.0])
+
+    class _Boom:
+        async def embed(self, model, inputs):
+            raise AssertionError("semantic branch must be skipped")
+
+    hits = await _search(root, db_path, "household", "urlaub", ollama=_Boom())
+    assert len(hits) >= 3
+
+
+async def test_semantic_timeout_degrades(env):
+    db_path, root = env
+    _okf_file(root, "okf/people/anna.md", "Anna")
+    _add_entity(db_path, "e1", "Anna", "household", [], "okf/people/anna.md")
+    _add_vector(db_path, "emb1", "e1", "entity", [1.0, 0.0, 0.0])
+    slow = _FakeOllama([1.0, 0.0, 0.0], delay=5.0)
+    # embed exceeds the 2s guard → degrade to structured (empty) result.
+    hits = await _search(root, db_path, "household", "kletterfreundin", ollama=slow)
+    assert hits == []

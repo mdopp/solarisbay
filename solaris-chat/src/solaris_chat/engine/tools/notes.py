@@ -10,16 +10,21 @@ as further tools without touching the loop.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from solaris_chat import notes_search
 from solaris_chat.engine.fuzzy import fuzzy_score, tokens
 from solaris_chat.engine.knowledge import projection
+from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.tools import Tool
+from solaris_chat.logging import log
 from solaris_chat.notes_search import SHARED_UID, _USER_PATH_RE
 
 _MAX_BYTES = 256 * 1024
@@ -27,11 +32,20 @@ _MAX_HITS = 8
 
 # Structured-merge scores (#651): alias-exact and event-range hits are high-
 # precision, so they outrank fuzzy vault hits; an #topic anchor boosts a fuzzy
-# note.
+# note. Semantic hits (PR 2) carry their raw cosine as the score.
 _ALIAS_SCORE = 0.95
 _EVENT_SCORE = 0.9
 _ANCHOR_BOOST = 0.3
 _ANCHOR_BASE = 0.6
+
+# Semantic branch (#651/#650): only run when fuzzy+alias found fewer than this,
+# cap the query embed at this many seconds (voice hot path + model-eviction
+# risk), and keep only cosines at/above the floor.
+_SEMANTIC_FLOOR_HITS = 3
+_EMBED_TIMEOUT_S = 2.0
+_SEMANTIC_TOP_K = 5
+_SEMANTIC_MIN_COS = 0.35
+_EMBED_MODEL = "nomic-embed-text"
 
 _ANCHOR_TOPIC_RE = re.compile(r"#([\w/-]+)")
 _ANCHOR_PERSON_RE = re.compile(r"@(\w+)")
@@ -85,7 +99,9 @@ def _render_okf_hit(
     }
 
 
-def build_notes_tools(notes_dir: str, uid_getter, db_path: str = "") -> list[Tool]:
+def build_notes_tools(
+    notes_dir: str, uid_getter, db_path: str = "", ollama: OllamaChat | None = None
+) -> list[Tool]:
     root = Path(notes_dir)
 
     def _fuzzy_hits(
@@ -182,6 +198,64 @@ def build_notes_tools(notes_dir: str, uid_getter, db_path: str = "") -> list[Too
                 hits.append(hit)
         return hits
 
+    async def _semantic_hits(query: str, caller_uid: str) -> list[dict[str, Any]]:
+        """Cosine top-k over `okf_vectors` — the guarded fallback (#651).
+
+        Runs only when the cheaper sources came up short; the query embed is
+        capped by `_EMBED_TIMEOUT_S` because it sits on the voice hot path and a
+        cold `nomic-embed-text` can evict a chat model. Timeout / OllamaError /
+        missing model → degrade to the structured result (empty here)."""
+        if not db_path or ollama is None:
+            return []
+        conn = projection.open_conn(db_path)
+        try:
+            if not conn.execute("SELECT EXISTS(SELECT 1 FROM okf_vectors)").fetchone()[
+                0
+            ]:
+                return []
+            rows = conn.execute(
+                "SELECT v.vector, c.okf_path FROM okf_vectors v"
+                " JOIN concepts c ON c.embedding_id = v.embedding_id"
+                " LEFT JOIN entities en"
+                " ON c.ref_kind = 'entity' AND en.id = c.ref_id"
+                " LEFT JOIN events ev ON c.ref_kind = 'event' AND ev.id = c.ref_id"
+                " WHERE COALESCE(en.resident_uid, ev.resident_uid) IN (?, ?)",
+                (caller_uid, SHARED_UID),
+            ).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return []
+        try:
+            embeds = await asyncio.wait_for(
+                ollama.embed(_EMBED_MODEL, [query]), _EMBED_TIMEOUT_S
+            )
+        except (TimeoutError, OllamaError, OSError):
+            log.info("engine.notes_search.embed_skipped")
+            return []
+        if not embeds:
+            return []
+        q = np.asarray(embeds[0], dtype=np.float32)
+        qn = float(np.linalg.norm(q))
+        if qn == 0.0:
+            return []
+        scored: list[tuple[float, str]] = []
+        for row in rows:
+            vec = np.frombuffer(row["vector"], dtype=np.float32)
+            vn = float(np.linalg.norm(vec))
+            if vn == 0.0 or vec.shape != q.shape:
+                continue
+            cos = float(np.dot(q, vec) / (qn * vn))
+            if cos >= _SEMANTIC_MIN_COS:
+                scored.append((cos, row["okf_path"]))
+        scored.sort(key=lambda s: s[0], reverse=True)
+        hits: list[dict[str, Any]] = []
+        for cos, okf_path in scored[:_SEMANTIC_TOP_K]:
+            hit = _render_okf_hit(root, okf_path, caller_uid, cos)
+            if hit is not None:
+                hits.append(hit)
+        return hits
+
     async def search(args: dict[str, Any]) -> str:
         query = str(args.get("query") or "").strip()
         if not query or not root.is_dir():
@@ -234,6 +308,13 @@ def build_notes_tools(notes_dir: str, uid_getter, db_path: str = "") -> list[Too
             score = hit["score"]
             if rel not in merged or score > merged[rel][0]:
                 merged[rel] = (score, hit)
+
+        # Semantic fallback (#651/#650): only when the cheap sources came up short.
+        if len(merged) < _SEMANTIC_FLOOR_HITS:
+            for hit in await _semantic_hits(query, caller_uid):
+                rel = hit["path"]
+                if rel not in merged:
+                    merged[rel] = (hit["score"], hit)
 
         ordered = sorted(merged.values(), key=lambda s: s[0], reverse=True)
         return json.dumps([h for _, h in ordered[:_MAX_HITS]], ensure_ascii=False)
