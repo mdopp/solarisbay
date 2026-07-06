@@ -193,6 +193,8 @@ def build_engine_clients(
             room_resolver=registry.media_player_for_room,
             area_fallback=registry.media_player_fallbacks,
             notes_dir=notes_dir,
+            recorder=recorder,
+            session_getter=_current_session,
         )
     # First-run/owner self-enrolment (#396): with zero enrolments an unknown
     # speaker resolves to `household`, not `guest`, so the guest-onboarding path

@@ -206,7 +206,8 @@ async def _call(db, uid, args):
 
 
 async def _call_lyrics(db, uid, args, client):
-    (t,) = build_music_query_tools(db, lambda: uid, client)
+    tools = build_music_query_tools(db, lambda: uid, client)
+    (t,) = [t for t in tools if t.name == "music_query"]
     return json.loads(await t.handler(args))
 
 
@@ -601,11 +602,12 @@ async def _call_play(db, uid, args, client, monkeypatch, *, ok=True, notes_dir="
 
 async def test_play_music_registered_only_with_client_and_creds(tmp_path):
     db = _db(tmp_path)
-    # No HA creds -> only music_query, no play_music.
+    # No HA creds -> no play_music (needs a cast target); playlist_add still
+    # registers on a live client alone (no HA cast involved).
     names = {
         t.name for t in build_music_query_tools(db, lambda: "mdopp", _FakeJellyfin())
     }
-    assert names == {"music_query"}
+    assert names == {"music_query", "playlist_add"}
     # Client + creds -> play_music registers.
     names = {
         t.name
@@ -631,6 +633,7 @@ async def test_play_music_title_casts_stream_url(tmp_path, monkeypatch):
         "artist": "",
         "entity_id": "media_player.kuche",
         "played": True,
+        "audio_id": "aud-boh",
     }
     # The HA call is media_player.play_media with content_type=music + the stream URL.
     (_, _, entity_id, service, data) = calls[0]
@@ -1266,3 +1269,193 @@ async def test_play_music_description_steers_music_not_podcast(tmp_path):
     assert "play_music" not in desc  # describes itself, doesn't name itself
     assert "Spiele Musik" in desc
     assert "NIE media_find_podcast" in desc
+
+
+# ---- playlist_add (#647): write a track to a Jellyfin playlist ---------------
+
+
+class _FakePlaylistJellyfin:
+    """A fake Jellyfin client for playlist_add: records the playlist writes and
+    serves an in-memory playlist store."""
+
+    def __init__(self, *, existing=None):
+        # {playlist_id: (name, [audio_ids])}
+        self._store = dict(existing or {})
+        self.created: list[tuple[str, list[str]]] = []
+        self.added: list[tuple[str, list[str]]] = []
+
+    async def lyrics(self, audio_id: str):
+        return None
+
+    async def stream_url(self, audio_id: str, *, static: bool = True):
+        return f"http://jf/{audio_id}"
+
+    async def playlists(self):
+        return [(pid, name) for pid, (name, _ids) in self._store.items()]
+
+    async def create_playlist(self, name: str, ids: list[str]) -> str:
+        pid = f"pl-{len(self._store) + 1}"
+        self._store[pid] = (name, list(ids))
+        self.created.append((name, list(ids)))
+        return pid
+
+    async def playlist_add(self, playlist_id: str, ids: list[str]) -> bool:
+        name, existing = self._store[playlist_id]
+        self._store[playlist_id] = (name, existing + list(ids))
+        self.added.append((playlist_id, list(ids)))
+        return True
+
+
+class _FakeRecorder:
+    """Mimics TraceRecorder.list_traces() (newest first) over injected steps."""
+
+    def __init__(self, steps):
+        self._steps = list(steps)
+
+    def list_traces(self):
+        return list(self._steps)[::-1]
+
+
+def _play_step(session_id, *, ok=True, audio_id="aud-boh", title="Bohemian Rhapsody"):
+    out = {"ok": ok, "title": title}
+    if audio_id is not None:
+        out["audio_id"] = audio_id
+    return {
+        "step_kind": "tool",
+        "session_id": session_id,
+        "tool_name": "play_music",
+        "output": json.dumps(out, ensure_ascii=False),
+    }
+
+
+def _playlist_tool(db, uid, client, *, recorder=None, session=""):
+    tools = build_music_query_tools(
+        db,
+        lambda: uid,
+        client,
+        recorder=recorder,
+        session_getter=(lambda: session),
+    )
+    (t,) = [t for t in tools if t.name == "playlist_add"]
+    return t
+
+
+async def _call_playlist(db, uid, args, client, *, recorder=None, session=""):
+    t = _playlist_tool(db, uid, client, recorder=recorder, session=session)
+    return json.loads(await t.handler(args))
+
+
+async def test_playlist_add_registered_on_client_alone(tmp_path):
+    db = _db(tmp_path)
+    names = {
+        t.name for t in build_music_query_tools(db, lambda: "mdopp", _FakeJellyfin())
+    }
+    assert "playlist_add" in names
+    # No client -> not registered.
+    names = {t.name for t in build_music_query_tools(db, lambda: "mdopp")}
+    assert "playlist_add" not in names
+
+
+async def test_playlist_add_explicit_track_creates_default(tmp_path):
+    db = _db(tmp_path)
+    client = _FakePlaylistJellyfin()
+    out = await _call_playlist(db, "mdopp", {"track": "Bohemian Rhapsody"}, client)
+    assert out["ok"] is True
+    assert out["title"] == "Bohemian Rhapsody"
+    assert out["playlist"] == "Favoriten"
+    assert client.created == [("Favoriten", ["aud-boh"])]
+
+
+async def test_playlist_add_explicit_track_appends_existing(tmp_path):
+    db = _db(tmp_path)
+    client = _FakePlaylistJellyfin(existing={"pl-x": ("favoriten", ["seed"])})
+    out = await _call_playlist(db, "mdopp", {"track": "Bohemian Rhapsody"}, client)
+    assert out["ok"] is True and out["playlist"] == "Favoriten"
+    # Case-insensitive match on the existing playlist -> append, no create.
+    assert client.created == []
+    assert client.added == [("pl-x", ["aud-boh"])]
+
+
+async def test_playlist_add_named_playlist(tmp_path):
+    db = _db(tmp_path)
+    client = _FakePlaylistJellyfin()
+    out = await _call_playlist(
+        db, "mdopp", {"track": "Bohemian Rhapsody", "playlist": "Party"}, client
+    )
+    assert out["ok"] is True and out["playlist"] == "Party"
+    assert client.created == [("Party", ["aud-boh"])]
+
+
+async def test_playlist_add_unknown_track_say(tmp_path):
+    db = _db(tmp_path)
+    client = _FakePlaylistJellyfin()
+    out = await _call_playlist(db, "mdopp", {"track": "xqzptv nonsense"}, client)
+    assert out["ok"] is False and out["reason"] == "not_found"
+    assert "?" in out["say"]
+    assert client.created == [] and client.added == []
+
+
+async def test_playlist_add_last_played_from_recorder(tmp_path):
+    db = _db(tmp_path)
+    client = _FakePlaylistJellyfin()
+    recorder = _FakeRecorder([_play_step("sess-1", audio_id="aud-boh")])
+    out = await _call_playlist(
+        db, "mdopp", {}, client, recorder=recorder, session="sess-1"
+    )
+    assert out["ok"] is True
+    assert out["title"] == "Bohemian Rhapsody"
+    assert client.created == [("Favoriten", ["aud-boh"])]
+
+
+async def test_playlist_add_no_current_track_say(tmp_path):
+    db = _db(tmp_path)
+    client = _FakePlaylistJellyfin()
+    # Empty recorder -> nothing played this session.
+    recorder = _FakeRecorder([])
+    out = await _call_playlist(
+        db, "mdopp", {}, client, recorder=recorder, session="sess-1"
+    )
+    assert out["ok"] is False and out["reason"] == "no_current_track"
+    assert "?" in out["say"]
+
+
+async def test_playlist_add_pre_extension_record_no_audio_id(tmp_path):
+    db = _db(tmp_path)
+    client = _FakePlaylistJellyfin()
+    # A play_music step recorded before #645 carries no audio_id -> skip it
+    # gracefully rather than crash, and report no_current_track.
+    recorder = _FakeRecorder([_play_step("sess-1", audio_id=None)])
+    out = await _call_playlist(
+        db, "mdopp", {}, client, recorder=recorder, session="sess-1"
+    )
+    assert out["ok"] is False and out["reason"] == "no_current_track"
+
+
+async def test_playlist_add_last_played_scoped_to_session(tmp_path):
+    db = _db(tmp_path)
+    client = _FakePlaylistJellyfin()
+    # A play in a DIFFERENT session must not leak into this one.
+    recorder = _FakeRecorder([_play_step("other-sess", audio_id="aud-boh")])
+    out = await _call_playlist(
+        db, "mdopp", {}, client, recorder=recorder, session="sess-1"
+    )
+    assert out["ok"] is False and out["reason"] == "no_current_track"
+
+
+async def test_playlist_add_no_client_no_stream(tmp_path):
+    db = _db(tmp_path)
+    # A client is required to register the tool, but guard the handler anyway.
+    tools = build_music_query_tools(db, lambda: "mdopp")
+    assert not [t for t in tools if t.name == "playlist_add"]
+
+
+async def test_playlist_add_description_steers(tmp_path):
+    db = _db(tmp_path)
+    (t,) = [
+        t
+        for t in build_music_query_tools(db, lambda: "mdopp", _FakePlaylistJellyfin())
+        if t.name == "playlist_add"
+    ]
+    assert "ZULETZT GESPIELTE" in t.description
+    assert "NICHT zum Abspielen" in t.description
+    assert "Playlist" in t.description

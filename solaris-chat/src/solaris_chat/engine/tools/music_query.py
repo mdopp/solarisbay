@@ -54,6 +54,12 @@ class LyricsClient(Protocol):
 
     async def stream_url(self, audio_id: str, *, static: bool = True) -> str | None: ...
 
+    async def playlists(self) -> list[tuple[str, str]]: ...
+
+    async def create_playlist(self, name: str, ids: list[str]) -> str: ...
+
+    async def playlist_add(self, playlist_id: str, ids: list[str]) -> bool: ...
+
 
 _SONG_CAP = 50
 _ARTIST_CAP = 50
@@ -128,6 +134,8 @@ def build_music_query_tools(
     room_resolver=None,
     area_fallback=None,
     notes_dir: str = "",
+    recorder=None,
+    session_getter=None,
 ) -> list[Tool]:
     def _caller() -> str:
         return uid_getter() or projection.SHARED_UID
@@ -582,6 +590,97 @@ def build_music_query_tools(
                 "artist": artist or "",
                 "entity_id": used,
                 "played": True,
+                "audio_id": audio_id,
+            },
+            ensure_ascii=False,
+        )
+
+    def _last_played(session_id: str) -> tuple[str, str] | None:
+        """The (audio_id, title) of the newest ok `play_music` step recorded for
+        this session, or None. Records written before #645's recorder extension
+        carry no `output`/`audio_id` — skipped, never crashed on."""
+        if recorder is None:
+            return None
+        for r in recorder.list_traces():  # newest first
+            if r.get("step_kind") != "tool" or r.get("session_id") != session_id:
+                continue
+            if r.get("tool_name") != "play_music":
+                continue
+            out = r.get("output") or ""
+            try:
+                data = json.loads(out)
+            except (ValueError, TypeError):
+                continue
+            audio_id = data.get("audio_id") if isinstance(data, dict) else None
+            if data.get("ok") and audio_id:
+                return str(audio_id), str(data.get("title") or "")
+        return None
+
+    async def playlist_add(args: dict[str, Any]) -> str:
+        if jellyfin_client is None:
+            return json.dumps({"ok": False, "reason": "no_stream"})
+        caller = _caller()
+        artist = str(args.get("artist") or "").strip()
+        title = str(args.get("track") or "").strip()
+        if title:
+            conn = projection.open_conn(db_path)
+            try:
+                song_id = _resolve_song_id(conn, title, artist, caller)
+                if song_id is None:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "reason": "not_found",
+                            "say": "Den Song habe ich nicht in der Bibliothek"
+                            " gefunden — wie heißt er genau?",
+                        },
+                        ensure_ascii=False,
+                    )
+                song = projection.entity_row(conn, song_id)
+                clean = song["canonical_name"]
+                audio_id = _song_audio_id(conn, song_id, caller)
+            finally:
+                conn.close()
+            if not audio_id:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "reason": "not_found",
+                        "say": "Den Song habe ich nicht in der Bibliothek"
+                        " gefunden — wie heißt er genau?",
+                    },
+                    ensure_ascii=False,
+                )
+        else:
+            session_id = session_getter() if session_getter else ""
+            hit = _last_played(session_id)
+            if hit is None:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "reason": "no_current_track",
+                        "say": "Ich weiß nicht, welcher Song gerade lief —"
+                        " welchen soll ich hinzufügen?",
+                    },
+                    ensure_ascii=False,
+                )
+            audio_id, clean = hit
+        name = str(args.get("playlist") or "").strip() or "Favoriten"
+        existing = await jellyfin_client.playlists()
+        playlist_id = next(
+            (pid for pid, pname in existing if pname.casefold() == name.casefold()),
+            None,
+        )
+        if playlist_id is None:
+            playlist_id = await jellyfin_client.create_playlist(name, [audio_id])
+        else:
+            await jellyfin_client.playlist_add(playlist_id, [audio_id])
+        return json.dumps(
+            {
+                "ok": True,
+                "title": clean,
+                "playlist": name,
+                "say": f"„{clean}“ zur Playlist {name} hinzugefügt.",
             },
             ensure_ascii=False,
         )
@@ -619,6 +718,34 @@ def build_music_query_tools(
             handler=music_query,
         ),
     ]
+    # Playlist write needs only a live Jellyfin client (no HA cast); playlists
+    # land under the shared service account, matching the shared-library posture.
+    if jellyfin_client is not None:
+        tools.append(
+            Tool(
+                name="playlist_add",
+                description=(
+                    "Fügt einen Song aus der eigenen Bibliothek einer"
+                    " Jellyfin-Playlist hinzu ('füge das meiner Playlist hinzu',"
+                    " 'pack den Song auf die Playlist'). Ohne track wird der ZULETZT"
+                    " GESPIELTE Song genommen — track NUR setzen, wenn der Nutzer"
+                    " einen Titel NENNT (wortwörtlich). playlist = Name nur, wenn"
+                    " genannt; sonst weglassen. NICHT zum Abspielen (play_music) und"
+                    " NICHT für Radiosender. Liefert das Ergebnis 'say', sprich"
+                    " diese Zeile wörtlich; melde nur den zurückgegebenen 'title'"
+                    " und Playlist-Namen aus der Antwort."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "track": {"type": "string"},
+                        "artist": {"type": "string"},
+                        "playlist": {"type": "string"},
+                    },
+                },
+                handler=playlist_add,
+            )
+        )
     # A distinct tool name (not another music_query op) steers far better: the
     # model reaches for play_music on "spiele Musik von X" instead of
     # media_find_podcast (#604). Registered only with a live Jellyfin client +
