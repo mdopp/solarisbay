@@ -385,10 +385,13 @@ class EngineClient:
         text: str,
         images: list[str] | None = None,
         reasoning_effort: str = "none",
+        turn_uid: str = "",
     ) -> str:
         """One turn, non-streamed: drain the stream, return the final answer."""
         answer = ""
-        async for event in self.chat_stream(session_id, text, images, reasoning_effort):
+        async for event in self.chat_stream(
+            session_id, text, images, reasoning_effort, turn_uid=turn_uid
+        ):
             if event["type"] == "run.completed":
                 for msg in event["data"].get("messages", []):
                     if msg.get("role") == "assistant" and msg.get("content"):
@@ -402,14 +405,24 @@ class EngineClient:
         images: list[str] | None = None,
         reasoning_effort: str = "none",
         suggest_answers: bool = False,
+        turn_uid: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         owner = store.session_owner(self._db_path, session_id)
         if owner is None:
             raise EngineError(f"unknown session: {session_id}")
-        token = current_uid.set(owner)
+        # The identity of THIS turn's caller (#649): for the shared household
+        # session the owner is `household`, but a typed turn carries the real
+        # resident, so timers/facts and the identity block stay theirs. Absent
+        # (voice/facade) it falls back to the owner — the correct household id.
+        token = current_uid.set(turn_uid or owner)
         try:
             async for event in self._run_turn(
-                session_id, text, images, reasoning_effort, suggest_answers
+                session_id,
+                text,
+                images,
+                reasoning_effort,
+                suggest_answers,
+                turn_uid=turn_uid,
             ):
                 yield event
         except OllamaError as e:
@@ -431,6 +444,7 @@ class EngineClient:
         images: list[str] | None,
         reasoning_effort: str,
         suggest_answers: bool = False,
+        turn_uid: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         store.append_message(
             self._db_path, session_id, "user", text, images=images or None
@@ -459,7 +473,7 @@ class EngineClient:
             think=think,
             session_id=session_id,
             persist=True,
-            uid=owner,
+            uid=turn_uid or owner,
             suggest_answers=suggest_answers,
         ):
             self._mirror(session_id, owner, "mirror_event", event)

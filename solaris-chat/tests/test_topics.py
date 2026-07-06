@@ -428,8 +428,10 @@ async def test_pinned_household_chat_persists_primary(aiohttp_client, tmp_path):
     # gateway sees no create (and thus no model override / persona overlay).
     assert fake.created == []
     sid = (await resp.json())["session_id"]
-    assert sid == store.household_session_id("mdopp")
-    assigned = topics_store.get_session_topics(db, sid, "mdopp")
+    # The pinned Zuhause is the ONE shared household session (#649), owned by
+    # default_uid — the same row for every resident — with the household primary.
+    assert sid == store.household_session_id("household")
+    assigned = topics_store.get_session_topics(db, sid, "household")
     assert assigned["primary"] == "household"
 
 

@@ -285,9 +285,9 @@ async def test_household_topic_chat_routes_to_household_even_when_thorough(
         headers=RESIDENT_HDRS,
     )
     assert resp.status == 200
-    # A household first turn lands in the resident's ONE durable household session
-    # (#345/#419), not a freshly minted `sess-1` — so it never forks per click.
-    durable = store.household_session_id("cdopp")
+    # A household first turn lands in the ONE SHARED household session (#649),
+    # not a freshly minted `sess-1` — so it never forks per click.
+    durable = store.household_session_id("household")
     assert household.turns and household.turns[0][0] == durable
     assert deep.turns == []
     # Household turns are fast-only regardless of any selector.
@@ -297,12 +297,13 @@ async def test_household_topic_chat_routes_to_household_even_when_thorough(
 async def test_household_first_turn_lands_in_durable_session_once(
     aiohttp_client, tmp_path
 ):
-    # The pinned "Zuhause" first turn (topic=household) must land in the resident's
-    # ONE durable household session and never mint a fresh row per click (#419):
-    # two separate first turns (e.g. two clicks) reuse the SAME id and leave
-    # exactly one engine_sessions row, stamped with the household primary topic.
+    # The pinned "Zuhause" first turn (topic=household) must land in the ONE
+    # SHARED household session (#649) — owned by default_uid, the same row voice
+    # persists to — and never mint a fresh row per click (#419): two separate
+    # first turns (e.g. two clicks, even by different residents) reuse the SAME
+    # id and leave exactly one engine_sessions row, stamped household primary.
     db = _db(tmp_path)
-    durable = store.household_session_id("cdopp")
+    durable = store.household_session_id("household")
     for _ in range(2):
         household = _FakeHermes()
         app = build_app(
@@ -323,17 +324,19 @@ async def test_household_first_turn_lands_in_durable_session_once(
         # The durable session is created in the store, not via the fake gateway.
         assert household.created == []
         assert household.turns and household.turns[0][0] == durable
+        # The turn runs under the typing resident (turn_uid), not the owner.
+        assert household.turn_uids[-1] == "cdopp"
 
     import sqlite3 as _sqlite3
 
     conn = _sqlite3.connect(db)
     n = conn.execute(
-        "SELECT COUNT(*) FROM engine_sessions WHERE owner_uid = ?", ("cdopp",)
+        "SELECT COUNT(*) FROM engine_sessions WHERE owner_uid = ?", ("household",)
     ).fetchone()[0]
     conn.close()
     assert n == 1
     assert (
-        topics_store.get_session_topics(db, durable, "cdopp").get("primary")
+        topics_store.get_session_topics(db, durable, "household").get("primary")
         == "household"
     )
 

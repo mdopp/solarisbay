@@ -313,6 +313,20 @@ def build_app(
     # sidecar beside solaris.db survives restarts. Household chats ignore it.
     other_model_pref = settings_store.get_other_model_pref(solaris_db_path)
 
+    # The one shared "Zuhause" every resident opens (#649): with speaker-ID off
+    # all voice is anonymous-household, so spoken and typed turns are one family
+    # conversation in a single deterministic row (owner_uid = default_uid).
+    shared_household_id = store.household_session_id(default_uid)
+
+    def effective_uid(uid: str, session_id: str) -> str:
+        """Admit any authenticated resident to the shared household row (#649).
+
+        Owner-scoped reads/writes filter on `owner_uid`; the shared Zuhause is
+        owned by `default_uid`, so a resident's real uid would 403/404 against
+        it. Map their uid to the owner for that one session, leave every other
+        session per-resident (privacy posture unchanged)."""
+        return default_uid if session_id == shared_household_id else uid
+
     def is_household_chat(uid: str, session_id: str, topic_slug: str) -> bool:
         """True when this turn belongs to the pinned household chat — by the
         first-turn topic, the fast-path set, or the persisted primary topic."""
@@ -461,14 +475,17 @@ def build_app(
             return session_id
         primary = new_session_topic(topic_slug)
         if primary == HOUSEHOLD_TOPIC:
-            # The pinned "Zuhause" first turn lands in the resident's ONE durable
-            # household session (#345/#419) — the same row voice turns use — so it
-            # never mints a fresh session per click/first-turn. Idempotent.
-            session_id = store.ensure_household_session(solaris_db_path, uid)
+            # The pinned "Zuhause" first turn lands in the ONE shared household
+            # session (#345/#419/#649) — the same row voice turns use — so it
+            # never mints a fresh session per click/first-turn, and every
+            # resident opens the same conversation. Owned by default_uid.
+            session_id = store.ensure_household_session(solaris_db_path, default_uid)
             household_sessions.add(session_id)
             # Stamp the household primary topic so the list chip + pinned-row
             # highlight (primary_topic == household) light up for this row (#241).
-            topics_store.set_primary(solaris_db_path, session_id, HOUSEHOLD_TOPIC, uid)
+            topics_store.set_primary(
+                solaris_db_path, session_id, HOUSEHOLD_TOPIC, default_uid
+            )
             log.info(
                 "chat.session.created",
                 uid=uid,
@@ -657,7 +674,9 @@ def build_app(
         # panel renders the same trace on reopen. Per-resident scope.
         uid = resolve_uid(request, remote_user_header, default_uid)
         session_id = request.match_info["session_id"]
-        steps = trace_store.list_session_trace(solaris_db_path, session_id, uid)
+        steps = trace_store.list_session_trace(
+            solaris_db_path, session_id, effective_uid(uid, session_id)
+        )
         return web.json_response({"ok": True, "steps": steps})
 
     async def session_events(request: web.Request) -> web.StreamResponse:
@@ -668,7 +687,10 @@ def build_app(
         # like trace_store D3), so a wrong-owner subscribe gets a silent empty
         # stream. The originating request keeps its own /api/chat/stream; this
         # only carries the OTHER clients' view.
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = effective_uid(
+            resolve_uid(request, remote_user_header, default_uid),
+            request.match_info["session_id"],
+        )
         session_id = request.match_info["session_id"]
         if store.session_owner(solaris_db_path, session_id) != uid:
             return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
@@ -782,10 +804,11 @@ def build_app(
                 "version": VERSION,
                 "logout_url": logout_url,
                 "context_window": context_window.value,
-                # The resident's ONE durable household session (#345/#419): the
-                # pinned "Zuhause" row opens this id instead of minting a fresh
-                # chat per click, so household stays a single conversation.
-                "household_session_id": store.household_session_id(uid),
+                # The ONE shared household session every resident opens (#649):
+                # the pinned "Zuhause" row opens this id so spoken (anonymous-
+                # household) and typed turns are the same conversation, visible
+                # to every logged-in resident instead of split per-uid.
+                "household_session_id": shared_household_id,
             }
         )
 
@@ -1338,7 +1361,9 @@ def build_app(
         uid = resolve_uid(request, remote_user_header, default_uid)
         session_id = request.match_info["session_id"]
         try:
-            session = await hermes.get_session(session_id, uid)
+            session = await hermes.get_session(
+                session_id, effective_uid(uid, session_id)
+            )
         except EngineError:
             return web.json_response(
                 {"ok": False, "reason": "engine_unavailable"}, status=502
@@ -1647,8 +1672,12 @@ def build_app(
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral = bool(body.get("ephemeral"))
+        # The shared Zuhause is owned by default_uid but any resident may act in
+        # it (#649): owner_uid drives session routing/scope; the real `uid` stays
+        # the typed turn's identity (timers/facts) via turn_uid below.
+        owner_uid = effective_uid(uid, session_id)
         # Household ("Zuhause") turns are fast-only: never think, never escalate.
-        household = is_household_chat(uid, session_id, topic_slug)
+        household = is_household_chat(owner_uid, session_id, topic_slug)
         effort = (
             "none"
             if household
@@ -1662,7 +1691,7 @@ def build_app(
             request,
             session_id,
             body.get("personality"),
-            uid=uid,
+            uid=owner_uid,
             topic_slug=topic_slug,
         )
 
@@ -1677,25 +1706,30 @@ def build_app(
             # therefore Ollama model eviction, not a per-turn session (#268).
             if not session_id:
                 session_id = await create_turn_session(
-                    uid,
+                    owner_uid,
                     topic_slug,
                     text,
                     ephemeral,
                     client,
                 )
+                owner_uid = effective_uid(uid, session_id)
             elif not ephemeral:
-                session_id, compacted = await maybe_compact(uid, session_id, client)
+                session_id, compacted = await maybe_compact(
+                    owner_uid, session_id, client
+                )
             turn_text = topic_turn_text(
                 text, uid, session_id, ephemeral=ephemeral, extract_topic=topic_slug
             )
             persist_mentions(uid, session_id, text, ephemeral=ephemeral)
-            reply = await client.chat(session_id, turn_text, images, effort)
+            reply = await client.chat(
+                session_id, turn_text, images, effort, turn_uid=uid
+            )
         except EngineError:
             return web.json_response(
                 {"ok": False, "reason": "engine_unavailable"}, status=502
             )
         attachments.add(session_id, images)
-        await persist_turn_trace(uid, session_id, wall_t0, ephemeral=ephemeral)
+        await persist_turn_trace(owner_uid, session_id, wall_t0, ephemeral=ephemeral)
         # Non-streamed turn: only total wall-time is observable (no per-phase
         # boundaries without the stream), so the trace carries just the total
         # (#225). The streaming path is where the phase waterfall comes from.
@@ -1731,8 +1765,12 @@ def build_app(
         session_id = str(body.get("session_id") or "")
         topic_slug = str(body.get("topic") or "").strip()
         ephemeral = bool(body.get("ephemeral"))
+        # The shared Zuhause is owned by default_uid but any resident may act in
+        # it (#649): owner_uid drives session routing/scope; the real `uid` stays
+        # the typed turn's identity (timers/facts) via turn_uid below.
+        owner_uid = effective_uid(uid, session_id)
         # Household ("Zuhause") turns are fast-only: never think, never escalate.
-        household = is_household_chat(uid, session_id, topic_slug)
+        household = is_household_chat(owner_uid, session_id, topic_slug)
         effort = (
             "none"
             if household
@@ -1746,7 +1784,7 @@ def build_app(
             request,
             session_id,
             body.get("personality"),
-            uid=uid,
+            uid=owner_uid,
             topic_slug=topic_slug,
         )
 
@@ -1779,14 +1817,17 @@ def build_app(
             compacted = False
             if not session_id:
                 session_id = await create_turn_session(
-                    uid,
+                    owner_uid,
                     topic_slug,
                     text,
                     ephemeral,
                     client,
                 )
+                owner_uid = effective_uid(uid, session_id)
             elif not ephemeral:
-                session_id, compacted = await maybe_compact(uid, session_id, client)
+                session_id, compacted = await maybe_compact(
+                    owner_uid, session_id, client
+                )
             cancels[session_id] = cancel
             await _send_event(
                 resp, "session", {"session_id": session_id, "compacted": compacted}
@@ -1800,7 +1841,12 @@ def build_app(
             )
             persist_mentions(uid, session_id, text, ephemeral=ephemeral)
             stream = client.chat_stream(
-                session_id, turn_text, images, effort, suggest_answers=True
+                session_id,
+                turn_text,
+                images,
+                effort,
+                suggest_answers=True,
+                turn_uid=uid,
             )
             async for event in _heartbeat(stream, resp):
                 if cancel.is_set():
@@ -1858,7 +1904,7 @@ def build_app(
                 await _send_event(resp, "trace", trace)
                 record_anchors(uid, session_id, anchors, text, ephemeral=ephemeral)
                 await persist_turn_trace(
-                    uid,
+                    owner_uid,
                     session_id,
                     wall_t0,
                     ephemeral=ephemeral,

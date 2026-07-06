@@ -186,7 +186,9 @@ class _FakeHermes:
     async def set_title(self, *a, **k):
         pass
 
-    async def chat(self, session_id, text, images=None, reasoning_effort="none"):
+    async def chat(
+        self, session_id, text, images=None, reasoning_effort="none", turn_uid=""
+    ):
         return f"echo: {text}"
 
 
@@ -215,7 +217,9 @@ class _RecordingHermes(_FakeHermes):
     def __init__(self, recorder):
         self._recorder = recorder
 
-    async def chat(self, session_id, text, images=None, reasoning_effort="none"):
+    async def chat(
+        self, session_id, text, images=None, reasoning_effort="none", turn_uid=""
+    ):
         _recorder_with(session_id, self._recorder)
         return f"echo: {text}"
 
