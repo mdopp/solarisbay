@@ -122,7 +122,11 @@ async def test_no_favorite_no_station_does_not_cast(tmp_path, monkeypatch):
         monkeypatch,
         {},
     )
-    assert out == {"ok": False, "reason": "no_favorite"}
+    assert out == {
+        "ok": False,
+        "reason": "no_favorite",
+        "say": "Welcher ist dein Lieblingssender?",
+    }
     assert calls == []
 
 
@@ -138,7 +142,11 @@ async def test_favorite_is_per_user(tmp_path, monkeypatch):
         monkeypatch,
         {},
     )
-    assert out == {"ok": False, "reason": "no_favorite"}
+    assert out == {
+        "ok": False,
+        "reason": "no_favorite",
+        "say": "Welcher ist dein Lieblingssender?",
+    }
     assert calls == []
 
 
@@ -167,7 +175,11 @@ async def test_need_default_device_when_no_entity_no_room(tmp_path, monkeypatch)
         monkeypatch,
         {"WDR 2": ("WDR 2", "http://stream/wdr2")},
     )
-    assert out == {"ok": False, "reason": "need_default_device"}
+    assert out == {
+        "ok": False,
+        "reason": "need_default_device",
+        "say": "Auf welchem Gerät soll ich standardmäßig spielen?",
+    }
     assert calls == []
 
 
@@ -210,8 +222,32 @@ async def test_radio_no_room_no_device_need_default_device(tmp_path, monkeypatch
 
     play = _tool_with_room(notes, "mdopp", room="", resolver=_resolver)
     out = json.loads(await play.handler({"station": "WDR 2"}))
-    assert out == {"ok": False, "reason": "need_default_device"}
+    assert out == {
+        "ok": False,
+        "reason": "need_default_device",
+        "say": "Auf welchem Gerät soll ich standardmäßig spielen?",
+    }
     assert calls == []
+
+
+async def test_dialog_say_lines_end_in_question_mark(tmp_path, monkeypatch):
+    # The say line steers the model verbatim (#404) and MUST end in `?` so the
+    # facade re-opens the mic (concept §1.1). no_favorite + need_default_device.
+    no_fav, _, _ = await _call(
+        str(tmp_path), "alice", {"entity_id": "media_player.kuche"}, monkeypatch, {}
+    )
+    assert no_fav["reason"] == "no_favorite"
+    assert no_fav["say"].rstrip().endswith("?")
+
+    need_dev, _, _ = await _call(
+        str(tmp_path),
+        "bob",
+        {"station": "WDR 2"},
+        monkeypatch,
+        {"WDR 2": ("WDR 2", "http://stream/wdr2")},
+    )
+    assert need_dev["reason"] == "need_default_device"
+    assert need_dev["say"].rstrip().endswith("?")
 
 
 async def test_play_failed_never_played(tmp_path, monkeypatch):
@@ -309,7 +345,11 @@ async def test_radio_default_device_is_per_user(tmp_path, monkeypatch):
     _write_default_device(notes, "alice", "media_player.alice")
     # Caller B has no default of their own and must NOT read A's.
     out, _, calls = await _call(notes, "bob", {}, monkeypatch, {})
-    assert out == {"ok": False, "reason": "need_default_device"}
+    assert out == {
+        "ok": False,
+        "reason": "need_default_device",
+        "say": "Auf welchem Gerät soll ich standardmäßig spielen?",
+    }
     assert calls == []
     assert _read_default_device(notes, "bob") is None
 

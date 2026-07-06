@@ -53,19 +53,13 @@ def build_choice_tools() -> list[Tool]:
         Tool(
             name="offer_choices",
             description=(
-                "Bietet dem Nutzer 2-4 kurze, anklickbare Antwortmöglichkeiten an,"
-                " wenn du eine Frage mit wenigen festen Antworten stellst (Ja/Nein"
-                " oder eine kleine Auswahl). Beispiele: „Garage öffnen?“ →"
-                ' ["ja","nein"]; „Alle Lichter an?“ → ["alle","nur im'
-                ' Wohnzimmer","nur im Büro"]. Halte die Optionen kurz; höchstens'
-                " 4. Stelle die Frage normal im Text und rufe zusätzlich dieses"
-                " Tool mit den Optionen auf. Dies ist das richtige Tool, um vor"
-                " sicherheitsrelevanten oder schwer umkehrbaren Aktionen (Garage,"
-                " Türen, Schlösser, Alarm) rückzufragen. WICHTIG: Dieses Tool"
-                " aufzurufen bedeutet, dass du nur FRAGST — du führst die Aktion"
-                " in diesem Zug NICHT aus und rufst dazu KEIN Aktions-Tool"
-                " (ha_call_service o. Ä.) auf, sondern wartest auf die Antwort des"
-                " Nutzers. Nicht für offene Fragen verwenden."
+                "Bietet 2–4 kurze, antippbare Antwortoptionen an, wenn du eine"
+                " Frage mit wenigen festen Antworten stellst — stelle die Frage"
+                " normal im Text UND rufe dieses Tool mit den Optionen (z.B."
+                " 'Garage öffnen?' ⇒ ['ja','nein']). Pflicht vor"
+                " sicherheitsrelevanten Aktionen (Garage, Tür, Schloss, Alarm): du"
+                " fragst damit NUR — in diesem Zug kein Aktions-Tool rufen, auf die"
+                " Antwort warten. Nicht für offene Fragen."
             ),
             parameters={
                 "type": "object",

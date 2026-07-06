@@ -40,7 +40,11 @@ from solaris_chat.engine.fuzzy import (
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools import Tool
 from solaris_chat.engine.tools.ha import call_service_scoped
-from solaris_chat.engine.tools.radio import cast_with_fallback, resolve_play_device
+from solaris_chat.engine.tools.radio import (
+    _SAY_NEED_DEFAULT_DEVICE,
+    cast_with_fallback,
+    resolve_play_device,
+)
 
 
 class LyricsClient(Protocol):
@@ -511,7 +515,10 @@ def build_music_query_tools(
             resolved_room_device=room_device,
         )
         if reason is not None:
-            return json.dumps({"ok": False, "reason": reason})
+            return json.dumps(
+                {"ok": False, "reason": reason, "say": _SAY_NEED_DEFAULT_DEVICE},
+                ensure_ascii=False,
+            )
         conn = projection.open_conn(db_path)
         try:
             if title:
@@ -583,19 +590,12 @@ def build_music_query_tools(
         Tool(
             name="music_query",
             description=(
-                "Beantwortet Fragen zur eigenen Musikbibliothek aus dem"
-                " strukturierten Wissensspeicher (nicht notes_search)."
-                " op='songs_by_artist' mit artist=<Name>: welche Songs/Lieder"
-                " von <Künstler> habe ich. op='list_artists' (optional prefix):"
-                " welche Künstler/Bands habe ich in der Bibliothek."
-                " op='artist_info' mit artist=<Name>: was weiß ich über"
-                " <Künstler/Band>, erzähl mir was über <Band>, welches Genre"
-                " ist <Band> — liefert Genre, Kurzbio und Songanzahl."
-                " op='song_lyrics' mit title=<Songtitel> (optional artist):"
-                " zeig mir die Lyrics von <Song>, Songtext von <Song> — holt"
-                " den Liedtext live aus der Bibliothek. Liefert saubere Titel."
-                " Exakter Treffer gewinnt (Queen ≠ Queens of the Stone Age);"
-                " sonst unscharf (Joel → Billy Joel)."
+                "Beantwortet Fragen zur eigenen Musikbibliothek (nicht"
+                " notes_search). op='songs_by_artist' (artist): welche Songs von X"
+                " habe ich. op='list_artists' (optional prefix): welche Künstler"
+                " habe ich. op='artist_info' (artist): Genre, Kurzbio, Songanzahl."
+                " op='song_lyrics' (title, optional artist): der Liedtext, live aus"
+                " der Bibliothek. Exakter Treffer gewinnt, sonst unscharf."
             ),
             parameters={
                 "type": "object",
@@ -628,27 +628,18 @@ def build_music_query_tools(
             Tool(
                 name="play_music",
                 description=(
-                    "Spielt einen Song oder die Musik eines Künstlers aus der"
-                    " EIGENEN Bibliothek (Jellyfin) auf einem Raum-Gerät. IMMER"
-                    " für 'Spiele Musik/Song von <Künstler>', 'Spiel <Songtitel>',"
-                    " 'Lass Musik von <X> laufen' — NICHT media_find_podcast."
-                    " title = der SONGTITEL ALLEINE; artist = der Künstler."
-                    " '(spiele) einen/ein Song von <X>', 'etwas von <X>', 'Musik"
-                    " von <X>', 'Lied von <X>' ⇒ artist=<X> und title LEER"
-                    " (irgendein Song von X). 'Spiele Musik' ohne alles ⇒ BEIDE"
-                    " leer (Zufallssong). Beispiele: 'Spiele einen Song von Queen'"
-                    " → {artist:\"Queen\"}; 'Spiele Bohemian Rhapsody' →"
-                    " {title:\"Bohemian Rhapsody\"}; 'Spiele Musik' → {}. Schreibe"
-                    " NIE Wörter wie Song/ein/eine/einen/von/Musik/Lied in title."
-                    " entity_id = das media_player-Gerät des Raums aus der"
-                    " Geräteliste (z.B. media_player.kuche) — NUR setzen, wenn der"
-                    " Nutzer ein Gerät/einen Raum NENNT; sonst WEGLASSEN, dann"
-                    " spielt es im aktuellen Raum oder auf dem gespeicherten"
-                    " Standardgerät. Liefert es reason:need_default_device, frag"
-                    " 'Auf welchem Gerät soll ich standardmäßig spielen?' und ruf"
-                    " mit 'entity_id=<Antwort>' erneut auf — das spielt UND merkt"
-                    " sich das Gerät als Standard. Melde NUR den vom"
-                    " Tool im Feld 'title' zurückgegebenen Titel — erfinde keinen."
+                    "Spielt Musik aus der EIGENEN Bibliothek (Jellyfin) auf einem"
+                    " Raum-Gerät — für 'Spiele Musik/einen Song von <Künstler>',"
+                    " 'Spiel <Songtitel>'; NIE media_find_podcast. artist = der"
+                    " Künstler; title = NUR der Songtitel, nie Füllwörter (Song/ein/"
+                    "von/Musik/Lied). 'Musik/etwas von X' ⇒ artist=X, title LEER."
+                    " 'Spiele Musik' ⇒ beide leer (Zufallssong). entity_id"
+                    " (media_player des Raums) NUR setzen, wenn der Nutzer"
+                    " Gerät/Raum nennt; sonst weglassen. Liefert das Ergebnis"
+                    " 'say', sprich diese Zeile wörtlich; nennt die Antwort ein"
+                    " Gerät, rufe erneut mit entity_id=<Gerät> auf. Bestätige NUR"
+                    " den zurückgegebenen 'title' — erfinde keinen; bei ok:false"
+                    " spiele nichts Anderes."
                 ),
                 parameters={
                     "type": "object",

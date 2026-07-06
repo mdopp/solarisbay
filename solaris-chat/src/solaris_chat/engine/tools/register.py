@@ -119,19 +119,15 @@ def build_register_tools(
         Tool(
             name="start_voice_enrollment",
             description=(
-                "Startet das Sprach-Enrollment, wenn sich jemand einrichten/anmelden"
-                " möchte, damit Solaris ihn an der Stimme erkennt (z.B. 'richte mich"
-                " ein', 'Setup starten', 'merk dir meine Stimme'). Bevor du es rufst:"
-                " (1) hol kurz das Einverständnis für die Stimmaufnahme ein — sie ist"
-                " biometrisch; (2) frag nach dem NAMEN, niemals nach einer technischen"
-                " ID; (3) leite die uid selbst aus dem Namen ab (kleinbuchstaben,"
-                " ASCII, z.B. 'Michael' -> 'michael') und übergib sie als uid. Öffnet"
-                " die Aufnahme-Anfrage und gibt im Feld 'say' den exakten Satz"
-                " zurück, den du der Person daraufhin WÖRTLICH sagst — bitte sie"
-                " NICHT, ihren Namen zu wiederholen, sondern gib genau diese"
-                " 'say'-Zeile aus. Jede folgende Äußerung der Person ist eine"
-                " Probe; erst nach drei Äußerungen ruf register_pending_resident."
-                " Braucht aktivierte Sprechererkennung."
+                "Startet das Sprach-Enrollment, wenn sich jemand einrichten will"
+                " ('richte mich ein', 'merk dir meine Stimme'). Vorher: kurz"
+                " Einverständnis zur Stimmaufnahme einholen (biometrisch) und nach"
+                " dem NAMEN fragen — nie nach einer ID; uid selbst ableiten"
+                " (kleinbuchstaben, ASCII: 'Michael' ⇒ 'michael'). Gibt 'say'"
+                " zurück: sprich GENAU diese Zeile — bitte NIE, den Namen zu"
+                " wiederholen. Jede folgende Äußerung ist eine Probe; nach drei"
+                " Äußerungen register_pending_resident rufen. Braucht aktive"
+                " Sprechererkennung."
             ),
             parameters={
                 "type": "object",

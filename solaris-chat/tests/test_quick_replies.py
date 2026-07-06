@@ -55,9 +55,9 @@ def test_offer_choices_description_steers_confirm_first_no_act():
     # "I am ASKING" — no action tool this turn, wait for the reply — and that
     # it's the right tool for confirming sensitive/irreversible actions.
     desc = _offer_tool().description
-    assert "ha_call_service" in desc and "NICHT" in desc
-    assert "wartest" in desc
-    assert "Garage" in desc or "Schlösser" in desc
+    assert "kein Aktions-Tool" in desc and "NUR" in desc
+    assert "warten" in desc
+    assert "Garage" in desc or "Schloss" in desc
 
 
 @pytest.mark.asyncio

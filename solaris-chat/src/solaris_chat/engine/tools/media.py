@@ -218,21 +218,15 @@ def build_media_tools(hass_url: str, hass_token: str) -> list[Tool]:
         Tool(
             name="media_find_podcast",
             description=(
-                "Findet einen Podcast über den freien Index fyyd.de und spielt die"
-                " neueste Folge auf einem Raum-Gerät. Übergib als 'name' GENAU den"
-                " Podcast- oder Personennamen, den der Nutzer gesagt hat — WORTWÖRTLICH."
-                " Du korrigierst, übersetzt, vervollständigst oder ersetzt den Namen"
-                " NIEMALS, auch wenn er dir unbekannt vorkommt oder wie ein Tippfehler"
-                " aussieht (z.B. bleibt 'tim pritlove' genau 'tim pritlove', wird NICHT"
-                " zu 'Tim Pratchett'; 'Netzpolitik' bleibt 'Netzpolitik'). Der Index"
-                " findet die richtige Sendung selbst per Fuzzy-Suche. Übergib die"
-                " media_player-Entität des Zielraums als 'entity_id'"
-                " (z.B. media_player.wohnzimmer). Ohne entity_id wird nur die"
-                " neueste Folge aufgelöst (frag dann nach dem Raum und ruf erneut)."
-                " Nutze es für 'Spiel die neueste Folge von <Podcast>' und auch für"
-                " 'Podcasts von <Person>' — der Index findet auch Sendungen über den"
-                " Host-/Autorennamen. NUR für Podcasts/Folgen — NICHT für 'Musik'"
-                " oder einen Song eines Künstlers (dafür play_music)."
+                "Findet einen Podcast über den Index fyyd.de und spielt die"
+                " neueste Folge auf einem Raum-Gerät — für 'Spiel die neueste Folge"
+                " von <Podcast>' und 'Podcasts von <Person>'. name = GENAU der"
+                " gesagte Podcast-/Personenname, WORTWÖRTLICH — niemals korrigieren,"
+                " übersetzen oder ersetzen ('tim pritlove' bleibt 'tim pritlove');"
+                " der Index fuzzy-matcht selbst. entity_id = media_player des"
+                " Zielraums; ohne entity_id wird nur aufgelöst — frag nach dem Raum"
+                " und rufe erneut auf. NUR Podcasts — Musik: play_music, Radio:"
+                " play_radio."
             ),
             parameters={
                 "type": "object",
