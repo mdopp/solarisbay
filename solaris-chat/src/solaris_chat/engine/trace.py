@@ -16,6 +16,9 @@ from typing import Any
 
 RING = 200
 DETAIL_RING = 30
+# Cap a recorded tool output so the light ring stays small (#647); enough to
+# carry a play_music/podcast result body a follow-up pin might key on.
+_OUTPUT_CAP = 2000
 
 
 def _toks(chars: int) -> int:
@@ -126,9 +129,15 @@ class TraceRecorder:
         profile: str,
         tool_name: str,
         wall_s: float,
+        arguments: dict[str, Any] | None = None,
+        output: str = "",
     ) -> dict[str, Any]:
         """Append one tool-execution step, interleaved by append order with the
-        LLM steps so a turn's `for_session` reads back the exact run sequence."""
+        LLM steps so a turn's `for_session` reads back the exact run sequence.
+
+        `arguments` are the EXACT args the tool ran with, so `pin_favorite` can
+        pin the last action verbatim (#645); `output` is the capped result body
+        (#647). Both optional so older/light callers stay valid."""
         record = {
             "ts": time.time(),
             "wall_s": round(wall_s, 3),
@@ -136,6 +145,8 @@ class TraceRecorder:
             "session_id": session_id,
             "profile": profile,
             "tool_name": tool_name,
+            "arguments": arguments,
+            "output": output[:_OUTPUT_CAP],
         }
         rec_id = self._next_id
         self._next_id += 1

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from solaris_chat import favorites_store
 from solaris_chat.engine import confirm, store
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
@@ -37,6 +38,7 @@ from solaris_chat.engine.residents import identity_block
 from solaris_chat.engine.tools import Toolbox
 from solaris_chat.engine.tools import choices as choice_tools
 from solaris_chat.engine.tools import ha as ha_tools
+from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
 from solaris_chat.engine.trace import TraceRecorder
 from solaris_chat.logging import log
 
@@ -52,6 +54,14 @@ current_uid: contextvars.ContextVar[str] = contextvars.ContextVar(
 # device-less "spiele Musik" default to the originating room's media_player.
 current_room: contextvars.ContextVar[str] = contextvars.ContextVar(
     "engine_room", default=""
+)
+
+# The current turn's session id — read by pin_favorite to key the recorder's
+# per-conversation step filter (#645). Like current_uid it must be set INSIDE
+# the dispatch task; a set() on the enclosing coroutine does not propagate into
+# the SSE-heartbeat-spawned gather task.
+current_session: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "engine_session", default=""
 )
 
 # Tool-call passes per turn: enough for list->act->confirm chains plus a
@@ -564,6 +574,24 @@ class EngineClient:
         async for event in self.chat_stream(session_id, turn):
             yield event
 
+    def _count_usage(self, uid: str, name: str, args: Any, output: str) -> None:
+        """Increment the "häufig genutzt" counter for one executed pinnable tool
+        (#645). Skips ephemeral (guest) turns, non-pinnable tools and failed
+        calls; a usage-write hiccup must never break the turn."""
+        if (
+            self._profile.ephemeral
+            or name not in PINNABLE_TOOLS
+            or not isinstance(args, dict)
+            or output.startswith('{"error"')
+        ):
+            return
+        try:
+            favorites_store.record_usage(
+                self._db_path, uid or self._profile.default_uid, name, args
+            )
+        except Exception:  # noqa: BLE001 — a usage hiccup must not kill the turn
+            pass
+
     async def _gate_sensitive(
         self,
         args: dict[str, Any],
@@ -726,6 +754,7 @@ class EngineClient:
                 yield {"type": "tool.started", "data": {"tool": "ha_call_service"}}
                 if uid:
                     current_uid.set(uid)
+                current_session.set(session_id)
                 t0 = time.monotonic()
                 output = await self._profile.toolbox.dispatch(
                     "ha_call_service", pending.args()
@@ -736,7 +765,10 @@ class EngineClient:
                     profile=self._profile.name,
                     tool_name="ha_call_service",
                     wall_s=tool_wall_s,
+                    arguments=pending.args(),
+                    output=output,
                 )
+                self._count_usage(uid, "ha_call_service", pending.args(), output)
                 yield {
                     "type": "tool.completed",
                     "data": {"tool": "ha_call_service", "wall_s": tool_wall_s},
@@ -881,6 +913,7 @@ class EngineClient:
                 # and card reads (#475) would land nowhere.
                 if uid:
                     current_uid.set(uid)
+                current_session.set(session_id)
                 ha_tools.card_sink.set(ha_cards)
                 choice_tools.choice_sink.set(quick_replies)
                 async with sem:
@@ -912,7 +945,12 @@ class EngineClient:
                         profile=self._profile.name,
                         tool_name=name,
                         wall_s=tool_wall_s,
+                        arguments=item["args"]
+                        if isinstance(item["args"], dict)
+                        else None,
+                        output=output,
                     )
+                    self._count_usage(uid, name, item["args"], output)
                 yield {
                     "type": "tool.completed",
                     "data": {"tool": name, "wall_s": tool_wall_s},

@@ -301,6 +301,53 @@ def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+async def resolve_entity_ref(hass_url: str, hass_token: str, ref: str) -> str:
+    """Resolve a model-supplied reference to a real entity_id, "" on no match.
+
+    A literal id is honoured ONLY if it actually exists — the model often
+    guesses one from the name (e.g. `light.sofalicht` for "Sofalicht", whose
+    real id is `light.dimmer_2_5`); a phantom id would otherwise sail through
+    and return an empty result, reading as "never happened". So: an existing id
+    wins; otherwise match the readable part against friendly_name (exact, then
+    substring), preferring the guessed domain. Shared by `build_ha_tools` and the
+    pin handler (#645) — no behaviour change from the old ha.py closure."""
+    ref = ref.strip()
+    if not ref:
+        return ""
+    url = hass_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+        async with client.get(f"{url}/api/states", headers=headers) as resp:
+            resp.raise_for_status()
+            states = await resp.json()
+    ids = {str(s.get("entity_id") or "") for s in states}
+    if ref in ids:
+        return ref
+    # A guessed-but-missing id: search by its slug, biased to its domain.
+    domain = ""
+    term = ref
+    if _ENTITY_RE.match(ref):
+        domain, slug = ref.split(".", 1)
+        term = slug.replace("_", " ")
+    wanted = term.lower()
+    best: tuple[int, str] | None = None
+    for s in states:
+        eid = str(s.get("entity_id") or "")
+        name = str((s.get("attributes") or {}).get("friendly_name") or "").lower()
+        in_dom = bool(domain) and eid.startswith(domain + ".")
+        if name == wanted:
+            pri = 0 if (not domain or in_dom) else 2
+        elif wanted and wanted in name:
+            pri = 1 if (not domain or in_dom) else 3
+        else:
+            continue
+        if best is None or pri < best[0]:
+            best = (pri, eid)
+            if pri == 0:
+                break
+    return best[1] if best else ""
+
+
 async def call_service_scoped(
     hass_url: str,
     hass_token: str,
@@ -511,48 +558,7 @@ def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:
         return json.dumps({"room": room_name, "actuators": out}, ensure_ascii=False)
 
     async def _resolve_entity_id(ref: str) -> str:
-        """Resolve a model-supplied reference to a real entity_id, "" on no match.
-
-        A literal id is honoured ONLY if it actually exists — the model often
-        guesses one from the name (e.g. `light.sofalicht` for "Sofalicht", whose
-        real id is `light.dimmer_2_5`); a phantom id would otherwise sail through
-        and return an empty history, reading as "never happened". So: an existing
-        id wins; otherwise match the readable part against friendly_name
-        (exact, then substring), preferring the guessed domain.
-        """
-        ref = ref.strip()
-        if not ref:
-            return ""
-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
-            async with client.get(f"{url}/api/states", headers=headers) as resp:
-                resp.raise_for_status()
-                states = await resp.json()
-        ids = {str(s.get("entity_id") or "") for s in states}
-        if ref in ids:
-            return ref
-        # A guessed-but-missing id: search by its slug, biased to its domain.
-        domain = ""
-        term = ref
-        if _ENTITY_RE.match(ref):
-            domain, slug = ref.split(".", 1)
-            term = slug.replace("_", " ")
-        wanted = term.lower()
-        best: tuple[int, str] | None = None
-        for s in states:
-            eid = str(s.get("entity_id") or "")
-            name = str((s.get("attributes") or {}).get("friendly_name") or "").lower()
-            in_dom = bool(domain) and eid.startswith(domain + ".")
-            if name == wanted:
-                pri = 0 if (not domain or in_dom) else 2
-            elif wanted and wanted in name:
-                pri = 1 if (not domain or in_dom) else 3
-            else:
-                continue
-            if best is None or pri < best[0]:
-                best = (pri, eid)
-                if pri == 0:
-                    break
-        return best[1] if best else ""
+        return await resolve_entity_ref(hass_url, hass_token, ref)
 
     async def get_state_history(args: dict[str, Any]) -> str:
         ref = str(args.get("entity") or args.get("entity_id") or "")
