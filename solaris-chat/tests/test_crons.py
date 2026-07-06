@@ -119,7 +119,12 @@ def test_load_jobs_from_shipped_pack_builds_the_three_jobs():
     jobs = crons.load_jobs(str(pack))
     assert jobs != crons.JOBS  # built from the registry, not the fallback
     by_name = {j.name: j for j in jobs}
-    assert set(by_name) == {"chat-compactor", "daily-chronicle", "problem-summarizer"}
+    assert set(by_name) == {
+        "chat-compactor",
+        "knowledge-night-run",
+        "daily-chronicle",
+        "problem-summarizer",
+    }
     compactor = by_name["chat-compactor"]
     assert (compactor.hour, compactor.minute, compactor.prompt) == (4, 15, "")
     chron = by_name["daily-chronicle"]
@@ -244,6 +249,94 @@ async def test_skill_body_prepended(db, tmp_path):
     assert text.startswith("# Chronik")
     assert "So geht das." in text
     assert text.endswith("Schreibe.")
+
+
+async def test_jobs_include_knowledge_night_run():
+    by_name = {j.name: j for j in crons.JOBS}
+    assert (
+        by_name["knowledge-night-run"].hour,
+        by_name["knowledge-night-run"].minute,
+    ) == (2, 30)
+    assert by_name["knowledge-night-run"].prompt == ""  # code job
+
+
+async def test_knowledge_night_run_calls_all_steps(db, monkeypatch, tmp_path):
+    calls = []
+
+    async def fake_ingest(settings):
+        calls.append("ingest")
+
+    async def fake_drain(db_path, ollama_url):
+        calls.append("drain")
+
+    def fake_obsidian(settings, writer, uid):
+        calls.append("obsidian")
+
+    monkeypatch.setattr(crons, "run_ingest", fake_ingest)
+    monkeypatch.setattr(crons.embed_worker, "drain", fake_drain)
+    monkeypatch.setattr(crons, "_run_obsidian", fake_obsidian)
+    monkeypatch.setattr(crons, "OkfWriter", lambda **kw: object())
+    monkeypatch.setattr(crons, "PendingEmbeddingQueue", lambda p: object())
+
+    class _Settings:
+        solaris_db_path = db
+        notes_dir = str(tmp_path)
+        ollama_url = "http://x"
+        default_uid = "household"
+
+    job = crons.CronJob(name="knowledge-night-run", minute=30, hour=2)
+    _baseline(db, "knowledge-night-run")
+    runner = crons.CronRunner(
+        db_path=db,
+        deep=_FakeDeep(),
+        skills_dir="",
+        context_window=32768,
+        jobs=(job,),
+        ingest_settings=_Settings(),
+    )
+    await runner.tick(datetime(2026, 6, 12, 3, 0, tzinfo=_TZ))
+    assert calls == ["ingest", "obsidian", "drain"]
+
+
+async def test_knowledge_night_run_one_failing_step_does_not_abort_rest(
+    db, monkeypatch, tmp_path
+):
+    calls = []
+
+    async def fake_ingest(settings):
+        raise RuntimeError("boom")
+
+    async def fake_drain(db_path, ollama_url):
+        calls.append("drain")
+
+    def fake_obsidian(settings, writer, uid):
+        calls.append("obsidian")
+
+    monkeypatch.setattr(crons, "run_ingest", fake_ingest)
+    monkeypatch.setattr(crons.embed_worker, "drain", fake_drain)
+    monkeypatch.setattr(crons, "_run_obsidian", fake_obsidian)
+    monkeypatch.setattr(crons, "OkfWriter", lambda **kw: object())
+    monkeypatch.setattr(crons, "PendingEmbeddingQueue", lambda p: object())
+
+    class _Settings:
+        solaris_db_path = db
+        notes_dir = str(tmp_path)
+        ollama_url = "http://x"
+        default_uid = "household"
+
+    job = crons.CronJob(name="knowledge-night-run", minute=30, hour=2)
+    _baseline(db, "knowledge-night-run")
+    runner = crons.CronRunner(
+        db_path=db,
+        deep=_FakeDeep(),
+        skills_dir="",
+        context_window=32768,
+        jobs=(job,),
+        ingest_settings=_Settings(),
+    )
+    await runner.tick(datetime(2026, 6, 12, 3, 0, tzinfo=_TZ))
+    # ingest raised, but obsidian + drain still ran.
+    assert calls == ["obsidian", "drain"]
 
 
 async def test_compactor_picks_stale_long_sessions(db, monkeypatch):

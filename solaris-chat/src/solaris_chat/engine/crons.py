@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,9 +25,14 @@ from zoneinfo import ZoneInfo
 
 from solaris_chat import compaction
 from solaris_chat.engine import store
+from solaris_chat.engine.ingest import run_ingest
+from solaris_chat.engine.ingest.runner import _run_obsidian
+from solaris_chat.engine.knowledge import PendingEmbeddingQueue, embed_worker
+from solaris_chat.engine.knowledge.writer import OkfWriter
 from solaris_chat.logging import log
 
 if TYPE_CHECKING:
+    from solaris_chat.config import Settings
     from solaris_chat.engine.client import EngineClient
 
 _LOCAL_TZ = ZoneInfo("Europe/Berlin")
@@ -85,12 +91,16 @@ JOBS = (
         skill="problem-summarizer",
     ),
     CronJob(name="chat-compactor", minute=15, hour=4),
+    CronJob(name="knowledge-night-run", minute=30, hour=2),
 )
 
-# The compactor is a code job (empty prompt → _compact_stale), so it can't live
-# as a prompt-bearing scheduler definition; it stays defined here and is always
+# Code jobs (empty prompt → dispatched by name, not fed to an agent) can't live
+# as prompt-bearing scheduler definitions; they stay defined here and are always
 # present in the loaded registry.
-_CODE_JOBS = (CronJob(name="chat-compactor", minute=15, hour=4),)
+_CODE_JOBS = (
+    CronJob(name="chat-compactor", minute=15, hour=4),
+    CronJob(name="knowledge-night-run", minute=30, hour=2),
+)
 
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
@@ -221,12 +231,14 @@ class CronRunner:
         skills_dir: str,
         context_window: int,
         jobs: tuple[CronJob, ...] | None = None,
+        ingest_settings: Settings | None = None,
     ):
         self._db_path = db_path
         self._deep = deep
         self._skills_dir = skills_dir
         self._context_window = context_window
         self._jobs = jobs if jobs is not None else load_jobs(skills_dir)
+        self._ingest_settings = ingest_settings
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -262,6 +274,8 @@ class CronRunner:
             log.info("engine.cron.fired", job=job.name, slot=slot)
             if job.prompt:
                 await self._run_agent_job(job)
+            elif job.name == "knowledge-night-run":
+                await self._knowledge_night_run()
             else:
                 await self._compact_stale()
 
@@ -278,6 +292,59 @@ class CronRunner:
             log.info("engine.cron.done", job=job.name, reply_len=len(reply))
         finally:
             await self._deep.delete_session(session_id, _CRON_UID)
+
+    async def _knowledge_night_run(self) -> None:
+        """The nightly knowledge pipeline (#652): re-ingest every source, run
+        the bibliothekar hook (#653), re-ingest the vault, then drain embeddings.
+
+        The ingest steps do synchronous sqlite writes + per-asset embedding work;
+        run them in a worker thread with its own loop, NOT on the chat server's
+        loop, so `/health` never starves during the run (the #586 lesson, same as
+        the boot ingest in `__main__._bg_ingest`). Each step is isolated so one
+        failing source doesn't abort the rest of the pipeline."""
+        if self._ingest_settings is None:
+            log.info("engine.night.skipped", reason="no_ingest_settings")
+            return
+        settings = self._ingest_settings
+
+        async def _pipeline() -> None:
+            try:
+                await run_ingest(settings)
+            except Exception as e:  # noqa: BLE001 — one step must not kill the rest.
+                log.error("engine.night.ingest_failed", error=str(e))
+            # The Bibliothekar (durable-fact consolidation) lands in #653; this is
+            # its ordered slot in the pipeline until then.
+            log.info("engine.night.bibliothekar_skipped")
+            try:
+                writer = OkfWriter(
+                    db_path=settings.solaris_db_path,
+                    notes_dir=settings.notes_dir,
+                    embedding_queue=PendingEmbeddingQueue(settings.solaris_db_path),
+                )
+                _run_obsidian(settings, writer, settings.default_uid)
+            except Exception as e:  # noqa: BLE001
+                log.error("engine.night.obsidian_failed", error=str(e))
+            try:
+                await embed_worker.drain(settings.solaris_db_path, settings.ollama_url)
+            except Exception as e:  # noqa: BLE001
+                log.error("engine.night.embed_drain_failed", error=str(e))
+
+        done = threading.Event()
+
+        def _worker() -> None:
+            try:
+                asyncio.run(_pipeline())
+            except Exception as e:  # noqa: BLE001 — the run must never crash the box.
+                log.error("engine.night.thread_failed", error=str(e))
+            finally:
+                done.set()
+
+        thread = threading.Thread(
+            target=_worker, name="knowledge-night-run", daemon=True
+        )
+        thread.start()
+        while not done.is_set():
+            await asyncio.sleep(1.0)
 
     async def _compact_stale(self) -> None:
         """The nightly chat-compactor: extract-then-compact stale, long chats

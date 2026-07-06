@@ -56,6 +56,7 @@ async def _run() -> None:
         deep=deep,
         skills_dir=settings.skills_dir,
         context_window=context_window.value,
+        ingest_settings=settings,
     )
     crons.start()
 
