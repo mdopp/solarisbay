@@ -17,6 +17,8 @@ dependencies = [
   "ddgs>=9",
   # Official MCP SDK — the admin profile's servicebay_admin toolbox.
   "mcp>=1.9",
+  # Brute-force cosine over the OKF embedding vectors (float32 blobs); #650/#651.
+  "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
