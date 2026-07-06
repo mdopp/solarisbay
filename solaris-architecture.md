@@ -267,17 +267,26 @@ binding + `#topic/<slug>` hint (#241/#243), pinned Zuhause (#237),
 ## 3. Knowledge architecture (4 layers, CQRS)
 
 Reads go to the right layer; writes and actions flow via MCP/API (CQRS).
+The write side is fixed by the [OKF write contract](docs/okf-write-contract.md)
+(frozen 2026-06-15); the read/curation side — retrieval, Stenograph capture,
+Bibliothekar curation — is defined in the
+[Solaris concept](docs/solaris-concept.md) §3.
 
 | Layer | Store | Status |
 |---|---|---|
-| **L1 — episodic / user facts** | Hermes-native `holographic` provider | active |
-| **L2 — freeform text** | Obsidian notes vault (`/opt/data/notes`, Syncthing) + `notes-search` skill; `qmd` semantic upgrade optional | active |
-| **L3 — structured knowledge** | `solaris.db` (SQLite) — today: `system_settings`, `cloud_audit`, `voice_embeddings`; Phase-3a domain collections + entity/interaction graph **deferred** to gbrain v0.43+ (gbrain's typed self-wiring did not work in v0.42) | partial |
-| **L4 — live device state** | HA-native `homeassistant` toolset | active |
+| **L1 — episodic / user facts** | dated fact files in the vault (`fact_store` tool + nightly Stenograph extraction) + `okf_vectors` semantic index in `solaris.db`, drained from the OKF embedding queue (`nomic-embed-text`) | fact files active; vector index per concept §3.1 |
+| **L2 — freeform text** | Obsidian notes vault (`/opt/data/notes`, Syncthing) + `notes_search` tool (keyword/fuzzy today; unified semantic+structured retrieval per concept §3.1) | active |
+| **L3 — structured knowledge** | `solaris.db` OKF projection — `entities`, `entity_aliases`, `facts`, `events`, `event_entities`, `concepts`, `ingest_log` (migration 0016), rebuildable from the OKF files under `notes/okf/`; fed by the `engine/ingest/` adapters (Obsidian, Immich, CalDAV/CardDAV, Jellyfin music) | active (write side); agent-readable retrieval per concept §3.1 |
+| **L4 — live device state** | HA-native `ha_*` tools | active |
+
+The former Hermes-native `holographic` provider (the original L1) was removed
+with Hermes (§2); nothing episodic survived it — L1 is being rebuilt on the
+OKF pipeline as described above.
 
 The `solaris.db` schema is managed by Alembic migrations in `database/`
-(hand-rolled SQL via `op.execute`; portable to Postgres if Phase 3a calls for it).
-See [`database/README.md`](database/README.md) for the migration runbook.
+(hand-rolled SQL via `op.execute`; portable to Postgres if the graph layer
+ever calls for it). See [`database/README.md`](database/README.md) for the
+migration runbook.
 
 ---
 
