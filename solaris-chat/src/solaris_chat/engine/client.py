@@ -387,6 +387,13 @@ class EngineClient:
             }
         ]
 
+    async def dispatch_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        """Run one tool directly on this gateway's toolbox (the start page's
+        favorite-run path, #646). Bypasses the agent loop and its confirm gate,
+        so the caller must re-check confirm.is_sensitive itself."""
+        await self._profile.toolbox.prepare()
+        return await self._profile.toolbox.dispatch(name, arguments)
+
     # -- turns ---------------------------------------------------------------
 
     async def chat(

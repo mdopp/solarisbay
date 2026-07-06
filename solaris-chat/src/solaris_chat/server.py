@@ -25,6 +25,7 @@ from aiohttp import web
 
 from solaris_chat import (
     compaction,
+    favorites_store,
     mentions_store,
     notes_search,
     personalities,
@@ -36,13 +37,19 @@ from solaris_chat import (
 )
 from solaris_chat.attachments import AttachmentStore, attach_to_messages
 from solaris_chat.context import STATIC_DEFAULT, ContextWindow
-from solaris_chat.engine import store
-from solaris_chat.engine.client import EngineClient, EngineError
+from solaris_chat.engine import confirm, store
+from solaris_chat.engine.client import EngineClient, EngineError, current_uid
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.knowledge import okf, projection
-from solaris_chat.engine.tools.ha import call_service_scoped, fetch_card, fetch_energy
+from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
+from solaris_chat.engine.tools.ha import (
+    _SERVICE_ALIASES,
+    call_service_scoped,
+    fetch_card,
+    fetch_energy,
+)
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
 from solaris_chat.logging import log
 
@@ -63,6 +70,27 @@ def _read_okf(notes_dir: str, okf_path: str) -> dict[str, str]:
         return okf.read_concept(target.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return {"description": "", "body": ""}
+
+
+def _favorite_label(payload: dict[str, Any]) -> str:
+    """A short label for a usage-counted action (#646) — the tool's most telling
+    argument, else the tool name. `payload` is `{tool, args}` from the counter."""
+    args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    tool = str(payload.get("tool") or "")
+    if tool == "ha_call_service":
+        entity_id = str(args.get("entity_id") or "")
+        name = (
+            entity_id.split(".", 1)[1].replace("_", " ")
+            if "." in entity_id
+            else entity_id
+        )
+        service = str(args.get("service") or "")
+        return f"{name} — {service}".strip(" —") or tool
+    for key in ("query", "station", "title", "name"):
+        val = args.get(key)
+        if val:
+            return str(val)
+    return tool or "Aktion"
 
 
 # Default prompt for an image-only turn (attachment with no typed text), so the
@@ -1576,6 +1604,168 @@ def build_app(
             STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
         )
 
+    def _action_is_sensitive(payload: dict[str, Any]) -> bool:
+        """Re-check whether a pinned action would be confirm-gated (#646).
+
+        The run path bypasses the agent-loop gate, so it must re-classify here.
+        Only `ha_call_service` can be sensitive; the server holds no
+        EntityRegistry, so a cover passes device_class=None and `is_sensitive`
+        fails SAFE (gated) — such a favorite could never be pinned by #645
+        anyway, so this is pure defense-in-depth."""
+        if payload.get("tool") != "ha_call_service":
+            return False
+        args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+        domain = str(args.get("domain") or "")
+        service = str(args.get("service") or "")
+        service = _SERVICE_ALIASES.get(domain, {}).get(service, service)
+        return confirm.is_sensitive(domain, service, None)
+
+    async def portal_start(request: web.Request) -> web.Response:
+        """Aggregate the resident's start page (#646): their pins + the shared
+        household ones + their most-used actions. Entity favorites are enriched
+        with live HA state via the read-only `fetch_card` path."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        favorites = favorites_store.list_favorites(solaris_db_path, uid)
+        personal: list[dict[str, Any]] = []
+        household: list[dict[str, Any]] = []
+
+        async def enrich(fav: dict[str, Any]) -> dict[str, Any]:
+            item = {
+                "id": fav["id"],
+                "kind": fav["kind"],
+                "label": fav["label"],
+                "payload": fav["payload"],
+                "position": fav["position"],
+                "scope": (
+                    "household"
+                    if fav["owner_uid"] == favorites_store.HOUSEHOLD
+                    else "personal"
+                ),
+            }
+            if fav["kind"] == "entity" and hass_url and hass_token:
+                entity_id = str(fav["payload"].get("entity_id") or "")
+                item["card"] = (
+                    await fetch_card(hass_url, hass_token, entity_id)
+                    if entity_id
+                    else None
+                )
+            return item
+
+        enriched = await asyncio.gather(*(enrich(f) for f in favorites))
+        for item in enriched:
+            (household if item["scope"] == "household" else personal).append(item)
+
+        frequent: list[dict[str, Any]] = []
+        for row in favorites_store.top_usage(solaris_db_path, uid, 6):
+            frequent.append(
+                {"kind": row["kind"], "label": _favorite_label(row["payload"]), **row}
+            )
+        return web.json_response(
+            {
+                "ok": True,
+                "personal": personal,
+                "household": household,
+                "frequent": frequent,
+            }
+        )
+
+    async def favorites_create(request: web.Request) -> web.Response:
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        kind = str(body.get("kind") or "")
+        label = str(body.get("label") or "")
+        payload = body.get("payload")
+        if kind not in ("entity", "action", "link") or not isinstance(payload, dict):
+            return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+        owner = favorites_store.HOUSEHOLD if body.get("scope") == "household" else uid
+        if kind == "action":
+            if payload.get("tool") not in PINNABLE_TOOLS:
+                return web.json_response(
+                    {"ok": False, "error": "tool_not_pinnable"}, status=403
+                )
+            if _action_is_sensitive(payload):
+                return web.json_response(
+                    {"ok": False, "error": "sensitive_action"}, status=403
+                )
+        fav_id = favorites_store.add_favorite(
+            solaris_db_path, owner, kind, label, payload
+        )
+        return web.json_response({"ok": True, "id": fav_id})
+
+    def _owner_for(request: web.Request, fav_id: str) -> str | None:
+        """The owner_uid a resident may mutate this favorite under: their own
+        uid or `household`, whichever holds the row. None → not found/forbidden."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        for fav in favorites_store.list_favorites(solaris_db_path, uid):
+            if fav["id"] == fav_id:
+                return fav["owner_uid"]
+        return None
+
+    async def favorites_delete(request: web.Request) -> web.Response:
+        fav_id = request.match_info["fav_id"]
+        owner = _owner_for(request, fav_id)
+        if owner is None:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        favorites_store.remove_favorite(solaris_db_path, owner, fav_id)
+        return web.json_response({"ok": True})
+
+    async def favorites_reorder(request: web.Request) -> web.Response:
+        fav_id = request.match_info["fav_id"]
+        owner = _owner_for(request, fav_id)
+        if owner is None:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        try:
+            position = int(body.get("position"))
+        except (TypeError, ValueError):
+            return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+        favorites_store.set_position(solaris_db_path, owner, fav_id, position)
+        return web.json_response({"ok": True})
+
+    async def favorites_run(request: web.Request) -> web.Response:
+        """Execute a pinned action favorite verbatim (#646). Re-checks the
+        confirm policy — a one-tap start-page bypass of the gate must not
+        exist — then dispatches on the household gateway toolbox."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        fav_id = request.match_info["fav_id"]
+        row = next(
+            (
+                f
+                for f in favorites_store.list_favorites(solaris_db_path, uid)
+                if f["id"] == fav_id
+            ),
+            None,
+        )
+        if row is None:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        if row["kind"] != "action":
+            return web.json_response({"ok": False, "error": "not_action"}, status=400)
+        payload = row["payload"]
+        tool = str(payload.get("tool") or "")
+        args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+        if tool not in PINNABLE_TOOLS:
+            return web.json_response(
+                {"ok": False, "error": "tool_not_pinnable"}, status=403
+            )
+        if _action_is_sensitive(payload):
+            return web.json_response(
+                {"ok": False, "error": "sensitive_action"}, status=403
+            )
+        current_uid.set(uid)
+        output = await hermes.dispatch_tool(tool, args)
+        favorites_store.record_usage(solaris_db_path, row["owner_uid"], tool, args)
+        try:
+            result = json.loads(output)
+        except (TypeError, ValueError):
+            result = {"ok": True, "raw": output}
+        return web.json_response({"ok": True, "result": result})
+
     async def anchors_resolve(request: web.Request) -> web.Response:
         """Resolve auto-anchors (#501) to OKF entity ids (#506).
 
@@ -1963,6 +2153,11 @@ def build_app(
     app.router.add_get("/api/concept/{id}", concept_view)
     app.router.add_get("/c/{id}", concept_page)
     app.router.add_get("/api/portal/energy", portal_energy)
+    app.router.add_get("/api/portal/start", portal_start)
+    app.router.add_post("/api/favorites", favorites_create)
+    app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
+    app.router.add_put("/api/favorites/{fav_id}", favorites_reorder)
+    app.router.add_post("/api/favorites/{fav_id}/run", favorites_run)
     app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/mentions/tags", mentions_tags)
