@@ -1,1 +1,0 @@
-skills/household/SOUL.md
