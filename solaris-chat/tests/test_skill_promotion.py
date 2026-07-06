@@ -241,7 +241,7 @@ def test_skill_promotion_tools_are_admin_only(tmp_path):
     never file or complete an approval)."""
     from solaris_chat.engine import profiles
 
-    household, _deep, admin, guest, _rec, _bus = profiles.build_engine_clients(
+    household, _deep, admin, guest, _lib, _rec, _bus = profiles.build_engine_clients(
         db_path=str(tmp_path / "solaris.db"),
         ollama_url="http://ollama",
         fast_model="m",

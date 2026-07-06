@@ -27,7 +27,11 @@ from solaris_chat import compaction
 from solaris_chat.engine import store
 from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.ingest.runner import _run_obsidian
-from solaris_chat.engine.knowledge import PendingEmbeddingQueue, embed_worker
+from solaris_chat.engine.knowledge import (
+    PendingEmbeddingQueue,
+    embed_worker,
+    projection,
+)
 from solaris_chat.engine.knowledge.writer import OkfWriter
 from solaris_chat.logging import log
 
@@ -38,6 +42,11 @@ if TYPE_CHECKING:
 _LOCAL_TZ = ZoneInfo("Europe/Berlin")
 _POLL_S = 30.0
 _CRON_UID = "system"
+# The shared-pool scope for the Bibliothekar: a session owned by this uid writes
+# to the vault ROOT (`okf/`, `facts/`, `okf/log.md`), not a `users/<uid>/` subtree
+# — it must match `notes_search.SHARED_UID` for the re-root logic to leave shared
+# writes at the root. A resident scope is that resident's own uid.
+_CRON_UID_SHARED = "household"
 
 # A stale chat the nightly compactor picks up: untouched for a week and
 # carrying enough transcript that compacting actually frees something.
@@ -50,6 +59,31 @@ _STENOGRAPH_WATERMARK = "stenograph-watermark"
 _STENOGRAPH_MAX_SESSIONS = 20
 _STENOGRAPH_SLICE_CHARS = 8000
 _STENOGRAPH_MIN_TURNS = 2
+
+# The nightly Bibliothekar (#653): the durable-fact/entity curation agent runs
+# one deep turn per ownership scope over a BOUNDED candidate set (§3.3): the
+# concept files touched since the last run plus fact files older than this many
+# days that aren't yet consolidated, capped per scope. The watermark is a
+# naive-UTC stamp — `concepts.updated` is `datetime('now')` (UTC), so comparing
+# it against the local-ISO cron slot would silently drop rows.
+_BIBLIOTHEKAR_WATERMARK = "bibliothekar-watermark"
+_BIBLIOTHEKAR_MAX_PATHS = 40
+_BIBLIOTHEKAR_STALE_DAYS = 3
+
+BIBLIOTHEKAR_PROMPT = (
+    "[system: nightly librarian run — unattended, no resident present]\n"
+    "Du bist der Bibliothekar. Regeln (bindend):\n"
+    "- NIEMALS Inhalte löschen. Nur umschreiben, zusammenführen, ergänzen.\n"
+    "- Duplikate: Aliasse in die kanonische Datei (frontmatter aliases), das\n"
+    '  Duplikat wird zum Stub mit "merged_into: <pfad>" und einem [[Link]].\n'
+    "- Fakten-Dateien: Inhalt in die passende Personen-/Themen-Notiz (nach\n"
+    '  #topic/@person) einarbeiten, dann "consolidated: true" ins Frontmatter\n'
+    "  der Quelldatei schreiben - Datei behalten.\n"
+    '- Veraltete einzeilige "description:"-Felder auffrischen.\n'
+    "- Jede Änderung als Zeile an okf/log.md anhängen (append).\n"
+    "- Bei unklaren/kaputten Dateien: überspringen, in log.md vermerken.\n"
+    "Kandidaten dieser Nacht:\n"
+)
 
 CHRONICLE_PROMPT = (
     "Write today's family chronicle / journal entry for today. "
@@ -213,6 +247,19 @@ def _mark_run(db_path: str, name: str, slot: str) -> None:
         )
 
 
+def _path_in_scope(okf_path: str, scope: str) -> bool:
+    """Whether a vault-relative path belongs to `scope` (#653).
+
+    A path under `users/<uid>/` belongs to resident `<uid>`; anything else
+    belongs to the shared household pool. Cross-scope files are excluded so a
+    scope's turn only ever sees paths it can actually edit (private-vs-shared
+    merges across scopes are forbidden by design)."""
+    from solaris_chat.notes_search import resident_for_path
+
+    owner = resident_for_path(okf_path)
+    return owner == scope if scope != _CRON_UID_SHARED else owner is None
+
+
 def _render_transcript(msgs: list[tuple[str, str]]) -> str:
     """Render `(role, content)` turns as `User:`/`Solaris:` lines, keeping the
     NEWEST within the slice cap (drop the oldest lines when it overflows)."""
@@ -251,6 +298,7 @@ class CronRunner:
         context_window: int,
         jobs: tuple[CronJob, ...] | None = None,
         ingest_settings: Settings | None = None,
+        librarian: EngineClient | None = None,
     ):
         self._db_path = db_path
         self._deep = deep
@@ -258,6 +306,7 @@ class CronRunner:
         self._context_window = context_window
         self._jobs = jobs if jobs is not None else load_jobs(skills_dir)
         self._ingest_settings = ingest_settings
+        self._librarian = librarian
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -333,14 +382,13 @@ class CronRunner:
         except Exception as e:  # noqa: BLE001 — one step must not kill the rest.
             log.error("engine.night.stenograph_failed", error=str(e))
 
-        async def _pipeline() -> None:
+        async def _ingest_step() -> None:
             try:
                 await run_ingest(settings)
             except Exception as e:  # noqa: BLE001 — one step must not kill the rest.
                 log.error("engine.night.ingest_failed", error=str(e))
-            # The Bibliothekar (durable-fact consolidation) lands in #653; this is
-            # its ordered slot in the pipeline until then.
-            log.info("engine.night.bibliothekar_skipped")
+
+        async def _reingest_step() -> None:
             try:
                 writer = OkfWriter(
                     db_path=settings.solaris_db_path,
@@ -355,11 +403,29 @@ class CronRunner:
             except Exception as e:  # noqa: BLE001
                 log.error("engine.night.embed_drain_failed", error=str(e))
 
+        # Ingest fills the projection (bibliothekar reads `concepts.updated` from
+        # it), so it runs first — in a worker thread (#586). The Bibliothekar then
+        # runs LIVE librarian turns on the chat loop, editing vault files. Its
+        # rewrites change what the Obsidian re-ingest reads, so it must land
+        # BETWEEN ingest and re-ingest; the re-ingest picks up the merged/stubbed
+        # files and re-embeds via content_hash → #650 drain.
+        await self._run_in_worker(_ingest_step)
+        try:
+            await self._bibliothekar()
+        except Exception as e:  # noqa: BLE001 — one bad scope must not kill the run.
+            log.error("engine.night.bibliothekar_failed", error=str(e))
+        await self._run_in_worker(_reingest_step)
+
+    @staticmethod
+    async def _run_in_worker(coro_factory) -> None:
+        """Run a coroutine on its own loop in a daemon thread, so its synchronous
+        sqlite + embedding work never starves the chat server's `/health` (#586).
+        Awaits completion without blocking the chat loop."""
         done = threading.Event()
 
         def _worker() -> None:
             try:
-                asyncio.run(_pipeline())
+                asyncio.run(coro_factory())
             except Exception as e:  # noqa: BLE001 — the run must never crash the box.
                 log.error("engine.night.thread_failed", error=str(e))
             finally:
@@ -371,6 +437,103 @@ class CronRunner:
         thread.start()
         while not done.is_set():
             await asyncio.sleep(1.0)
+
+    def _bibliothekar_scopes(self, notes_dir: str) -> list[str]:
+        """The ownership scopes to curate: the shared household pool plus every
+        `users/<uid>/` subtree. Session owner == scope, so each turn can only
+        touch its own subtree (default-deny, #576)."""
+        scopes = [_CRON_UID_SHARED]
+        users_dir = Path(notes_dir) / "users"
+        if users_dir.is_dir():
+            scopes += sorted(d.name for d in users_dir.iterdir() if d.is_dir())
+        return scopes
+
+    def _bibliothekar_candidates(
+        self, notes_dir: str, scope: str, since: str
+    ) -> list[str]:
+        """Bounded candidate paths for one scope: concept files touched since the
+        last run (filtered to the scope's subtree) plus stale, unconsolidated fact
+        files. Capped at `_BIBLIOTHEKAR_MAX_PATHS` (the §3.3 bounded-input guard)."""
+        root = Path(notes_dir)
+        conn = projection.open_conn(self._db_path)
+        try:
+            changed = projection.concepts_changed_since(conn, since)
+        finally:
+            conn.close()
+        in_scope = [p for p in changed if _path_in_scope(p, scope)]
+
+        facts_dir = (
+            root / "facts"
+            if scope == _CRON_UID_SHARED
+            else (root / "users" / scope / "facts")
+        )
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=_BIBLIOTHEKAR_STALE_DAYS)
+        ).strftime("%Y-%m-%d")
+        stale_facts: list[str] = []
+        if facts_dir.is_dir():
+            for path in sorted(facts_dir.glob("*.md")):
+                # `fact_store` names files `YYYY-MM-DD-<slug>.md`; the date prefix
+                # is the age. Older than the cutoff and not yet consolidated.
+                if path.name[:10] >= cutoff:
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if "consolidated: true" in text:
+                    continue
+                stale_facts.append(str(path.relative_to(root)))
+
+        candidates = list(dict.fromkeys(in_scope + stale_facts))
+        return candidates[:_BIBLIOTHEKAR_MAX_PATHS]
+
+    async def _bibliothekar(self) -> None:
+        """The nightly vault curation (#653): one librarian turn per ownership
+        scope over a bounded candidate set, editing vault files through the
+        notes tools (concept §3.3 — files are truth, the projection heals on the
+        following re-ingest). Never deletes: merges become alias+stub, stale facts
+        get a `consolidated:` stamp, every change is logged to `okf/log.md`. The
+        librarian toolbox has no HA/media/web tools, so the run cannot touch a
+        device (the whole point of a fifth, restricted client)."""
+        if self._librarian is None or self._ingest_settings is None:
+            log.info("engine.night.bibliothekar_skipped", reason="no_librarian")
+            return
+        notes_dir = self._ingest_settings.notes_dir
+        if not notes_dir:
+            log.info("engine.night.bibliothekar_skipped", reason="no_notes_dir")
+            return
+        since = _last_run(self._db_path, _BIBLIOTHEKAR_WATERMARK)
+        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        for scope in self._bibliothekar_scopes(notes_dir):
+            try:
+                candidates = self._bibliothekar_candidates(notes_dir, scope, since)
+                if not candidates:
+                    continue
+                prompt = (
+                    BIBLIOTHEKAR_PROMPT
+                    + "\n".join(candidates)
+                    + "\n\nArbeite sie mit notes_read/note_write ab."
+                    " Antworte nur mit einer Zusammenfassung."
+                )
+                session_id = await self._librarian.create_session(scope, ephemeral=True)
+                try:
+                    reply = await self._librarian.chat(session_id, prompt, None, "high")
+                    log.info(
+                        "engine.night.bibliothekar_scope",
+                        scope=scope,
+                        candidates=len(candidates),
+                        reply_len=len(reply),
+                    )
+                finally:
+                    await self._librarian.delete_session(session_id, scope)
+            except Exception as e:  # noqa: BLE001 — one bad scope/file mustn't abort.
+                log.error(
+                    "engine.night.bibliothekar_scope_failed", scope=scope, error=str(e)
+                )
+        # Advance the watermark only after every scope, so a mid-run crash
+        # re-curates the same candidates rather than dropping them.
+        _mark_run(self._db_path, _BIBLIOTHEKAR_WATERMARK, now_utc)
 
     async def _stenograph(self) -> None:
         """Distil each active session's day into durable facts (#652).

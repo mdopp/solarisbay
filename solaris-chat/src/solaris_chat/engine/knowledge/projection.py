@@ -227,6 +227,19 @@ def upsert_concept(
     return concept_id
 
 
+def concepts_changed_since(conn: sqlite3.Connection, watermark: str) -> list[str]:
+    """OKF paths of concepts whose `updated` is newer than `watermark` (#653).
+
+    Bounded-input source for the nightly Bibliothekar: `concepts.updated` is a
+    UTC `datetime('now')` string, so `watermark` must be the same naive-UTC form.
+    An empty watermark yields every concept path (a first run)."""
+    rows = conn.execute(
+        "SELECT okf_path FROM concepts WHERE updated > ? ORDER BY updated DESC",
+        (watermark or "",),
+    ).fetchall()
+    return [r["okf_path"] for r in rows]
+
+
 def concept_embedding_id(conn: sqlite3.Connection, concept_id: str) -> str | None:
     row = conn.execute(
         "SELECT embedding_id FROM concepts WHERE id = ?", (concept_id,)

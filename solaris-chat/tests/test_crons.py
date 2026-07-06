@@ -483,6 +483,187 @@ async def test_compactor_picks_stale_long_sessions(db, monkeypatch):
     assert compacted == [("old-long", True)]
 
 
+_CONCEPTS_DDL = """
+CREATE TABLE concepts (
+  id           TEXT PRIMARY KEY,
+  ref_id       TEXT NOT NULL,
+  ref_kind     TEXT NOT NULL,
+  okf_path     TEXT NOT NULL,
+  embedding_id TEXT,
+  content_hash TEXT NOT NULL,
+  updated      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+
+def _seed_concept(db, okf_path, updated):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO concepts (id, ref_id, ref_kind, okf_path, content_hash, updated)"
+        " VALUES (?, 'e', 'entity', ?, 'h', ?)",
+        (okf_path + updated, okf_path, updated),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _write_fact(notes_dir, rel, text):
+    p = Path(notes_dir) / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def test_path_in_scope_splits_shared_and_resident():
+    assert crons._path_in_scope("okf/people/anna.md", "household") is True
+    assert crons._path_in_scope("okf/people/anna.md", "lena") is False
+    assert crons._path_in_scope("users/lena/okf/people/anna.md", "lena") is True
+    assert crons._path_in_scope("users/lena/okf/people/anna.md", "household") is False
+    assert crons._path_in_scope("users/lena/okf/x.md", "mdopp") is False
+
+
+def test_bibliothekar_scopes_lists_household_then_users(db, tmp_path):
+    (tmp_path / "users" / "lena").mkdir(parents=True)
+    (tmp_path / "users" / "mdopp").mkdir(parents=True)
+    (tmp_path / "okf").mkdir()  # not a user dir → ignored
+    runner = _runner(db, _FakeDeep())
+    assert runner._bibliothekar_scopes(str(tmp_path)) == ["household", "lena", "mdopp"]
+
+
+def test_bibliothekar_candidates_filters_by_scope_and_staleness(db, tmp_path):
+    conn = sqlite3.connect(db)
+    conn.executescript(_CONCEPTS_DDL)
+    conn.commit()
+    conn.close()
+    since = "2026-07-01 00:00:00"
+    _seed_concept(db, "okf/people/anna.md", "2026-07-05 00:00:00")  # changed, shared
+    _seed_concept(db, "okf/people/old.md", "2026-06-01 00:00:00")  # before watermark
+    _seed_concept(db, "users/lena/okf/x.md", "2026-07-05 00:00:00")  # other scope
+    # A stale, unconsolidated shared fact → a candidate; a fresh + a consolidated
+    # one → excluded.
+    _write_fact(tmp_path, "facts/2020-01-01-stale.md", "---\ndate: 2020-01-01\n---\nx")
+    _write_fact(tmp_path, "facts/2020-01-02-done.md", "---\nconsolidated: true\n---\ny")
+    _write_fact(
+        tmp_path,
+        "facts/2099-01-01-fresh.md",
+        "---\ndate: 2099-01-01\n---\nz",
+    )
+    runner = _runner(db, _FakeDeep())
+    cands = runner._bibliothekar_candidates(str(tmp_path), "household", since)
+    assert "okf/people/anna.md" in cands
+    assert "facts/2020-01-01-stale.md" in cands
+    assert "okf/people/old.md" not in cands  # before the watermark
+    assert "users/lena/okf/x.md" not in cands  # other scope
+    assert "facts/2020-01-02-done.md" not in cands  # already consolidated
+    assert "facts/2099-01-01-fresh.md" not in cands  # not yet stale
+
+
+def test_bibliothekar_candidates_capped(db, tmp_path):
+    conn = sqlite3.connect(db)
+    conn.executescript(_CONCEPTS_DDL)
+    conn.commit()
+    conn.close()
+    for i in range(60):
+        _seed_concept(db, f"okf/e{i}.md", "2026-07-05 00:00:00")
+    runner = _runner(db, _FakeDeep())
+    cands = runner._bibliothekar_candidates(str(tmp_path), "household", "")
+    assert len(cands) == crons._BIBLIOTHEKAR_MAX_PATHS
+
+
+async def test_bibliothekar_runs_one_librarian_turn_per_nonempty_scope(db, tmp_path):
+    conn = sqlite3.connect(db)
+    conn.executescript(_CONCEPTS_DDL)
+    conn.commit()
+    conn.close()
+    (tmp_path / "users" / "lena").mkdir(parents=True)
+    (tmp_path / "users" / "empty").mkdir(parents=True)  # no candidates → skipped
+    _seed_concept(db, "okf/people/anna.md", "2026-07-05 00:00:00")
+    _seed_concept(db, "users/lena/okf/x.md", "2026-07-05 00:00:00")
+
+    class _Settings:
+        solaris_db_path = db
+        notes_dir = str(tmp_path)
+        ollama_url = "http://x"
+        default_uid = "household"
+
+    librarian = _FakeDeep()
+    runner = crons.CronRunner(
+        db_path=db,
+        deep=_FakeDeep(),
+        skills_dir="",
+        context_window=32768,
+        jobs=(),
+        ingest_settings=_Settings(),
+        librarian=librarian,
+    )
+    await runner._bibliothekar()
+    # One turn per scope that had candidates (household + lena), none for empty.
+    owners = [c[0] for c in librarian.created]
+    assert owners == ["household", "lena"]
+    assert all(effort == "high" for _, _, effort in librarian.turns)
+    assert crons.BIBLIOTHEKAR_PROMPT[:20] in librarian.turns[0][1]
+    assert "okf/people/anna.md" in librarian.turns[0][1]
+    # Watermark advanced (naive-UTC), sessions cleaned up.
+    assert crons._last_run(db, crons._BIBLIOTHEKAR_WATERMARK)
+    assert len(librarian.deleted) == 2
+
+
+async def test_bibliothekar_skipped_without_librarian(db, tmp_path):
+    class _Settings:
+        solaris_db_path = db
+        notes_dir = str(tmp_path)
+        ollama_url = "http://x"
+        default_uid = "household"
+
+    runner = crons.CronRunner(
+        db_path=db,
+        deep=_FakeDeep(),
+        skills_dir="",
+        context_window=32768,
+        jobs=(),
+        ingest_settings=_Settings(),
+    )
+    await runner._bibliothekar()  # librarian is None → no-op, no watermark
+    assert crons._last_run(db, crons._BIBLIOTHEKAR_WATERMARK) == ""
+
+
+async def test_bibliothekar_one_bad_scope_does_not_abort_others(db, tmp_path):
+    conn = sqlite3.connect(db)
+    conn.executescript(_CONCEPTS_DDL)
+    conn.commit()
+    conn.close()
+    (tmp_path / "users" / "lena").mkdir(parents=True)
+    _seed_concept(db, "okf/a.md", "2026-07-05 00:00:00")
+    _seed_concept(db, "users/lena/okf/x.md", "2026-07-05 00:00:00")
+
+    class _Settings:
+        solaris_db_path = db
+        notes_dir = str(tmp_path)
+        ollama_url = "http://x"
+        default_uid = "household"
+
+    class _FlakyLibrarian(_FakeDeep):
+        async def chat(self, session_id, text, images=None, reasoning_effort="none"):
+            if not self.turns:
+                self.turns.append((session_id, text, reasoning_effort))
+                raise RuntimeError("boom on the first scope")
+            return await super().chat(session_id, text, images, reasoning_effort)
+
+    librarian = _FlakyLibrarian()
+    runner = crons.CronRunner(
+        db_path=db,
+        deep=_FakeDeep(),
+        skills_dir="",
+        context_window=32768,
+        jobs=(),
+        ingest_settings=_Settings(),
+        librarian=librarian,
+    )
+    await runner._bibliothekar()
+    # The first scope raised, but the second still ran (2 turns attempted).
+    assert len(librarian.turns) == 2
+    assert crons._last_run(db, crons._BIBLIOTHEKAR_WATERMARK)  # advanced anyway
+
+
 async def test_compactor_never_forks_the_durable_household_session(db, monkeypatch):
     # The durable household session (#345) must NOT be compacted into a
     # `Fortsetzung` continuation by the nightly cron — that would surface as a

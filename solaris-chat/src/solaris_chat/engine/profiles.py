@@ -103,9 +103,15 @@ def build_engine_clients(
     jellyfin_username: str = "",
     jellyfin_password: str = "",
 ) -> tuple[
-    EngineClient, EngineClient, EngineClient, EngineClient, TraceRecorder, SessionBus
+    EngineClient,
+    EngineClient,
+    EngineClient,
+    EngineClient,
+    EngineClient,
+    TraceRecorder,
+    SessionBus,
 ]:
-    """Returns (household, deep, admin, guest) clients + the recorder + bus."""
+    """Returns (household, deep, admin, guest, librarian) clients + recorder + bus."""
     ollama = OllamaChat(ollama_url)
     recorder = TraceRecorder()
     bus = SessionBus()
@@ -315,4 +321,25 @@ def build_engine_clients(
             default_uid=default_uid,
         )
     )
-    return household, deep, admin, guest, recorder, bus
+    # Bibliothekar (#653): the nightly vault-curation agent. Deep model (it
+    # thinks about merges), but a notes-tools-ONLY toolbox — an unattended file
+    # rewriter must not hold ha_call_service/media/timers/web. The restriction
+    # is in code (the register.py lesson), not a prompt instruction; the toolbox
+    # physically cannot delete or touch HA. Per-scope ephemeral sessions re-root
+    # every write to the scope's subtree, so default-deny holds by construction.
+    librarian_tools: list[Tool] = (
+        build_notes_tools(notes_dir, _current_uid, db_path=db_path, ollama=ollama)
+        if notes_dir
+        else []
+    )
+    librarian = make(
+        EngineProfile(
+            name="librarian",
+            model=thorough_model or "gemma4:12b",
+            soul_path=soul_path,
+            think_default=True,
+            toolbox=Toolbox(librarian_tools),
+            default_uid=default_uid,
+        )
+    )
+    return household, deep, admin, guest, librarian, recorder, bus
