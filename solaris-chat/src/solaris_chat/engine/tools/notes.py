@@ -151,8 +151,17 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
             # Stamp the caller as owner (#576): a model-written note belongs to
             # the resident it was written for, not the shared pool. Without this
             # the note is untagged and (None = shared) visible to everyone.
+            # But content that already carries its own frontmatter (an OKF concept
+            # file, or any note authored with `---`) is written verbatim (#657) —
+            # prepending a second block would demote the caller's frontmatter to
+            # body text, silently dropping its type/id/resident keys. Ownership of
+            # such a write is still enforced by the path (re-rooted under
+            # users/<owner>/ above) and by its own `resident:`/`added_by:` keys.
             body = content.rstrip("\n") + "\n"
-            note = f"---\nadded_by: {owner}\n---\n\n{body}"
+            if content.lstrip().startswith("---"):
+                note = body
+            else:
+                note = f"---\nadded_by: {owner}\n---\n\n{body}"
             path.write_text(note, encoding="utf-8")
         return json.dumps({"written": rel})
 
