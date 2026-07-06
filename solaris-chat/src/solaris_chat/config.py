@@ -14,6 +14,52 @@ from dataclasses import dataclass
 from solaris_chat import context
 
 
+@dataclass(frozen=True)
+class ImapAccount:
+    """One curated IMAP mailbox the email-ingest adapter reads (#654).
+
+    Numbered flat env: `IMAP_<n>_HOST/PORT/USERNAME/PASSWORD/FOLDER/RESIDENT`.
+    The folder IS the filter (read-only that folder only); each account maps to
+    exactly one resident so its mail is per-person scoped by construction.
+    """
+
+    host: str
+    port: int
+    username: str
+    password: str
+    folder: str
+    resident_uid: str
+
+
+def _parse_imap_accounts(environ: dict[str, str]) -> tuple[ImapAccount, ...]:
+    """Scan `IMAP_<n>_*` (n=1..) while `IMAP_<n>_HOST` is set.
+
+    An account missing USERNAME/PASSWORD/RESIDENT is skipped (the caller logs
+    it) — we never build a half-configured account. PORT defaults to 993 (SSL),
+    FOLDER to `Solaris`. Passwords live only here + the process env, never a log.
+    """
+    accounts: list[ImapAccount] = []
+    n = 1
+    while host := environ.get(f"IMAP_{n}_HOST", "").strip():
+        username = environ.get(f"IMAP_{n}_USERNAME", "").strip()
+        password = environ.get(f"IMAP_{n}_PASSWORD", "")
+        resident = environ.get(f"IMAP_{n}_RESIDENT", "").strip()
+        if username and password and resident:
+            accounts.append(
+                ImapAccount(
+                    host=host,
+                    port=int(environ.get(f"IMAP_{n}_PORT", "993")),
+                    username=username,
+                    password=password,
+                    folder=environ.get(f"IMAP_{n}_FOLDER", "Solaris").strip()
+                    or "Solaris",
+                    resident_uid=resident,
+                )
+            )
+        n += 1
+    return tuple(accounts)
+
+
 def _parse_library_owners(raw: str) -> dict[str, str]:
     """Parse `Name=uid;Name2=uid2` into a {library_name: owner_uid} map.
 
@@ -73,6 +119,7 @@ class Settings:
     jellyfin_username: str
     jellyfin_password: str
     jellyfin_library_owners: dict[str, str]
+    imap_accounts: tuple[ImapAccount, ...]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -222,6 +269,9 @@ class Settings:
             jellyfin_library_owners=_parse_library_owners(
                 os.environ.get("JELLYFIN_LIBRARY_OWNERS", "Music (cdopp)=cdopp")
             ),
+            # Curated IMAP mailboxes the email-ingest adapter reads (read-only,
+            # #654). Numbered flat env `IMAP_<n>_*`; no account ⇒ ingest skipped.
+            imap_accounts=_parse_imap_accounts(dict(os.environ)),
         )
 
 

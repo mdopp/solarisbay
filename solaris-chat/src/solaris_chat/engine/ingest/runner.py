@@ -26,6 +26,7 @@ from ..knowledge import PendingEmbeddingQueue, embed_worker, projection
 from ..knowledge.writer import OkfWriter
 from .caldav import DavIngest
 from .dav_client import HttpDavClient
+from .imap import ImapIngest
 from .immich import ImmichIngest
 from .immich_client import RestImmichClient
 from .jellyfin import JellyfinMusicIngest, RestJellyfinMusicClient
@@ -51,6 +52,7 @@ async def run_ingest(settings: Settings) -> None:
     await _run_immich(settings, writer, uid)
     await _run_caldav(settings, writer, uid)
     await _run_jellyfin(settings, writer, uid)
+    await _run_imap(settings, writer)
 
     # Drain the embedding queue the adapters just filled into okf_vectors. Rides
     # this ingest thread (never the voice hot path — nomic-embed-text is a VRAM
@@ -188,6 +190,42 @@ async def _run_jellyfin(settings: Settings, writer: OkfWriter, uid: str) -> None
         )
     except Exception as e:  # noqa: BLE001 — degrade gracefully on any source error.
         log.error("engine.ingest.jellyfin_failed", error=str(e))
+
+
+async def _run_imap(settings: Settings, writer: OkfWriter) -> None:
+    if not settings.imap_accounts:
+        log.info("engine.ingest.imap_skipped", reason="unconfigured")
+        return
+    ingest = ImapIngest(writer)
+    for account in settings.imap_accounts:
+        # One dead server must not block the other accounts — isolate each.
+        # The IMAP login is the health probe (no HTTP ping); a per-account+folder
+        # cursor key keeps the high-water marks independent.
+        source = f"imap:{account.username}@{account.host}/{account.folder}"
+        try:
+            cursor = _load_cursor(settings, source)
+            stats = await asyncio.to_thread(
+                ingest.run_account,
+                account,
+                cursor,
+                checkpoint=lambda c, s=source: _save_cursor(settings, s, c),
+            )
+            _save_cursor(settings, source, stats.cursor)
+            log.info(
+                "engine.ingest.imap",
+                account=stats.account,
+                seen=stats.seen,
+                written=stats.written,
+                skipped=stats.skipped,
+                cursor=stats.cursor,
+            )
+        except Exception as e:  # noqa: BLE001 — degrade gracefully on any source error.
+            # Log the account as user@host/folder only — never the password.
+            log.error(
+                "engine.ingest.imap_failed",
+                account=f"{account.username}@{account.host}/{account.folder}",
+                error=str(e),
+            )
 
 
 def _load_cursor(settings: Settings, source: str) -> str:
