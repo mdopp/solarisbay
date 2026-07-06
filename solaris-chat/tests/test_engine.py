@@ -179,6 +179,29 @@ def test_store_ephemeral_not_listed(db):
     assert store.list_sessions(db, "anna") == []
 
 
+def test_messages_since_returns_only_new_user_assistant_rows(db):
+    import sqlite3
+
+    sid = store.create_session(db, "anna")
+    conn = sqlite3.connect(db)
+    conn.executemany(
+        "INSERT INTO engine_messages (session_id, seq, role, content, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        [
+            (sid, 1, "user", "alt", "2026-07-05 09:00:00"),
+            (sid, 2, "assistant", "alte antwort", "2026-07-05 09:00:01"),
+            (sid, 3, "user", "neu", "2026-07-06 10:00:00"),
+            (sid, 4, "assistant", "neue antwort", "2026-07-06 10:00:01"),
+            (sid, 5, "assistant", "", "2026-07-06 10:00:02"),  # empty → skipped
+            (sid, 6, "tool", "tool result", "2026-07-06 10:00:03"),  # non-chat
+        ],
+    )
+    conn.commit()
+    conn.close()
+    got = store.messages_since(db, sid, "2026-07-06 00:00:00")
+    assert got == [("user", "neu"), ("assistant", "neue antwort")]
+
+
 def test_store_overlay_and_usage(db):
     sid = store.create_session(db, "anna")
     store.set_overlay(db, sid, "Fortsetzung: ...")

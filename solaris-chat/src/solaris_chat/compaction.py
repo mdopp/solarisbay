@@ -77,7 +77,28 @@ EXTRACT_PROMPT = (
     "state — those live in Home Assistant and must be read from it, not stored. "
     "Store nothing that is transient small-talk or already obvious; if there is "
     "nothing durable, store nothing. Do not summarise back to me — just save the "
-    "facts. Reply only with how many facts you stored."
+    "facts. Tag each stored fact with a #topic and an @person mention where they "
+    "apply, inline in the fact text. Reply only with how many facts you stored."
+)
+
+# The nightly Stenograph (#652) reuses the extraction pass on LIVE household
+# sessions, but must not append to their durable history — so it runs the same
+# instruction against a day's transcript INLINED into the prompt, in an
+# ephemeral deep session owned by the source session's owner. This prefix frames
+# the inlined slice; `EXTRACT_PROMPT` (minus its "THIS conversation" wording)
+# supplies the store-only-durable rules that follow the transcript.
+STENOGRAPH_PREFIX = (
+    "[system: nightly memory extraction] Below is today's slice of a household "
+    "conversation. Review it and store only genuinely durable, reusable knowledge "
+    "worth keeping — facts, decisions, household preferences, people, recurring "
+    "routines. Use your memory tool (fact_store) to save each one as a short "
+    "standalone fact, tagged with a #topic and an @person mention where they "
+    "apply. SKIP turns that are pure device control, tool calls, or trivial "
+    "confirmations; do NOT memorise device/room/entity mappings or device state "
+    "(those live in Home Assistant). Store nothing transient or already obvious; "
+    "if there is nothing durable, store nothing. Do not summarise back to me — "
+    "just save the facts. Reply only with how many facts you stored.\n\n"
+    "--- today's conversation ---\n"
 )
 
 # Pass 2 — produce a compact summary of the conversation so far, to seed the

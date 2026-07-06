@@ -308,6 +308,28 @@ def history(db_path: str, session_id: str) -> list[dict[str, Any]]:
     return out
 
 
+def messages_since(
+    db_path: str, session_id: str, since_utc: str
+) -> list[tuple[str, str]]:
+    """The user/assistant turns of `session_id` created after `since_utc` (a
+    sqlite UTC `created_at` string), oldest first, as `(role, content)` pairs.
+
+    Skips tool-call/empty rows (the stenograph only distils real conversation)
+    and orders by `seq` — the durable household session is head-truncated in
+    place (#466), so `created_at` filters what is new without relying on seq
+    continuity.
+    """
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT role, content FROM engine_messages"
+            " WHERE session_id = ? AND created_at > ?"
+            " AND role IN ('user', 'assistant') AND content != ''"
+            " ORDER BY seq",
+            (session_id, since_utc),
+        ).fetchall()
+    return [(r["role"], r["content"]) for r in rows]
+
+
 def add_usage(db_path: str, session_id: str, prompt: int, completion: int) -> None:
     with _conn(db_path) as conn:
         conn.execute(

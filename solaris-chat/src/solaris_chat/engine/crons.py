@@ -18,7 +18,7 @@ import asyncio
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -43,6 +43,13 @@ _CRON_UID = "system"
 # carrying enough transcript that compacting actually frees something.
 _STALE_DAYS = 7
 _STALE_MIN_USAGE = 0.5
+
+# The nightly Stenograph (#652): how many active sessions it distils per night,
+# and the transcript slice cap fed to one extraction turn (head-truncated).
+_STENOGRAPH_WATERMARK = "stenograph-watermark"
+_STENOGRAPH_MAX_SESSIONS = 20
+_STENOGRAPH_SLICE_CHARS = 8000
+_STENOGRAPH_MIN_TURNS = 2
 
 CHRONICLE_PROMPT = (
     "Write today's family chronicle / journal entry for today. "
@@ -206,6 +213,18 @@ def _mark_run(db_path: str, name: str, slot: str) -> None:
         )
 
 
+def _render_transcript(msgs: list[tuple[str, str]]) -> str:
+    """Render `(role, content)` turns as `User:`/`Solaris:` lines, keeping the
+    NEWEST within the slice cap (drop the oldest lines when it overflows)."""
+    lines = [
+        f"{'User' if role == 'user' else 'Solaris'}: {content}"
+        for role, content in msgs
+    ]
+    while lines and sum(len(line) + 1 for line in lines) > _STENOGRAPH_SLICE_CHARS:
+        lines.pop(0)
+    return "\n".join(lines)
+
+
 def _skill_body(skills_dir: str, skill_id: str) -> str:
     """The skill markdown that used to ride the Hermes cron's `skills` list."""
     path = Path(skills_dir) / skill_id / "SKILL.md"
@@ -307,6 +326,13 @@ class CronRunner:
             return
         settings = self._ingest_settings
 
+        # The Stenograph runs LIVE deep-client turns, so it stays on the chat
+        # loop; the sqlite-heavy ingest pipeline below moves to a worker thread.
+        try:
+            await self._stenograph()
+        except Exception as e:  # noqa: BLE001 — one step must not kill the rest.
+            log.error("engine.night.stenograph_failed", error=str(e))
+
         async def _pipeline() -> None:
             try:
                 await run_ingest(settings)
@@ -345,6 +371,71 @@ class CronRunner:
         thread.start()
         while not done.is_set():
             await asyncio.sleep(1.0)
+
+    async def _stenograph(self) -> None:
+        """Distil each active session's day into durable facts (#652).
+
+        Reusing compaction's extract pass on the LIVE session would append the
+        extraction turn to that session's durable history and mirror it to open
+        tabs — unacceptable on the active household chat. So each session's new
+        turns are rendered into the prompt and run through one extraction turn in
+        an EPHEMERAL deep session owned by the source session's owner; the deep
+        client sets `current_uid` from the session owner, so `fact_store` writes
+        land under that resident's facts exactly as if they'd said "merk dir das".
+
+        The watermark is a UTC timestamp: `engine_messages.created_at` /
+        `last_activity` are sqlite UTC strings, while the cron slot stamps are
+        local-ISO with an offset — comparing the two would silently drop rows.
+        """
+        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        last = _last_run(self._db_path, _STENOGRAPH_WATERMARK)
+        if not last:
+            # First run: baseline to the last 24h rather than the whole history.
+            last = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+
+        try:
+            with sqlite3.connect(self._db_path, timeout=10) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT id, owner_uid FROM engine_sessions"
+                    " WHERE ephemeral = 0 AND maintenance = 0 AND last_activity > ?"
+                    " ORDER BY last_activity DESC LIMIT ?",
+                    (last, _STENOGRAPH_MAX_SESSIONS),
+                ).fetchall()
+        except sqlite3.Error as e:
+            log.error("engine.stenograph.query_failed", error=str(e))
+            return
+
+        skipped = 0
+        for row in rows:
+            slice_msgs = store.messages_since(self._db_path, row["id"], last)
+            if len(slice_msgs) < _STENOGRAPH_MIN_TURNS:
+                skipped += 1
+                continue
+            transcript = _render_transcript(slice_msgs)
+            prompt = compaction.STENOGRAPH_PREFIX + transcript
+            session_id = await self._deep.create_session(
+                row["owner_uid"], ephemeral=True
+            )
+            try:
+                reply = await self._deep.chat(session_id, prompt, None, "high")
+                log.info(
+                    "engine.stenograph.session",
+                    source=row["id"],
+                    owner=row["owner_uid"],
+                    reply_len=len(reply),
+                )
+            finally:
+                await self._deep.delete_session(session_id, row["owner_uid"])
+
+        log.info(
+            "engine.stenograph.done", distilled=len(rows) - skipped, skipped=skipped
+        )
+        # Advance the watermark only after the whole loop completes, so a crash
+        # mid-run re-distils the same day rather than dropping sessions.
+        _mark_run(self._db_path, _STENOGRAPH_WATERMARK, now_utc)
 
     async def _compact_stale(self) -> None:
         """The nightly chat-compactor: extract-then-compact stale, long chats

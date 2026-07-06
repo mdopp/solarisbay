@@ -339,6 +339,115 @@ async def test_knowledge_night_run_one_failing_step_does_not_abort_rest(
     assert calls == ["obsidian", "drain"]
 
 
+def _seed_session(db, sid, owner, *, ephemeral=0, maintenance=0, last_activity=None):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO engine_sessions (id, owner_uid, ephemeral, maintenance,"
+        " last_activity) VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')))",
+        (sid, owner, ephemeral, maintenance, last_activity),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _seed_msg(db, sid, seq, role, content, created_at):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO engine_messages (session_id, seq, role, content, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (sid, seq, role, content, created_at),
+    )
+    conn.commit()
+    conn.close()
+
+
+async def test_stenograph_distills_active_sessions_via_ephemeral_owner_turns(db):
+    # An active resident session with a fresh conversation → one ephemeral deep
+    # extraction turn owned by that resident, with the transcript inlined.
+    _seed_session(db, "anna-chat", "anna", last_activity="2026-07-06 20:00:00")
+    _seed_msg(
+        db,
+        "anna-chat",
+        1,
+        "user",
+        "wir fahren im August nach Rom",
+        "2026-07-06 19:00:00",
+    )
+    _seed_msg(db, "anna-chat", 2, "assistant", "schoen!", "2026-07-06 19:00:01")
+    _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
+    deep = _FakeDeep()
+    runner = _runner(db, deep)
+    await runner._stenograph()
+    assert len(deep.turns) == 1
+    sid, text, effort = deep.turns[0]
+    assert effort == "high"
+    assert "wir fahren im August nach Rom" in text
+    assert text.startswith(crons.compaction.STENOGRAPH_PREFIX[:20])
+    # Ephemeral session owned by the resident, cleaned up.
+    assert deep.created[0][0] == "anna"
+    assert deep.created[0][1]["ephemeral"] is True
+    assert deep.deleted == [(sid, "anna")]
+
+
+async def test_stenograph_excludes_ephemeral_maintenance_and_stale(db):
+    _seed_session(db, "eph", "anna", ephemeral=1, last_activity="2026-07-06 20:00:00")
+    _seed_session(
+        db, "maint", "anna", maintenance=1, last_activity="2026-07-06 20:00:00"
+    )
+    _seed_session(db, "stale", "anna", last_activity="2026-07-04 20:00:00")
+    for sid in ("eph", "maint", "stale"):
+        _seed_msg(db, sid, 1, "user", "etwas merkbares hier", "2026-07-06 19:00:00")
+        _seed_msg(db, sid, 2, "assistant", "ok", "2026-07-06 19:00:01")
+    _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
+    deep = _FakeDeep()
+    await _runner(db, deep)._stenograph()
+    assert deep.turns == []
+
+
+async def test_stenograph_skips_trivially_short_slices(db):
+    # A session with only ONE new turn is below the min-turns floor → skipped.
+    _seed_session(db, "quiet", "anna", last_activity="2026-07-06 20:00:00")
+    _seed_msg(db, "quiet", 1, "user", "hi", "2026-07-06 19:00:00")
+    _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
+    deep = _FakeDeep()
+    await _runner(db, deep)._stenograph()
+    assert deep.turns == []
+
+
+async def test_stenograph_advances_watermark_in_utc(db):
+    _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
+    await _runner(db, _FakeDeep())._stenograph()
+    mark = crons._last_run(db, "stenograph-watermark")
+    # Advanced to a fresh UTC stamp (no timezone offset), not the old baseline.
+    assert mark != "2026-07-06 00:00:00"
+    datetime.strptime(mark, "%Y-%m-%d %H:%M:%S")  # parseable naive-UTC form
+
+
+async def test_stenograph_first_run_baselines_to_last_24h(db):
+    # No watermark row yet → the first run reads only ~24h back, not the whole
+    # history, and still writes a watermark afterwards.
+    _seed_session(db, "old", "anna", last_activity="2020-01-01 00:00:00")
+    _seed_msg(db, "old", 1, "user", "uralt", "2020-01-01 00:00:00")
+    _seed_msg(db, "old", 2, "assistant", "auch uralt", "2020-01-01 00:00:01")
+    deep = _FakeDeep()
+    await _runner(db, deep)._stenograph()
+    assert deep.turns == []  # the ancient session predates the 24h baseline
+    assert crons._last_run(db, "stenograph-watermark")
+
+
+def test_render_transcript_head_truncates_to_cap(monkeypatch):
+    monkeypatch.setattr(crons, "_STENOGRAPH_SLICE_CHARS", 40)
+    msgs = [
+        ("user", "aaaaaaaaaa"),
+        ("assistant", "bbbbbbbbbb"),
+        ("user", "cccccccccc"),
+    ]
+    out = crons._render_transcript(msgs)
+    # Oldest lines dropped until under the cap; the newest survives.
+    assert "cccccccccc" in out
+    assert len(out) <= 40
+
+
 async def test_compactor_picks_stale_long_sessions(db, monkeypatch):
     conn = sqlite3.connect(db)
     conn.execute(
