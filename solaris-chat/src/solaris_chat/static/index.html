@@ -4,6 +4,15 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="icon" type="image/svg+xml" href="/static/solaris-mark.svg" />
+  <!-- PWA (#648): manifest lives under /static/ so start_url/scope are absolute
+       (else it scopes to /static/); use-credentials so the fetch carries the
+       Authelia cookie instead of hitting the auth redirect. -->
+  <link rel="manifest" href="/static/manifest.json" crossorigin="use-credentials" />
+  <meta name="theme-color" content="#070709" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Solaris" />
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
   <title>Solaris</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -212,6 +221,9 @@
        they are hidden on desktop where the rail provides the same chrome. */
     .header-burger { display: none; }
     .brand-wordmark { display: none; }
+
+    /* Mobile bottom tab bar (#648): hidden on desktop, shown <=760px only. */
+    #tabbar { display: none; }
 
     /* Embed mode (#227): focused frame for the ServiceBay maintenance
        iframe — drop the rail chrome, let .main fill the frame. The in-header
@@ -917,6 +929,26 @@
       .settings-card #skill-edit-pane, .settings-card #soul-edit-pane { height: auto; }
       .settings-card #skill-edit-pane .editor-wrap,
       .settings-card #soul-edit-pane .editor-wrap { min-height: 75vh; }
+
+      /* Bottom tab bar (#648): navigation into thumb reach. Sits below the
+         composer; both need bottom room so nothing covers the tabs. The
+         env(safe-area-inset-bottom) pads the iPhone home indicator in
+         display:standalone. */
+      #tabbar {
+        display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 25;
+        height: calc(56px + env(safe-area-inset-bottom));
+        padding-bottom: env(safe-area-inset-bottom);
+        background: var(--rail); border-top: 1px solid var(--line);
+      }
+      #tabbar button {
+        flex: 1 1 0; display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 2px; color: var(--muted);
+        font-size: 10.5px; line-height: 1;
+      }
+      #tabbar button .ic { width: 22px; height: 22px; }
+      #tabbar button.active { color: var(--accent); }
+      /* Leave room for the tab bar so the composer/log are never covered. */
+      .composer-bar { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
     }
     /* ---------- ServiceBay finish: depth, fonts, scrollbar, motion ---------- */
     /* Messages read as lifted cards (rounded + soft depth). */
@@ -1054,6 +1086,7 @@
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14l-5-4.87 6.91-1.01z"/></symbol>
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
@@ -1452,6 +1485,15 @@
       </div>
     </div>
   </div>
+
+  <!-- Mobile bottom tab bar (#648): shown <=760px only (CSS). Same hash-router
+       targets, no new routing model — Zuhause reuses the pinned-household path,
+       Chats opens the rail drawer, Favoriten routes to #/p/start. -->
+  <nav id="tabbar" aria-label="Navigation">
+    <button id="tab-home" type="button" aria-label="Zuhause"><svg class="ic"><use href="#i-home"></use></svg>Zuhause</button>
+    <button id="tab-chats" type="button" aria-label="Chats"><svg class="ic"><use href="#i-chat"></use></svg>Chats</button>
+    <button id="tab-favorites" type="button" aria-label="Favoriten"><svg class="ic"><use href="#i-star"></use></svg>Favoriten</button>
+  </nav>
 
   <script src="/static/markdown.js"></script>
   <script src="/static/mermaid.min.js"></script>
@@ -3719,6 +3761,7 @@
             ct.textContent = (topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name) || "Zuhause";
           }
         }
+        if (typeof syncTabbar === "function") syncTabbar();
       }
 
       function renderSessions(list) {
@@ -3921,6 +3964,28 @@
       newBtn.addEventListener("click", newSession);
       incognitoBtn.addEventListener("click", newIncognito);
       householdBtn.addEventListener("click", startHouseholdChat);
+
+      // Mobile bottom tab bar (#648): the three tabs reuse existing behaviors,
+      // no new routing model. Active state: Favoriten while on #/p/start,
+      // Zuhause while the household chat is open, else neutral.
+      var tabHome = document.getElementById("tab-home");
+      var tabChats = document.getElementById("tab-chats");
+      var tabFavorites = document.getElementById("tab-favorites");
+      tabHome.addEventListener("click", function () {
+        if (location.hash) location.hash = "";
+        closeRail();
+        startHouseholdChat();
+      });
+      tabChats.addEventListener("click", function () { document.body.classList.add("rail-open"); });
+      tabFavorites.addEventListener("click", function () { location.hash = "#/p/start"; });
+      function syncTabbar() {
+        var onStart = (location.hash || "").indexOf("#/p/start") === 0;
+        var onHome = !onStart && householdBtn.classList.contains("active");
+        tabFavorites.classList.toggle("active", onStart);
+        tabHome.classList.toggle("active", onHome);
+        tabChats.classList.toggle("active", false);
+      }
+      window.addEventListener("hashchange", syncTabbar);
 
       // ---- Persona × speed ----
       // Each persona is crossed with a speed: "schnell" (reasoning none) or
@@ -5694,7 +5759,7 @@
       // cross (and, for an Authelia admin, the admin profile #293 — the server
       // re-enforces the gate, so a non-admin can never reach it).
       Promise.all([loadPersonalities(), loadWhoami()]);
-      loadTopics().then(loadSessions).then(routeFromLocation);
+      loadTopics().then(loadSessions).then(routeFromLocation).then(syncTabbar);
     })();
   </script>
 </body>

@@ -1,0 +1,22 @@
+{
+  "name": "Solaris",
+  "short_name": "Solaris",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#070709",
+  "theme_color": "#0c0c0e",
+  "icons": [
+    {
+      "src": "/static/solaris-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}
