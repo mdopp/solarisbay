@@ -385,6 +385,41 @@ def entity_events(
     return [dict(r) for r in rows]
 
 
+def events_between(
+    conn: sqlite3.Connection,
+    caller_uid: str,
+    after: str | None,
+    before: str | None,
+) -> list[dict[str, Any]]:
+    """Events in the `[after, before]` ISO range the caller may see (#651).
+
+    Per-owner scope (#576): only `resident_uid IN (caller, 'household')`. `after`/
+    `before` compare as ISO strings against `events.ts` (the `events(resident_uid,
+    ts)` index from migration 0016). Returns newest first, each with its `okf_path`
+    (from `concepts`, `ref_kind='event'`) and the participant names joined from
+    `event_entities → entities`, so the caller can answer "wen…" without a read."""
+    where = ["ev.resident_uid IN (?, ?)"]
+    params: list[str] = [caller_uid, SHARED_UID]
+    if after:
+        where.append("ev.ts >= ?")
+        params.append(after)
+    if before:
+        where.append("ev.ts <= ?")
+        params.append(before)
+    rows = conn.execute(
+        "SELECT ev.id, ev.ts, ev.kind, c.okf_path,"
+        " group_concat(en.canonical_name, ', ') AS participants"
+        " FROM events ev"
+        " LEFT JOIN concepts c ON c.ref_kind = 'event' AND c.ref_id = ev.id"
+        " LEFT JOIN event_entities ee ON ee.event_id = ev.id"
+        " LEFT JOIN entities en ON en.id = ee.entity_id"
+        f" WHERE {' AND '.join(where)}"  # noqa: S608 — where clauses are literals
+        " GROUP BY ev.id ORDER BY ev.ts DESC",
+        tuple(params),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def open_conn(db_path: str) -> sqlite3.Connection:
     return _conn(db_path)
 

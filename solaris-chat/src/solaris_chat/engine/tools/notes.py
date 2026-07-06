@@ -18,11 +18,23 @@ from typing import Any
 
 from solaris_chat import notes_search
 from solaris_chat.engine.fuzzy import fuzzy_score, tokens
+from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools import Tool
-from solaris_chat.notes_search import _USER_PATH_RE
+from solaris_chat.notes_search import SHARED_UID, _USER_PATH_RE
 
 _MAX_BYTES = 256 * 1024
 _MAX_HITS = 8
+
+# Structured-merge scores (#651): alias-exact and event-range hits are high-
+# precision, so they outrank fuzzy vault hits; an #topic anchor boosts a fuzzy
+# note.
+_ALIAS_SCORE = 0.95
+_EVENT_SCORE = 0.9
+_ANCHOR_BOOST = 0.3
+_ANCHOR_BASE = 0.6
+
+_ANCHOR_TOPIC_RE = re.compile(r"#([\w/-]+)")
+_ANCHOR_PERSON_RE = re.compile(r"@(\w+)")
 
 # Ranked-search blend (#591): the short title is fuzzily matched (typos clear),
 # the body contributes a cheap whole-word coverage of the query terms (NO
@@ -48,21 +60,38 @@ def _snippet(text: str, present_terms: list[str]) -> str:
     return text[max(0, idx - 80) : idx + 160].replace("\n", " ")
 
 
-def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
+def _render_okf_hit(
+    root: Path, rel: str, caller_uid: str, score: float, snippet: str | None = None
+) -> dict[str, Any] | None:
+    """Read an OKF file for `title`/`snippet` (defence-in-depth visibility, #576).
+
+    The SQL scope and the path scope agree by construction, but re-checking the
+    file's own owner keeps a `resident:`/path leak from surfacing. Returns the
+    compact hit dict, or None when unreadable or not visible to the caller."""
+    path = (root / rel).resolve()
+    if not str(path).startswith(str(root.resolve())) or not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not notes_search.is_visible(notes_search.owner_of(rel, text), caller_uid):
+        return None
+    return {
+        "path": rel,
+        "title": notes_search._title(text, path.stem),
+        "snippet": snippet if snippet is not None else _snippet(text, []),
+        "score": round(score, 4),
+    }
+
+
+def build_notes_tools(notes_dir: str, uid_getter, db_path: str = "") -> list[Tool]:
     root = Path(notes_dir)
 
-    async def search(args: dict[str, Any]) -> str:
-        query = str(args.get("query") or "").strip()
-        if not query or not root.is_dir():
-            return "[]"
-        # Default-deny per-owner scope (#576): only the caller's own notes plus
-        # the shared household pool — never another resident's private note. An
-        # unknown caller resolves to `household`, so it sees the shared pool only.
-        caller_uid = uid_getter()
-        terms = tokens(query)
-        if not terms:
-            return "[]"
-        scored: list[tuple[float, dict[str, Any]]] = []
+    def _fuzzy_hits(
+        query: str, terms: list[str], caller_uid: str, boost_paths: set[str]
+    ) -> dict[str, tuple[float, dict[str, Any]]]:
+        by_path: dict[str, tuple[float, dict[str, Any]]] = {}
         for path in sorted(root.rglob("*.md")):
             try:
                 if not path.is_file() or path.stat().st_size > _MAX_BYTES:
@@ -87,22 +116,127 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
             score = _TITLE_WEIGHT * fuzzy_score(query, title) + _BODY_WEIGHT * (
                 body_coverage
             )
+            if rel in boost_paths:
+                score += _ANCHOR_BOOST
             if score < _MIN_SCORE:
                 continue
-            snippet = _snippet(text, present)
-            scored.append(
-                (
-                    score,
-                    {
-                        "path": rel,
-                        "title": title,
-                        "snippet": snippet,
-                        "score": round(score, 4),
-                    },
-                )
+            by_path[rel] = (
+                score,
+                {
+                    "path": rel,
+                    "title": title,
+                    "snippet": _snippet(text, present),
+                    "score": round(score, 4),
+                },
             )
-        scored.sort(key=lambda s: s[0], reverse=True)
-        return json.dumps([h for _, h in scored[:_MAX_HITS]], ensure_ascii=False)
+        return by_path
+
+    def _alias_hits(names: list[str], caller_uid: str) -> dict[str, float]:
+        """OKF paths whose entity has an exact (case-insensitive) alias in
+        `names`, scoped `resident_uid IN (caller, household)`. Path → score."""
+        if not db_path:
+            return {}
+        wanted = [n for n in dict.fromkeys(n.strip() for n in names) if n]
+        if not wanted:
+            return {}
+        conn = projection.open_conn(db_path)
+        try:
+            paths: dict[str, float] = {}
+            for name in wanted:
+                rows = conn.execute(
+                    "SELECT c.okf_path FROM entity_aliases a"
+                    " JOIN entities e ON e.id = a.entity_id"
+                    " JOIN concepts c ON c.ref_kind = 'entity' AND c.ref_id = e.id"
+                    " WHERE a.alias = ? COLLATE NOCASE"
+                    " AND e.resident_uid IN (?, ?)",
+                    (name, caller_uid, SHARED_UID),
+                ).fetchall()
+                for r in rows:
+                    paths[r["okf_path"]] = _ALIAS_SCORE
+            return paths
+        finally:
+            conn.close()
+
+    def _event_hits(
+        after: str | None, before: str | None, caller_uid: str
+    ) -> list[dict[str, Any]]:
+        if not db_path or not (after or before):
+            return []
+        conn = projection.open_conn(db_path)
+        try:
+            events = projection.events_between(conn, caller_uid, after, before)
+        finally:
+            conn.close()
+        hits: list[dict[str, Any]] = []
+        for ev in events:
+            okf_path = ev.get("okf_path")
+            if not okf_path:
+                continue
+            participants = ev.get("participants") or ""
+            snippet = f"{ev['ts']} {ev['kind']}"
+            if participants:
+                snippet += f" — mit {participants}"
+            hit = _render_okf_hit(root, okf_path, caller_uid, _EVENT_SCORE, snippet)
+            if hit is not None:
+                hit["date"] = ev["ts"]
+                hits.append(hit)
+        return hits
+
+    async def search(args: dict[str, Any]) -> str:
+        query = str(args.get("query") or "").strip()
+        if not query or not root.is_dir():
+            return "[]"
+        after = str(args.get("after") or "").strip() or None
+        before = str(args.get("before") or "").strip() or None
+        # Default-deny per-owner scope (#576): only the caller's own notes plus
+        # the shared household pool — never another resident's private note. An
+        # unknown caller resolves to `household`, so it sees the shared pool only.
+        caller_uid = uid_getter()
+        terms = tokens(query)
+        if not terms:
+            return "[]"
+
+        # Anchors (#651 §1.3): #topic boosts its tagged notes, @person feeds the
+        # alias/mention sources with a specific name.
+        topics = _ANCHOR_TOPIC_RE.findall(query)
+        persons = _ANCHOR_PERSON_RE.findall(query)
+        boost_paths: set[str] = set()
+        for slug in topics:
+            for n in notes_search.notes_for_topic(root, slug, caller_uid):
+                boost_paths.add(n["path"])
+
+        merged: dict[str, tuple[float, dict[str, Any]]] = _fuzzy_hits(
+            query, terms, caller_uid, boost_paths
+        )
+        # A #topic note not caught by the fuzzy blend still surfaces (base score).
+        for rel in boost_paths:
+            if rel not in merged:
+                hit = _render_okf_hit(root, rel, caller_uid, _ANCHOR_BASE)
+                if hit is not None:
+                    merged[rel] = (_ANCHOR_BASE, hit)
+
+        alias_names = list(persons)
+        if len(terms) == 1 and not (topics or persons):
+            alias_names.append(query)
+        for rel, score in _alias_hits(alias_names, caller_uid).items():
+            hit = _render_okf_hit(root, rel, caller_uid, score)
+            if hit is not None and (rel not in merged or score > merged[rel][0]):
+                merged[rel] = (score, hit)
+        for name in persons:
+            for n in notes_search.notes_mentioning(root, [name], caller_uid):
+                if n["path"] not in merged:
+                    hit = _render_okf_hit(root, n["path"], caller_uid, _ANCHOR_BASE)
+                    if hit is not None:
+                        merged[n["path"]] = (_ANCHOR_BASE, hit)
+
+        for hit in _event_hits(after, before, caller_uid):
+            rel = hit["path"]
+            score = hit["score"]
+            if rel not in merged or score > merged[rel][0]:
+                merged[rel] = (score, hit)
+
+        ordered = sorted(merged.values(), key=lambda s: s[0], reverse=True)
+        return json.dumps([h for _, h in ordered[:_MAX_HITS]], ensure_ascii=False)
 
     async def read(args: dict[str, Any]) -> str:
         rel = str(args.get("path") or "")
@@ -188,10 +322,18 @@ def build_notes_tools(notes_dir: str, uid_getter) -> list[Tool]:
     return [
         Tool(
             name="notes_search",
-            description="Durchsucht die Haushalts-Notizen (Stichwortsuche).",
+            description=(
+                "Durchsucht Notizen und Haushaltswissen"
+                " (Stichwort, Namen, Bedeutung)."
+                " Für Zeitfragen after/before als ISO-Datum setzen."
+            ),
             parameters={
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
+                "properties": {
+                    "query": {"type": "string"},
+                    "after": {"type": "string", "description": "ISO-Datum, ab"},
+                    "before": {"type": "string", "description": "ISO-Datum, bis"},
+                },
                 "required": ["query"],
             },
             handler=search,

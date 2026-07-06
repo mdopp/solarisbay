@@ -149,7 +149,7 @@ def build_engine_clients(
                 area_fallback=registry.media_player_fallbacks,
             )
     if notes_dir:
-        household_tools += build_notes_tools(notes_dir, _current_uid)
+        household_tools += build_notes_tools(notes_dir, _current_uid, db_path=db_path)
     # Start-page pins (#645): pin_favorite reads the last action from the shared
     # recorder and resolves target devices against HA. Household + deep share
     # this list; guest gets nothing (its list is separate + ephemeral).
