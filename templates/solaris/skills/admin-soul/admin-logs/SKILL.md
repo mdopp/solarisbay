@@ -32,8 +32,8 @@ Out of scope: breadth-first triage ("was ist überhaupt kaputt?") →
 - **`get_service_logs <service>`** — interleaves every container in the pod; use it
   when the failure spans a sidecar or you don't yet know which container logged it.
 
-Resolve the container name as `solaris-admin-diagnose` does (`list_containers`,
-match `<service>-<app>`) — **never ask the operator for it.**
+Resolve the container name per the operator soul's service↔container model; never
+ask the operator for it.
 
 ## Operating sequence
 

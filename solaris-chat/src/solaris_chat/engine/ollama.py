@@ -80,6 +80,21 @@ class OllamaChat:
                         continue
                     yield json.loads(line)
 
+    async def embed(self, model: str, inputs: list[str]) -> list[list[float]]:
+        """`POST /api/embed` — embed a batch of texts, one vector per input.
+
+        Returns the `embeddings` list (a `list[float]` per input, in order).
+        Non-2xx raises `OllamaError` with truncated detail, like `pull()`.
+        """
+        body = {"model": model, "input": inputs}
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.post(f"{self._base_url}/api/embed", json=body) as resp:
+                if resp.status >= 400:
+                    detail = (await resp.text())[:500]
+                    raise OllamaError(f"ollama /api/embed {resp.status}: {detail}")
+                data = await resp.json()
+        return data.get("embeddings") or []
+
     async def stream(
         self,
         model: str,

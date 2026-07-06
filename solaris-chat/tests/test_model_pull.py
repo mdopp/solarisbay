@@ -82,6 +82,64 @@ async def test_pull_raises_on_error_status(monkeypatch):
         [c async for c in client.pull("nope:bad")]
 
 
+# --- /api/embed -----------------------------------------------------------
+
+
+def _patch_ollama_embed(monkeypatch, body, status=200):
+    """Stub aiohttp so POST returns `body` as the JSON response."""
+
+    class _Resp:
+        def __init__(self):
+            self.status = status
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self):
+            return body
+
+        async def text(self):
+            return "boom"
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, json=None):
+            _Session.last = {"url": url, "json": json}
+            return _Resp()
+
+    monkeypatch.setattr(ollama.aiohttp, "ClientSession", _Session)
+    return _Session
+
+
+async def test_embed_batches_inputs_and_returns_vectors(monkeypatch):
+    sess = _patch_ollama_embed(monkeypatch, {"embeddings": [[0.1, 0.2], [0.3, 0.4]]})
+    client = OllamaChat("http://x:11434")
+
+    out = await client.embed("nomic-embed-text", ["a", "b"])
+
+    assert out == [[0.1, 0.2], [0.3, 0.4]]
+    assert sess.last["url"] == "http://x:11434/api/embed"
+    assert sess.last["json"] == {"model": "nomic-embed-text", "input": ["a", "b"]}
+
+
+async def test_embed_raises_on_error_status(monkeypatch):
+    _patch_ollama_embed(monkeypatch, {}, status=500)
+    client = OllamaChat("http://x:11434")
+    with pytest.raises(OllamaError):
+        await client.embed("nomic-embed-text", ["a"])
+
+
 # --- combined-vs-available estimate ---------------------------------------
 
 

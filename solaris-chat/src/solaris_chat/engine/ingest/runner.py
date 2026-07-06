@@ -22,7 +22,7 @@ import aiohttp
 from solaris_chat.config import Settings
 from solaris_chat.logging import log
 
-from ..knowledge import PendingEmbeddingQueue, projection
+from ..knowledge import PendingEmbeddingQueue, embed_worker, projection
 from ..knowledge.writer import OkfWriter
 from .caldav import DavIngest
 from .dav_client import HttpDavClient
@@ -51,6 +51,14 @@ async def run_ingest(settings: Settings) -> None:
     await _run_immich(settings, writer, uid)
     await _run_caldav(settings, writer, uid)
     await _run_jellyfin(settings, writer, uid)
+
+    # Drain the embedding queue the adapters just filled into okf_vectors. Rides
+    # this ingest thread (never the voice hot path — nomic-embed-text is a VRAM
+    # slot); drain() never raises, but wrap it to match the per-adapter degrade.
+    try:
+        await embed_worker.drain(settings.solaris_db_path, settings.ollama_url)
+    except Exception as e:  # noqa: BLE001 — the drain must not crash the trigger.
+        log.error("engine.ingest.embed_drain_failed", error=str(e))
 
 
 def _run_obsidian(settings: Settings, writer: OkfWriter, uid: str) -> None:

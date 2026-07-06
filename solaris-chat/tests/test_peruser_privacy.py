@@ -131,6 +131,22 @@ async def test_note_write_stamps_caller_as_owner(tmp_path):
     assert "Geheimnis Wintergarten Notiz." in text
 
 
+async def test_note_write_preserves_existing_frontmatter(tmp_path):
+    # #657: content that already carries its own frontmatter is written verbatim —
+    # NOT double-stamped. A second `added_by` block would demote the caller's
+    # frontmatter to body text and silently drop its type/id/resident keys.
+    root = tmp_path / "notes"
+    write = _tool_handler(str(root), "cdopp", "note_write")
+    content = "---\ntype: person\nid: anna\nresident: cdopp\n---\n\nGeheimnis.\n"
+    out = json.loads(await write({"path": "okf/anna.md", "content": content}))
+    text = (root / out["written"]).read_text(encoding="utf-8")
+    # Exactly one frontmatter block, and the caller's keys survive.
+    assert text.count("---\n") == 2
+    assert "type: person" in text
+    assert "id: anna" in text
+    assert "added_by:" not in text
+
+
 # ---- path-based ownership (#576 slice 2): users/<uid>/ + resident: leak -------
 
 

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from solaris_chat import favorites_store
 from solaris_chat.engine import confirm, store
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
@@ -37,6 +38,7 @@ from solaris_chat.engine.residents import identity_block
 from solaris_chat.engine.tools import Toolbox
 from solaris_chat.engine.tools import choices as choice_tools
 from solaris_chat.engine.tools import ha as ha_tools
+from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
 from solaris_chat.engine.trace import TraceRecorder
 from solaris_chat.logging import log
 
@@ -52,6 +54,14 @@ current_uid: contextvars.ContextVar[str] = contextvars.ContextVar(
 # device-less "spiele Musik" default to the originating room's media_player.
 current_room: contextvars.ContextVar[str] = contextvars.ContextVar(
     "engine_room", default=""
+)
+
+# The current turn's session id — read by pin_favorite to key the recorder's
+# per-conversation step filter (#645). Like current_uid it must be set INSIDE
+# the dispatch task; a set() on the enclosing coroutine does not propagate into
+# the SSE-heartbeat-spawned gather task.
+current_session: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "engine_session", default=""
 )
 
 # Tool-call passes per turn: enough for list->act->confirm chains plus a
@@ -385,10 +395,13 @@ class EngineClient:
         text: str,
         images: list[str] | None = None,
         reasoning_effort: str = "none",
+        turn_uid: str = "",
     ) -> str:
         """One turn, non-streamed: drain the stream, return the final answer."""
         answer = ""
-        async for event in self.chat_stream(session_id, text, images, reasoning_effort):
+        async for event in self.chat_stream(
+            session_id, text, images, reasoning_effort, turn_uid=turn_uid
+        ):
             if event["type"] == "run.completed":
                 for msg in event["data"].get("messages", []):
                     if msg.get("role") == "assistant" and msg.get("content"):
@@ -402,14 +415,24 @@ class EngineClient:
         images: list[str] | None = None,
         reasoning_effort: str = "none",
         suggest_answers: bool = False,
+        turn_uid: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         owner = store.session_owner(self._db_path, session_id)
         if owner is None:
             raise EngineError(f"unknown session: {session_id}")
-        token = current_uid.set(owner)
+        # The identity of THIS turn's caller (#649): for the shared household
+        # session the owner is `household`, but a typed turn carries the real
+        # resident, so timers/facts and the identity block stay theirs. Absent
+        # (voice/facade) it falls back to the owner — the correct household id.
+        token = current_uid.set(turn_uid or owner)
         try:
             async for event in self._run_turn(
-                session_id, text, images, reasoning_effort, suggest_answers
+                session_id,
+                text,
+                images,
+                reasoning_effort,
+                suggest_answers,
+                turn_uid=turn_uid,
             ):
                 yield event
         except OllamaError as e:
@@ -431,6 +454,7 @@ class EngineClient:
         images: list[str] | None,
         reasoning_effort: str,
         suggest_answers: bool = False,
+        turn_uid: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         store.append_message(
             self._db_path, session_id, "user", text, images=images or None
@@ -459,7 +483,7 @@ class EngineClient:
             think=think,
             session_id=session_id,
             persist=True,
-            uid=owner,
+            uid=turn_uid or owner,
             suggest_answers=suggest_answers,
         ):
             self._mirror(session_id, owner, "mirror_event", event)
@@ -549,6 +573,24 @@ class EngineClient:
         turn = f"{_now_hint()}\n\n{text}" if text else text
         async for event in self.chat_stream(session_id, turn):
             yield event
+
+    def _count_usage(self, uid: str, name: str, args: Any, output: str) -> None:
+        """Increment the "häufig genutzt" counter for one executed pinnable tool
+        (#645). Skips ephemeral (guest) turns, non-pinnable tools and failed
+        calls; a usage-write hiccup must never break the turn."""
+        if (
+            self._profile.ephemeral
+            or name not in PINNABLE_TOOLS
+            or not isinstance(args, dict)
+            or output.startswith('{"error"')
+        ):
+            return
+        try:
+            favorites_store.record_usage(
+                self._db_path, uid or self._profile.default_uid, name, args
+            )
+        except Exception:  # noqa: BLE001 — a usage hiccup must not kill the turn
+            pass
 
     async def _gate_sensitive(
         self,
@@ -712,6 +754,7 @@ class EngineClient:
                 yield {"type": "tool.started", "data": {"tool": "ha_call_service"}}
                 if uid:
                     current_uid.set(uid)
+                current_session.set(session_id)
                 t0 = time.monotonic()
                 output = await self._profile.toolbox.dispatch(
                     "ha_call_service", pending.args()
@@ -722,7 +765,10 @@ class EngineClient:
                     profile=self._profile.name,
                     tool_name="ha_call_service",
                     wall_s=tool_wall_s,
+                    arguments=pending.args(),
+                    output=output,
                 )
+                self._count_usage(uid, "ha_call_service", pending.args(), output)
                 yield {
                     "type": "tool.completed",
                     "data": {"tool": "ha_call_service", "wall_s": tool_wall_s},
@@ -867,6 +913,7 @@ class EngineClient:
                 # and card reads (#475) would land nowhere.
                 if uid:
                     current_uid.set(uid)
+                current_session.set(session_id)
                 ha_tools.card_sink.set(ha_cards)
                 choice_tools.choice_sink.set(quick_replies)
                 async with sem:
@@ -898,7 +945,12 @@ class EngineClient:
                         profile=self._profile.name,
                         tool_name=name,
                         wall_s=tool_wall_s,
+                        arguments=item["args"]
+                        if isinstance(item["args"], dict)
+                        else None,
+                        output=output,
                     )
+                    self._count_usage(uid, name, item["args"], output)
                 yield {
                     "type": "tool.completed",
                     "data": {"tool": name, "wall_s": tool_wall_s},

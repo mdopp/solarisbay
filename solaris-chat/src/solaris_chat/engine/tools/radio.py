@@ -32,6 +32,13 @@ from solaris_chat.engine.tools.ha import call_service_scoped
 _MIRROR = "https://de1.api.radio-browser.info"
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 
+# Dialog lines the model speaks VERBATIM (the register.py `say` pattern, #404):
+# on gemma4:e4b prose steering is high-variance, so the two ask-for-more reasons
+# carry the exact question here. Both MUST end in `?` — the facade re-opens the
+# mic only on a trailing question mark (_question_pending).
+_SAY_NEED_DEFAULT_DEVICE = "Auf welchem Gerät soll ich standardmäßig spielen?"
+_SAY_NO_FAVORITE = "Welcher ist dein Lieblingssender?"
+
 # A Cast GROUP rejects URL play_media with an HA 500 (#638); when a play on such
 # a target fails we retry on a single device in the same area, but only on a
 # 500-class server error — not on a normal not-found / need_device. Cap the
@@ -245,7 +252,10 @@ def build_radio_tools(
             resolved_room_device=room_device,
         )
         if reason is not None:
-            return json.dumps({"ok": False, "reason": reason})
+            return json.dumps(
+                {"ok": False, "reason": reason, "say": _SAY_NEED_DEFAULT_DEVICE},
+                ensure_ascii=False,
+            )
 
         if station:
             resolved = await resolver.resolve_station(station)
@@ -259,7 +269,10 @@ def build_radio_tools(
         else:
             fav = _read_favorite(notes_dir, caller)
             if fav is None:
-                return json.dumps({"ok": False, "reason": "no_favorite"})
+                return json.dumps(
+                    {"ok": False, "reason": "no_favorite", "say": _SAY_NO_FAVORITE},
+                    ensure_ascii=False,
+                )
             name, url = fav["name"], fav["stream_url"]
 
         async def _cast(target: str) -> dict[str, Any]:
@@ -298,23 +311,15 @@ def build_radio_tools(
         Tool(
             name="play_radio",
             description=(
-                "Spielt den Lieblings-Radiosender des Bewohners auf einem"
-                " Raum-Gerät. Für 'Spiele Radio' rufst du es OHNE 'station' auf —"
-                " dann wird der gespeicherte Lieblingssender gespielt. Liefert es"
-                " reason:no_favorite, frag den Nutzer nach seinem Lieblingssender"
-                " und ruf erneut mit 'station=<Antwort>' auf — das löst den Sender"
-                " über radio-browser.info auf, SPEICHERT ihn dauerhaft als"
-                " Lieblingssender und spielt ihn. 'entity_id' = die media_player-"
-                " Entität des Zielraums (z.B. media_player.wohnzimmer) — NUR"
-                " setzen, wenn der Nutzer ein Gerät/einen Raum NENNT; sonst"
-                " WEGLASSEN, dann spielt es im aktuellen Raum oder auf dem"
-                " gespeicherten Standardgerät. Liefert es reason:need_default_device,"
-                " frag 'Auf welchem Gerät soll ich standardmäßig spielen?' und ruf"
-                " mit 'entity_id=<Antwort>' erneut auf — das spielt UND merkt sich"
-                " das Gerät als Standard."
-                " Bestätige nur den zurückgegebenen Sendernamen, erfinde"
-                " keinen. NUR für Radiosender — NICHT für Musik (play_music) oder"
-                " Podcasts (media_find_podcast)."
+                "Spielt den Lieblings-Radiosender auf einem Raum-Gerät. 'Spiele"
+                " Radio' ⇒ ohne Argumente (gespeicherter Lieblingssender). station"
+                " NUR setzen, wenn der Nutzer einen Sender nennt — das löst ihn"
+                " auf, speichert ihn dauerhaft und spielt. entity_id NUR bei"
+                " genanntem Gerät/Raum. Liefert das Ergebnis 'say', sprich diese"
+                " Zeile wörtlich und rufe mit der Antwort erneut auf (Sendername ⇒"
+                " station, Gerät ⇒ entity_id). Bestätige nur den zurückgegebenen"
+                " Sendernamen. NUR Radio — Musik: play_music, Podcasts:"
+                " media_find_podcast."
             ),
             parameters={
                 "type": "object",

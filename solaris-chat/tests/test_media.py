@@ -240,14 +240,14 @@ def test_find_podcast_description_demands_verbatim_name():
     desc = _tool().description
     assert "WORTWÖRTLICH" in desc
     # explicitly forbids rewriting/correcting/translating the name
-    assert "NIEMALS" in desc
-    assert "korrigierst" in desc and "übersetzt" in desc
+    assert "niemals korrigieren" in desc
+    assert "übersetzen" in desc and "ersetzen" in desc
 
 
 def test_find_podcast_description_excludes_music(monkeypatch):
     # Narrowed to podcasts-only so a music request steers to play_music (#604).
     desc = _tool().description
-    assert "NUR für Podcasts" in desc
+    assert "NUR Podcasts" in desc
     assert "play_music" in desc
 
 

@@ -28,6 +28,7 @@ from solaris_chat.engine.ollama import OllamaChat
 from solaris_chat.engine.registry import EntityRegistry
 from solaris_chat.engine.tools import Tool, Toolbox
 from solaris_chat.engine.tools.choices import build_choice_tools
+from solaris_chat.engine.tools.favorites import build_favorites_tools
 from solaris_chat.engine.tools.ha import build_ha_tools
 from solaris_chat.engine.tools.mcp_tools import CombinedToolbox, McpToolbox
 from solaris_chat.engine.tools.media import build_media_tools
@@ -51,6 +52,10 @@ def _current_uid() -> str:
 
 def _current_room() -> str:
     return engine_client.current_room.get()
+
+
+def _current_session() -> str:
+    return engine_client.current_session.get()
 
 
 def _skills_prompt(skills_dir: str) -> str:
@@ -145,6 +150,19 @@ def build_engine_clients(
             )
     if notes_dir:
         household_tools += build_notes_tools(notes_dir, _current_uid)
+    # Start-page pins (#645): pin_favorite reads the last action from the shared
+    # recorder and resolves target devices against HA. Household + deep share
+    # this list; guest gets nothing (its list is separate + ephemeral).
+    if db_path:
+        household_tools += build_favorites_tools(
+            db_path,
+            _current_uid,
+            _current_session,
+            recorder,
+            registry,
+            hass_url,
+            hass_token,
+        )
     # Structured music-library queries (#588): household + deep share this list,
     # so both get music_query; guest (its own list below) is withheld. A live
     # Jellyfin client (built once, the same read-only creds the ingest uses) is

@@ -75,6 +75,7 @@ class _FakeHermes:
         self.deleted = []
         self.images = []
         self.efforts = []
+        self.turn_uids = []
         self._events = events or []
         # store: list of {id, user_id, title, last_activity, messages}
         self._store = store or []
@@ -126,10 +127,13 @@ class _FakeHermes:
             }
         ]
 
-    async def chat(self, session_id, text, images=None, reasoning_effort="none"):
+    async def chat(
+        self, session_id, text, images=None, reasoning_effort="none", turn_uid=""
+    ):
         self.turns.append((session_id, text))
         self.images.append(images or [])
         self.efforts.append(reasoning_effort)
+        self.turn_uids.append(turn_uid)
         return f"echo: {text}"
 
     async def chat_stream(
@@ -139,10 +143,12 @@ class _FakeHermes:
         images=None,
         reasoning_effort="none",
         suggest_answers=False,
+        turn_uid="",
     ):
         self.turns.append((session_id, text))
         self.images.append(images or [])
         self.efforts.append(reasoning_effort)
+        self.turn_uids.append(turn_uid)
         for event in self._events:
             yield event
 
@@ -1939,11 +1945,9 @@ def test_shipped_pack_groups_into_the_four_kinds():
     }
     assert by_kind["hook"] == {
         "media-ingestion-multimodal",
-        "guest-onboarding",
         "topic-suggester",
         "room-enrollment",
-        "resident-registration",
-        "self-enrollment",
+        "enrollment",
     }
     assert by_kind["skill"] == {
         "status",
@@ -2146,10 +2150,11 @@ async def test_whoami_reports_context_window(aiohttp_client):
     assert body["context_window"] == 4096
 
 
-async def test_whoami_reports_durable_household_session_id(aiohttp_client):
-    # The pinned "Zuhause" row opens the resident's ONE durable household session
-    # (#345/#419); /api/whoami exposes its deterministic id so the front end
-    # routes the click into it instead of minting a fresh chat.
+async def test_whoami_reports_shared_household_session_id(aiohttp_client):
+    # The pinned "Zuhause" row opens the ONE SHARED household session every
+    # resident opens (#649): /api/whoami exposes the default_uid-owned id (the
+    # same row voice persists to), NOT a per-resident one, so spoken and typed
+    # history are the same conversation for everyone logged in.
     from solaris_chat.engine import store
 
     app = build_app(
@@ -2161,7 +2166,7 @@ async def test_whoami_reports_durable_household_session_id(aiohttp_client):
     body = await (
         await client.get("/api/whoami", headers={"Remote-User": "cdopp"})
     ).json()
-    assert body["household_session_id"] == store.household_session_id("cdopp")
+    assert body["household_session_id"] == store.household_session_id("household")
 
 
 # --- Soul edit (admin, direct file write on the chat-owned volume) --------
@@ -2789,6 +2794,7 @@ async def test_cancel_interrupts_active_stream(aiohttp_client):
             images=None,
             reasoning_effort="none",
             suggest_answers=False,
+            turn_uid="",
         ):
             self.turns.append((session_id, text))
             while True:

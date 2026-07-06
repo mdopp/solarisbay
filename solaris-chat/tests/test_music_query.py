@@ -450,7 +450,7 @@ async def test_artist_info_description_steers_was_weiss_ich(tmp_path):
     db = _db(tmp_path)
     desc = _tool(db, "mdopp").description
     assert "artist_info" in desc
-    assert "was weiß ich über" in desc
+    assert "Genre" in desc and "Kurzbio" in desc
 
 
 async def test_bad_op(tmp_path):
@@ -554,7 +554,7 @@ async def test_song_lyrics_description_steers(tmp_path):
     db = _db(tmp_path)
     desc = _tool(db, "mdopp").description
     assert "song_lyrics" in desc
-    assert "Lyrics" in desc
+    assert "Liedtext" in desc
 
 
 # ---- play_music (#604): cast a library track on a media_player --------------
@@ -666,7 +666,11 @@ async def test_play_music_missing_device_no_ha_call(tmp_path, monkeypatch):
     out, calls = await _call_play(
         db, "mdopp", {"title": "Bohemian Rhapsody"}, _FakeJellyfin(), monkeypatch
     )
-    assert out == {"ok": False, "reason": "need_default_device"}
+    assert out == {
+        "ok": False,
+        "reason": "need_default_device",
+        "say": "Auf welchem Gerät soll ich standardmäßig spielen?",
+    }
     assert calls == []
 
 
@@ -793,7 +797,11 @@ async def test_play_music_no_room_no_device_need_default_device(tmp_path, monkey
         notes_dir=str(tmp_path),
     )
     out = json.loads(await play.handler({"title": "Bohemian Rhapsody"}))
-    assert out == {"ok": False, "reason": "need_default_device"}
+    assert out == {
+        "ok": False,
+        "reason": "need_default_device",
+        "say": "Auf welchem Gerät soll ich standardmäßig spielen?",
+    }
     assert calls == []
 
 
@@ -884,7 +892,11 @@ async def test_play_music_default_device_is_per_user(tmp_path, monkeypatch):
         monkeypatch,
         notes_dir=notes,
     )
-    assert out == {"ok": False, "reason": "need_default_device"}
+    assert out == {
+        "ok": False,
+        "reason": "need_default_device",
+        "say": "Auf welchem Gerät soll ich standardmäßig spielen?",
+    }
     assert calls == []
     assert _read_default_device(notes, "bob") is None
     fav = Path(notes) / "users" / "alice" / "preferences" / "default-device.md"
@@ -1098,7 +1110,11 @@ async def test_play_music_need_device_when_no_entity(tmp_path, monkeypatch):
     out, calls = await _call_play(
         db, "mdopp", {"artist": "Queen"}, _FakeJellyfin(), monkeypatch
     )
-    assert out == {"ok": False, "reason": "need_default_device"}
+    assert out == {
+        "ok": False,
+        "reason": "need_default_device",
+        "say": "Auf welchem Gerät soll ich standardmäßig spielen?",
+    }
     assert calls == []
 
 
@@ -1239,7 +1255,8 @@ async def test_play_music_single_device_success_no_fallback(tmp_path, monkeypatc
 async def test_play_music_description_states_filler_rule(tmp_path):
     db = _db(tmp_path)
     desc = _play_tool(db, "mdopp", _FakeJellyfin()).description
-    assert "SONGTITEL ALLEINE" in desc
+    assert "NUR der Songtitel" in desc
+    assert "Füllwörter" in desc
     assert "Zufallssong" in desc
 
 
@@ -1248,4 +1265,4 @@ async def test_play_music_description_steers_music_not_podcast(tmp_path):
     desc = _play_tool(db, "mdopp", _FakeJellyfin()).description
     assert "play_music" not in desc  # describes itself, doesn't name itself
     assert "Spiele Musik" in desc
-    assert "NICHT media_find_podcast" in desc
+    assert "NIE media_find_podcast" in desc

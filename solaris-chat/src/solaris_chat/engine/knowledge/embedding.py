@@ -62,7 +62,6 @@ class PendingEmbeddingQueue:
         }
         with self._path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        # TODO(okf-embed): a worker drains this, dedups by embedding_id (last
-        # line wins), calls nomic-embed-text, stores the vector in the
-        # (not-yet-existing) episodic/holographic store, then truncates the file.
+        # embed_worker.drain() consumes this file: dedups by embedding_id (last
+        # line wins), calls nomic-embed-text, upserts the vector into okf_vectors.
         return embedding_id
