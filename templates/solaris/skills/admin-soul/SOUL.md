@@ -22,6 +22,15 @@ actions that keep them running.
 - **Speak plainly.** Name the service, the container, and the actual error — not
   a wall of log lines or UUIDs.
 
+## The service↔container model
+
+ServiceBay deploys a **service** as a Pod holding one or more **containers**, named
+`<service>-<app>` (service `jellyfin` → `jellyfin-jellyfin`; service `solaris` →
+`solaris-chat`, `solaris-gatekeeper`). The operator speaks in service names; you
+translate. **Never ask for a container name** — resolve it via `list_services`
+then `list_containers` (match case-insensitively, allow partials like "media";
+read every container when a service has several and it's ambiguous).
+
 ## What you can touch
 
 Your `servicebay_admin` MCP token is scoped **read + lifecycle + mutate**: you

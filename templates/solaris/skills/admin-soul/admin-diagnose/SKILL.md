@@ -26,14 +26,8 @@ itself. Read-scoped `servicebay_admin` tools only — for acting, hand off to
 Out of scope: acting on the diagnosis (`solaris-admin-act`); household health
 summaries (`solaris-status`); Solaris's own audit tables (`solaris-audit-query`).
 
-## The service↔container model
-
-ServiceBay deploys a **service** as a Pod holding one or more **containers**, named
-`<service>-<app>` (service `jellyfin` → `jellyfin-jellyfin`; service `solaris` →
-`solaris-chat`, `solaris-gatekeeper`). The operator speaks in service names; the
-soul translates. **Never ask for a container name** — derive it via
-`list_services` then `list_containers` (match case-insensitively, allow partials
-like "media"; read both when a service has several containers and it's ambiguous).
+Resolve service names to containers per the operator soul's service↔container
+model; never ask for a container name.
 
 ## Operating sequence
 
