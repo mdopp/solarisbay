@@ -617,17 +617,24 @@ class EngineClient:
         confirmation (F3)."""
         domain = str(args.get("domain") or "")
         service = str(args.get("service") or "")
-        # Normalise the model's natural verb the same way call_service does
-        # (cover "open" -> "open_cover"), so the classification sees the real
-        # service name.
-        service = ha_tools._SERVICE_ALIASES.get(domain, {}).get(service, service)
         entity_id = str(args.get("entity_id") or "")
+        # The gate keys on what the action would do to the REAL entity, not the
+        # model's supplied domain: e4b mis-routes a garage open as the wrong
+        # domain (e.g. light.open_cover) and the model's domain string can't be
+        # trusted to classify sensitivity (#632). The entity_id carries the true
+        # domain, so classify on that; fall back to the model's domain only when
+        # no entity_id was given.
+        gate_domain = entity_id.split(".", 1)[0] if "." in entity_id else domain
+        # Normalise the natural verb the same way call_service does
+        # (cover "open" -> "open_cover"), so the classification sees the real
+        # service name — keyed on the true domain.
+        service = ha_tools._SERVICE_ALIASES.get(gate_domain, {}).get(service, service)
         # A cover's danger is class-specific: resolve the entity's device_class
         # so a garage/door/gate is gated but a blind is not (F1).
         device_class: str | None = None
-        if domain == "cover" and self._profile.registry is not None:
+        if gate_domain == "cover" and self._profile.registry is not None:
             device_class = await self._profile.registry.device_class(entity_id)
-        if not confirm.is_sensitive(domain, service, device_class):
+        if not confirm.is_sensitive(gate_domain, service, device_class):
             return None
         if (domain, service, entity_id) in confirmed:
             return None
