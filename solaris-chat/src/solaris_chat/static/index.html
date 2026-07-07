@@ -3844,9 +3844,10 @@
       // it's active when the open chat is bound to the household topic, or when
       // a fresh no-session chat is pre-bound to it before its first turn. The
       // row is otherwise neutral. Generalizes to any future pinned topic row.
-      // The header title is context-aware (#671): "Startseite" on the #/p/start
-      // portal, "Zuhause" in the household chat, otherwise the session title —
-      // never the "Neuer Chat" placeholder on the start/household views.
+      // The header title is context-aware (#671): "Favoriten" on the #/p/start
+      // portal (matching the bottom tab, #677), "Zuhause" in the household chat,
+      // otherwise the session title — never the "Neuer Chat" placeholder on the
+      // start/household views.
       function isHouseholdActive(activeS) {
         return sessionId
           ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
@@ -3856,7 +3857,7 @@
         var ct = document.getElementById("chat-title");
         if (!ct) return;
         if ((location.hash || "").indexOf("#/p/start") === 0) {
-          ct.textContent = "Startseite";
+          ct.textContent = "Favoriten";
         } else if (isHouseholdActive(activeS) && !(activeS && (activeS.title || activeS.preview))) {
           ct.textContent = (topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name) || "Zuhause";
         } else {
@@ -3876,7 +3877,7 @@
         syncChatTitle(lastSessions.find(function (s) { return s.id === sessionId; }));
       }
       // Opening a real chat leaves a lingering portal route (#671), so the
-      // header title stops reading "Startseite" once we're back in a chat.
+      // header title stops reading "Favoriten" once we're back in a chat.
       function leavePortal() {
         if ((location.hash || "").indexOf("#/p/") === 0) location.hash = "";
       }
@@ -4122,7 +4123,7 @@
         tabFavorites.classList.toggle("active", onStart && !railOpen);
         tabHome.classList.toggle("active", onHome);
         tabChats.classList.toggle("active", onChats);
-        // The header title tracks the route too (#671): "Startseite" on start,
+        // The header title tracks the route too (#671): "Favoriten" on start,
         // the session/"Zuhause" title elsewhere.
         refreshChatTitle();
       }
@@ -4555,10 +4556,6 @@
         card.classList.add("start-page");
         var head = document.createElement("div");
         head.className = "concept-head";
-        var title = document.createElement("span");
-        title.className = "concept-title";
-        title.textContent = "Startseite";
-        head.appendChild(title);
         var add = document.createElement("button");
         add.className = "start-edit start-add";
         add.type = "button";
