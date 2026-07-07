@@ -26,6 +26,7 @@ from ..knowledge import PendingEmbeddingQueue, embed_worker, projection
 from ..knowledge.writer import OkfWriter
 from .caldav import DavIngest
 from .dav_client import HttpDavClient
+from .exports import ExportsIngest
 from .imap import ImapIngest
 from .immich import ImmichIngest
 from .immich_client import RestImmichClient
@@ -49,6 +50,7 @@ async def run_ingest(settings: Settings) -> None:
     uid = settings.default_uid
 
     _run_obsidian(settings, writer, uid)
+    _run_exports(settings, writer)
     await _run_immich(settings, writer, uid)
     await _run_caldav(settings, writer, uid)
     await _run_jellyfin(settings, writer, uid)
@@ -79,6 +81,30 @@ def _run_obsidian(settings: Settings, writer: OkfWriter, uid: str) -> None:
         )
     except Exception as e:  # noqa: BLE001 — one adapter failing must not crash boot.
         log.error("engine.ingest.obsidian_failed", error=str(e))
+
+
+def _run_exports(settings: Settings, writer: OkfWriter) -> None:
+    """The drop-folder adapter scans the vault it already has — always runs.
+
+    Ownership is per-file from the vault path (#576), so it takes no ingesting
+    uid; a shared drop is `household`, a `users/<uid>/…` drop is that resident."""
+    try:
+        stats = ExportsIngest(
+            writer,
+            db_path=settings.solaris_db_path,
+            notes_dir=settings.notes_dir,
+        ).run()
+        log.info(
+            "engine.ingest.exports",
+            files=stats.files,
+            processed=stats.processed,
+            events=stats.events_written,
+            people=stats.people_written,
+            skipped=stats.skipped,
+            unrecognized=stats.unrecognized,
+        )
+    except Exception as e:  # noqa: BLE001 — one adapter failing must not crash boot.
+        log.error("engine.ingest.exports_failed", error=str(e))
 
 
 async def _wait_for_health(source: str, url: str) -> bool:

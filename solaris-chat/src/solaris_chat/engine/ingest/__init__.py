@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .caldav import DavIngest, DavIngestStats
 from .dav_client import CalEvent, Contact, DavClient
+from .exports import ExportsIngest, ExportsIngestStats
 from .imap import ImapIngest, ImapIngestStats
 from .immich import ImmichIngest, ImmichIngestStats
 from .immich_client import ImmichAsset, ImmichClient, ImmichPerson, RestImmichClient
@@ -39,6 +40,8 @@ __all__ = [
     "RestJellyfinMusicClient",
     "ImapIngest",
     "ImapIngestStats",
+    "ExportsIngest",
+    "ExportsIngestStats",
     "DavIngest",
     "DavIngestStats",
     "CalEvent",
