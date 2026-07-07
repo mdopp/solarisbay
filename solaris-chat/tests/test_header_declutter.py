@@ -112,22 +112,26 @@ def test_chat_search_moved_out_of_the_header():
 
 
 def test_household_chat_title_reads_zuhause():
-    # In the household context the header title is "Zuhause", not the generic
-    # "Neuer Chat" placeholder (#281), without breaking non-household derivation.
+    # The header title is context-aware (#671): "Startseite" on #/p/start,
+    # "Zuhause" in the household chat, else the session title — never the generic
+    # "Neuer Chat" placeholder on the start/household views. All three live in the
+    # single syncChatTitle helper.
     sync = re.search(
-        r"function syncPinnedActive\(activeS\) \{(.*?)\n      \}", _HTML, re.S
+        r"function syncChatTitle\(activeS\) \{(.*?)\n      \}", _HTML, re.S
     )
-    assert sync, "syncPinnedActive not found"
+    assert sync, "syncChatTitle not found"
     body = sync.group(1)
+    assert '"Startseite"' in body
+    assert '"#/p/start"' in body
     assert '"Zuhause"' in body
     assert (
         "topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name"
         in body
     )
-    # The plain renderSessions default for non-household chats is preserved.
+    # The plain default for non-household, non-portal chats is preserved.
     assert (
         'ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat";'
-        in _HTML
+        in body
     )
 
 

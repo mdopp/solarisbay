@@ -3803,29 +3803,48 @@
       // it's active when the open chat is bound to the household topic, or when
       // a fresh no-session chat is pre-bound to it before its first turn. The
       // row is otherwise neutral. Generalizes to any future pinned topic row.
-      function syncPinnedActive(activeS) {
-        var active = sessionId
+      // The header title is context-aware (#671): "Startseite" on the #/p/start
+      // portal, "Zuhause" in the household chat, otherwise the session title —
+      // never the "Neuer Chat" placeholder on the start/household views.
+      function isHouseholdActive(activeS) {
+        return sessionId
           ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
           : pendingTopic === HOUSEHOLD_TOPIC;
-        householdBtn.classList.toggle("active", active);
-        if (active) {
-          // Name the household chat "Zuhause" rather than the generic
-          // new-chat placeholder, including the pre-first-turn state (#281).
-          var ct = document.getElementById("chat-title");
-          if (ct && !(activeS && (activeS.title || activeS.preview))) {
-            ct.textContent = (topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name) || "Zuhause";
-          }
+      }
+      function syncChatTitle(activeS) {
+        var ct = document.getElementById("chat-title");
+        if (!ct) return;
+        if ((location.hash || "").indexOf("#/p/start") === 0) {
+          ct.textContent = "Startseite";
+        } else if (isHouseholdActive(activeS) && !(activeS && (activeS.title || activeS.preview))) {
+          ct.textContent = (topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name) || "Zuhause";
+        } else {
+          ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat";
         }
+      }
+
+      function syncPinnedActive(activeS) {
+        householdBtn.classList.toggle("active", isHouseholdActive(activeS));
         if (typeof syncTabbar === "function") syncTabbar();
       }
 
+      var lastSessions = [];
+      // Re-derive + apply the header title from the last-known session list, so
+      // routing changes (#/p/start ⇄ chat) update it without a sessions fetch.
+      function refreshChatTitle() {
+        syncChatTitle(lastSessions.find(function (s) { return s.id === sessionId; }));
+      }
+      // Opening a real chat leaves a lingering portal route (#671), so the
+      // header title stops reading "Startseite" once we're back in a chat.
+      function leavePortal() {
+        if ((location.hash || "").indexOf("#/p/") === 0) location.hash = "";
+      }
+
       function renderSessions(list) {
+        lastSessions = list || [];
         // Mirror the active session's name into the chat header.
-        var activeS = (list || []).find(function (s) { return s.id === sessionId; });
-        var ct = document.getElementById("chat-title");
-        if (ct) { ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat"; }
-        // syncPinnedActive overrides the placeholder with "Zuhause" when this is
-        // the household chat (#281); it runs after the default is set above.
+        var activeS = lastSessions.find(function (s) { return s.id === sessionId; });
+        syncChatTitle(activeS);
         syncPinnedActive(activeS);
         sessionsEl.textContent = "";
         if (!list.length) {
@@ -3901,6 +3920,7 @@
         dropIncognitoSession();
         applyIncognito(false);
         closeRail();
+        leavePortal();
         showView("chat");
         fetch("/api/sessions/" + encodeURIComponent(id))
           .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
@@ -3975,6 +3995,7 @@
         loadSessions();
         loadTagCloud();
         closeRail();
+        leavePortal();
         showView("chat");
         input.focus();
       }
@@ -3990,6 +4011,7 @@
         loadSessions();
         loadTagCloud();
         closeRail();
+        leavePortal();
         showView("chat");
         input.focus();
       }
@@ -4052,6 +4074,9 @@
         tabFavorites.classList.toggle("active", onStart);
         tabHome.classList.toggle("active", onHome);
         tabChats.classList.toggle("active", onChats);
+        // The header title tracks the route too (#671): "Startseite" on start,
+        // the session/"Zuhause" title elsewhere.
+        refreshChatTitle();
       }
       window.addEventListener("hashchange", syncTabbar);
 
