@@ -49,6 +49,7 @@ from solaris_chat.engine.tools.ha import (
     _SERVICE_ALIASES,
     call_service_scoped,
     fetch_addable_cards,
+    fetch_addable_runnables,
     fetch_card,
     fetch_energy,
     fetch_energy_history,
@@ -815,6 +816,16 @@ def build_app(
         if entity_id.split(".", 1)[0] not in ("light", "switch", "cover", "climate"):
             return web.json_response(
                 {"ok": False, "error": "unsupported_domain"}, status=400
+            )
+        # Confirm gate for a card tap (#702): a garage/door/gate cover open is
+        # sensitive and must not fire on a bare tap. The client shows an explicit
+        # confirm dialog and re-sends with `confirmed=true`; the server re-checks
+        # here so the gate is authoritative — an unconfirmed sensitive tap is 403.
+        if await _ha_call_is_sensitive(entity_id, service) and not body.get(
+            "confirmed"
+        ):
+            return web.json_response(
+                {"ok": False, "error": "sensitive_action"}, status=403
             )
         data = body.get("data")
         result = await call_service_scoped(
@@ -1650,6 +1661,29 @@ def build_app(
         service = _SERVICE_ALIASES.get(domain, {}).get(service, service)
         return confirm.is_sensitive(domain, service, None)
 
+    def _entity_card_sensitive(card: dict[str, Any]) -> bool:
+        """True when a one-tap action on this entity card is confirm-gated (#702).
+
+        A garage/door/gate cover's toggle is sensitive; the card is added with a
+        lock badge and its tap requires an explicit confirm the server re-checks
+        (`/api/ha/call` with `confirmed=true`). Other domains are not gated."""
+        return card.get("domain") == "cover" and confirm.is_sensitive(
+            "cover", "toggle", card.get("device_class")
+        )
+
+    async def _ha_call_is_sensitive(entity_id: str, service: str) -> bool:
+        """Authoritative confirm-gate re-check for a card tap (#702).
+
+        `service` is dotted (`cover.open_cover`). Only a cover open is class-
+        specific, so resolve the entity's live device_class (one read-only fetch)
+        and let `is_sensitive` decide — an unresolved class fails SAFE (gated)."""
+        domain, _, action = service.partition(".")
+        if domain != "cover" or action not in confirm.COVER_OPEN_SERVICES:
+            return confirm.is_sensitive(domain, action, None)
+        card = await fetch_card(hass_url, hass_token, entity_id)
+        device_class = card.get("device_class") if card else None
+        return confirm.is_sensitive(domain, action, device_class)
+
     async def portal_start(request: web.Request) -> web.Response:
         """Aggregate the resident's start page (#646): their pins + the shared
         household ones + their most-used actions. Entity favorites are enriched
@@ -1674,11 +1708,14 @@ def build_app(
             }
             if fav["kind"] == "entity" and hass_url and hass_token:
                 entity_id = str(fav["payload"].get("entity_id") or "")
-                item["card"] = (
+                card = (
                     await fetch_card(hass_url, hass_token, entity_id)
                     if entity_id
                     else None
                 )
+                if card is not None:
+                    card["sensitive"] = _entity_card_sensitive(card)
+                item["card"] = card
             return item
 
         enriched = await asyncio.gather(*(enrich(f) for f in favorites))
@@ -1707,8 +1744,10 @@ def build_app(
         set + live state), grouped by room, marking those already pinned
         (personal or household) so they aren't offered twice. A cover whose
         one-tap toggle would be confirm-gated (garage/door/gate) is marked
-        `sensitive` — the client renders it disabled, mirroring the pin-time
-        refusal the favorites store enforces for actions."""
+        `sensitive` — the client keeps such a card selectable but renders a lock
+        badge and guards its tap with an explicit confirm the server re-checks
+        (#702). Scenes/scripts/automations are offered as a separate "Automationen"
+        group of pinnable ACTION cards."""
         if not hass_url or not hass_token or area_registry is None:
             return web.json_response(
                 {"ok": False, "error": "ha_unconfigured"}, status=503
@@ -1720,24 +1759,54 @@ def build_app(
             return web.json_response(
                 {"ok": False, "error": "ha_unavailable"}, status=502
             )
+        favorites = favorites_store.list_favorites(solaris_db_path, uid)
         pinned = {
             str(f["payload"].get("entity_id") or "")
-            for f in favorites_store.list_favorites(solaris_db_path, uid)
+            for f in favorites
             if f["kind"] == "entity"
         }
         rooms: dict[str, list[dict[str, Any]]] = {}
         for card in cards:
             eid = str(card.get("entity_id") or "")
             card["pinned"] = eid in pinned
-            card["sensitive"] = card.get("domain") == "cover" and confirm.is_sensitive(
-                "cover", "toggle", card.get("device_class")
-            )
+            card["sensitive"] = _entity_card_sensitive(card)
             rooms.setdefault(card.pop("room") or "", []).append(card)
         grouped = [
             {"room": room, "cards": rooms[room]}
             for room in sorted(rooms, key=lambda r: (r == "", r.lower()))
         ]
-        return web.json_response({"ok": True, "rooms": grouped})
+        # Scenes/scripts/automations as pinnable ACTION cards (#702). A pinned
+        # entity_id already in `ha_run_scene_script` favorites is marked so it
+        # isn't offered twice.
+        pinned_runnables = {
+            str(
+                (f["payload"].get("args") or {}).get("entity")
+                or (f["payload"].get("args") or {}).get("entity_id")
+                or ""
+            )
+            for f in favorites
+            if f["kind"] == "action"
+            and f["payload"].get("tool") == "ha_run_scene_script"
+        }
+        runnables = await fetch_addable_runnables(hass_url, hass_token)
+        automations = []
+        for r in runnables or []:
+            eid = str(r.get("entity_id") or "")
+            automations.append(
+                {
+                    "entity_id": eid,
+                    "name": r.get("name") or eid,
+                    "domain": r.get("domain"),
+                    "kind": "action",
+                    "tool": "ha_run_scene_script",
+                    "args": {"entity": eid},
+                    "pinned": eid in pinned_runnables,
+                    "sensitive": False,
+                }
+            )
+        return web.json_response(
+            {"ok": True, "rooms": grouped, "automations": automations}
+        )
 
     async def favorites_create(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)

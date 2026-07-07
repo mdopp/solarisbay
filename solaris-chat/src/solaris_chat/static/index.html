@@ -446,6 +446,11 @@
     .on .hc-badge.hc-switch::after { transform: translateX(16px); }
     .off .hc-badge.hc-switch { background: rgba(127,127,127,0.45); }
     .ha-card.busy { opacity: 0.6; pointer-events: none; }
+    /* #702: a picker-inert tile is selection-only — no control inside it may
+       fire a device action. The card renderer skips the handler wiring; this
+       kills pointer events on any residual control as a backstop, and the whole
+       tile forwards clicks to the picker's selection toggle. */
+    .hc-inert, .hc-inert * { pointer-events: none; }
     /* #538: a light card is compact — the on/off badge + brightness slider
        share one row (.hc-compact); the slider drops its own top margin and
        grows to fill, the colour picker stays on its own row below. */
@@ -2258,6 +2263,12 @@
       function renderHaCard(c, row, opts) {
         var card = document.createElement("div");
         card.className = row ? "hc-row" : "ha-card";
+        // Picker-inert mode (#702): in the "+ Karten hinzufügen" overlay a tile
+        // is selection-only — no toggle/slider/tap fires a device action. The
+        // card renders its state display but skips ALL handler wiring, and
+        // .hc-inert kills pointer events on any residual control as a backstop.
+        var inert = !!(opts && opts.picker);
+        if (inert) card.classList.add("hc-inert");
         // #692: the card is a header row [name .... controls ☆] + a body. The
         // on/off toggle (light/switch) and the cover open/stop/close controls
         // live top-right in the header (next to the ☆ pin), so the body holds
@@ -2281,13 +2292,13 @@
           }
           card.appendChild(val);
         } else if (c.domain === "climate") {
-          renderClimateCard(card, c, st);
+          renderClimateCard(card, c, st, inert);
         } else if (c.domain === "media_player") {
           // #551: a now-playing media_player is the wide card — it spans 2 base
           // grid columns so its title/transport row isn't cramped; it still
           // collapses to the single column when the viewport is narrow.
           card.classList.add("hc-span2");
-          renderMediaPlayerCard(card, c, st);
+          renderMediaPlayerCard(card, c, st, inert);
         } else {
           // binary_sensor / cover / light / switch -> on/off-style badge.
           var onish = st === "on" || st === "open";
@@ -2325,18 +2336,33 @@
             card.setAttribute("role", "switch");
             card.setAttribute("aria-checked", onish ? "true" : "false");
             card.setAttribute("aria-label", haStateLabel(c.domain, st));
-            card.tabIndex = 0;
-            var act = function () { haToggle(card, badge, c); };
-            card.addEventListener("click", act);
-            card.addEventListener("keydown", function (e) {
-              if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
-            });
+            if (!inert) {
+              card.tabIndex = 0;
+              var act = function () { haToggle(card, badge, c); };
+              card.addEventListener("click", act);
+              card.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
+              });
+            }
           }
           // #692: the light brightness slider drops into the card BODY (below the
           // header toggle); the cover open/stop/close buttons stay in the header
-          // host, its position slider goes to the body.
-          if (c.domain === "light") renderLightControls(card, c, card);
-          else if (c.domain === "cover") renderCoverControls(card, c, badgeHost);
+          // host, its position slider goes to the body. Skipped in picker mode —
+          // an inert tile shows state only, never an actionable control (#702).
+          if (!inert) {
+            if (c.domain === "light") renderLightControls(card, c, card);
+            else if (c.domain === "cover") renderCoverControls(card, c, badgeHost);
+          }
+        }
+        // Lock hint (#702): a sensitive (garage/door/gate) card wears a 🔒 in its
+        // header so the resident sees the tap is confirm-gated before pressing.
+        if (c.sensitive) {
+          card.classList.add("hc-sensitive");
+          var lock = document.createElement("span");
+          lock.className = "hc-lock";
+          lock.textContent = "🔒";
+          lock.title = "Bestätigungspflichtig";
+          head.appendChild(lock);
         }
         // ☆ pin affordance, chat renderers only (#646). It sits last in the
         // header so the row reads [name] .... [toggle] [☆]. stopPropagation is
@@ -2400,14 +2426,17 @@
       // #550: open/stop/close ride the compact badge row; the position slider
       // sits on its own line below when the cover supports set_position.
       function renderCoverControls(card, c, host) {
-        var garage = c.device_class === "garage";
+        // A confirm-gated cover (garage/door/gate) is flagged `sensitive` by the
+        // server (#702); moving it asks an explicit confirm and sends
+        // confirmed=true so the server's gate lets the confirmed tap through.
+        var sensitive = c.sensitive || c.device_class === "garage";
         makeButtons(host || card, [
           ["▲", "open_cover", "Öffnen"], ["■", "stop_cover", "Stopp"],
           ["▼", "close_cover", "Schließen"],
         ], function (b) {
-          if (garage && b[1] !== "stop_cover" &&
-              !window.confirm(b[2] + " — Garagentor wirklich bewegen?")) return;
-          haCall(card, c, "cover." + b[1], {});
+          if (sensitive && b[1] !== "stop_cover" &&
+              !window.confirm(b[2] + " — " + (c.name || "Tor") + " wirklich bewegen?")) return;
+          haCall(card, c, "cover." + b[1], {}, sensitive);
         }, host != null);
         var feat = Number(c.supported_features || 0);
         if (feat & COVER_SET_POSITION) {
@@ -2421,7 +2450,7 @@
       // Climate: current temp + a setpoint stepper and an hvac-mode select.
       // #550: the current temp + the setpoint stepper share one compact row;
       // the hvac-mode select sits below.
-      function renderClimateCard(card, c, st) {
+      function renderClimateCard(card, c, st, inert) {
         var compact = document.createElement("div");
         compact.className = "hc-compact";
         card.appendChild(compact);
@@ -2430,6 +2459,8 @@
         cur.textContent = c.current_temperature != null
           ? c.current_temperature + "°C" : (st || "—");
         compact.appendChild(cur);
+        // Picker-inert (#702): a climate tile shows current/target temp only.
+        if (inert) return;
         var feat = Number(c.supported_features || 0);
         if (feat & CLIMATE_TARGET_TEMP || c.temperature != null) {
           var step = Number(c.target_temp_step) || 0.5;
@@ -2477,7 +2508,7 @@
       // #561: a power on/off toggle (turn_on/turn_off, gated on TURN_ON/OFF) so
       // an off TV is reachable from the card, plus a source/app picker when the
       // player supports select_source — reuses the #560 .hc-switch toggle style.
-      function renderMediaPlayerCard(card, c, st) {
+      function renderMediaPlayerCard(card, c, st, inert) {
         var on = st !== "off" && st !== "" && st !== "unavailable";
         var playing = st === "playing";
         card.classList.add(on ? "on" : "off");
@@ -2486,6 +2517,22 @@
         var compact = document.createElement("div");
         compact.className = "hc-compact";
         card.appendChild(compact);
+        // Picker-inert (#702): a media tile shows the state badge + now-playing,
+        // never the interactive power/transport/source controls.
+        if (inert) {
+          var ibadge = document.createElement("span");
+          ibadge.className = "hc-badge";
+          ibadge.textContent = haStateLabel("media_player", st);
+          compact.appendChild(ibadge);
+          if (c.media_title) {
+            var inowp = document.createElement("div");
+            inowp.className = "hc-now";
+            inowp.textContent = c.media_artist
+              ? c.media_artist + " — " + c.media_title : c.media_title;
+            card.appendChild(inowp);
+          }
+          return;
+        }
         // #561: power toggle when the player can be turned on AND off; renders as
         // the same sliding switch as a light/switch and flips via turn_on/off.
         if (feat & MP_TURN_ON && feat & MP_TURN_OFF) {
@@ -2601,13 +2648,19 @@
 
       // Generic card action (#477): POST a scoped service, mark busy, no revert
       // (sliders/setpoints have no single prior boolean to flip back to).
-      function haCall(card, c, service, data) {
+      function haCall(card, c, service, data, confirmed) {
         if (card.classList.contains("busy")) return;
         card.classList.add("busy");
         fetch("/api/ha/call", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ entity_id: c.entity_id, service: service, data: data }),
+          body: JSON.stringify({
+            entity_id: c.entity_id, service: service, data: data,
+            // A sensitive (garage/door/gate) tap carries the explicit client
+            // confirm; the server re-checks the gate and 403s an unconfirmed
+            // sensitive request no matter what the client sends (#702).
+            confirmed: confirmed === true,
+          }),
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (res) { if (res && res.ok && res.state != null) c.state = res.state; })
@@ -5201,6 +5254,35 @@
               body.textContent = "Keine steuerbaren Geräte gefunden.";
               return;
             }
+            // A selectable tile: renders an INERT card (no device action), a
+            // status badge, and toggles SELECTION on click. Already-pinned tiles
+            // are disabled; sensitive ones stay selectable but wear a lock (#702).
+            function addTile(grid, c, key, labelEl) {
+              var tile = document.createElement("div");
+              tile.className = "cp-tile";
+              if (c.pinned) tile.classList.add("taken");
+              if (c.sensitive) tile.classList.add("cp-sensitive");
+              tile.appendChild(labelEl);
+              var check = document.createElement("span");
+              check.className = "cp-check";
+              check.textContent = c.pinned ? "★" : (c.sensitive ? "🔒" : "");
+              tile.appendChild(check);
+              if (!c.pinned) {
+                tile.addEventListener("click", function () {
+                  if (selected[key]) {
+                    delete selected[key];
+                    tile.classList.remove("sel");
+                    check.textContent = c.sensitive ? "🔒" : "";
+                  } else {
+                    selected[key] = c;
+                    tile.classList.add("sel");
+                    check.textContent = "✓";
+                  }
+                  refresh();
+                });
+              }
+              grid.appendChild(tile);
+            }
             j.rooms.forEach(function (group) {
               var rh = document.createElement("div");
               rh.className = "cp-room";
@@ -5209,33 +5291,26 @@
               var grid = document.createElement("div");
               grid.className = "cp-grid";
               group.cards.forEach(function (c) {
-                var tile = document.createElement("div");
-                tile.className = "cp-tile";
-                var taken = c.pinned || c.sensitive;
-                if (taken) tile.classList.add("taken");
-                tile.appendChild(renderHaCard(c, false));
-                var check = document.createElement("span");
-                check.className = "cp-check";
-                check.textContent = c.pinned ? "★" : (c.sensitive ? "🔒" : "");
-                tile.appendChild(check);
-                if (!taken) {
-                  tile.addEventListener("click", function () {
-                    if (selected[c.entity_id]) {
-                      delete selected[c.entity_id];
-                      tile.classList.remove("sel");
-                      check.textContent = "";
-                    } else {
-                      selected[c.entity_id] = c;
-                      tile.classList.add("sel");
-                      check.textContent = "✓";
-                    }
-                    refresh();
-                  });
-                }
-                grid.appendChild(tile);
+                addTile(grid, c, c.entity_id, renderHaCard(c, false, { picker: true }));
               });
               body.appendChild(grid);
             });
+            // Automationen (#702): scenes/scripts/automations as action cards.
+            if (j.automations && j.automations.length) {
+              var ah = document.createElement("div");
+              ah.className = "cp-room";
+              ah.textContent = "Automationen";
+              body.appendChild(ah);
+              var agrid = document.createElement("div");
+              agrid.className = "cp-grid";
+              j.automations.forEach(function (a) {
+                var label = document.createElement("div");
+                label.className = "hc-row hc-inert";
+                label.textContent = a.name || a.entity_id;
+                addTile(agrid, a, a.entity_id, label);
+              });
+              body.appendChild(agrid);
+            }
           })
           .catch(function () { body.textContent = "Konnte die Karten nicht laden."; });
 
@@ -5246,15 +5321,17 @@
           var sc = scope.value;
           Promise.all(picks.map(function (eid) {
             var c = selected[eid];
+            // An Automationen pick is an action favorite (run via /run); a
+            // device pick is an entity favorite (live card + tap) (#702).
+            var payload = c.kind === "action"
+              ? { kind: "action", label: c.name || c.entity_id || "",
+                  scope: sc, payload: { tool: c.tool, args: c.args } }
+              : { kind: "entity", label: c.name || c.entity_id || "",
+                  scope: sc, payload: { entity_id: c.entity_id } };
             return fetch("/api/favorites", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                kind: "entity",
-                label: c.name || c.entity_id || "",
-                scope: sc,
-                payload: { entity_id: c.entity_id },
-              }),
+              body: JSON.stringify(payload),
             });
           })).then(function () {
             shut();

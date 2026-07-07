@@ -200,6 +200,27 @@ async def test_list_runnable_filters_to_domains(monkeypatch):
     assert ids == {"scene.movie", "script.bedtime", "automation.morning"}
 
 
+async def test_fetch_addable_runnables_keeps_runnable_domains(monkeypatch):
+    # #702: the picker's Automationen source keeps scenes/scripts/automations
+    # and returns {entity_id, name, domain}, sorted by name; other domains drop.
+    states = [
+        {"entity_id": "scene.movie", "attributes": {"friendly_name": "Kino"}},
+        {"entity_id": "script.bedtime", "attributes": {"friendly_name": "Ab ins Bett"}},
+        {"entity_id": "automation.morning", "attributes": {}},
+        {"entity_id": "light.kitchen", "attributes": {"friendly_name": "Küche"}},
+    ]
+    _stub(monkeypatch, states=states)
+    out = await ha_mod.fetch_addable_runnables("http://ha", "tok")
+    assert [r["entity_id"] for r in out] == [
+        "script.bedtime",
+        "automation.morning",
+        "scene.movie",
+    ]
+    assert out[-1] == {"entity_id": "scene.movie", "name": "Kino", "domain": "scene"}
+    # automation with no friendly_name falls back to its entity_id.
+    assert out[1]["name"] == "automation.morning"
+
+
 @pytest.mark.parametrize(
     "entity_id,service",
     [

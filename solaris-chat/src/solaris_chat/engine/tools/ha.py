@@ -264,6 +264,39 @@ async def fetch_addable_cards(
     return cards
 
 
+async def fetch_addable_runnables(
+    hass_url: str, hass_token: str
+) -> list[dict[str, Any]] | None:
+    """Scenes/scripts/automations offered as addable ACTION cards (#702).
+
+    One read-only `/api/states`; keeps the runnable domains (scene/script/
+    automation) and returns `{entity_id, name, domain}` for each so the picker
+    can pin them as `{tool: "ha_run_scene_script", args: {entity: <id>}}`. These
+    are non-sensitive one-shot routines — they run on tap like other action
+    cards. Returns None on any HA error.
+    """
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                if resp.status >= 400:
+                    return None
+                states = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    out: list[dict[str, Any]] = []
+    for s in states:
+        eid = str(s.get("entity_id") or "")
+        domain = eid.split(".", 1)[0]
+        if domain not in _RUNNABLE_DOMAINS:
+            continue
+        name = str((s.get("attributes") or {}).get("friendly_name") or eid)
+        out.append({"entity_id": eid, "name": name, "domain": domain})
+    out.sort(key=lambda r: r["name"].lower())
+    return out
+
+
 # Current-power (W) flow sensors for the "Jetzt" picture + the trend chart
 # (#691). Matched by EXACT friendly_name and require device_class=power / unit W
 # so the kWh lifetime counters (PV Erzeugung, Netzbezug, …) never leak into the

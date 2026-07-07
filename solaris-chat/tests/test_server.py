@@ -3119,7 +3119,13 @@ async def test_ha_call_allows_cover_and_climate_controls(
         seen.update(entity=eid, service=svc, data=d)
         return {"ok": True, "state": "ok"}
 
+    # The #702 confirm-gate resolves a cover's device_class before running: an
+    # ordinary blind is non-sensitive → the tap proceeds without a confirm.
+    async def _fake_card(url, token, eid):
+        return {"domain": "cover", "device_class": "blind", "entity_id": eid}
+
     monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    monkeypatch.setattr(server_mod, "fetch_card", _fake_card)
     app = build_app(
         hermes=_FakeHermes(),
         remote_user_header="Remote-User",
@@ -3135,6 +3141,76 @@ async def test_ha_call_allows_cover_and_climate_controls(
     )
     assert resp.status == 200
     assert seen == {"entity": entity_id, "service": service, "data": data}
+
+
+async def test_ha_call_refuses_unconfirmed_sensitive_cover(aiohttp_client, monkeypatch):
+    # #702: a garage/door/gate cover open is confirm-gated. A bare card tap
+    # (no confirmed flag) must be refused server-side and never reach HA — the
+    # server gate is authoritative, not the client dialog. Fails against the
+    # pre-#702 code where /api/ha/call ran any allowed-domain service unchecked.
+    called = False
+
+    async def _fake_call(*a, **k):
+        nonlocal called
+        called = True
+        return {"ok": True, "state": "open"}
+
+    async def _fake_card(url, token, eid):
+        return {"domain": "cover", "device_class": "garage", "entity_id": eid}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    monkeypatch.setattr(server_mod, "fetch_card", _fake_card)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={"entity_id": "cover.garage", "service": "cover.open_cover"},
+    )
+    assert resp.status == 403
+    assert (await resp.json())["error"] == "sensitive_action"
+    assert called is False  # never reaches the HA helper
+
+
+async def test_ha_call_runs_confirmed_sensitive_cover(aiohttp_client, monkeypatch):
+    # #702: the same garage open proceeds once the client sends confirmed=true
+    # (after its explicit confirm dialog); the server re-checked and let it pass.
+    seen = {}
+
+    async def _fake_call(hass_url, hass_token, eid, svc, d=None):
+        seen.update(entity=eid, service=svc)
+        return {"ok": True, "state": "open"}
+
+    async def _fake_card(url, token, eid):
+        return {"domain": "cover", "device_class": "garage", "entity_id": eid}
+
+    monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
+    monkeypatch.setattr(server_mod, "fetch_card", _fake_card)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/ha/call",
+        json={
+            "entity_id": "cover.garage",
+            "service": "cover.open_cover",
+            "confirmed": True,
+        },
+    )
+    assert resp.status == 200
+    assert seen == {"entity": "cover.garage", "service": "cover.open_cover"}
 
 
 async def test_ha_call_503_when_ha_not_configured(aiohttp_client):
