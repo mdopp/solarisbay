@@ -93,13 +93,14 @@ def test_no_header_persona_or_topic_controls():
 
 
 def test_household_pin_binding_intact():
-    # The internal household topic binding stays: the pinned chat pre-binds the
-    # `household` topic via the #242 pendingTopic path, and loadTopics surfaces
-    # the pin only when the resident can see the household topic.
+    # The internal household topic binding stays: the rail Zuhause entry pre-binds
+    # the `household` topic via the #242 pendingTopic path before the resident's
+    # durable session exists.
     assert 'var HOUSEHOLD_TOPIC = "household";' in _HTML
     assert "pendingTopic = HOUSEHOLD_TOPIC;" in _HTML
     assert "payload.topic = pendingTopic;" in _HTML
-    assert "householdBtn.hidden = !topicsBySlug[HOUSEHOLD_TOPIC];" in _HTML
+    # Zuhause is a rail-nav entry now (#700), not a topic-gated hidden pin.
+    assert 'id="rail-home"' in _HTML
 
 
 def test_chat_search_moved_out_of_the_header():

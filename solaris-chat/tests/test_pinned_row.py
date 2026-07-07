@@ -1,10 +1,10 @@
-"""Frontend-contract checks for the pinned household row highlight (#262).
+"""Frontend-contract checks for the desktop rail nav (#700, was #262).
 
-The pinned "Zuhause" row must be visually NEUTRAL by default and only carry the
-active highlight when the household chat is the current selection — driven from
-selection state, the same mechanism that toggles `.active` on a normal session
-row. The real check is the box-verify of the rendered highlight; these assert
-the markup/CSS no longer hardcodes the active treatment.
+The household chat is no longer a pinned *session row* in the CHATS list — it is
+a primary rail-nav entry (Zuhause) beside Favoriten + Energie. Its highlight is
+derived strictly from the current view (isHouseholdView), so exactly one nav
+entry is lit and it never latches. The real check is the box-verify of the
+rendered highlight; these assert the markup/wiring that makes it possible.
 """
 
 from __future__ import annotations
@@ -22,22 +22,32 @@ def _rule_body(selector: str) -> str:
     return m.group(1)
 
 
-def test_pinned_rule_is_neutral_by_default():
-    body = _rule_body(".session.pinned ")
-    assert "accent-soft" not in body
-    assert "border-color" not in body
+def test_household_is_a_rail_nav_entry_not_a_session_row():
+    # One Zuhause: a #rail-home nav entry, and no leftover pinned session row.
+    assert 'id="rail-home"' in _HTML
+    assert 'id="pinned-household"' not in _HTML
+    assert 'class="session pinned"' not in _HTML
 
 
-def test_pinned_title_does_not_hardcode_active_look():
-    # No `.session.pinned .title` accent/bold rule (was the hardcoded active look).
-    assert not re.search(r"\.session\.pinned \.title\s*\{", _HTML)
+def test_rail_nav_groups_the_three_primary_entries():
+    m = re.search(r'<nav class="rail-nav">(.*?)</nav>', _HTML, re.S)
+    assert m, "missing .rail-nav group"
+    group = m.group(1)
+    assert 'id="rail-home"' in group
+    assert 'id="rail-favorites"' in group
+    assert 'id="rail-energy"' in group
 
 
-def test_active_highlight_is_shared_and_toggled_from_selection():
-    # The accent highlight lives on the shared `.session.active` rule …
-    assert "accent-soft" in _rule_body(".session.active ")
-    # … and the pinned row's `.active` is toggled from selection state, like a
-    # normal session row — not statically present in its markup.
-    assert 'class="session pinned"' in _HTML
-    assert 'class="session pinned active"' not in _HTML
-    assert 'householdBtn.classList.toggle("active"' in _HTML
+def test_rail_active_highlight_derives_from_view_state():
+    # The nav highlight is toggled from the current view, not a hidden button's
+    # class — isHouseholdView is the single source of truth (#700).
+    assert "function isHouseholdView()" in _HTML
+    assert "sessionId === householdSessionId" in _HTML
+    assert 'railHome.classList.toggle("active", onHome)' in _HTML
+    # The old latch-prone wiring is gone.
+    assert "householdBtn" not in _HTML
+    assert "syncPinnedActive" not in _HTML
+
+
+def test_rail_nav_active_look_is_accent():
+    assert "accent-soft" in _rule_body(".rail-nav button.active")

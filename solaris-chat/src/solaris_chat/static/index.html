@@ -185,16 +185,6 @@
     .trash:hover { background: rgba(194,72,58,.14); color: var(--danger); }
     .sessions-empty { padding: 12px 14px; color: var(--muted); font-size: 13px; }
 
-    /* Pinned household chat (#237): a fixed entry above the session list that
-       starts a new chat pre-bound to the `household` topic (e2b + household
-       soul). Pinned layout + home icon only — the active highlight comes from
-       the shared `.session.active` rule, toggled from selection state (#262),
-       so the row is neutral unless the household chat is the current chat. */
-    .session.pinned {
-      width: calc(100% - 16px); margin: 4px 8px 2px; text-align: left;
-    }
-    .session.pinned .pin-ic { flex: 0 0 26px; display: flex; align-items: center; justify-content: center; color: var(--accent); }
-
     .rail-foot { border-top: 1px solid var(--line); padding: 10px 12px; }
     .rail-user { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 6px; }
     .rail-user .who { font-weight: 600; }
@@ -1279,27 +1269,27 @@
       </div>
     </div>
 
+    <!-- Primary nav (#681/#700): Zuhause = the household chat, Favoriten +
+         Energie the two portals. One prominent group above the CHATS list; the
+         household chat lives here, not as a session row below. -->
+    <nav class="rail-nav">
+      <button id="rail-home" type="button" title="Zuhause — Haushalts-Chat (Solaris, schnelles Modell)">
+        <svg class="ic"><use href="#i-home"></use></svg><span>Zuhause</span>
+      </button>
+      <button id="rail-favorites" type="button" title="Favoriten — Startseite">
+        <svg class="ic"><use href="#i-star"></use></svg><span>Favoriten</span>
+      </button>
+      <button id="rail-energy" type="button" title="Energie — Hausverbrauch">
+        <svg class="ic"><use href="#i-bolt"></use></svg><span>Energie</span>
+      </button>
+    </nav>
+
     <div class="rail-sessions">
       <div class="rs-head">
         <span>Chats</span><span class="grow"></span>
         <button class="icon-btn" id="new-incognito" type="button" title="Temporärer Chat (incognito) — wird beim Schließen gelöscht, nichts wird gespeichert" aria-label="Temporärer Chat"><svg class="ic"><use href="#i-ghost"></use></svg></button>
         <button class="icon-btn" id="new-session" type="button" title="New chat" aria-label="New chat"><svg class="ic"><use href="#i-plus"></use></svg></button>
       </div>
-      <button class="session pinned" id="pinned-household" type="button" hidden
-              title="Zuhause — Haushalts-Chat (Solaris, schnelles Modell)">
-        <span class="pin-ic"><svg class="ic"><use href="#i-home"></use></svg></span>
-        <span class="title">Zuhause</span>
-      </button>
-      <button class="session pinned" id="rail-favorites" type="button"
-              title="Favoriten — Startseite">
-        <span class="pin-ic"><svg class="ic"><use href="#i-star"></use></svg></span>
-        <span class="title">Favoriten</span>
-      </button>
-      <button class="session pinned" id="rail-energy" type="button"
-              title="Energie — Hausverbrauch">
-        <span class="pin-ic"><svg class="ic"><use href="#i-bolt"></use></svg></span>
-        <span class="title">Energie</span>
-      </button>
       <div id="sessions"></div>
     </div>
 
@@ -1664,8 +1654,9 @@
   </div>
 
   <!-- Mobile bottom tab bar (#648): shown <=760px only (CSS). Same hash-router
-       targets, no new routing model — Zuhause reuses the pinned-household path,
-       Chats opens the rail drawer, Favoriten routes to #/p/start. -->
+       targets, no new routing model — Zuhause reuses the household-chat path
+       (startHouseholdChat, #700), Chats opens the rail drawer, Favoriten routes
+       to #/p/start. -->
   <nav id="tabbar" aria-label="Navigation">
     <button id="tab-home" type="button" aria-label="Zuhause"><svg class="ic"><use href="#i-home"></use></svg>Zuhause</button>
     <button id="tab-chats" type="button" aria-label="Chats"><svg class="ic"><use href="#i-chat"></use></svg>Chats</button>
@@ -1711,7 +1702,7 @@
       var sessionsEl = document.getElementById("sessions");
       var newBtn = document.getElementById("new-session");
       var incognitoBtn = document.getElementById("new-incognito");
-      var householdBtn = document.getElementById("pinned-household");
+      var railHome = document.getElementById("rail-home");
       var incognitoBadge = document.getElementById("incognito-badge");
       var backdrop = document.getElementById("backdrop");
       var adminBadge = document.getElementById("admin-badge");
@@ -1753,9 +1744,6 @@
             topicsList = (j && j.topics) || [];
             topicsBySlug = {};
             topicsList.forEach(function (t) { topicsBySlug[t.slug] = t; });
-            // Surface the pinned household chat only when the resident can see
-            // the household topic (it's a shared system topic — #237).
-            householdBtn.hidden = !topicsBySlug[HOUSEHOLD_TOPIC];
           })
           .catch(function () {});
       }
@@ -4098,18 +4086,20 @@
         return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
       }
 
-      // Drive the pinned household row's highlight from selection state, the
-      // same mechanism that toggles .active on a normal .session row (#262):
-      // it's active when the open chat is bound to the household topic, or when
-      // a fresh no-session chat is pre-bound to it before its first turn. The
-      // row is otherwise neutral. Generalizes to any future pinned topic row.
       // The header title is context-aware (#671): "Favoriten" on the #/p/start
       // portal (matching the bottom tab, #677), "Zuhause" in the household chat,
       // otherwise the session title — never the "Neuer Chat" placeholder on the
       // start/household views.
-      function isHouseholdActive(activeS) {
+      // The household chat IS the current view when the open session is the
+      // resident's durable household session (#345/#419, from whoami), or — before
+      // that session's first turn exists — when a fresh no-session chat is
+      // pre-bound to the household topic (#242). A portal route is never it.
+      // This is the single source of truth for the Zuhause highlight (#700):
+      // derived from the view, so it can't latch on stale button state.
+      function isHouseholdView() {
+        if ((location.hash || "").indexOf("#/p/") === 0) return false;
         return sessionId
-          ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
+          ? !!(householdSessionId && sessionId === householdSessionId)
           : pendingTopic === HOUSEHOLD_TOPIC;
       }
       function syncChatTitle(activeS) {
@@ -4117,16 +4107,11 @@
         if (!ct) return;
         if ((location.hash || "").indexOf("#/p/start") === 0) {
           ct.textContent = "Favoriten";
-        } else if (isHouseholdActive(activeS) && !(activeS && (activeS.title || activeS.preview))) {
+        } else if (isHouseholdView() && !(activeS && (activeS.title || activeS.preview))) {
           ct.textContent = (topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name) || "Zuhause";
         } else {
           ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat";
         }
-      }
-
-      function syncPinnedActive(activeS) {
-        householdBtn.classList.toggle("active", isHouseholdActive(activeS));
-        if (typeof syncTabbar === "function") syncTabbar();
       }
 
       var lastSessions = [];
@@ -4146,7 +4131,10 @@
         // Mirror the active session's name into the chat header.
         var activeS = lastSessions.find(function (s) { return s.id === sessionId; });
         syncChatTitle(activeS);
-        syncPinnedActive(activeS);
+        syncTabbar();
+        // The household chat lives in the nav group (#700), not the CHATS list —
+        // drop its durable session row so "Zuhause" appears exactly once.
+        list = lastSessions.filter(function (s) { return !(householdSessionId && s.id === householdSessionId); });
         sessionsEl.textContent = "";
         if (!list.length) {
           var empty = document.createElement("div");
@@ -4337,16 +4325,20 @@
       function startHouseholdPrebind() {
         newSession();
         pendingTopic = HOUSEHOLD_TOPIC;
-        syncPinnedActive(null);
+        syncTabbar();
       }
 
       newBtn.addEventListener("click", newSession);
       incognitoBtn.addEventListener("click", newIncognito);
-      householdBtn.addEventListener("click", startHouseholdChat);
 
-      // Desktop rail nav (#681): Favoriten + Energie are prominent pinned
-      // entries beside Zuhause, not small footer links. Both route to their
-      // portal hash; syncTabbar lights the active one on its route.
+      // Desktop rail nav (#681/#700): Zuhause opens the household chat, Favoriten
+      // + Energie route to their portal hash. syncTabbar lights the active one
+      // from the current view.
+      railHome.addEventListener("click", function () {
+        closeRail();
+        startHouseholdChat();
+        syncTabbar();
+      });
       var railFavorites = document.getElementById("rail-favorites");
       var railEnergy = document.getElementById("rail-energy");
       railFavorites.addEventListener("click", function () {
@@ -4390,20 +4382,21 @@
       function syncTabbar() {
         // Active tab tracks the current VIEW, not transient drawer state (#675).
         // Favoriten = on #/p/start; Zuhause = the household session is the open
-        // chat (syncPinnedActive keeps householdBtn.active in sync); Chats = any
-        // other session is the current view — OR while the drawer is open and
-        // being browsed. Picking a chat calls closeRail(), so Chats must stay lit
-        // from the view (a non-household chat), not from rail-open.
+        // chat (isHouseholdView, #700); Chats = any other session is the current
+        // view — OR while the drawer is open and being browsed. Picking a chat
+        // calls closeRail(), so Chats must stay lit from the view (a non-household
+        // chat), not from rail-open.
         var railOpen = document.body.classList.contains("rail-open");
         var onStart = (location.hash || "").indexOf("#/p/start") === 0;
         var onEnergy = (location.hash || "").indexOf("#/p/energy") === 0;
-        var onHome = !railOpen && !onStart && !onEnergy && householdBtn.classList.contains("active");
+        var onHome = !onStart && !onEnergy && isHouseholdView();
         var onChats = railOpen || (!onStart && !onEnergy && !onHome);
         tabFavorites.classList.toggle("active", onStart && !railOpen);
-        tabHome.classList.toggle("active", onHome);
+        tabHome.classList.toggle("active", onHome && !railOpen);
         tabChats.classList.toggle("active", onChats);
-        // Desktop rail entries (#681) highlight on their portal routes, mirroring
-        // the mobile tab highlighting.
+        // Desktop rail entries (#681/#700) highlight strictly from the current
+        // view — exactly one of the three, or none for another session's chat.
+        railHome.classList.toggle("active", onHome);
         railFavorites.classList.toggle("active", onStart);
         railEnergy.classList.toggle("active", onEnergy);
         // The header title tracks the route too (#671): "Favoriten" on start,
@@ -6576,8 +6569,10 @@
       // Load the persona catalog + identity so `/persona` can offer the full
       // cross (and, for an Authelia admin, the admin profile #293 — the server
       // re-enforces the gate, so a non-admin can never reach it).
-      Promise.all([loadPersonalities(), loadWhoami()]);
-      loadTopics().then(loadSessions).then(routeFromLocation).then(syncTabbar);
+      // whoami first: it sets householdSessionId, which loadSessions needs to
+      // filter the household chat out of the list + drive the Zuhause highlight (#700).
+      Promise.all([loadPersonalities(), loadWhoami(), loadTopics()])
+        .then(loadSessions).then(routeFromLocation).then(syncTabbar);
     })();
   </script>
 </body>
