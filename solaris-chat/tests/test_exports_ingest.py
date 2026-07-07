@@ -420,3 +420,176 @@ def test_signal_unrecognized_json_left_in_place(env):
     stats = ingest.run()
     assert stats.unrecognized == 1 and stats.events_written == 0
     assert p.exists()  # left untouched.
+
+
+# --- SMS/RCS JSON parser (FOSS "SMS Import/Export") ---------------------------
+
+
+def _sms(
+    ms,
+    *,
+    address=None,
+    type_=None,
+    body=None,
+    msg_box=None,
+    parts=None,
+    recipients=None,
+):
+    obj = {"date": str(ms)}
+    if address is not None:
+        obj["address"] = address
+    if type_ is not None:
+        obj["type"] = type_
+    if body is not None:
+        obj["body"] = body
+    if msg_box is not None:
+        obj["msg_box"] = msg_box
+    if parts is not None:
+        obj["parts"] = parts
+    if recipients is not None:
+        obj["recipients"] = recipients
+    return obj
+
+
+# SMS thread with the peer "+49 171 1234567": one received, one sent, on the 15th;
+# a media-only MMS (no text — dropped) and a received SMS on the 16th.
+_SMS_ARRAY = [
+    _sms(_T15_A, address="+49 171 1234567", type_=1, body="Kommst du heute? Grüße"),
+    _sms(_T15_B, address="+49 171 1234567", type_=2, body="Ja, um acht."),
+    _sms(
+        _T15_B + 1000,
+        address="+49 171 1234567",
+        msg_box=1,
+        parts=[{"content_type": "image/jpeg"}],
+    ),  # media-only — dropped.
+    _sms(_T16, address="+49 171 1234567", type_=1, body="Guten Morgen."),
+]
+
+
+def test_sms_json_array_groups_one_event_per_day(env):
+    ingest, db_path, notes_dir = env
+    _drop(notes_dir, "users/anna/inbox/exports/sms-171.json", json.dumps(_SMS_ARRAY))
+    stats = ingest.run()
+    assert stats.events_written == 2  # 15th + 16th; media-only dropped.
+    rows = _events(db_path)
+    assert [r["ts"] for r in rows] == [
+        f"{_local_day(_T15_A)}T00:00:00",
+        f"{_local_day(_T16)}T00:00:00",
+    ]
+    assert all(r["kind"] == "chat" for r in rows)
+    assert all(r["resident_uid"] == "anna" for r in rows)
+
+
+def test_sms_person_concepts_resolve_by_number(env):
+    ingest, db_path, notes_dir = env
+    _drop(notes_dir, "users/anna/inbox/exports/sms-171.json", json.dumps(_SMS_ARRAY))
+    stats = ingest.run()
+    assert stats.people_written == 2  # the peer number + "Me".
+    conn = projection.open_conn(db_path)
+    try:
+        people = {r["canonical_name"] for r in conn.execute("SELECT * FROM entities")}
+        assert people == {"+49 171 1234567", "Me"}
+        day15 = conn.execute(
+            "SELECT id FROM events WHERE ts = ?", (f"{_local_day(_T15_A)}T00:00:00",)
+        ).fetchone()["id"]
+        roles = conn.execute(
+            "SELECT role FROM event_entities WHERE event_id = ?", (day15,)
+        ).fetchall()
+        assert len(roles) == 2 and all(r["role"] == "with" for r in roles)
+    finally:
+        conn.close()
+
+
+def test_sms_body_title_and_sent_marker(env):
+    ingest, db_path, notes_dir = env
+    _drop(notes_dir, "users/anna/inbox/exports/sms-171.json", json.dumps(_SMS_ARRAY))
+    ingest.run()
+    day15 = _local_day(_T15_A)
+    conn = projection.open_conn(db_path)
+    try:
+        path = conn.execute(
+            "SELECT okf_path FROM concepts WHERE ref_kind = 'event' AND okf_path LIKE ?",
+            (f"%{day15}%",),
+        ).fetchone()["okf_path"]
+    finally:
+        conn.close()
+    text = (notes_dir / path).read_text(encoding="utf-8")
+    assert "+49 171 1234567: Kommst du heute? Grüße" in text  # received, umlaut kept.
+    assert "Me: Ja, um acht." in text  # sent side labelled "Me".
+    # Single-peer thread names itself after the peer; platform prefix "SMS".
+    assert f"SMS +49 171 1234567 {day15}" in text
+
+
+def test_rcs_mms_parts_and_recipients_ndjson(env):
+    ingest, db_path, notes_dir = env
+    ndjson = "\n".join(
+        json.dumps(o)
+        for o in [
+            # MMS/RCS: body in a text part, peer in recipients (self address skipped).
+            _sms(
+                _T15_A,
+                msg_box=1,
+                parts=[{"content_type": "text/plain", "text": "Foto vom See"}],
+                recipients=[{"address": "+49 160 9998887", "type": 151}],
+            ),
+            _sms(
+                _T15_B,
+                msg_box=2,
+                parts=[{"content_type": "text/plain", "text": "schön!"}],
+                recipients=[
+                    {"address": "+49 160 9998887", "type": 151},
+                    {"address": "+49 171 0000000", "type": 137},
+                ],
+            ),
+        ]
+    )
+    _drop(notes_dir, "users/anna/inbox/exports/messages_rcs.json", ndjson)
+    stats = ingest.run()
+    assert stats.events_written == 1
+    conn = projection.open_conn(db_path)
+    try:
+        people = {r["canonical_name"] for r in conn.execute("SELECT * FROM entities")}
+        path = conn.execute(
+            "SELECT okf_path FROM concepts WHERE ref_kind = 'event'"
+        ).fetchone()["okf_path"]
+    finally:
+        conn.close()
+    # The 137-typed (self) recipient is not treated as the peer.
+    assert people == {"+49 160 9998887", "Me"}
+    text = (notes_dir / path).read_text(encoding="utf-8")
+    assert "+49 160 9998887: Foto vom See" in text
+    assert "Me: schön!" in text
+
+
+def test_sms_does_not_claim_signal_json(env):
+    ingest, db_path, notes_dir = env
+    # A signal-cli export (has `envelope`, no `address`) stays with the signal
+    # parser — the SMS detector must not swallow it.
+    _drop(
+        notes_dir,
+        "users/anna/inbox/exports/signal-Bob.json",
+        json.dumps(_SIGNAL_ARRAY),
+    )
+    ingest.run()
+    conn = projection.open_conn(db_path)
+    try:
+        path = conn.execute(
+            "SELECT okf_path FROM concepts WHERE ref_kind = 'event' LIMIT 1"
+        ).fetchone()["okf_path"]
+    finally:
+        conn.close()
+    text = (notes_dir / path).read_text(encoding="utf-8")
+    assert "Signal Bob" in text  # signal parser owned it, not SMS.
+
+
+def test_sms_unrecognized_json_left_in_place(env):
+    ingest, db_path, notes_dir = env
+    # JSON with neither `envelope` nor address/recipients/msg_box is unclaimed.
+    p = _drop(
+        notes_dir,
+        "users/anna/inbox/exports/config.json",
+        json.dumps({"date": "1715774400000", "unrelated": True}),
+    )
+    stats = ingest.run()
+    assert stats.unrecognized == 1 and stats.events_written == 0
+    assert p.exists()  # left untouched.

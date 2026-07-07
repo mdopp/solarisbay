@@ -18,9 +18,11 @@ unique sender *first* so each event's `with →` edge resolves (the writer drops
 unresolved edges silently).
 
 **Parser registry:** `_PARSERS` is a list of `(detect, parse)` pairs keyed on the
-filename + first sniffed lines. Ships the WhatsApp text/zip parser and the
-signal-cli JSON parser; SMS/RCS-JSON is a follow-up on this same registry (do not
-pre-build it).
+filename + first sniffed lines. Ships the WhatsApp text/zip parser, the
+signal-cli JSON parser, and the SMS/RCS JSON parser (the FOSS *SMS Import/Export*
+Android app). Both JSON parsers detect `.json`; they disambiguate on a
+schema-specific key — signal-cli carries `"envelope"`, SMS Import/Export carries
+`"address"`/`"recipients"` with a `"date"` epoch and no envelope.
 
 **Locale trap:** the WhatsApp detect regexes match ONLY `DD.MM.YY` German
 exports. A month-first US export would swap day/month and silently corrupt
@@ -417,6 +419,150 @@ def _chat_name_signal(name: str) -> str:
     return stem or "chat"
 
 
+# --- SMS/RCS (FOSS "SMS Import/Export" JSON) ----------------------------------
+#
+# The Android app "SMS Import/Export" (github.com/tmo1/sms-ie) writes a JSON array
+# (or newline-delimited JSON) of message objects. SMS objects carry `address`
+# (the other party's number), `date` (epoch ms as a string), `type`
+# (1=received/inbox, 2=sent), and `body`. MMS/RCS objects instead carry
+# `msg_box` (1=inbox, 2=sent), a `parts` array whose text parts hold the body,
+# and a `recipients`/`addresses` list. There is no display name in the export —
+# a chat/thread is keyed by the peer's phone number and person concepts resolve
+# by that number.
+#
+# Format assumptions (v1): `date` is a ms epoch; the peer for an outgoing message
+# is the `address`/`recipients`, and for group MMS the first non-self recipient
+# names the thread; parts with a `text` field are concatenated, media parts are
+# dropped (mirrors WhatsApp's media-omitted skip). Disambiguated from signal-cli
+# by the absence of `"envelope"` and the presence of `address`/`recipients`.
+
+# The device owner's own number in a `type`/`msg_box` == 2 (sent) row is not the
+# peer; SMS Import/Export marks the self side with these address `type` codes.
+_SMS_SELF_ADDR_TYPES = {137}  # PduHeaders FROM for the sender's own MMS address.
+
+
+def _detect_sms(name: str, first_lines: list[str]) -> bool:
+    if not name.endswith(".json"):
+        return False
+    if any('"envelope"' in line for line in first_lines):
+        return False  # signal-cli — handled by _detect_signal.
+    joined = "".join(first_lines)
+    if '"date"' not in joined:
+        return False
+    return '"address"' in joined or '"recipients"' in joined or '"msg_box"' in joined
+
+
+def _iter_json_objects(text: str) -> Iterable[dict]:
+    """Yield dicts from a JSON array or newline-delimited JSON export."""
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        try:
+            arr = json.loads(text)
+        except ValueError:
+            return
+        if isinstance(arr, list):
+            yield from (o for o in arr if isinstance(o, dict))
+        return
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            yield obj
+
+
+def _parse_sms(name: str, text: str) -> _Chat:
+    chat = _Chat(name=_chat_name_sms(name), platform="SMS")
+    for obj in _iter_json_objects(text):
+        parsed = _sms_message(obj)
+        if parsed is not None:
+            chat.messages.append(parsed)
+    # A single-peer thread names itself after the peer; keep the filename name for
+    # group MMS (multiple peers) so the number soup doesn't become the title.
+    peers = {m.sender for m in chat.messages if m.sender != "Me"}
+    if len(peers) == 1:
+        chat.name = next(iter(peers))
+    return chat
+
+
+def _sms_message(obj: dict) -> _Message | None:
+    iso = _sms_ts(obj.get("date"))
+    if iso is None:
+        return None
+    day, hhmm = iso
+    body = _sms_body(obj)
+    if not body:
+        return None  # media-only / no text — dropped, like WhatsApp media.
+    outgoing = str(obj.get("type") or obj.get("msg_box") or "") == "2"
+    sender = "Me" if outgoing else _sms_peer(obj)
+    return _Message(date=day, time=hhmm, sender=sender, text=body)
+
+
+def _sms_body(obj: dict) -> str:
+    body = obj.get("body")
+    if isinstance(body, str) and body:
+        return body
+    parts = obj.get("parts")
+    if isinstance(parts, list):  # MMS/RCS: text lives in the parts array.
+        texts = [
+            p["text"]
+            for p in parts
+            if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"]
+        ]
+        return "\n".join(texts)
+    return ""
+
+
+def _sms_peer(obj: dict) -> str:
+    addr = obj.get("address")
+    if isinstance(addr, str) and addr:
+        return addr.strip()
+    recipients = obj.get("recipients")
+    if isinstance(recipients, list):
+        for r in recipients:
+            num = _recipient_number(r)
+            if num:
+                return num
+    return "Unknown"
+
+
+def _recipient_number(r: object) -> str:
+    if isinstance(r, str) and r.strip():
+        return r.strip()
+    if isinstance(r, dict):
+        if r.get("type") in _SMS_SELF_ADDR_TYPES:
+            return ""  # the owner's own MMS address, not the peer.
+        addr = r.get("address") or r.get("number")
+        if isinstance(addr, str) and addr.strip():
+            return addr.strip()
+    return ""
+
+
+def _sms_ts(ms: object) -> tuple[str, str] | None:
+    """`(YYYY-MM-DD, HH:MM)` local time from a ms epoch (int or numeric str)."""
+    if isinstance(ms, str):
+        try:
+            ms = int(ms)
+        except ValueError:
+            return None
+    if not isinstance(ms, (int, float)) or ms <= 0:
+        return None
+    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone()
+    return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")
+
+
+def _chat_name_sms(name: str) -> str:
+    stem = Path(name).stem
+    for prefix in ("sms-", "sms_", "messages-", "messages_"):
+        if stem.lower().startswith(prefix):
+            stem = stem[len(prefix) :]
+    return stem or "chat"
+
+
 def _text_of(path: Path, raw: bytes) -> tuple[str, str | None]:
     """`(display_name, text)` for an export file; text is None when undecodable.
 
@@ -442,8 +588,11 @@ def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-# The parser registry: `(detect, parse)`. WhatsApp text/zip + signal-cli JSON.
+# The parser registry: `(detect, parse)`. WhatsApp text/zip + signal-cli JSON +
+# SMS/RCS JSON (SMS Import/Export). Signal's detect runs before SMS's so an
+# `"envelope"` export is never claimed by the number-keyed SMS parser.
 _PARSERS: list[tuple[Callable[[str, list[str]], bool], Callable[[str, str], _Chat]]] = [
     (_detect_whatsapp, _parse_whatsapp),
     (_detect_signal, _parse_signal),
+    (_detect_sms, _parse_sms),
 ]
