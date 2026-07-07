@@ -609,6 +609,38 @@
     .energy-circuit .ec-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .energy-circuit .ec-value { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 600; }
     .energy-circuit .ec-unit { color: var(--muted); font-weight: 500; margin-left: 3px; }
+    /* "Jetzt" flow tiles (#689): PV/Haus/Netz/Akku with a direction cue. */
+    .energy-flow {
+      display: grid; gap: 10px; margin: 6px 0 4px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+    .flow-tile {
+      border: 1px solid var(--line); border-radius: 12px;
+      background: rgba(127,127,127,0.05); padding: 12px 14px;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .flow-tile.pos { border-color: rgba(46,160,67,0.45); }
+    .flow-tile.neg { border-color: rgba(218,54,51,0.45); }
+    .flow-tile .ft-value { font-size: 26px; font-weight: 700; line-height: 1.1; color: var(--ink); }
+    .flow-tile.pos .ft-value { color: #2ea043; }
+    .flow-tile.neg .ft-value { color: #da3633; }
+    .flow-tile .ft-value .ft-unit { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+    .flow-tile .ft-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .flow-tile .ft-dir { font-size: 12px; color: var(--muted); font-weight: 600; }
+    /* Trend chart (#689): a range toggle + inline SVG line chart + legend. */
+    .energy-trend-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .trend-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .trend-toggle button {
+      border: 0; background: transparent; color: var(--muted); cursor: pointer;
+      padding: 4px 12px; font: inherit; font-size: 13px;
+    }
+    .trend-toggle button.active { background: var(--accent, #2ea043); color: #fff; }
+    .energy-chart { margin: 8px 0 2px; }
+    .energy-chart svg { width: 100%; height: auto; display: block; }
+    .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+    .chart-legend .cl-item { display: inline-flex; align-items: center; gap: 5px; }
+    .chart-legend .cl-swatch { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+    .chart-empty { color: var(--muted); font-size: 13px; margin: 8px 0; }
     /* Card picker (#669): the "+ Karten hinzufügen" button lives beside
        Bearbeiten but only shows once the page is in edit mode; the overlay is a
        room-grouped grid of selectable tiles. */
@@ -4612,6 +4644,10 @@
           });
           card.appendChild(tiles);
         }
+        // "Jetzt": flow summary — PV / Haus / Netz / Akku with a direction cue.
+        renderEnergyFlow(card, e.headlines || []);
+        // 24h / 7d trend chart with a range toggle (#689).
+        renderEnergyTrend(card);
         // Circuits → a readable value-aligned list, ordered by current power.
         if (e.circuits && e.circuits.length) {
           card.appendChild(conceptSectionTitle("Stromkreise"));
@@ -4647,6 +4683,213 @@
           none.textContent = "Keine Energie-Sensoren gefunden.";
           card.appendChild(none);
         }
+      }
+
+      // "Jetzt" flow tiles: PV/Haus/Netz/Akku from the headline sensors, with a
+      // direction cue. Grid import (Netzbezug) and battery-discharge read as
+      // draw (neg); export (Einspeisung) and battery-charge read as supply.
+      function renderEnergyFlow(card, headlines) {
+        var byLabel = {};
+        headlines.forEach(function (h) { byLabel[h.label] = h; });
+        // {label shown, source headline label, dir hint}. Netz collapses the two
+        // grid headlines: import wins if present, else export.
+        var tiles = [];
+        function push(h, shown, sense) {
+          if (!h || h.state == null) return;
+          var n = parseFloat(h.state);
+          tiles.push({ h: h, shown: shown, val: isNaN(n) ? null : n, sense: sense });
+        }
+        push(byLabel["PV-Erzeugung"], "PV-Erzeugung", "supply");
+        push(byLabel["Hausverbrauch"], "Hausverbrauch", "draw");
+        if (byLabel["Netzbezug"] && parseFloat(byLabel["Netzbezug"].state) > 0) {
+          push(byLabel["Netzbezug"], "Netzbezug", "draw");
+        } else if (byLabel["Einspeisung"]) {
+          push(byLabel["Einspeisung"], "Einspeisung", "supply");
+        } else if (byLabel["Netzbezug"]) {
+          push(byLabel["Netzbezug"], "Netzbezug", "draw");
+        }
+        push(byLabel["Akku"], "Akku", "battery");
+        if (!tiles.length) return;
+        card.appendChild(conceptSectionTitle("Jetzt"));
+        var wrap = document.createElement("div");
+        wrap.className = "energy-flow";
+        tiles.forEach(function (t) {
+          var tile = document.createElement("div");
+          tile.className = "flow-tile";
+          var dir = "";
+          // sense drives the arrow + pos/neg colour. battery: charge(+)=supply.
+          if (t.val != null) {
+            if (t.sense === "supply") { tile.classList.add("pos"); dir = "↑ liefert"; }
+            else if (t.sense === "draw") { tile.classList.add("neg"); dir = "↓ Verbrauch"; }
+            else if (t.sense === "battery") {
+              if (t.val > 0) { tile.classList.add("pos"); dir = "↑ lädt"; }
+              else if (t.val < 0) { tile.classList.add("neg"); dir = "↓ entlädt"; }
+            }
+          }
+          var val = document.createElement("div");
+          val.className = "ft-value";
+          val.textContent = t.val == null ? "—" : fmtNum(Math.abs(t.val));
+          if (t.h.unit) {
+            var u = document.createElement("span");
+            u.className = "ft-unit";
+            u.textContent = t.h.unit;
+            val.appendChild(u);
+          }
+          var lbl = document.createElement("div");
+          lbl.className = "ft-label";
+          lbl.textContent = t.shown;
+          tile.appendChild(val);
+          tile.appendChild(lbl);
+          if (dir) {
+            var d = document.createElement("div");
+            d.className = "ft-dir";
+            d.textContent = dir;
+            tile.appendChild(d);
+          }
+          wrap.appendChild(tile);
+        });
+        card.appendChild(wrap);
+      }
+
+      // 24h / 7d trend: a range toggle + an inline-SVG line chart, refetched from
+      // /api/portal/energy/history on toggle. No chart lib (#689).
+      var TREND_COLORS = ["#2ea043", "#e3a008", "#3b82f6", "#a855f7", "#da3633"];
+      function renderEnergyTrend(card) {
+        card.appendChild(conceptSectionTitle("Verlauf"));
+        var head = document.createElement("div");
+        head.className = "energy-trend-head";
+        var toggle = document.createElement("div");
+        toggle.className = "trend-toggle";
+        var body = document.createElement("div");
+        var ranges = [["24h", "24h"], ["7d", "7d"]];
+        var current = "24h";
+        function load(range) {
+          current = range;
+          Array.prototype.forEach.call(toggle.children, function (b) {
+            b.classList.toggle("active", b.getAttribute("data-range") === range);
+          });
+          body.textContent = "";
+          var loading = document.createElement("div");
+          loading.className = "chart-empty";
+          loading.textContent = "Lade Verlauf…";
+          body.appendChild(loading);
+          fetch("/api/portal/energy/history?range=" + range)
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              if (current !== range) return;
+              body.textContent = "";
+              if (!j || !j.ok || !j.history || !j.history.series ||
+                  !j.history.series.some(function (s) { return s.points && s.points.length; })) {
+                var none = document.createElement("div");
+                none.className = "chart-empty";
+                none.textContent = "Keine Verlaufsdaten verfügbar.";
+                body.appendChild(none);
+                return;
+              }
+              drawEnergyChart(body, j.history.series);
+            })
+            .catch(function () {
+              if (current !== range) return;
+              body.textContent = "";
+              var err = document.createElement("div");
+              err.className = "chart-empty";
+              err.textContent = "Konnte den Verlauf nicht laden.";
+              body.appendChild(err);
+            });
+        }
+        ranges.forEach(function (r) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.textContent = r[0];
+          b.setAttribute("data-range", r[1]);
+          b.addEventListener("click", function () { load(r[1]); });
+          toggle.appendChild(b);
+        });
+        head.appendChild(toggle);
+        card.appendChild(head);
+        card.appendChild(body);
+        load("24h");
+      }
+
+      // Inline SVG line chart: each series a polyline over a shared time+value
+      // range, plus a legend. Kept deliberately simple (klar einfach deutlich).
+      function drawEnergyChart(body, series) {
+        var W = 720, H = 220, padL = 40, padR = 12, padT = 12, padB = 22;
+        var pts = [];
+        series.forEach(function (s) {
+          (s.points || []).forEach(function (p) {
+            var t = Date.parse(p.t);
+            if (!isNaN(t) && typeof p.v === "number") pts.push({ t: t, v: p.v });
+          });
+        });
+        if (!pts.length) return;
+        var tMin = Math.min.apply(null, pts.map(function (p) { return p.t; }));
+        var tMax = Math.max.apply(null, pts.map(function (p) { return p.t; }));
+        var vMin = Math.min.apply(null, pts.map(function (p) { return p.v; }));
+        var vMax = Math.max.apply(null, pts.map(function (p) { return p.v; }));
+        if (vMin > 0) vMin = 0;
+        if (vMax === vMin) vMax = vMin + 1;
+        var tSpan = tMax - tMin || 1;
+        function x(t) { return padL + (t - tMin) / tSpan * (W - padL - padR); }
+        function y(v) { return padT + (1 - (v - vMin) / (vMax - vMin)) * (H - padT - padB); }
+        var svgns = "http://www.w3.org/2000/svg";
+        var wrap = document.createElement("div");
+        wrap.className = "energy-chart";
+        var svg = document.createElementNS(svgns, "svg");
+        svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+        svg.setAttribute("preserveAspectRatio", "none");
+        function line(x1, y1, x2, y2, cls) {
+          var l = document.createElementNS(svgns, "line");
+          l.setAttribute("x1", x1); l.setAttribute("y1", y1);
+          l.setAttribute("x2", x2); l.setAttribute("y2", y2);
+          l.setAttribute("stroke", "var(--line)"); l.setAttribute("stroke-width", "1");
+          svg.appendChild(l);
+        }
+        // Axes: min/max value labels + a baseline.
+        line(padL, padT, padL, H - padB);
+        line(padL, H - padB, W - padR, H - padB);
+        [vMax, vMin].forEach(function (v, i) {
+          var tx = document.createElementNS(svgns, "text");
+          tx.setAttribute("x", padL - 4);
+          tx.setAttribute("y", i === 0 ? padT + 8 : H - padB);
+          tx.setAttribute("text-anchor", "end");
+          tx.setAttribute("font-size", "10");
+          tx.setAttribute("fill", "var(--muted)");
+          tx.textContent = fmtNum(v);
+          svg.appendChild(tx);
+        });
+        series.forEach(function (s, i) {
+          var ok = (s.points || []).filter(function (p) {
+            return !isNaN(Date.parse(p.t)) && typeof p.v === "number";
+          });
+          if (!ok.length) return;
+          var d = ok.map(function (p) {
+            return x(Date.parse(p.t)) + "," + y(p.v);
+          }).join(" ");
+          var pl = document.createElementNS(svgns, "polyline");
+          pl.setAttribute("points", d);
+          pl.setAttribute("fill", "none");
+          pl.setAttribute("stroke", TREND_COLORS[i % TREND_COLORS.length]);
+          pl.setAttribute("stroke-width", "2");
+          pl.setAttribute("vector-effect", "non-scaling-stroke");
+          svg.appendChild(pl);
+        });
+        wrap.appendChild(svg);
+        body.appendChild(wrap);
+        var legend = document.createElement("div");
+        legend.className = "chart-legend";
+        series.forEach(function (s, i) {
+          if (!(s.points && s.points.length)) return;
+          var item = document.createElement("span");
+          item.className = "cl-item";
+          var sw = document.createElement("span");
+          sw.className = "cl-swatch";
+          sw.style.background = TREND_COLORS[i % TREND_COLORS.length];
+          item.appendChild(sw);
+          item.appendChild(document.createTextNode(s.label + (s.unit ? " (" + s.unit + ")" : "")));
+          legend.appendChild(item);
+        });
+        body.appendChild(legend);
       }
 
       // Numeric power of a circuit for sorting (unknown/non-numeric sink last).
