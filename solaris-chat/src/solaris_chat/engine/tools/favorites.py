@@ -30,7 +30,13 @@ from solaris_chat.engine.trace import TraceRecorder
 # for "häufig genutzt"). Deliberately narrow: device control + media, never a
 # read/discovery tool. Shared with client.py's usage counter.
 PINNABLE_TOOLS = frozenset(
-    {"ha_call_service", "play_music", "play_radio", "media_find_podcast"}
+    {
+        "ha_call_service",
+        "ha_run_scene_script",
+        "play_music",
+        "play_radio",
+        "media_find_podcast",
+    }
 )
 
 _DESCRIPTION = (

@@ -46,7 +46,7 @@ def test_group_rows_reuse_the_per_entity_controls():
     # open/stop/close buttons stay on the header badge host.
     assert "renderLightControls(card, c, card)" in body
     assert "renderCoverControls(card, c, badgeHost)" in body
-    assert "renderClimateCard(card, c, st)" in body
+    assert "renderClimateCard(card, c, st, inert)" in body
 
 
 def test_group_card_has_row_styling():
@@ -171,7 +171,7 @@ def test_all_controllable_cards_use_the_compact_one_row_layout():
 
     # media_player: badge + transport buttons on one compact row.
     mp = re.search(
-        r"function renderMediaPlayerCard\(card, c, st\) \{(.*?)\n      \}",
+        r"function renderMediaPlayerCard\(card, c, st, inert\) \{(.*?)\n      \}",
         _HTML,
         re.S,
     )
@@ -191,7 +191,7 @@ def test_all_controllable_cards_use_the_compact_one_row_layout():
 
     # climate: current temp + setpoint stepper on one compact row.
     cl = re.search(
-        r"function renderClimateCard\(card, c, st\) \{(.*?)\n      \}",
+        r"function renderClimateCard\(card, c, st, inert\) \{(.*?)\n      \}",
         _HTML,
         re.S,
     )
@@ -301,7 +301,7 @@ def test_media_player_card_has_power_toggle_and_source_picker():
     # source/app picker (gated on SELECT_SOURCE) that calls select_source —
     # while keeping the transport + volume controls.
     mp = re.search(
-        r"function renderMediaPlayerCard\(card, c, st\) \{(.*?)\n      \}",
+        r"function renderMediaPlayerCard\(card, c, st, inert\) \{(.*?)\n      \}",
         _HTML,
         re.S,
     )

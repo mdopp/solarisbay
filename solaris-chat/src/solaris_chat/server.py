@@ -49,12 +49,14 @@ from solaris_chat.engine.tools.ha import (
     _SERVICE_ALIASES,
     call_service_scoped,
     fetch_addable_cards,
+    fetch_addable_runnables,
     fetch_card,
     fetch_energy,
     fetch_energy_history,
     fetch_entity_names,
 )
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
+from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -74,6 +76,121 @@ def _read_okf(notes_dir: str, okf_path: str) -> dict[str, str]:
         return okf.read_concept(target.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return {"description": "", "body": ""}
+
+
+# ---- Notes portal (#696): read-only aggregators over the vault ----------------
+
+_NOTES_TITLE_RE = re.compile(r"(?m)^#\s+(.+?)\s*$")
+_NOTES_FM_RE = re.compile(r"(?s)\A---\n(.*?)\n---\s*\n?")
+# The topic tag in either written form (mirrors notes_search._topic_pattern) —
+# used to bucket notes by #Thema for the browse view.
+_TOPIC_TAG_RE = re.compile(r"(?<![\w/])#?topic/([\w/-]+)")
+
+
+def _note_title(text: str, fallback: str) -> str:
+    """A note's first `# ` heading, or the filename stem as a fallback."""
+    m = _NOTES_TITLE_RE.search(text)
+    return m.group(1).strip() if m else fallback
+
+
+def _note_frontmatter(text: str) -> dict[str, str]:
+    """The note's leading `--- … ---` block parsed as flat key/value pairs.
+
+    A deliberately small, deterministic subset (no PyYAML in the engine, mirroring
+    `okf`): each `key: value` line at the top of the block. Empty when there is no
+    frontmatter fence."""
+    m = _NOTES_FM_RE.match(text)
+    if not m:
+        return {}
+    out: dict[str, str] = {}
+    for line in m.group(1).splitlines():
+        k, sep, v = line.partition(":")
+        if sep and k.strip() and not k.startswith(" "):
+            out[k.strip()] = v.strip().strip("'\"")
+    return out
+
+
+def _notes_inbox_count(notes_dir: str, uid: str) -> int:
+    """Unconsolidated fact files older than the Bibliothekar's stale threshold.
+
+    The same signal the nightly librarian queues (#653): fact files whose
+    `YYYY-MM-DD-` name prefix is older than `_BIBLIOTHEKAR_STALE_DAYS` and that
+    carry no `consolidated: true` stamp — the household inbox that still needs
+    curation. Scoped to the caller ∪ shared pool (`facts/` shared,
+    `users/<uid>/facts/` the caller's own)."""
+    from datetime import timedelta, timezone
+
+    from solaris_chat.engine.crons import _BIBLIOTHEKAR_STALE_DAYS
+
+    root = Path(notes_dir)
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=_BIBLIOTHEKAR_STALE_DAYS)
+    ).strftime("%Y-%m-%d")
+    dirs = [root / "facts"]
+    if uid != notes_search.SHARED_UID:
+        dirs.append(root / "users" / uid / "facts")
+    count = 0
+    for facts_dir in dirs:
+        if not facts_dir.is_dir():
+            continue
+        for path in facts_dir.glob("*.md"):
+            if path.name[:10] >= cutoff:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if "consolidated: true" not in text:
+                count += 1
+    return count
+
+
+def _notes_visible_files(notes_dir: str, uid: str):
+    """Yield `(relpath, text)` for every vault `.md` the caller may see.
+
+    Owner-scoped via `is_visible(owner_of(...))` (caller ∪ shared, default-deny);
+    skips pathological files, matching the notes_search readers."""
+    root = Path(notes_dir)
+    if not root.is_dir():
+        return
+    for path in sorted(root.rglob("*.md")):
+        if not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > notes_search._MAX_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel = str(path.relative_to(root))
+        if notes_search.is_visible(notes_search.owner_of(rel, text), uid):
+            yield rel, text, path
+
+
+def _notes_recent(notes_dir: str, uid: str, limit: int = 10) -> list[dict[str, Any]]:
+    """The most recently modified notes the caller may see: `[{path, mtime, title}]`."""
+    rows: list[dict[str, Any]] = []
+    for rel, text, path in _notes_visible_files(notes_dir, uid):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        rows.append(
+            {"path": rel, "mtime": mtime, "title": _note_title(text, path.stem)}
+        )
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return rows[:limit]
+
+
+def _notes_last_librarian(notes_dir: str, lines: int = 8) -> list[str]:
+    """The last N lines of `okf/log.md` — the Bibliothekar's run trail (#653)."""
+    log_path = Path(notes_dir).resolve() / "okf" / "log.md"
+    try:
+        log_path.relative_to(Path(notes_dir).resolve())
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return []
+    return [ln for ln in text.splitlines() if ln.strip()][-lines:]
 
 
 def _favorite_label(payload: dict[str, Any]) -> str:
@@ -815,6 +932,16 @@ def build_app(
         if entity_id.split(".", 1)[0] not in ("light", "switch", "cover", "climate"):
             return web.json_response(
                 {"ok": False, "error": "unsupported_domain"}, status=400
+            )
+        # Confirm gate for a card tap (#702): a garage/door/gate cover open is
+        # sensitive and must not fire on a bare tap. The client shows an explicit
+        # confirm dialog and re-sends with `confirmed=true`; the server re-checks
+        # here so the gate is authoritative — an unconfirmed sensitive tap is 403.
+        if await _ha_call_is_sensitive(entity_id, service) and not body.get(
+            "confirmed"
+        ):
+            return web.json_response(
+                {"ok": False, "error": "sensitive_action"}, status=403
             )
         data = body.get("data")
         result = await call_service_scoped(
@@ -1650,6 +1777,29 @@ def build_app(
         service = _SERVICE_ALIASES.get(domain, {}).get(service, service)
         return confirm.is_sensitive(domain, service, None)
 
+    def _entity_card_sensitive(card: dict[str, Any]) -> bool:
+        """True when a one-tap action on this entity card is confirm-gated (#702).
+
+        A garage/door/gate cover's toggle is sensitive; the card is added with a
+        lock badge and its tap requires an explicit confirm the server re-checks
+        (`/api/ha/call` with `confirmed=true`). Other domains are not gated."""
+        return card.get("domain") == "cover" and confirm.is_sensitive(
+            "cover", "toggle", card.get("device_class")
+        )
+
+    async def _ha_call_is_sensitive(entity_id: str, service: str) -> bool:
+        """Authoritative confirm-gate re-check for a card tap (#702).
+
+        `service` is dotted (`cover.open_cover`). Only a cover open is class-
+        specific, so resolve the entity's live device_class (one read-only fetch)
+        and let `is_sensitive` decide — an unresolved class fails SAFE (gated)."""
+        domain, _, action = service.partition(".")
+        if domain != "cover" or action not in confirm.COVER_OPEN_SERVICES:
+            return confirm.is_sensitive(domain, action, None)
+        card = await fetch_card(hass_url, hass_token, entity_id)
+        device_class = card.get("device_class") if card else None
+        return confirm.is_sensitive(domain, action, device_class)
+
     async def portal_start(request: web.Request) -> web.Response:
         """Aggregate the resident's start page (#646): their pins + the shared
         household ones + their most-used actions. Entity favorites are enriched
@@ -1674,11 +1824,14 @@ def build_app(
             }
             if fav["kind"] == "entity" and hass_url and hass_token:
                 entity_id = str(fav["payload"].get("entity_id") or "")
-                item["card"] = (
+                card = (
                     await fetch_card(hass_url, hass_token, entity_id)
                     if entity_id
                     else None
                 )
+                if card is not None:
+                    card["sensitive"] = _entity_card_sensitive(card)
+                item["card"] = card
             return item
 
         enriched = await asyncio.gather(*(enrich(f) for f in favorites))
@@ -1707,8 +1860,10 @@ def build_app(
         set + live state), grouped by room, marking those already pinned
         (personal or household) so they aren't offered twice. A cover whose
         one-tap toggle would be confirm-gated (garage/door/gate) is marked
-        `sensitive` — the client renders it disabled, mirroring the pin-time
-        refusal the favorites store enforces for actions."""
+        `sensitive` — the client keeps such a card selectable but renders a lock
+        badge and guards its tap with an explicit confirm the server re-checks
+        (#702). Scenes/scripts/automations are offered as a separate "Automationen"
+        group of pinnable ACTION cards."""
         if not hass_url or not hass_token or area_registry is None:
             return web.json_response(
                 {"ok": False, "error": "ha_unconfigured"}, status=503
@@ -1720,24 +1875,174 @@ def build_app(
             return web.json_response(
                 {"ok": False, "error": "ha_unavailable"}, status=502
             )
+        favorites = favorites_store.list_favorites(solaris_db_path, uid)
         pinned = {
             str(f["payload"].get("entity_id") or "")
-            for f in favorites_store.list_favorites(solaris_db_path, uid)
+            for f in favorites
             if f["kind"] == "entity"
         }
         rooms: dict[str, list[dict[str, Any]]] = {}
         for card in cards:
             eid = str(card.get("entity_id") or "")
             card["pinned"] = eid in pinned
-            card["sensitive"] = card.get("domain") == "cover" and confirm.is_sensitive(
-                "cover", "toggle", card.get("device_class")
-            )
+            card["sensitive"] = _entity_card_sensitive(card)
             rooms.setdefault(card.pop("room") or "", []).append(card)
         grouped = [
             {"room": room, "cards": rooms[room]}
             for room in sorted(rooms, key=lambda r: (r == "", r.lower()))
         ]
-        return web.json_response({"ok": True, "rooms": grouped})
+        # Scenes/scripts/automations as pinnable ACTION cards (#702). A pinned
+        # entity_id already in `ha_run_scene_script` favorites is marked so it
+        # isn't offered twice.
+        pinned_runnables = {
+            str(
+                (f["payload"].get("args") or {}).get("entity")
+                or (f["payload"].get("args") or {}).get("entity_id")
+                or ""
+            )
+            for f in favorites
+            if f["kind"] == "action"
+            and f["payload"].get("tool") == "ha_run_scene_script"
+        }
+        runnables = await fetch_addable_runnables(hass_url, hass_token)
+        automations = []
+        for r in runnables or []:
+            eid = str(r.get("entity_id") or "")
+            automations.append(
+                {
+                    "entity_id": eid,
+                    "name": r.get("name") or eid,
+                    "domain": r.get("domain"),
+                    "kind": "action",
+                    "tool": "ha_run_scene_script",
+                    "args": {"entity": eid},
+                    "pinned": eid in pinned_runnables,
+                    "sensitive": False,
+                }
+            )
+        return web.json_response(
+            {"ok": True, "rooms": grouped, "automations": automations}
+        )
+
+    async def portal_notes(request: web.Request) -> web.Response:
+        """Notes-portal overview for `#/p/notes` (#696): counts, the last
+        Bibliothekar run, and the recently modified notes — read-only, owner-scoped
+        (caller ∪ shared, default-deny), all reads path-jailed to `notes_dir`."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        total = 0
+        facts = 0
+        for rel, _text, _path in _notes_visible_files(notes_dir, uid):
+            total += 1
+            head = rel.replace("\\", "/").split("/", 1)[0]
+            if head == "facts" or "/facts/" in rel.replace("\\", "/"):
+                facts += 1
+        return web.json_response(
+            {
+                "ok": True,
+                "counts": {
+                    "notes": total,
+                    "facts": facts,
+                    "inbox": _notes_inbox_count(notes_dir, uid),
+                },
+                "librarian": _notes_last_librarian(notes_dir),
+                "recent": _notes_recent(notes_dir, uid),
+            }
+        )
+
+    async def portal_notes_browse(request: web.Request) -> web.Response:
+        """Grouped vault listing for the Durchstöbern chips (#696).
+
+        `by=topic|person|journal|okf|folder` — reusing the notes_search readers and
+        the vault tree. Every result is owner-scoped (caller ∪ shared)."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        by = request.query.get("by", "topic")
+        groups: dict[str, list[dict[str, Any]]] = {}
+        if by == "topic":
+            for rel, text, path in _notes_visible_files(notes_dir, uid):
+                for slug in dict.fromkeys(_TOPIC_TAG_RE.findall(text)):
+                    groups.setdefault(slug, []).append(
+                        {"path": rel, "title": _note_title(text, path.stem)}
+                    )
+        elif by == "okf":
+            for rel, text, path in _notes_visible_files(notes_dir, uid):
+                parts = rel.replace("\\", "/").split("/")
+                if parts[0] != "okf" or len(parts) < 2:
+                    continue
+                domain = parts[1] if len(parts) > 2 else "okf"
+                if domain == "log.md":
+                    continue
+                groups.setdefault(domain, []).append(
+                    {"path": rel, "title": _note_title(text, path.stem)}
+                )
+        elif by in ("journal", "folder"):
+            prefix = "journal" if by == "journal" else None
+            for rel, text, path in _notes_visible_files(notes_dir, uid):
+                norm = rel.replace("\\", "/")
+                if by == "journal" and not (
+                    norm.startswith("journal/") or "/journal/" in norm
+                ):
+                    continue
+                folder = norm.rsplit("/", 1)[0] if "/" in norm else "(Wurzel)"
+                groups.setdefault(folder if prefix is None else norm, []).append(
+                    {"path": rel, "title": _note_title(text, path.stem)}
+                )
+        elif by == "person":
+            for name in mentions_store.known_persons_for(solaris_db_path, uid):
+                hits = notes_search.notes_mentioning(notes_dir, [name], uid)
+                if hits:
+                    groups[name] = hits
+        else:
+            return web.json_response({"ok": False, "error": "bad_by"}, status=400)
+        out = [
+            {"group": g, "items": groups[g]}
+            for g in sorted(groups, key=lambda s: s.lower())
+        ]
+        return web.json_response({"ok": True, "by": by, "groups": out})
+
+    async def portal_notes_note(request: web.Request) -> web.Response:
+        """One note for the viewer (#696): raw markdown + parsed frontmatter.
+
+        Path-jail: resolve under `notes_dir` and reject anything escaping it (a
+        `..` traversal). Owner-scoped via `is_visible` — a caller may only read
+        their own or shared notes, never another resident's private one."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        rel = request.query.get("path", "")
+        root = Path(notes_dir).resolve()
+        try:
+            path = (root / rel).resolve()
+            path.relative_to(root)
+        except (ValueError, OSError):
+            return web.json_response({"ok": False, "error": "bad_path"}, status=400)
+        if not path.is_file():
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        text = path.read_text(encoding="utf-8", errors="replace")
+        canon = str(path.relative_to(root))
+        if not notes_search.is_visible(notes_search.owner_of(canon, text), uid):
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        return web.json_response(
+            {
+                "ok": True,
+                "path": canon,
+                "title": _note_title(text, path.stem),
+                "frontmatter": _note_frontmatter(text),
+                "content": text,
+            }
+        )
+
+    async def portal_notes_search(request: web.Request) -> web.Response:
+        """Search over the unified notes_search machinery (#696): a thin GET
+        wrapper around the engine `notes_search` tool (fuzzy + alias + #topic /
+        @person + semantic fallback), owner-scoped to the caller."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        query = request.query.get("q", "").strip()
+        if not query:
+            return web.json_response({"ok": True, "hits": []})
+        tools = build_notes_tools(
+            notes_dir, lambda: uid, solaris_db_path, OllamaChat(ollama_url)
+        )
+        search = next(t.handler for t in tools if t.name == "notes_search")
+        hits = json.loads(await search({"query": query}))
+        return web.json_response({"ok": True, "hits": hits})
 
     async def favorites_create(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
@@ -2279,6 +2584,10 @@ def build_app(
     app.router.add_get("/api/portal/energy/history", portal_energy_history)
     app.router.add_get("/api/portal/start", portal_start)
     app.router.add_get("/api/portal/start/addable", portal_start_addable)
+    app.router.add_get("/api/portal/notes", portal_notes)
+    app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
+    app.router.add_get("/api/portal/notes/note", portal_notes_note)
+    app.router.add_get("/api/portal/notes/search", portal_notes_search)
     app.router.add_post("/api/favorites", favorites_create)
     app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
     app.router.add_put("/api/favorites/{fav_id}", favorites_reorder)

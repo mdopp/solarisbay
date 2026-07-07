@@ -446,6 +446,11 @@
     .on .hc-badge.hc-switch::after { transform: translateX(16px); }
     .off .hc-badge.hc-switch { background: rgba(127,127,127,0.45); }
     .ha-card.busy { opacity: 0.6; pointer-events: none; }
+    /* #702: a picker-inert tile is selection-only — no control inside it may
+       fire a device action. The card renderer skips the handler wiring; this
+       kills pointer events on any residual control as a backstop, and the whole
+       tile forwards clicks to the picker's selection toggle. */
+    .hc-inert, .hc-inert * { pointer-events: none; }
     /* #538: a light card is compact — the on/off badge + brightness slider
        share one row (.hc-compact); the slider drops its own top margin and
        grows to fill, the colour picker stays on its own row below. */
@@ -587,6 +592,28 @@
     .energy-tile .et-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: var(--ink); }
     .energy-tile .et-value .et-unit { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 4px; }
     .energy-tile .et-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    /* Notizen portal (#696): search box, note rows, compact frontmatter block. */
+    .notes-search {
+      width: 100%; box-sizing: border-box; margin: 12px 0 4px;
+      padding: 10px 12px; border-radius: 10px; font: inherit;
+      background: var(--panel-solid); color: var(--ink); border: 1px solid var(--line);
+    }
+    .notes-list { display: flex; flex-direction: column; }
+    .note-row {
+      display: block; padding: 9px 10px; border-radius: 8px;
+      color: var(--ink); text-decoration: none; font-size: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .note-row:last-child { border-bottom: 0; }
+    .note-row:hover { background: var(--bubble-sol); }
+    .note-back { margin-right: 6px; }
+    .note-frontmatter {
+      display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
+      margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px;
+      background: var(--panel-solid); border: 1px solid var(--line); font-size: 13px;
+    }
+    .note-frontmatter dt { color: var(--muted); }
+    .note-frontmatter dd { margin: 0; color: var(--ink); }
     /* Circuits flow in the same packed multi-column masonry as the card groups
        (#692): 1-3 columns by width, tightly packed. Each tile carries its own
        surface (zebra striping doesn't read across columns). */
@@ -1258,6 +1285,7 @@
     <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M5 21V9a7 7 0 0 1 14 0v12l-2.5-2-2 2-2-2-2 2-2-2z"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></symbol>
     <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 9.5V21h5v-6h4v6h5V9.5"/></symbol>
     <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6M8 13h8M8 17h6"/></symbol>
   </svg>
 
   <aside class="rail">
@@ -1281,6 +1309,9 @@
       </button>
       <button id="rail-energy" type="button" title="Energie — Hausverbrauch">
         <svg class="ic"><use href="#i-bolt"></use></svg><span>Energie</span>
+      </button>
+      <button id="rail-notes" type="button" title="Notizen — Wissen des Haushalts">
+        <svg class="ic"><use href="#i-note"></use></svg><span>Notizen</span>
       </button>
     </nav>
 
@@ -1661,6 +1692,7 @@
     <button id="tab-home" type="button" aria-label="Zuhause"><svg class="ic"><use href="#i-home"></use></svg>Zuhause</button>
     <button id="tab-chats" type="button" aria-label="Chats"><svg class="ic"><use href="#i-chat"></use></svg>Chats</button>
     <button id="tab-favorites" type="button" aria-label="Favoriten"><svg class="ic"><use href="#i-star"></use></svg>Favoriten</button>
+    <button id="tab-notes" type="button" aria-label="Notizen"><svg class="ic"><use href="#i-note"></use></svg>Notizen</button>
   </nav>
 
   <script src="/static/markdown.js"></script>
@@ -2258,6 +2290,12 @@
       function renderHaCard(c, row, opts) {
         var card = document.createElement("div");
         card.className = row ? "hc-row" : "ha-card";
+        // Picker-inert mode (#702): in the "+ Karten hinzufügen" overlay a tile
+        // is selection-only — no toggle/slider/tap fires a device action. The
+        // card renders its state display but skips ALL handler wiring, and
+        // .hc-inert kills pointer events on any residual control as a backstop.
+        var inert = !!(opts && opts.picker);
+        if (inert) card.classList.add("hc-inert");
         // #692: the card is a header row [name .... controls ☆] + a body. The
         // on/off toggle (light/switch) and the cover open/stop/close controls
         // live top-right in the header (next to the ☆ pin), so the body holds
@@ -2281,13 +2319,13 @@
           }
           card.appendChild(val);
         } else if (c.domain === "climate") {
-          renderClimateCard(card, c, st);
+          renderClimateCard(card, c, st, inert);
         } else if (c.domain === "media_player") {
           // #551: a now-playing media_player is the wide card — it spans 2 base
           // grid columns so its title/transport row isn't cramped; it still
           // collapses to the single column when the viewport is narrow.
           card.classList.add("hc-span2");
-          renderMediaPlayerCard(card, c, st);
+          renderMediaPlayerCard(card, c, st, inert);
         } else {
           // binary_sensor / cover / light / switch -> on/off-style badge.
           var onish = st === "on" || st === "open";
@@ -2325,18 +2363,33 @@
             card.setAttribute("role", "switch");
             card.setAttribute("aria-checked", onish ? "true" : "false");
             card.setAttribute("aria-label", haStateLabel(c.domain, st));
-            card.tabIndex = 0;
-            var act = function () { haToggle(card, badge, c); };
-            card.addEventListener("click", act);
-            card.addEventListener("keydown", function (e) {
-              if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
-            });
+            if (!inert) {
+              card.tabIndex = 0;
+              var act = function () { haToggle(card, badge, c); };
+              card.addEventListener("click", act);
+              card.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
+              });
+            }
           }
           // #692: the light brightness slider drops into the card BODY (below the
           // header toggle); the cover open/stop/close buttons stay in the header
-          // host, its position slider goes to the body.
-          if (c.domain === "light") renderLightControls(card, c, card);
-          else if (c.domain === "cover") renderCoverControls(card, c, badgeHost);
+          // host, its position slider goes to the body. Skipped in picker mode —
+          // an inert tile shows state only, never an actionable control (#702).
+          if (!inert) {
+            if (c.domain === "light") renderLightControls(card, c, card);
+            else if (c.domain === "cover") renderCoverControls(card, c, badgeHost);
+          }
+        }
+        // Lock hint (#702): a sensitive (garage/door/gate) card wears a 🔒 in its
+        // header so the resident sees the tap is confirm-gated before pressing.
+        if (c.sensitive) {
+          card.classList.add("hc-sensitive");
+          var lock = document.createElement("span");
+          lock.className = "hc-lock";
+          lock.textContent = "🔒";
+          lock.title = "Bestätigungspflichtig";
+          head.appendChild(lock);
         }
         // ☆ pin affordance, chat renderers only (#646). It sits last in the
         // header so the row reads [name] .... [toggle] [☆]. stopPropagation is
@@ -2400,14 +2453,17 @@
       // #550: open/stop/close ride the compact badge row; the position slider
       // sits on its own line below when the cover supports set_position.
       function renderCoverControls(card, c, host) {
-        var garage = c.device_class === "garage";
+        // A confirm-gated cover (garage/door/gate) is flagged `sensitive` by the
+        // server (#702); moving it asks an explicit confirm and sends
+        // confirmed=true so the server's gate lets the confirmed tap through.
+        var sensitive = c.sensitive || c.device_class === "garage";
         makeButtons(host || card, [
           ["▲", "open_cover", "Öffnen"], ["■", "stop_cover", "Stopp"],
           ["▼", "close_cover", "Schließen"],
         ], function (b) {
-          if (garage && b[1] !== "stop_cover" &&
-              !window.confirm(b[2] + " — Garagentor wirklich bewegen?")) return;
-          haCall(card, c, "cover." + b[1], {});
+          if (sensitive && b[1] !== "stop_cover" &&
+              !window.confirm(b[2] + " — " + (c.name || "Tor") + " wirklich bewegen?")) return;
+          haCall(card, c, "cover." + b[1], {}, sensitive);
         }, host != null);
         var feat = Number(c.supported_features || 0);
         if (feat & COVER_SET_POSITION) {
@@ -2421,7 +2477,7 @@
       // Climate: current temp + a setpoint stepper and an hvac-mode select.
       // #550: the current temp + the setpoint stepper share one compact row;
       // the hvac-mode select sits below.
-      function renderClimateCard(card, c, st) {
+      function renderClimateCard(card, c, st, inert) {
         var compact = document.createElement("div");
         compact.className = "hc-compact";
         card.appendChild(compact);
@@ -2430,6 +2486,8 @@
         cur.textContent = c.current_temperature != null
           ? c.current_temperature + "°C" : (st || "—");
         compact.appendChild(cur);
+        // Picker-inert (#702): a climate tile shows current/target temp only.
+        if (inert) return;
         var feat = Number(c.supported_features || 0);
         if (feat & CLIMATE_TARGET_TEMP || c.temperature != null) {
           var step = Number(c.target_temp_step) || 0.5;
@@ -2477,7 +2535,7 @@
       // #561: a power on/off toggle (turn_on/turn_off, gated on TURN_ON/OFF) so
       // an off TV is reachable from the card, plus a source/app picker when the
       // player supports select_source — reuses the #560 .hc-switch toggle style.
-      function renderMediaPlayerCard(card, c, st) {
+      function renderMediaPlayerCard(card, c, st, inert) {
         var on = st !== "off" && st !== "" && st !== "unavailable";
         var playing = st === "playing";
         card.classList.add(on ? "on" : "off");
@@ -2486,6 +2544,22 @@
         var compact = document.createElement("div");
         compact.className = "hc-compact";
         card.appendChild(compact);
+        // Picker-inert (#702): a media tile shows the state badge + now-playing,
+        // never the interactive power/transport/source controls.
+        if (inert) {
+          var ibadge = document.createElement("span");
+          ibadge.className = "hc-badge";
+          ibadge.textContent = haStateLabel("media_player", st);
+          compact.appendChild(ibadge);
+          if (c.media_title) {
+            var inowp = document.createElement("div");
+            inowp.className = "hc-now";
+            inowp.textContent = c.media_artist
+              ? c.media_artist + " — " + c.media_title : c.media_title;
+            card.appendChild(inowp);
+          }
+          return;
+        }
         // #561: power toggle when the player can be turned on AND off; renders as
         // the same sliding switch as a light/switch and flips via turn_on/off.
         if (feat & MP_TURN_ON && feat & MP_TURN_OFF) {
@@ -2601,13 +2675,19 @@
 
       // Generic card action (#477): POST a scoped service, mark busy, no revert
       // (sliders/setpoints have no single prior boolean to flip back to).
-      function haCall(card, c, service, data) {
+      function haCall(card, c, service, data, confirmed) {
         if (card.classList.contains("busy")) return;
         card.classList.add("busy");
         fetch("/api/ha/call", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ entity_id: c.entity_id, service: service, data: data }),
+          body: JSON.stringify({
+            entity_id: c.entity_id, service: service, data: data,
+            // A sensitive (garage/door/gate) tap carries the explicit client
+            // confirm; the server re-checks the gate and 403s an unconfirmed
+            // sensitive request no matter what the client sends (#702).
+            confirmed: confirmed === true,
+          }),
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (res) { if (res && res.ok && res.state != null) c.state = res.state; })
@@ -4341,6 +4421,7 @@
       });
       var railFavorites = document.getElementById("rail-favorites");
       var railEnergy = document.getElementById("rail-energy");
+      var railNotes = document.getElementById("rail-notes");
       railFavorites.addEventListener("click", function () {
         closeRail();
         if ((location.hash || "").indexOf("#/p/start") === 0) routeFromLocation();
@@ -4353,6 +4434,12 @@
         else location.hash = "#/p/energy";
         syncTabbar();
       });
+      railNotes.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/notes") === 0) routeFromLocation();
+        else location.hash = "#/p/notes";
+        syncTabbar();
+      });
 
       // Mobile bottom tab bar (#648): the three tabs reuse existing behaviors,
       // no new routing model. Active state: Favoriten while on #/p/start,
@@ -4360,6 +4447,13 @@
       var tabHome = document.getElementById("tab-home");
       var tabChats = document.getElementById("tab-chats");
       var tabFavorites = document.getElementById("tab-favorites");
+      var tabNotes = document.getElementById("tab-notes");
+      tabNotes.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/notes") === 0) routeFromLocation();
+        else location.hash = "#/p/notes";
+        syncTabbar();
+      });
       tabHome.addEventListener("click", function () {
         if (location.hash) location.hash = "";
         closeRail();
@@ -4389,16 +4483,19 @@
         var railOpen = document.body.classList.contains("rail-open");
         var onStart = (location.hash || "").indexOf("#/p/start") === 0;
         var onEnergy = (location.hash || "").indexOf("#/p/energy") === 0;
-        var onHome = !onStart && !onEnergy && isHouseholdView();
-        var onChats = railOpen || (!onStart && !onEnergy && !onHome);
+        var onNotes = (location.hash || "").indexOf("#/p/notes") === 0;
+        var onHome = !onStart && !onEnergy && !onNotes && isHouseholdView();
+        var onChats = railOpen || (!onStart && !onEnergy && !onNotes && !onHome);
         tabFavorites.classList.toggle("active", onStart && !railOpen);
         tabHome.classList.toggle("active", onHome && !railOpen);
+        tabNotes.classList.toggle("active", onNotes && !railOpen);
         tabChats.classList.toggle("active", onChats);
         // Desktop rail entries (#681/#700) highlight strictly from the current
-        // view — exactly one of the three, or none for another session's chat.
+        // view — exactly one of the four, or none for another session's chat.
         railHome.classList.toggle("active", onHome);
         railFavorites.classList.toggle("active", onStart);
         railEnergy.classList.toggle("active", onEnergy);
+        railNotes.classList.toggle("active", onNotes);
         // The header title tracks the route too (#671): "Favoriten" on start,
         // the session/"Zuhause" title elsewhere.
         refreshChatTitle();
@@ -4721,11 +4818,11 @@
       // the home-energy picture (the data the "Energieverbrauch" answer used to
       // dump into chat belongs here).
       function openPortal(type) {
-        if (type !== "energy" && type !== "start") { showView("chat"); return; }
+        if (type !== "energy" && type !== "start" && type !== "notes") { showView("chat"); return; }
         closeRail();
-        // A portal (#/p/start, #/p/energy) is a standalone page, not another
-        // card stacked on the current chat (#668): clear the transcript so it
-        // fills the view — and re-tapping Favoriten doesn't pile up duplicates.
+        // A portal (#/p/start, #/p/energy, #/p/notes) is a standalone page, not
+        // another card stacked on the current chat (#668): clear the transcript so
+        // it fills the view — and re-tapping a nav entry doesn't pile up duplicates.
         clearLog();
         var card = document.createElement("div");
         card.className = "msg info concept-card";
@@ -4734,6 +4831,10 @@
         card.scrollIntoView({ block: "start" });
         if (type === "start") {
           loadStartPage(card);
+          return;
+        }
+        if (type === "notes") {
+          loadNotesPage(card);
           return;
         }
         fetch("/api/portal/energy")
@@ -4753,6 +4854,230 @@
             renderStartPage(card, j);
           })
           .catch(function () { card.textContent = "Konnte die Startseite nicht laden."; });
+      }
+
+      // ---- Notizen portal (#696): overview → search → browse → viewer ----
+      function loadNotesPage(card) {
+        fetch("/api/portal/notes")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) { card.textContent = "Notizen nicht verfügbar."; return; }
+            renderNotesPage(card, j);
+          })
+          .catch(function () { card.textContent = "Konnte die Notizen nicht laden."; });
+      }
+
+      function renderNotesPage(card, data) {
+        card.textContent = "";
+        card.classList.add("start-page");
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = "Notizen";
+        head.appendChild(title);
+        card.appendChild(head);
+
+        // Überblick: total notes / fact files / inbox / last Bibliothekar run.
+        var c = data.counts || {};
+        var tiles = document.createElement("div");
+        tiles.className = "energy-tiles";
+        [
+          ["Notizen", c.notes],
+          ["Fakten", c.facts],
+          ["Posteingang", c.inbox],
+        ].forEach(function (t) {
+          var tile = document.createElement("div");
+          tile.className = "energy-tile";
+          var val = document.createElement("div");
+          val.className = "et-value";
+          val.textContent = t[1] == null ? "—" : String(t[1]);
+          var lab = document.createElement("div");
+          lab.className = "et-label";
+          lab.textContent = t[0];
+          tile.appendChild(val);
+          tile.appendChild(lab);
+          tiles.appendChild(tile);
+        });
+        card.appendChild(tiles);
+        if (data.librarian && data.librarian.length) {
+          var lib = document.createElement("p");
+          lib.className = "concept-desc";
+          lib.textContent = "Bibliothekar: " + data.librarian[data.librarian.length - 1];
+          card.appendChild(lib);
+        }
+
+        // Suche über die vereinheitlichte notes_search.
+        var search = document.createElement("input");
+        search.type = "search";
+        search.className = "notes-search";
+        search.placeholder = "Notizen durchsuchen…";
+        card.appendChild(search);
+        var results = document.createElement("div");
+        results.className = "notes-list";
+        card.appendChild(results);
+        var searchTimer = null;
+        search.addEventListener("input", function () {
+          if (searchTimer) clearTimeout(searchTimer);
+          var q = search.value.trim();
+          searchTimer = setTimeout(function () {
+            if (!q) { results.textContent = ""; return; }
+            fetch("/api/portal/notes/search?q=" + encodeURIComponent(q))
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (j) {
+                results.textContent = "";
+                if (!j || !j.ok || !j.hits.length) {
+                  results.textContent = "Nichts gefunden.";
+                  return;
+                }
+                j.hits.forEach(function (h) {
+                  results.appendChild(noteRow(h.path, h.title || h.path));
+                });
+              })
+              .catch(function () { results.textContent = "Suche fehlgeschlagen."; });
+          }, 250);
+        });
+
+        // Durchstöbern: chips that swap the list below to a grouped browse.
+        card.appendChild(conceptSectionTitle("Durchstöbern"));
+        var chips = document.createElement("div");
+        chips.className = "anchor-chips";
+        card.appendChild(chips);
+        var browse = document.createElement("div");
+        browse.className = "notes-browse";
+        card.appendChild(browse);
+        [
+          ["#Themen", "topic"],
+          ["@Personen", "person"],
+          ["Journal", "journal"],
+          ["OKF", "okf"],
+          ["Ordner", "folder"],
+        ].forEach(function (b) {
+          var chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "anchor-chip";
+          chip.textContent = b[0];
+          chip.addEventListener("click", function () {
+            Array.prototype.forEach.call(chips.children, function (el) {
+              el.classList.toggle("resolved", el === chip);
+            });
+            loadNotesBrowse(browse, b[1]);
+          });
+          chips.appendChild(chip);
+        });
+
+        // Recently modified.
+        if (data.recent && data.recent.length) {
+          card.appendChild(conceptSectionTitle("Zuletzt geändert"));
+          var recent = document.createElement("div");
+          recent.className = "notes-list";
+          data.recent.forEach(function (r) {
+            recent.appendChild(noteRow(r.path, r.title || r.path));
+          });
+          card.appendChild(recent);
+        }
+      }
+
+      function loadNotesBrowse(container, by) {
+        container.textContent = "Lade…";
+        fetch("/api/portal/notes/browse?by=" + encodeURIComponent(by))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            container.textContent = "";
+            if (!j || !j.ok || !j.groups.length) {
+              container.textContent = "Nichts vorhanden.";
+              return;
+            }
+            j.groups.forEach(function (g) {
+              container.appendChild(conceptSectionTitle(g.group));
+              var list = document.createElement("div");
+              list.className = "notes-list";
+              g.items.forEach(function (it) {
+                list.appendChild(noteRow(it.path, it.title || it.path));
+              });
+              container.appendChild(list);
+            });
+          })
+          .catch(function () { container.textContent = "Konnte nicht laden."; });
+      }
+
+      function noteRow(path, title) {
+        var a = document.createElement("a");
+        a.className = "note-row";
+        a.href = "#/p/notes";
+        a.textContent = title;
+        a.title = path;
+        a.addEventListener("click", function (e) {
+          e.preventDefault();
+          openNoteViewer(path);
+        });
+        return a;
+      }
+
+      // The note viewer: rendered markdown (chat renderer + [[..]] linkified to
+      // /c/<id>), a compact frontmatter block, and a back button to the overview.
+      function openNoteViewer(path) {
+        clearLog();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card start-page";
+        card.textContent = "Lade…";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+        fetch("/api/portal/notes/note?path=" + encodeURIComponent(path))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) { card.textContent = "Notiz nicht gefunden."; return; }
+            renderNoteViewer(card, j);
+          })
+          .catch(function () { card.textContent = "Konnte die Notiz nicht laden."; });
+      }
+
+      function renderNoteViewer(card, note) {
+        card.textContent = "";
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var back = document.createElement("button");
+        back.type = "button";
+        back.className = "icon-btn note-back";
+        back.setAttribute("aria-label", "Zurück");
+        back.innerHTML = '<svg class="ic"><use href="#i-back"></use></svg>';
+        back.addEventListener("click", function () { location.hash = "#/p/notes"; routeFromLocation(); });
+        head.appendChild(back);
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = note.title || note.path;
+        head.appendChild(title);
+        card.appendChild(head);
+
+        var fm = note.frontmatter || {};
+        var keys = Object.keys(fm);
+        if (keys.length) {
+          var meta = document.createElement("dl");
+          meta.className = "note-frontmatter";
+          keys.forEach(function (k) {
+            var dt = document.createElement("dt");
+            dt.textContent = k;
+            var dd = document.createElement("dd");
+            dd.textContent = fm[k];
+            meta.appendChild(dt);
+            meta.appendChild(dd);
+          });
+          card.appendChild(meta);
+        }
+
+        var body = document.createElement("div");
+        body.className = "md";
+        body.innerHTML = renderReply(stripFrontmatter(note.content || ""));
+        linkifyWikiLinks(body);
+        renderMermaidIn(body);
+        card.appendChild(body);
+      }
+
+      // Drop a leading `--- … ---` block so the viewer body renders prose only
+      // (the frontmatter is shown as its own compact key/value block above).
+      function stripFrontmatter(text) {
+        var m = /^---\n[\s\S]*?\n---\s*\n?/.exec(text);
+        return m ? text.slice(m[0].length) : text;
       }
 
       function renderEnergyPage(card, e) {
@@ -5201,6 +5526,35 @@
               body.textContent = "Keine steuerbaren Geräte gefunden.";
               return;
             }
+            // A selectable tile: renders an INERT card (no device action), a
+            // status badge, and toggles SELECTION on click. Already-pinned tiles
+            // are disabled; sensitive ones stay selectable but wear a lock (#702).
+            function addTile(grid, c, key, labelEl) {
+              var tile = document.createElement("div");
+              tile.className = "cp-tile";
+              if (c.pinned) tile.classList.add("taken");
+              if (c.sensitive) tile.classList.add("cp-sensitive");
+              tile.appendChild(labelEl);
+              var check = document.createElement("span");
+              check.className = "cp-check";
+              check.textContent = c.pinned ? "★" : (c.sensitive ? "🔒" : "");
+              tile.appendChild(check);
+              if (!c.pinned) {
+                tile.addEventListener("click", function () {
+                  if (selected[key]) {
+                    delete selected[key];
+                    tile.classList.remove("sel");
+                    check.textContent = c.sensitive ? "🔒" : "";
+                  } else {
+                    selected[key] = c;
+                    tile.classList.add("sel");
+                    check.textContent = "✓";
+                  }
+                  refresh();
+                });
+              }
+              grid.appendChild(tile);
+            }
             j.rooms.forEach(function (group) {
               var rh = document.createElement("div");
               rh.className = "cp-room";
@@ -5209,33 +5563,26 @@
               var grid = document.createElement("div");
               grid.className = "cp-grid";
               group.cards.forEach(function (c) {
-                var tile = document.createElement("div");
-                tile.className = "cp-tile";
-                var taken = c.pinned || c.sensitive;
-                if (taken) tile.classList.add("taken");
-                tile.appendChild(renderHaCard(c, false));
-                var check = document.createElement("span");
-                check.className = "cp-check";
-                check.textContent = c.pinned ? "★" : (c.sensitive ? "🔒" : "");
-                tile.appendChild(check);
-                if (!taken) {
-                  tile.addEventListener("click", function () {
-                    if (selected[c.entity_id]) {
-                      delete selected[c.entity_id];
-                      tile.classList.remove("sel");
-                      check.textContent = "";
-                    } else {
-                      selected[c.entity_id] = c;
-                      tile.classList.add("sel");
-                      check.textContent = "✓";
-                    }
-                    refresh();
-                  });
-                }
-                grid.appendChild(tile);
+                addTile(grid, c, c.entity_id, renderHaCard(c, false, { picker: true }));
               });
               body.appendChild(grid);
             });
+            // Automationen (#702): scenes/scripts/automations as action cards.
+            if (j.automations && j.automations.length) {
+              var ah = document.createElement("div");
+              ah.className = "cp-room";
+              ah.textContent = "Automationen";
+              body.appendChild(ah);
+              var agrid = document.createElement("div");
+              agrid.className = "cp-grid";
+              j.automations.forEach(function (a) {
+                var label = document.createElement("div");
+                label.className = "hc-row hc-inert";
+                label.textContent = a.name || a.entity_id;
+                addTile(agrid, a, a.entity_id, label);
+              });
+              body.appendChild(agrid);
+            }
           })
           .catch(function () { body.textContent = "Konnte die Karten nicht laden."; });
 
@@ -5246,15 +5593,17 @@
           var sc = scope.value;
           Promise.all(picks.map(function (eid) {
             var c = selected[eid];
+            // An Automationen pick is an action favorite (run via /run); a
+            // device pick is an entity favorite (live card + tap) (#702).
+            var payload = c.kind === "action"
+              ? { kind: "action", label: c.name || c.entity_id || "",
+                  scope: sc, payload: { tool: c.tool, args: c.args } }
+              : { kind: "entity", label: c.name || c.entity_id || "",
+                  scope: sc, payload: { entity_id: c.entity_id } };
             return fetch("/api/favorites", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                kind: "entity",
-                label: c.name || c.entity_id || "",
-                scope: sc,
-                payload: { entity_id: c.entity_id },
-              }),
+              body: JSON.stringify(payload),
             });
           })).then(function () {
             shut();
