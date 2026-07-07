@@ -702,53 +702,48 @@ async def test_call_service_scoped_surfaces_ha_error(monkeypatch):
     assert "HA 500" in res["error"]
 
 
-async def test_fetch_energy_buckets_headlines_and_circuits(monkeypatch):
+def _power(eid, name, state):
+    return {
+        "entity_id": eid,
+        "state": state,
+        "attributes": {
+            "friendly_name": name,
+            "device_class": "power",
+            "unit_of_measurement": "W",
+        },
+    }
+
+
+def _energy(eid, name, state):
+    return {
+        "entity_id": eid,
+        "state": state,
+        "attributes": {
+            "friendly_name": name,
+            "device_class": "energy",
+            "unit_of_measurement": "kWh",
+        },
+    }
+
+
+async def test_fetch_energy_flow_uses_power_sensors_not_kwh(monkeypatch):
+    # The real box exposes BOTH a kWh lifetime counter ("PV Erzeugung") and the
+    # current-power (W) sensor ("Aktuell erzeugter PV-Strom") — the flow must
+    # pick the W one (#691). Signs: Netz +50 = Bezug, Akku -465 = entlädt.
     states = [
-        {
-            "entity_id": "sensor.hausverbrauch",
-            "state": "1200",
-            "attributes": {
-                "friendly_name": "Hausverbrauch",
-                "device_class": "power",
-                "unit_of_measurement": "W",
-            },
-        },
-        {
-            "entity_id": "sensor.pv_leistung",
-            "state": "3400",
-            "attributes": {
-                "friendly_name": "PV Erzeugung",
-                "device_class": "power",
-                "unit_of_measurement": "W",
-            },
-        },
-        {
-            "entity_id": "sensor.akku_soc",
-            "state": "87",
-            "attributes": {
-                "friendly_name": "Akku Ladung",
-                "device_class": "power",
-                "unit_of_measurement": "W",
-            },
-        },
-        {
-            "entity_id": "sensor.kueche_strom",
-            "state": "150",
-            "attributes": {
-                "friendly_name": "Küche",
-                "device_class": "power",
-                "unit_of_measurement": "W",
-            },
-        },
-        {
-            "entity_id": "sensor.bad_strom",
-            "state": "40",
-            "attributes": {
-                "friendly_name": "Bad",
-                "device_class": "power",
-                "unit_of_measurement": "W",
-            },
-        },
+        _power("sensor.pv_w", "Aktuell erzeugter PV-Strom", "0"),
+        _power("sensor.haus_w", "Aktueller Hausverbrauch", "271.5"),
+        _power("sensor.netz_w", "Aktuelle Netz Leistung", "50"),
+        _power("sensor.akku_w", "Aktuelle Akku Leistung", "-465.5"),
+        # kWh lifetime counters — totals only, must NOT enter the flow
+        _energy("sensor.pv_kwh", "PV Erzeugung", "775.4"),
+        _energy("sensor.netzbezug_kwh", "Netzbezug", "6.8"),
+        _energy("sensor.einspeisung_kwh", "Netzeinspeisung", "503.8"),
+        _energy("sensor.laden_kwh", "Batterie laden", "300.1"),
+        _energy("sensor.entladen_kwh", "Batterie entladen", "250.2"),
+        # leftover power sensors fall through to circuits, sorted by name
+        _power("sensor.kueche", "Küche", "150"),
+        _power("sensor.bad", "Bad", "40"),
         # non-energy sensor + a light are ignored
         {
             "entity_id": "sensor.temp",
@@ -760,11 +755,26 @@ async def test_fetch_energy_buckets_headlines_and_circuits(monkeypatch):
     gets = _stub(monkeypatch, states=states)
     energy = await ha_mod.fetch_energy("http://ha", "tok")
     assert gets[0][0] == "http://ha/api/states"
-    labels = {h["label"]: h for h in energy["headlines"]}
-    assert labels["Hausverbrauch"]["state"] == "1200"
-    assert labels["PV-Erzeugung"]["entity_id"] == "sensor.pv_leistung"
-    assert labels["Akku"]["entity_id"] == "sensor.akku_soc"
-    # leftover power sensors fall through to the per-circuit list, sorted by name
+    flow = {f["label"]: f for f in energy["flow"]}
+    # flow order preserved: PV, Haus, Netz, Akku
+    assert [f["label"] for f in energy["flow"]] == ["PV", "Haus", "Netz", "Akku"]
+    assert flow["PV"]["entity_id"] == "sensor.pv_w"
+    assert flow["PV"]["unit"] == "W"
+    assert flow["PV"]["sense"] == "supply"
+    assert flow["Haus"]["state"] == "271.5" and flow["Haus"]["sense"] == "draw"
+    # Netz +50 → grid draw (Bezug); Akku -465.5 → battery supply (entlädt)
+    assert flow["Netz"]["state"] == "50" and flow["Netz"]["sense"] == "grid"
+    assert flow["Akku"]["state"] == "-465.5" and flow["Akku"]["sense"] == "battery"
+    # kWh counters live only in totals, labeled — never in flow/circuits
+    total_labels = [t["label"] for t in energy["totals"]]
+    assert total_labels == [
+        "PV-Erzeugung",
+        "Einspeisung",
+        "Netzbezug",
+        "Batterie geladen",
+        "Batterie entladen",
+    ]
+    assert all(t["unit"] == "kWh" for t in energy["totals"])
     circuit_names = [c["name"] for c in energy["circuits"]]
     assert circuit_names == ["Bad", "Küche"]
 
@@ -787,58 +797,46 @@ async def test_fetch_energy_returns_none_on_ha_error(monkeypatch):
     assert await ha_mod.fetch_energy("http://ha", "tok") is None
 
 
-async def test_fetch_energy_history_series_downsampled_and_ordered(monkeypatch):
+async def test_fetch_energy_history_only_power_series_ordered(monkeypatch):
+    # History must return only the current-power (W) flow sensors — the kWh
+    # lifetime counter is present but excluded so the chart is single-axis (#691).
     states = [
-        {
-            "entity_id": "sensor.hausverbrauch",
-            "state": "1200",
-            "attributes": {
-                "friendly_name": "Hausverbrauch",
-                "device_class": "power",
-                "unit_of_measurement": "W",
-            },
-        },
-        {
-            "entity_id": "sensor.pv_leistung",
-            "state": "3400",
-            "attributes": {
-                "friendly_name": "PV Erzeugung",
-                "device_class": "power",
-                "unit_of_measurement": "W",
-            },
-        },
+        _power("sensor.pv_w", "Aktuell erzeugter PV-Strom", "0"),
+        _power("sensor.haus_w", "Aktueller Hausverbrauch", "271.5"),
+        _energy("sensor.pv_kwh", "PV Erzeugung", "775.4"),
     ]
     # HA returns the runs out of requested order; each keyed by first point's id.
     pv_run = [
-        {"entity_id": "sensor.pv_leistung", "state": str(i), "last_changed": f"t{i}"}
+        {"entity_id": "sensor.pv_w", "state": str(i), "last_changed": f"t{i}"}
         for i in range(120)
     ]
     house_run = [
-        {"entity_id": "sensor.hausverbrauch", "state": "500", "last_changed": "t0"},
-        {"entity_id": "sensor.hausverbrauch", "state": "nope", "last_changed": "t1"},
-        {"entity_id": "sensor.hausverbrauch", "state": "700", "last_changed": "t2"},
+        {"entity_id": "sensor.haus_w", "state": "500", "last_changed": "t0"},
+        {"entity_id": "sensor.haus_w", "state": "nope", "last_changed": "t1"},
+        {"entity_id": "sensor.haus_w", "state": "700", "last_changed": "t2"},
     ]
     gets = _stub(monkeypatch, states=states, history=[pv_run, house_run])
     out = await ha_mod.fetch_energy_history("http://ha", "tok", 24)
     assert out["hours"] == 24
     assert gets[0][0] == "http://ha/api/states"
     hist_url, params = next((u, p) for u, p in gets if "/api/history/period/" in u)
-    # one batched query for both headline ids
-    assert params["filter_entity_id"] == "sensor.hausverbrauch,sensor.pv_leistung"
+    # only the W flow ids are queried — the kWh counter is excluded
+    assert params["filter_entity_id"] == "sensor.pv_w,sensor.haus_w"
     assert params["no_attributes"] == "true"
     series = {s["entity_id"]: s for s in out["series"]}
-    # headline order preserved (Hausverbrauch before PV) despite HA run order
-    assert [s["label"] for s in out["series"]] == ["Hausverbrauch", "PV-Erzeugung"]
+    # flow order preserved (PV before Haus) despite HA run order
+    assert [s["label"] for s in out["series"]] == ["PV", "Haus"]
+    assert all(s["unit"] == "W" for s in out["series"])
     # 120 points downsampled to ~48 for 24h
-    assert len(series["sensor.pv_leistung"]["points"]) <= 49
+    assert len(series["sensor.pv_w"]["points"]) <= 49
     # non-numeric state dropped, numeric points kept as {t, v}
-    assert series["sensor.hausverbrauch"]["points"] == [
+    assert series["sensor.haus_w"]["points"] == [
         {"t": "t0", "v": 500.0},
         {"t": "t2", "v": 700.0},
     ]
 
 
-async def test_fetch_energy_history_empty_when_no_headlines(monkeypatch):
+async def test_fetch_energy_history_empty_when_no_flow(monkeypatch):
     states = [
         {
             "entity_id": "sensor.temp",

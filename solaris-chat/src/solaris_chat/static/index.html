@@ -4619,35 +4619,37 @@
         title.textContent = "Energie";
         head.appendChild(title);
         card.appendChild(head);
-        // Headlines → prominent metric tiles (big value + unit + label).
-        if (e.headlines && e.headlines.length) {
-          var tiles = document.createElement("div");
-          tiles.className = "energy-tiles";
-          e.headlines.forEach(function (h) {
+        // "Jetzt": flow summary — PV / Haus / Netz / Akku with a direction cue.
+        // No unlabeled top metric row (#691): the flow IS the headline.
+        renderEnergyFlow(card, e.flow || []);
+        // 24h / 7d trend chart with a range toggle (#689).
+        renderEnergyTrend(card);
+        // Lifetime kWh totals — a clearly-labeled section, never mixed with W.
+        if (e.totals && e.totals.length) {
+          card.appendChild(conceptSectionTitle("Energie gesamt"));
+          var totals = document.createElement("div");
+          totals.className = "energy-tiles";
+          e.totals.forEach(function (t) {
             var tile = document.createElement("div");
             tile.className = "energy-tile";
             var val = document.createElement("div");
             val.className = "et-value";
-            val.textContent = h.state == null ? "—" : fmtNum(h.state);
-            if (h.unit) {
+            val.textContent = t.state == null ? "—" : fmtNum(t.state);
+            if (t.unit) {
               var u = document.createElement("span");
               u.className = "et-unit";
-              u.textContent = h.unit;
+              u.textContent = t.unit;
               val.appendChild(u);
             }
             var lbl = document.createElement("div");
             lbl.className = "et-label";
-            lbl.textContent = h.label;
+            lbl.textContent = t.label;
             tile.appendChild(val);
             tile.appendChild(lbl);
-            tiles.appendChild(tile);
+            totals.appendChild(tile);
           });
-          card.appendChild(tiles);
+          card.appendChild(totals);
         }
-        // "Jetzt": flow summary — PV / Haus / Netz / Akku with a direction cue.
-        renderEnergyFlow(card, e.headlines || []);
-        // 24h / 7d trend chart with a range toggle (#689).
-        renderEnergyTrend(card);
         // Circuits → a readable value-aligned list, ordered by current power.
         if (e.circuits && e.circuits.length) {
           card.appendChild(conceptSectionTitle("Stromkreise"));
@@ -4677,7 +4679,7 @@
             });
           card.appendChild(list);
         }
-        if (!(e.headlines && e.headlines.length) && !(e.circuits && e.circuits.length)) {
+        if (!(e.flow && e.flow.length) && !(e.circuits && e.circuits.length)) {
           var none = document.createElement("p");
           none.className = "concept-desc";
           none.textContent = "Keine Energie-Sensoren gefunden.";
@@ -4685,30 +4687,18 @@
         }
       }
 
-      // "Jetzt" flow tiles: PV/Haus/Netz/Akku from the headline sensors, with a
-      // direction cue. Grid import (Netzbezug) and battery-discharge read as
-      // draw (neg); export (Einspeisung) and battery-charge read as supply.
-      function renderEnergyFlow(card, headlines) {
-        var byLabel = {};
-        headlines.forEach(function (h) { byLabel[h.label] = h; });
-        // {label shown, source headline label, dir hint}. Netz collapses the two
-        // grid headlines: import wins if present, else export.
-        var tiles = [];
-        function push(h, shown, sense) {
-          if (!h || h.state == null) return;
-          var n = parseFloat(h.state);
-          tiles.push({ h: h, shown: shown, val: isNaN(n) ? null : n, sense: sense });
-        }
-        push(byLabel["PV-Erzeugung"], "PV-Erzeugung", "supply");
-        push(byLabel["Hausverbrauch"], "Hausverbrauch", "draw");
-        if (byLabel["Netzbezug"] && parseFloat(byLabel["Netzbezug"].state) > 0) {
-          push(byLabel["Netzbezug"], "Netzbezug", "draw");
-        } else if (byLabel["Einspeisung"]) {
-          push(byLabel["Einspeisung"], "Einspeisung", "supply");
-        } else if (byLabel["Netzbezug"]) {
-          push(byLabel["Netzbezug"], "Netzbezug", "draw");
-        }
-        push(byLabel["Akku"], "Akku", "battery");
+      // "Jetzt" flow tiles: PV/Haus/Netz/Akku from the current-power (W) sensors
+      // (#691). `sense` from the server fixes the sign convention:
+      //   supply → liefert/erzeugt (green); draw → Verbrauch (red)
+      //   grid:    +W = Bezug (red), −W = Einspeisung (green)
+      //   battery: −W = entlädt (green, supplies), +W = lädt (red, draws)
+      function renderEnergyFlow(card, flow) {
+        var tiles = flow
+          .filter(function (f) { return f.state != null; })
+          .map(function (f) {
+            var n = parseFloat(f.state);
+            return { f: f, val: isNaN(n) ? null : n, sense: f.sense };
+          });
         if (!tiles.length) return;
         card.appendChild(conceptSectionTitle("Jetzt"));
         var wrap = document.createElement("div");
@@ -4717,27 +4707,29 @@
           var tile = document.createElement("div");
           tile.className = "flow-tile";
           var dir = "";
-          // sense drives the arrow + pos/neg colour. battery: charge(+)=supply.
           if (t.val != null) {
             if (t.sense === "supply") { tile.classList.add("pos"); dir = "↑ liefert"; }
             else if (t.sense === "draw") { tile.classList.add("neg"); dir = "↓ Verbrauch"; }
-            else if (t.sense === "battery") {
-              if (t.val > 0) { tile.classList.add("pos"); dir = "↑ lädt"; }
-              else if (t.val < 0) { tile.classList.add("neg"); dir = "↓ entlädt"; }
+            else if (t.sense === "grid") {
+              if (t.val > 0) { tile.classList.add("neg"); dir = "↓ Bezug"; }
+              else if (t.val < 0) { tile.classList.add("pos"); dir = "↑ Einspeisung"; }
+            } else if (t.sense === "battery") {
+              if (t.val > 0) { tile.classList.add("neg"); dir = "↓ lädt"; }
+              else if (t.val < 0) { tile.classList.add("pos"); dir = "↑ entlädt"; }
             }
           }
           var val = document.createElement("div");
           val.className = "ft-value";
           val.textContent = t.val == null ? "—" : fmtNum(Math.abs(t.val));
-          if (t.h.unit) {
+          if (t.f.unit) {
             var u = document.createElement("span");
             u.className = "ft-unit";
-            u.textContent = t.h.unit;
+            u.textContent = t.f.unit;
             val.appendChild(u);
           }
           var lbl = document.createElement("div");
           lbl.className = "ft-label";
-          lbl.textContent = t.shown;
+          lbl.textContent = t.f.label;
           tile.appendChild(val);
           tile.appendChild(lbl);
           if (dir) {
