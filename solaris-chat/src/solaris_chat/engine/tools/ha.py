@@ -205,6 +205,39 @@ async def fetch_card(
     return card_spec(entity_id, body.get("state"), body.get("attributes") or {})
 
 
+async def fetch_addable_cards(
+    hass_url: str, hass_token: str, entity_area: dict[str, str]
+) -> list[dict[str, Any]] | None:
+    """Card-specs for the house's controllable actuators, for the start-page
+    picker (#669). One read-only `/api/states`; keeps only the actuator domains
+    (light/switch/cover/climate/media_player — the same set a room query cards),
+    builds each entity's card-spec and annotates it with its room. Returns None
+    on any HA error; entities without an area carry room "".
+    """
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                if resp.status >= 400:
+                    return None
+                states = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    cards: list[dict[str, Any]] = []
+    for s in states:
+        eid = str(s.get("entity_id") or "")
+        if eid.split(".", 1)[0] not in _ROOM_ACTUATOR_DOMAINS:
+            continue
+        spec = card_spec(eid, s.get("state"), s.get("attributes") or {})
+        if spec is None:
+            continue
+        spec["room"] = entity_area.get(eid, "")
+        cards.append(spec)
+    cards.sort(key=lambda c: (c["room"].lower(), c["name"].lower()))
+    return cards
+
+
 # Headline buckets for the home-energy picture (#503). Each matches a sensor by
 # substrings in its friendly_name (lower-cased); the first matching bucket wins,
 # so leftover power sensors fall through to the per-circuit list. German + a few
