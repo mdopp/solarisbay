@@ -1015,8 +1015,10 @@
          composer; both need bottom room so nothing covers the tabs. The
          env(safe-area-inset-bottom) pads the iPhone home indicator in
          display:standalone. */
+      /* Above the rail drawer (30) + its backdrop (20) so Zuhause/Favoriten stay
+         visible and tappable while the Chats drawer is open (#675). */
       #tabbar {
-        display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 25;
+        display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 31;
         height: calc(56px + env(safe-area-inset-bottom));
         padding-bottom: env(safe-area-inset-bottom);
         background: var(--rail); border-top: 1px solid var(--line);
@@ -4107,10 +4109,17 @@
         syncTabbar();
       });
       function syncTabbar() {
+        // Active tab tracks the current VIEW, not transient drawer state (#675).
+        // Favoriten = on #/p/start; Zuhause = the household session is the open
+        // chat (syncPinnedActive keeps householdBtn.active in sync); Chats = any
+        // other session is the current view — OR while the drawer is open and
+        // being browsed. Picking a chat calls closeRail(), so Chats must stay lit
+        // from the view (a non-household chat), not from rail-open.
+        var railOpen = document.body.classList.contains("rail-open");
         var onStart = (location.hash || "").indexOf("#/p/start") === 0;
-        var onChats = !onStart && document.body.classList.contains("rail-open");
-        var onHome = !onStart && !onChats && householdBtn.classList.contains("active");
-        tabFavorites.classList.toggle("active", onStart);
+        var onHome = !railOpen && !onStart && householdBtn.classList.contains("active");
+        var onChats = railOpen || (!onStart && !onHome);
+        tabFavorites.classList.toggle("active", onStart && !railOpen);
         tabHome.classList.toggle("active", onHome);
         tabChats.classList.toggle("active", onChats);
         // The header title tracks the route too (#671): "Startseite" on start,
