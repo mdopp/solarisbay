@@ -998,14 +998,20 @@
          opens the rail drawer, so the header toggle is redundant. */
       .header-burger { display: none; }
       .brand-wordmark { display: inline-flex; align-items: baseline; }
+      /* Chats is a full-page view on mobile (#679), consistent with Favoriten:
+         full width, from the top down to just above the bottom tab bar — not a
+         side drawer. It's hidden until "Chats" is tapped (rail-open); the
+         session list scrolls within this region and #tabbar (z-index 31) stays
+         above it so the three nav buttons remain tappable. No slide/backdrop. */
+      :root { --tabbar-h: calc(56px + env(safe-area-inset-bottom)); }
       .rail {
-        position: fixed; top: 0; left: 0; bottom: 0; z-index: 30;
-        width: 80%; max-width: 310px; flex-basis: auto;
+        display: none;
+        position: fixed; left: 0; right: 0; top: 0; bottom: var(--tabbar-h);
+        z-index: 30; width: 100%; flex-basis: auto;
         background: var(--rail);
-        transform: translateX(-100%); transition: transform 0.2s ease;
       }
-      body.rail-open .rail { transform: translateX(0); }
-      body.rail-open #backdrop { display: block; position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,0.4); }
+      body.rail-open .rail { display: flex; }
+      #backdrop { display: none !important; }
       /* Editing a skill/soul on mobile: use the whole screen (#418). */
       .settings-card #skill-edit-pane, .settings-card #soul-edit-pane { height: auto; }
       .settings-card #skill-edit-pane .editor-wrap,
@@ -1015,11 +1021,11 @@
          composer; both need bottom room so nothing covers the tabs. The
          env(safe-area-inset-bottom) pads the iPhone home indicator in
          display:standalone. */
-      /* Above the rail drawer (30) + its backdrop (20) so Zuhause/Favoriten stay
-         visible and tappable while the Chats drawer is open (#675). */
+      /* Above the full-page Chats view (30) so Zuhause/Favoriten stay visible
+         and tappable while Chats is open (#675/#679). */
       #tabbar {
         display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 31;
-        height: calc(56px + env(safe-area-inset-bottom));
+        height: var(--tabbar-h);
         padding-bottom: env(safe-area-inset-bottom);
         background: var(--rail); border-top: 1px solid var(--line);
       }
@@ -1036,7 +1042,7 @@
         background: var(--accent-soft); box-shadow: inset 0 2px 0 var(--accent);
       }
       /* Leave room for the tab bar so the composer/log are never covered. */
-      .composer-bar { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+      .composer-bar { padding-bottom: var(--tabbar-h); }
     }
     /* ---------- ServiceBay finish: depth, fonts, scrollbar, motion ---------- */
     /* Messages read as lifted cards (rounded + soft depth). */
