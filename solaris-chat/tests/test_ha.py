@@ -785,3 +785,67 @@ async def test_fetch_energy_returns_none_on_ha_error(monkeypatch):
 
     monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
     assert await ha_mod.fetch_energy("http://ha", "tok") is None
+
+
+async def test_fetch_energy_history_series_downsampled_and_ordered(monkeypatch):
+    states = [
+        {
+            "entity_id": "sensor.hausverbrauch",
+            "state": "1200",
+            "attributes": {
+                "friendly_name": "Hausverbrauch",
+                "device_class": "power",
+                "unit_of_measurement": "W",
+            },
+        },
+        {
+            "entity_id": "sensor.pv_leistung",
+            "state": "3400",
+            "attributes": {
+                "friendly_name": "PV Erzeugung",
+                "device_class": "power",
+                "unit_of_measurement": "W",
+            },
+        },
+    ]
+    # HA returns the runs out of requested order; each keyed by first point's id.
+    pv_run = [
+        {"entity_id": "sensor.pv_leistung", "state": str(i), "last_changed": f"t{i}"}
+        for i in range(120)
+    ]
+    house_run = [
+        {"entity_id": "sensor.hausverbrauch", "state": "500", "last_changed": "t0"},
+        {"entity_id": "sensor.hausverbrauch", "state": "nope", "last_changed": "t1"},
+        {"entity_id": "sensor.hausverbrauch", "state": "700", "last_changed": "t2"},
+    ]
+    gets = _stub(monkeypatch, states=states, history=[pv_run, house_run])
+    out = await ha_mod.fetch_energy_history("http://ha", "tok", 24)
+    assert out["hours"] == 24
+    assert gets[0][0] == "http://ha/api/states"
+    hist_url, params = next((u, p) for u, p in gets if "/api/history/period/" in u)
+    # one batched query for both headline ids
+    assert params["filter_entity_id"] == "sensor.hausverbrauch,sensor.pv_leistung"
+    assert params["no_attributes"] == "true"
+    series = {s["entity_id"]: s for s in out["series"]}
+    # headline order preserved (Hausverbrauch before PV) despite HA run order
+    assert [s["label"] for s in out["series"]] == ["Hausverbrauch", "PV-Erzeugung"]
+    # 120 points downsampled to ~48 for 24h
+    assert len(series["sensor.pv_leistung"]["points"]) <= 49
+    # non-numeric state dropped, numeric points kept as {t, v}
+    assert series["sensor.hausverbrauch"]["points"] == [
+        {"t": "t0", "v": 500.0},
+        {"t": "t2", "v": 700.0},
+    ]
+
+
+async def test_fetch_energy_history_empty_when_no_headlines(monkeypatch):
+    states = [
+        {
+            "entity_id": "sensor.temp",
+            "state": "21",
+            "attributes": {"device_class": "temperature"},
+        }
+    ]
+    _stub(monkeypatch, states=states, history=[])
+    out = await ha_mod.fetch_energy_history("http://ha", "tok", 168)
+    assert out == {"hours": 168, "series": []}
