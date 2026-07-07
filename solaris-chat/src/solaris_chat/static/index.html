@@ -2159,7 +2159,7 @@
         if (c.domain === "sensor") {
           var val = document.createElement("div");
           val.className = "hc-state";
-          val.textContent = st || "—";
+          val.textContent = fmtNum(st) || "—";
           if (c.unit) {
             var u = document.createElement("span");
             u.className = "hc-unit"; u.textContent = c.unit;
@@ -2489,6 +2489,17 @@
           if (state === "off") return "aus";
         }
         return state || "—";
+      }
+
+      // Round a numeric value (or numeric string) to ≤1 decimal for display,
+      // dropping a trailing ".0" so integers stay clean (#685). Non-numeric
+      // strings pass through unchanged; null/undefined → "".
+      function fmtNum(v) {
+        if (v == null) return "";
+        if (typeof v === "string" && v.trim() === "") return v;
+        var n = Number(v);
+        if (!isFinite(n)) return String(v);
+        return String(Math.round(n * 10) / 10);
       }
 
       // Toggle a light/switch card via the scoped /api/ha/call endpoint (#476):
@@ -4562,7 +4573,7 @@
             tile.className = "energy-tile";
             var val = document.createElement("div");
             val.className = "et-value";
-            val.textContent = h.state == null ? "—" : String(h.state);
+            val.textContent = h.state == null ? "—" : fmtNum(h.state);
             if (h.unit) {
               var u = document.createElement("span");
               u.className = "et-unit";
@@ -4594,7 +4605,7 @@
               name.textContent = c.name || c.entity_id || "";
               var value = document.createElement("span");
               value.className = "ec-value";
-              value.textContent = c.state == null ? "—" : String(c.state);
+              value.textContent = c.state == null ? "—" : fmtNum(c.state);
               if (c.unit) {
                 var cu = document.createElement("span");
                 cu.className = "ec-unit";
