@@ -1193,6 +1193,7 @@
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
     <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M5 21V9a7 7 0 0 1 14 0v12l-2.5-2-2 2-2-2-2 2-2-2z"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></symbol>
     <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 9.5V21h5v-6h4v6h5V9.5"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
   </svg>
 
   <aside class="rail">
@@ -1215,6 +1216,16 @@
         <span class="pin-ic"><svg class="ic"><use href="#i-home"></use></svg></span>
         <span class="title">Zuhause</span>
       </button>
+      <button class="session pinned" id="rail-favorites" type="button"
+              title="Favoriten — Startseite">
+        <span class="pin-ic"><svg class="ic"><use href="#i-star"></use></svg></span>
+        <span class="title">Favoriten</span>
+      </button>
+      <button class="session pinned" id="rail-energy" type="button"
+              title="Energie — Hausverbrauch">
+        <span class="pin-ic"><svg class="ic"><use href="#i-bolt"></use></svg></span>
+        <span class="title">Energie</span>
+      </button>
       <div id="sessions"></div>
     </div>
 
@@ -1228,8 +1239,6 @@
         <span class="admin-badge" id="admin-badge" hidden>Admin</span>
       </div>
       <div class="rail-links">
-        <a id="favorites-link" href="#/p/start">⭐ Favoriten</a>
-        <a id="energy-link" href="#/p/energy">Energie</a>
         <a id="release-link" href="https://github.com/mdopp/solarisbay/releases" target="_blank" rel="noopener">Release news</a>
         <a href="https://github.com/mdopp/solarisbay" target="_blank" rel="noopener">GitHub</a>
         <a id="logout-link" href="#" hidden>Log out</a>
@@ -4090,6 +4099,24 @@
       incognitoBtn.addEventListener("click", newIncognito);
       householdBtn.addEventListener("click", startHouseholdChat);
 
+      // Desktop rail nav (#681): Favoriten + Energie are prominent pinned
+      // entries beside Zuhause, not small footer links. Both route to their
+      // portal hash; syncTabbar lights the active one on its route.
+      var railFavorites = document.getElementById("rail-favorites");
+      var railEnergy = document.getElementById("rail-energy");
+      railFavorites.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/start") === 0) routeFromLocation();
+        else location.hash = "#/p/start";
+        syncTabbar();
+      });
+      railEnergy.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/energy") === 0) routeFromLocation();
+        else location.hash = "#/p/energy";
+        syncTabbar();
+      });
+
       // Mobile bottom tab bar (#648): the three tabs reuse existing behaviors,
       // no new routing model. Active state: Favoriten while on #/p/start,
       // Zuhause while the household chat is open, else neutral.
@@ -4124,11 +4151,16 @@
         // from the view (a non-household chat), not from rail-open.
         var railOpen = document.body.classList.contains("rail-open");
         var onStart = (location.hash || "").indexOf("#/p/start") === 0;
-        var onHome = !railOpen && !onStart && householdBtn.classList.contains("active");
-        var onChats = railOpen || (!onStart && !onHome);
+        var onEnergy = (location.hash || "").indexOf("#/p/energy") === 0;
+        var onHome = !railOpen && !onStart && !onEnergy && householdBtn.classList.contains("active");
+        var onChats = railOpen || (!onStart && !onEnergy && !onHome);
         tabFavorites.classList.toggle("active", onStart && !railOpen);
         tabHome.classList.toggle("active", onHome);
         tabChats.classList.toggle("active", onChats);
+        // Desktop rail entries (#681) highlight on their portal routes, mirroring
+        // the mobile tab highlighting.
+        railFavorites.classList.toggle("active", onStart);
+        railEnergy.classList.toggle("active", onEnergy);
         // The header title tracks the route too (#671): "Favoriten" on start,
         // the session/"Zuhause" title elsewhere.
         refreshChatTitle();
