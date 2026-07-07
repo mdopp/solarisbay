@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- interactive-widget=resizes-content (#673): the virtual keyboard shrinks the
+       layout viewport, so the flex shell + 100dvh dock the composer directly
+       above it (Chrome Android). iOS Safari ignores this and is handled by the
+       visualViewport JS below. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
   <link rel="icon" type="image/svg+xml" href="/static/solaris-mark.svg" />
   <!-- PWA (#648): manifest lives under /static/ so start_url/scope are absolute
        (else it scopes to /static/); use-credentials so the fetch carries the
@@ -79,7 +83,10 @@
     /* Honor the hidden attribute even when a class sets display (e.g. panes,
        the pinned household row, hidden badges). */
     [hidden] { display: none !important; }
-    html, body { height: 100%; margin: 0; overflow: hidden; }
+    /* #673: dvh tracks the DYNAMIC viewport (keyboard/browser-chrome aware), so
+       the shell + bottom-docked composer follow the visible area instead of the
+       fixed layout viewport; 100vh is the fallback where dvh is unsupported. */
+    html, body { height: 100vh; height: 100dvh; margin: 0; overflow: hidden; }
     body {
       font: 15px/1.5 "Geist", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
@@ -545,6 +552,30 @@
       cursor: pointer; padding: 1px 7px; font-size: 12px; color: var(--muted);
     }
     .start-toast { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    /* #672: the start page is a full-page portal, not a chat bubble — it fills
+       the chat viewport (full width AND height) like the transcript, dropping the
+       narrow-bubble cap, accent tint and shadow so it reads as the page itself. */
+    .msg.info.start-page {
+      align-self: stretch; max-width: 100%; width: 100%;
+      flex: 1 1 auto; margin-top: 0;
+      background: none; border: none; box-shadow: none; padding: 4px 0;
+    }
+    /* Favorite/frequent rows lay out as a single full-width column of cards, so a
+       row's badge/slider aren't cramped into a shrink-to-fit flex item (the
+       source of the clipped "a"/"au" toggle label). */
+    .start-favs {
+      display: flex; flex-direction: column; gap: 8px;
+      margin: 8px 0 2px; max-width: 100%;
+    }
+    .start-favs > .hc-row {
+      box-sizing: border-box; width: 100%; min-width: 0;
+      border: 1px solid var(--line); border-top: 1px solid var(--line);
+      border-radius: 10px; background: rgba(127,127,127,0.05);
+    }
+    /* The frequent/action row keeps its badge + controls on one tidy line with a
+       consistent baseline; the slider grows, the percent/toggle stay put. */
+    .start-favs > .hc-row .hc-compact { align-items: center; }
+    .start-frequent .hc-name, .start-frequent > span:first-child { flex: 1 1 auto; min-width: 0; }
     /* Card picker (#669): the "+ Karten hinzufügen" button lives beside
        Bearbeiten but only shows once the page is in edit mode; the overlay is a
        room-grouped grid of selectable tiles. */
@@ -1745,17 +1776,25 @@
       function atBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 40; }
       function scrollDown(stick) { if (stick) log.scrollTop = log.scrollHeight; }
 
-      // Mobile keyboard (#412): an opening keyboard shrinks visualViewport but
-      // leaves body at full layout height, pushing the composer + latest
-      // messages below the keyboard. Pin body to the visual viewport so the
-      // shell fits above it, and keep the transcript stuck to the bottom.
+      // Mobile keyboard (#412, #673): the 100dvh shell + interactive-widget meta
+      // dock the composer on Chrome Android, but iOS Safari ignores both — an
+      // opening keyboard shrinks visualViewport while leaving body at full layout
+      // height, pushing the composer + latest messages below the keyboard. Pin
+      // body to the visual viewport (and reset any browser scroll offset so the
+      // shell doesn't drift up) so it fits directly above the keyboard, keeping
+      // the transcript stuck to the bottom.
       if (window.visualViewport) {
         var fitViewport = function () {
           var stick = atBottom();
           document.body.style.height = window.visualViewport.height + "px";
+          window.scrollTo(0, 0);
           scrollDown(stick);
         };
         window.visualViewport.addEventListener("resize", fitViewport);
+        window.visualViewport.addEventListener("scroll", fitViewport);
+        // The initial keyboard open can settle without a resize event on iOS;
+        // re-fit shortly after the composer gains focus.
+        input.addEventListener("focus", function () { setTimeout(fitViewport, 250); });
       }
 
       // HH:MM, prefixed with a short date when the message isn't from today —
@@ -3803,29 +3842,48 @@
       // it's active when the open chat is bound to the household topic, or when
       // a fresh no-session chat is pre-bound to it before its first turn. The
       // row is otherwise neutral. Generalizes to any future pinned topic row.
-      function syncPinnedActive(activeS) {
-        var active = sessionId
+      // The header title is context-aware (#671): "Startseite" on the #/p/start
+      // portal, "Zuhause" in the household chat, otherwise the session title —
+      // never the "Neuer Chat" placeholder on the start/household views.
+      function isHouseholdActive(activeS) {
+        return sessionId
           ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
           : pendingTopic === HOUSEHOLD_TOPIC;
-        householdBtn.classList.toggle("active", active);
-        if (active) {
-          // Name the household chat "Zuhause" rather than the generic
-          // new-chat placeholder, including the pre-first-turn state (#281).
-          var ct = document.getElementById("chat-title");
-          if (ct && !(activeS && (activeS.title || activeS.preview))) {
-            ct.textContent = (topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name) || "Zuhause";
-          }
+      }
+      function syncChatTitle(activeS) {
+        var ct = document.getElementById("chat-title");
+        if (!ct) return;
+        if ((location.hash || "").indexOf("#/p/start") === 0) {
+          ct.textContent = "Startseite";
+        } else if (isHouseholdActive(activeS) && !(activeS && (activeS.title || activeS.preview))) {
+          ct.textContent = (topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name) || "Zuhause";
+        } else {
+          ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat";
         }
+      }
+
+      function syncPinnedActive(activeS) {
+        householdBtn.classList.toggle("active", isHouseholdActive(activeS));
         if (typeof syncTabbar === "function") syncTabbar();
       }
 
+      var lastSessions = [];
+      // Re-derive + apply the header title from the last-known session list, so
+      // routing changes (#/p/start ⇄ chat) update it without a sessions fetch.
+      function refreshChatTitle() {
+        syncChatTitle(lastSessions.find(function (s) { return s.id === sessionId; }));
+      }
+      // Opening a real chat leaves a lingering portal route (#671), so the
+      // header title stops reading "Startseite" once we're back in a chat.
+      function leavePortal() {
+        if ((location.hash || "").indexOf("#/p/") === 0) location.hash = "";
+      }
+
       function renderSessions(list) {
+        lastSessions = list || [];
         // Mirror the active session's name into the chat header.
-        var activeS = (list || []).find(function (s) { return s.id === sessionId; });
-        var ct = document.getElementById("chat-title");
-        if (ct) { ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat"; }
-        // syncPinnedActive overrides the placeholder with "Zuhause" when this is
-        // the household chat (#281); it runs after the default is set above.
+        var activeS = lastSessions.find(function (s) { return s.id === sessionId; });
+        syncChatTitle(activeS);
         syncPinnedActive(activeS);
         sessionsEl.textContent = "";
         if (!list.length) {
@@ -3901,6 +3959,7 @@
         dropIncognitoSession();
         applyIncognito(false);
         closeRail();
+        leavePortal();
         showView("chat");
         fetch("/api/sessions/" + encodeURIComponent(id))
           .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
@@ -3975,6 +4034,7 @@
         loadSessions();
         loadTagCloud();
         closeRail();
+        leavePortal();
         showView("chat");
         input.focus();
       }
@@ -3990,6 +4050,7 @@
         loadSessions();
         loadTagCloud();
         closeRail();
+        leavePortal();
         showView("chat");
         input.focus();
       }
@@ -4052,6 +4113,9 @@
         tabFavorites.classList.toggle("active", onStart);
         tabHome.classList.toggle("active", onHome);
         tabChats.classList.toggle("active", onChats);
+        // The header title tracks the route too (#671): "Startseite" on start,
+        // the session/"Zuhause" title elsewhere.
+        refreshChatTitle();
       }
       window.addEventListener("hashchange", syncTabbar);
 
@@ -4479,6 +4543,7 @@
       // a single Bearbeiten toggle revealing per-card remove/reorder controls.
       function renderStartPage(card, data) {
         card.textContent = "";
+        card.classList.add("start-page");
         var head = document.createElement("div");
         head.className = "concept-head";
         var title = document.createElement("span");
@@ -4521,7 +4586,17 @@
         section("Meine Favoriten", data.personal || []);
         section("Haushalt", data.household || []);
 
-        var freq = (data.frequent || []).filter(function (f) { return f.kind === "action"; });
+        // Dedup by label (#672): the personal + household usage counters can
+        // carry the same action under two rows (e.g. "play_radio"), which would
+        // otherwise list it twice under "Häufig genutzt".
+        var seen = {};
+        var freq = (data.frequent || []).filter(function (f) {
+          if (f.kind !== "action") return false;
+          var key = f.label || "";
+          if (seen[key]) return false;
+          seen[key] = true;
+          return true;
+        });
         if (freq.length) {
           card.appendChild(conceptSectionTitle("Häufig genutzt"));
           var fwrap = document.createElement("div");
