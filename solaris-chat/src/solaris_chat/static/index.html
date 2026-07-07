@@ -429,12 +429,13 @@
     .ha-card.off .hc-badge { background: rgba(127,127,127,0.18); }
     .ha-card.hc-toggle { cursor: pointer; user-select: none; }
     .ha-card.hc-toggle:hover { border-color: var(--accent); }
-    /* #560: the light/switch on/off badge reads as a real toggle switch — a
+    /* #560/#686: the light/switch on/off badge reads as a real toggle switch — a
        pill track with a sliding knob that slides right + turns green when on,
-       grey/left when off. The state label text is hidden (it stays as the
-       accessible aria-label on the card). Driven by the card's .on/.off class. */
+       grey/left when off. It carries NO visible label (#686 dropped the clipped
+       "an"/"aus" text); state is the knob position + colour, the word lives only
+       in the card's aria-label/title. Driven by the card's .on/.off class. */
     .hc-badge.hc-switch {
-      position: relative; width: 34px; height: 18px; padding: 0;
+      position: relative; width: 34px; height: 18px; padding: 0; flex: 0 0 auto;
       border-radius: 999px; overflow: hidden; font-size: 0;
       transition: background 0.15s ease; vertical-align: middle;
     }
@@ -2178,9 +2179,19 @@
           // binary_sensor / cover / light / switch -> on/off-style badge.
           var onish = st === "on" || st === "open";
           card.classList.add(onish ? "on" : "off");
+          var isSwitch = c.domain === "light" || c.domain === "switch";
           var badge = document.createElement("span");
           badge.className = "hc-badge";
-          badge.textContent = haStateLabel(c.domain, st);
+          // #686: a light/switch renders as a pure knob+track switch — state is
+          // read from knob position + colour, so no visible (clippable) label;
+          // the on/off word stays only as the accessible aria-label/title.
+          // A read-only badge (binary_sensor / cover) keeps the visible label.
+          if (isSwitch) {
+            badge.setAttribute("aria-hidden", "true");
+            badge.title = haStateLabel(c.domain, st);
+          } else {
+            badge.textContent = haStateLabel(c.domain, st);
+          }
           // #550: every controllable card packs its on/off badge + its primary
           // controls onto ONE compact row (.hc-compact), like the #538 light.
           // A read-only badge (binary_sensor) keeps the badge directly.
@@ -2192,14 +2203,15 @@
           }
           badgeHost.appendChild(badge);
           // Phase 2 (#476): light/switch badge becomes an on/off toggle.
-          // #560: render it as a real on/off switch (state-reflecting, flips on
-          // click), not an ambiguous "an"/"aus" label — the badge text stays as
-          // the accessible label while the pill reads visually as a switch.
-          if (c.domain === "light" || c.domain === "switch") {
+          // #560/#686: render it as a real on/off switch (state-reflecting, flips
+          // on click) with no visible label — the on/off word is the card's
+          // aria-label so screen readers still announce state.
+          if (isSwitch) {
             badge.classList.add("hc-switch");
             card.classList.add("hc-toggle");
             card.setAttribute("role", "switch");
             card.setAttribute("aria-checked", onish ? "true" : "false");
+            card.setAttribute("aria-label", haStateLabel(c.domain, st));
             card.tabIndex = 0;
             var act = function () { haToggle(card, badge, c); };
             card.addEventListener("click", act);
@@ -2512,7 +2524,10 @@
           card.classList.toggle("off", !on);
           card.setAttribute("aria-checked", on ? "true" : "false");
           c.state = on ? "on" : "off";
-          badge.textContent = haStateLabel(c.domain, c.state);
+          // #686: the pill has no visible label; keep the accessible state in sync.
+          var lbl = haStateLabel(c.domain, c.state);
+          card.setAttribute("aria-label", lbl);
+          badge.title = lbl;
         };
         apply(!was);
         card.classList.add("busy");
