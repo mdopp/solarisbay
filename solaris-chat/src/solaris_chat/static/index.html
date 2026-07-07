@@ -576,6 +576,30 @@
        consistent baseline; the slider grows, the percent/toggle stay put. */
     .start-favs > .hc-row .hc-compact { align-items: center; }
     .start-frequent .hc-name, .start-frequent > span:first-child { flex: 1 1 auto; min-width: 0; }
+    /* Energy page (#682): headline sensors become prominent metric tiles (big
+       value + unit + label); circuits become a readable value-aligned list. The
+       page reuses the #672 full-viewport start-page treatment. */
+    .energy-tiles {
+      display: grid; gap: 10px; margin: 10px 0 4px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+    .energy-tile {
+      border: 1px solid var(--line); border-radius: 12px;
+      background: rgba(127,127,127,0.05); padding: 12px 14px;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .energy-tile .et-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: var(--ink); }
+    .energy-tile .et-value .et-unit { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+    .energy-tile .et-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .energy-circuits { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 2px; }
+    .energy-circuit {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 8px 10px; border-radius: 8px;
+    }
+    .energy-circuit:nth-child(odd) { background: rgba(127,127,127,0.05); }
+    .energy-circuit .ec-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .energy-circuit .ec-value { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 600; }
+    .energy-circuit .ec-unit { color: var(--muted); font-weight: 500; margin-left: 3px; }
     /* Card picker (#669): the "+ Karten hinzufügen" button lives beside
        Bearbeiten but only shows once the page is in edit mode; the overlay is a
        room-grouped grid of selectable tiles. */
@@ -1193,6 +1217,7 @@
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
     <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M5 21V9a7 7 0 0 1 14 0v12l-2.5-2-2 2-2-2-2 2-2-2z"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></symbol>
     <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 9.5V21h5v-6h4v6h5V9.5"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
   </svg>
 
   <aside class="rail">
@@ -1215,6 +1240,16 @@
         <span class="pin-ic"><svg class="ic"><use href="#i-home"></use></svg></span>
         <span class="title">Zuhause</span>
       </button>
+      <button class="session pinned" id="rail-favorites" type="button"
+              title="Favoriten — Startseite">
+        <span class="pin-ic"><svg class="ic"><use href="#i-star"></use></svg></span>
+        <span class="title">Favoriten</span>
+      </button>
+      <button class="session pinned" id="rail-energy" type="button"
+              title="Energie — Hausverbrauch">
+        <span class="pin-ic"><svg class="ic"><use href="#i-bolt"></use></svg></span>
+        <span class="title">Energie</span>
+      </button>
       <div id="sessions"></div>
     </div>
 
@@ -1228,8 +1263,6 @@
         <span class="admin-badge" id="admin-badge" hidden>Admin</span>
       </div>
       <div class="rail-links">
-        <a id="favorites-link" href="#/p/start">⭐ Favoriten</a>
-        <a id="energy-link" href="#/p/energy">Energie</a>
         <a id="release-link" href="https://github.com/mdopp/solarisbay/releases" target="_blank" rel="noopener">Release news</a>
         <a href="https://github.com/mdopp/solarisbay" target="_blank" rel="noopener">GitHub</a>
         <a id="logout-link" href="#" hidden>Log out</a>
@@ -4090,6 +4123,24 @@
       incognitoBtn.addEventListener("click", newIncognito);
       householdBtn.addEventListener("click", startHouseholdChat);
 
+      // Desktop rail nav (#681): Favoriten + Energie are prominent pinned
+      // entries beside Zuhause, not small footer links. Both route to their
+      // portal hash; syncTabbar lights the active one on its route.
+      var railFavorites = document.getElementById("rail-favorites");
+      var railEnergy = document.getElementById("rail-energy");
+      railFavorites.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/start") === 0) routeFromLocation();
+        else location.hash = "#/p/start";
+        syncTabbar();
+      });
+      railEnergy.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/energy") === 0) routeFromLocation();
+        else location.hash = "#/p/energy";
+        syncTabbar();
+      });
+
       // Mobile bottom tab bar (#648): the three tabs reuse existing behaviors,
       // no new routing model. Active state: Favoriten while on #/p/start,
       // Zuhause while the household chat is open, else neutral.
@@ -4124,11 +4175,16 @@
         // from the view (a non-household chat), not from rail-open.
         var railOpen = document.body.classList.contains("rail-open");
         var onStart = (location.hash || "").indexOf("#/p/start") === 0;
-        var onHome = !railOpen && !onStart && householdBtn.classList.contains("active");
-        var onChats = railOpen || (!onStart && !onHome);
+        var onEnergy = (location.hash || "").indexOf("#/p/energy") === 0;
+        var onHome = !railOpen && !onStart && !onEnergy && householdBtn.classList.contains("active");
+        var onChats = railOpen || (!onStart && !onEnergy && !onHome);
         tabFavorites.classList.toggle("active", onStart && !railOpen);
         tabHome.classList.toggle("active", onHome);
         tabChats.classList.toggle("active", onChats);
+        // Desktop rail entries (#681) highlight on their portal routes, mirroring
+        // the mobile tab highlighting.
+        railFavorites.classList.toggle("active", onStart);
+        railEnergy.classList.toggle("active", onEnergy);
         // The header title tracks the route too (#671): "Favoriten" on start,
         // the session/"Zuhause" title elsewhere.
         refreshChatTitle();
@@ -4487,6 +4543,9 @@
 
       function renderEnergyPage(card, e) {
         card.textContent = "";
+        // Full-viewport page like the favorites start page (#672/#682), not a
+        // narrow centered bubble.
+        card.classList.add("start-page");
         var head = document.createElement("div");
         head.className = "concept-head";
         var title = document.createElement("span");
@@ -4494,26 +4553,59 @@
         title.textContent = "Energie";
         head.appendChild(title);
         card.appendChild(head);
+        // Headlines → prominent metric tiles (big value + unit + label).
         if (e.headlines && e.headlines.length) {
-          var hl = document.createElement("ul");
-          hl.className = "concept-facts";
+          var tiles = document.createElement("div");
+          tiles.className = "energy-tiles";
           e.headlines.forEach(function (h) {
-            var li = document.createElement("li");
-            li.textContent = h.label + ": " + (h.state == null ? "?" : h.state) +
-              (h.unit ? " " + h.unit : "");
-            hl.appendChild(li);
+            var tile = document.createElement("div");
+            tile.className = "energy-tile";
+            var val = document.createElement("div");
+            val.className = "et-value";
+            val.textContent = h.state == null ? "—" : String(h.state);
+            if (h.unit) {
+              var u = document.createElement("span");
+              u.className = "et-unit";
+              u.textContent = h.unit;
+              val.appendChild(u);
+            }
+            var lbl = document.createElement("div");
+            lbl.className = "et-label";
+            lbl.textContent = h.label;
+            tile.appendChild(val);
+            tile.appendChild(lbl);
+            tiles.appendChild(tile);
           });
-          card.appendChild(hl);
+          card.appendChild(tiles);
         }
+        // Circuits → a readable value-aligned list, ordered by current power.
         if (e.circuits && e.circuits.length) {
           card.appendChild(conceptSectionTitle("Stromkreise"));
-          var wrap = document.createElement("div");
-          wrap.className = "ha-cards";
-          var group = document.createElement("div");
-          group.className = "ha-card hc-group";
-          e.circuits.forEach(function (c) { group.appendChild(renderHaCard(c, true)); });
-          wrap.appendChild(group);
-          card.appendChild(wrap);
+          var list = document.createElement("div");
+          list.className = "energy-circuits";
+          e.circuits
+            .slice()
+            .sort(function (a, b) { return circuitPower(b) - circuitPower(a); })
+            .forEach(function (c) {
+              var row = document.createElement("div");
+              row.className = "energy-circuit";
+              var name = document.createElement("span");
+              name.className = "ec-name";
+              name.textContent = c.name || c.entity_id || "";
+              var value = document.createElement("span");
+              value.className = "ec-value";
+              value.textContent = c.state == null ? "—" : String(c.state);
+              if (c.unit) {
+                var cu = document.createElement("span");
+                cu.className = "ec-unit";
+                cu.textContent = c.unit;
+                value.appendChild(cu);
+              }
+              row.appendChild(name);
+              row.appendChild(value);
+              list.appendChild(row);
+            });
+          card.appendChild(list);
         }
         if (!(e.headlines && e.headlines.length) && !(e.circuits && e.circuits.length)) {
           var none = document.createElement("p");
@@ -4521,6 +4613,12 @@
           none.textContent = "Keine Energie-Sensoren gefunden.";
           card.appendChild(none);
         }
+      }
+
+      // Numeric power of a circuit for sorting (unknown/non-numeric sink last).
+      function circuitPower(c) {
+        var n = parseFloat(c.state);
+        return isNaN(n) ? -Infinity : n;
       }
 
       // A brief non-blocking status line at the foot of a portal card (#646).
