@@ -250,6 +250,37 @@ class RestJellyfinMusicClient:
                 log.info("engine.ingest.jellyfin_reauth", path=path)
                 await self._reauthenticate()
 
+    async def _post_json(
+        self,
+        client: aiohttp.ClientSession,
+        path: str,
+        *,
+        params: dict | None = None,
+        json_body: dict | None = None,
+    ) -> dict[str, Any]:
+        """Authenticated POST with the same 401→reauth→retry loop as `_get_json`.
+        A 204-No-Content success (playlist_add) returns an empty dict."""
+        url = f"{self._base_url}{path}"
+        while True:
+            try:
+                async with client.post(
+                    url, params=params, json=json_body, headers=self._auth_headers()
+                ) as resp:
+                    if resp.status == 401:
+                        raise aiohttp.ClientResponseError(
+                            resp.request_info, resp.history, status=401
+                        )
+                    resp.raise_for_status()
+                    if resp.status == 204 or resp.content_length == 0:
+                        return {}
+                    return await resp.json()
+            except aiohttp.ClientResponseError as e:
+                if e.status != 401 or self._reauths >= self._MAX_REAUTH:
+                    raise
+                self._reauths += 1
+                log.info("engine.ingest.jellyfin_reauth", path=path)
+                await self._reauthenticate()
+
     async def lyrics(self, audio_id: str) -> str | None:
         """Fetch a track's lyrics live (#593): `GET /Audio/{id}/Lyrics`, authed
         as the read-only service user with the same re-auth-on-401 path as the
@@ -309,6 +340,51 @@ class RestJellyfinMusicClient:
             for f in (payload.get("Items") or [])
             if _str(f, "Id") and _str(f, "CollectionType").casefold() == "music"
         ]
+
+    async def playlists(self) -> list[tuple[str, str]]:
+        # No list-all /Playlists GET exists in Jellyfin; enumerate via the
+        # user-scoped /Items like libraries() does.
+        await self.authenticate()
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            payload = await self._get_json(
+                client,
+                "/Items",
+                params={
+                    "UserId": self._user_id,
+                    "IncludeItemTypes": "Playlist",
+                    "Recursive": "true",
+                },
+            )
+        return [
+            (_str(f, "Id"), _str(f, "Name"))
+            for f in (payload.get("Items") or [])
+            if _str(f, "Id")
+        ]
+
+    async def create_playlist(self, name: str, ids: list[str]) -> str:
+        await self.authenticate()
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            payload = await self._post_json(
+                client,
+                "/Playlists",
+                json_body={
+                    "Name": name,
+                    "UserId": self._user_id,
+                    "Ids": ids,
+                    "MediaType": "Audio",
+                },
+            )
+        return _str(payload, "Id")
+
+    async def playlist_add(self, playlist_id: str, ids: list[str]) -> bool:
+        await self.authenticate()
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            await self._post_json(
+                client,
+                f"/Playlists/{playlist_id}/Items",
+                params={"ids": ",".join(ids), "userId": self._user_id},
+            )
+        return True
 
     async def iter_library(self, library_id: str) -> AsyncIterator[JellyfinItem]:
         await self.authenticate()

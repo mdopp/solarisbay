@@ -19,7 +19,7 @@ async def _run() -> None:
     context_window = await build_context_window(
         settings.ollama_url, settings.context_window_override
     )
-    household, deep, admin, guest, recorder, bus = build_engine_clients(
+    household, deep, admin, guest, librarian, recorder, bus = build_engine_clients(
         db_path=settings.solaris_db_path,
         ollama_url=settings.ollama_url,
         fast_model=settings.fast_model,
@@ -56,6 +56,8 @@ async def _run() -> None:
         deep=deep,
         skills_dir=settings.skills_dir,
         context_window=context_window.value,
+        ingest_settings=settings,
+        librarian=librarian,
     )
     crons.start()
 

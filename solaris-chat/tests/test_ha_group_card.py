@@ -26,16 +26,18 @@ def test_multiple_entities_render_as_one_group_card():
     assert "hc-group" in body
     # The group iterates entities, rendering each via the shared per-entity card.
     assert "cards.forEach" in body
-    assert "renderHaCard(c, true)" in body
+    assert "renderHaCard(c, true, { pin: true })" in body
     # A single entity still renders one standalone card.
-    assert "renderHaCard(cards[0], false)" in body
+    assert "renderHaCard(cards[0], false, { pin: true })" in body
 
 
 def test_group_rows_reuse_the_per_entity_controls():
     # renderHaCard holds the phase-2/3 controls and is reused for group rows, so
     # each row carries toggle (light/switch), sliders (brightness/cover), colour,
     # and climate — no duplicated control code for the group case.
-    fn = re.search(r"function renderHaCard\(c, row\) \{(.*?)\n      \}", _HTML, re.S)
+    fn = re.search(
+        r"function renderHaCard\(c, row, opts\) \{(.*?)\n      \}", _HTML, re.S
+    )
     assert fn, "renderHaCard not found"
     body = fn.group(1)
     assert 'card.className = row ? "hc-row" : "ha-card";' in body
@@ -79,7 +81,9 @@ def test_room_grouping_renders_room_header_or_label():
 def test_light_card_is_compact_badge_and_slider_one_row():
     # #538: a light card packs the on/off badge + the brightness slider onto ONE
     # compact row (.hc-compact); the colour picker stays its own row below.
-    fn = re.search(r"function renderHaCard\(c, row\) \{(.*?)\n      \}", _HTML, re.S)
+    fn = re.search(
+        r"function renderHaCard\(c, row, opts\) \{(.*?)\n      \}", _HTML, re.S
+    )
     assert fn, "renderHaCard not found"
     body = fn.group(1)
     # The light routes its badge into a .hc-compact host instead of the card.
@@ -119,7 +123,9 @@ def test_all_controllable_cards_use_the_compact_one_row_layout():
     # #550: the #538 compact layout generalizes to every controllable card type
     # — switch/cover/light route the badge into a shared .hc-compact host, and
     # cover/media/climate lay their primary controls on that same compact row.
-    fn = re.search(r"function renderHaCard\(c, row\) \{(.*?)\n      \}", _HTML, re.S)
+    fn = re.search(
+        r"function renderHaCard\(c, row, opts\) \{(.*?)\n      \}", _HTML, re.S
+    )
     assert fn, "renderHaCard not found"
     body = fn.group(1)
     # light/switch/cover all build the shared compact badge host.
@@ -165,7 +171,9 @@ def test_all_controllable_cards_use_the_compact_one_row_layout():
 
     # #551: the now-playing media_player is the wide card — renderHaCard tags it
     # hc-span2 so it spans two base grid columns.
-    rc = re.search(r"function renderHaCard\(c, row\) \{(.*?)\n      \}", _HTML, re.S)
+    rc = re.search(
+        r"function renderHaCard\(c, row, opts\) \{(.*?)\n      \}", _HTML, re.S
+    )
     assert rc, "renderHaCard not found"
     rcb = rc.group(1)
     assert 'card.classList.add("hc-span2")' in rcb
@@ -197,7 +205,9 @@ def test_group_cards_lay_out_side_by_side_on_a_grid():
     body = fn.group(1)
     # Both the per-room groups and the single ungrouped group build a grid host.
     assert body.count('grid.className = "hc-grid"') == 2
-    assert "grid.appendChild(renderHaCard(c, true))" in body  # room-group rows
+    assert (
+        "grid.appendChild(renderHaCard(c, true, { pin: true }))" in body
+    )  # room-group rows
     assert "grid.appendChild(row)" in body  # ungrouped rows
     assert "group.appendChild(grid)" in body
     # CSS grid: a fixed base column width repeated to fill, degrading to 1 column;
@@ -252,7 +262,9 @@ def test_onoff_control_is_a_toggle_switch_not_a_label_button():
     # reflects the live state and flips on click — not an ambiguous "an"/"aus"
     # label-button. The badge gains the .hc-switch class, the card is a role=switch
     # with aria-checked tracking state, and it still routes through haToggle.
-    fn = re.search(r"function renderHaCard\(c, row\) \{(.*?)\n      \}", _HTML, re.S)
+    fn = re.search(
+        r"function renderHaCard\(c, row, opts\) \{(.*?)\n      \}", _HTML, re.S
+    )
     assert fn, "renderHaCard not found"
     body = fn.group(1)
     assert 'badge.classList.add("hc-switch")' in body

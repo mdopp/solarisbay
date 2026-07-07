@@ -81,6 +81,7 @@ class FakeSettings:
     jellyfin_username: str = ""
     jellyfin_password: str = ""
     jellyfin_library_owners: dict = field(default_factory=dict)
+    imap_accounts: tuple = ()
 
 
 @pytest.fixture
