@@ -3151,3 +3151,83 @@ async def test_ha_call_503_when_ha_not_configured(aiohttp_client):
     )
     assert resp.status == 503
     assert (await resp.json())["error"] == "ha_not_configured"
+
+
+async def test_portal_energy_history_503_when_ha_not_configured(aiohttp_client):
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/portal/energy/history")
+    assert resp.status == 503
+    assert (await resp.json())["error"] == "ha_unconfigured"
+
+
+async def test_portal_energy_history_maps_range_and_returns_series(
+    aiohttp_client, monkeypatch
+):
+    seen = {}
+
+    async def fake_history(hass_url, hass_token, hours):
+        seen["hours"] = hours
+        return {
+            "hours": hours,
+            "series": [
+                {
+                    "entity_id": "sensor.hausverbrauch",
+                    "label": "Hausverbrauch",
+                    "unit": "W",
+                    "points": [{"t": "2026-07-07T10:00:00+00:00", "v": 500.0}],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(server_mod, "fetch_energy_history", fake_history)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha.local",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/portal/energy/history?range=7d")
+    assert resp.status == 200
+    body = await resp.json()
+    assert seen["hours"] == 168
+    assert body["ok"] is True
+    assert body["history"]["series"][0]["label"] == "Hausverbrauch"
+
+    resp = await client.get("/api/portal/energy/history?range=24h")
+    assert resp.status == 200
+    assert seen["hours"] == 24
+
+    # No range → defaults to 24h.
+    resp = await client.get("/api/portal/energy/history")
+    assert resp.status == 200
+    assert seen["hours"] == 24
+
+
+async def test_portal_energy_history_502_when_ha_unavailable(
+    aiohttp_client, monkeypatch
+):
+    async def fake_history(hass_url, hass_token, hours):
+        return None
+
+    monkeypatch.setattr(server_mod, "fetch_energy_history", fake_history)
+    app = build_app(
+        hermes=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        hass_url="http://ha.local",
+        hass_token="tok",
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/portal/energy/history?range=24h")
+    assert resp.status == 502
+    assert (await resp.json())["error"] == "ha_unavailable"

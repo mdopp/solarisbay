@@ -255,24 +255,15 @@ _ENERGY_HEADLINES = (
 )
 
 
-async def fetch_energy(hass_url: str, hass_token: str) -> dict[str, Any] | None:
-    """Compose the home-energy picture from live HA state (read-only, #503).
+def _bucket_energy_states(
+    states: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Sort HA states into headline buckets + a per-circuit power list (#503).
 
-    One `/api/states` read; power/energy `device_class` sensors are sorted into
-    the headline buckets (Hausverbrauch/PV/Netzbezug/Einspeisung/Akku) plus a
-    per-circuit power list (the data the "Energieverbrauch" answer dumped as ~30
-    chat cards belongs on this page). Returns None on any HA error.
+    Shared by `fetch_energy` (live picture) and `fetch_energy_history` (which
+    needs the same headline entity_ids to query their history). First matching
+    headline wins; leftover power sensors fall through to the circuit list.
     """
-    headers = {"Authorization": f"Bearer {hass_token}"}
-    url = hass_url.rstrip("/")
-    try:
-        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
-            async with client.get(f"{url}/api/states", headers=headers) as resp:
-                if resp.status >= 400:
-                    return None
-                states = await resp.json()
-    except aiohttp.ClientError:
-        return None
     headlines: dict[str, dict[str, Any]] = {}
     circuits: list[dict[str, Any]] = []
     for s in states:
@@ -299,6 +290,28 @@ async def fetch_energy(hass_url: str, hass_token: str) -> dict[str, Any] | None:
         else:
             if dclass == "power":
                 circuits.append(spec)
+    return headlines, circuits
+
+
+async def fetch_energy(hass_url: str, hass_token: str) -> dict[str, Any] | None:
+    """Compose the home-energy picture from live HA state (read-only, #503).
+
+    One `/api/states` read; power/energy `device_class` sensors are sorted into
+    the headline buckets (Hausverbrauch/PV/Netzbezug/Einspeisung/Akku) plus a
+    per-circuit power list (the data the "Energieverbrauch" answer dumped as ~30
+    chat cards belongs on this page). Returns None on any HA error.
+    """
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                if resp.status >= 400:
+                    return None
+                states = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    headlines, circuits = _bucket_energy_states(states)
     circuits.sort(key=lambda c: c["name"].lower())
     return {
         "headlines": [
@@ -308,6 +321,95 @@ async def fetch_energy(hass_url: str, hass_token: str) -> dict[str, Any] | None:
         ],
         "circuits": circuits,
     }
+
+
+def _downsample(points: list[dict[str, Any]], target: int) -> list[dict[str, Any]]:
+    """Thin a time-series to ~target points by even stride, keeping the last one
+    so the trend ends at "now"."""
+    if len(points) <= target:
+        return points
+    step = len(points) / target
+    kept = [points[int(i * step)] for i in range(target)]
+    if kept[-1] is not points[-1]:
+        kept.append(points[-1])
+    return kept
+
+
+async def fetch_energy_history(
+    hass_url: str, hass_token: str, hours: int
+) -> dict[str, Any] | None:
+    """Per-series power history for the headline energy sensors (#689).
+
+    Resolves the same headline sensors `fetch_energy` finds (one `/api/states`
+    read, reusing its bucketing), then one batched `/api/history/period` query
+    for their entity_ids. Each series is downsampled to a small point count so
+    the payload stays light. Returns None on any HA error; empty `series` when
+    no headline sensors resolve (the frontend degrades gracefully).
+    """
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    target = 48 if hours <= 24 else 84
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                if resp.status >= 400:
+                    return None
+                states = await resp.json()
+            headlines, _ = _bucket_energy_states(states)
+            ordered = [
+                {**headlines[key], "label": label}
+                for key, label, _ in _ENERGY_HEADLINES
+                if key in headlines
+            ]
+            if not ordered:
+                return {"hours": hours, "series": []}
+            end = datetime.now(UTC)
+            start = end - timedelta(hours=hours)
+            params = {
+                "filter_entity_id": ",".join(h["entity_id"] for h in ordered),
+                "end_time": end.isoformat(),
+                "minimal_response": "true",
+                "no_attributes": "true",
+            }
+            async with client.get(
+                f"{url}/api/history/period/{start.isoformat()}",
+                params=params,
+                headers=headers,
+            ) as resp:
+                if resp.status >= 400:
+                    return None
+                body = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    # HA returns one list per entity, but not necessarily in the requested
+    # order — key each returned list by its first point's entity_id.
+    by_eid: dict[str, list[dict[str, Any]]] = {}
+    for run in body if isinstance(body, list) else []:
+        if run and isinstance(run, list):
+            eid = str(run[0].get("entity_id") or "")
+            if eid:
+                by_eid[eid] = run
+    series = []
+    for h in ordered:
+        raw = by_eid.get(h["entity_id"], [])
+        points = []
+        for p in raw:
+            when = p.get("last_changed") or p.get("last_updated")
+            try:
+                val = float(p.get("state"))
+            except (TypeError, ValueError):
+                continue
+            if when:
+                points.append({"t": when, "v": val})
+        series.append(
+            {
+                "entity_id": h["entity_id"],
+                "label": h["label"],
+                "unit": h.get("unit"),
+                "points": _downsample(points, target),
+            }
+        )
+    return {"hours": hours, "series": series}
 
 
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")

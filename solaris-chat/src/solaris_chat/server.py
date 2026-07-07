@@ -51,6 +51,7 @@ from solaris_chat.engine.tools.ha import (
     fetch_addable_cards,
     fetch_card,
     fetch_energy,
+    fetch_energy_history,
 )
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
 from solaris_chat.logging import log
@@ -1599,6 +1600,25 @@ def build_app(
             )
         return web.json_response({"ok": True, "energy": energy})
 
+    async def portal_energy_history(request: web.Request) -> web.Response:
+        """Power history for the energy page's 24h/7d trend chart (#689).
+
+        Same read-only Authelia-gated pattern as `portal_energy`; `range=24h|7d`
+        selects the window (default 24h). 503 when HA is unconfigured, 502 when
+        it is unavailable.
+        """
+        if not hass_url or not hass_token:
+            return web.json_response(
+                {"ok": False, "error": "ha_unconfigured"}, status=503
+            )
+        hours = 168 if request.query.get("range") == "7d" else 24
+        history = await fetch_energy_history(hass_url, hass_token, hours)
+        if history is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unavailable"}, status=502
+            )
+        return web.json_response({"ok": True, "history": history})
+
     async def portal_page(_request: web.Request) -> web.Response:
         # Bookmarkable deep-link to a household page: serve the SPA shell; the
         # client router reads the `/p/<type>` path and renders from the API.
@@ -2202,6 +2222,7 @@ def build_app(
     app.router.add_get("/api/concept/{id}", concept_view)
     app.router.add_get("/c/{id}", concept_page)
     app.router.add_get("/api/portal/energy", portal_energy)
+    app.router.add_get("/api/portal/energy/history", portal_energy_history)
     app.router.add_get("/api/portal/start", portal_start)
     app.router.add_get("/api/portal/start/addable", portal_start_addable)
     app.router.add_post("/api/favorites", favorites_create)
