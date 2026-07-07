@@ -761,7 +761,13 @@
     .md blockquote { margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
     .md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
 
-    .activity { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .activity { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+    /* Progressive status line (#695): after a few seconds the bare "thinking…"
+       gains a compact live line — elapsed time · model · current tool/steps.
+       Hidden until revealed so short turns stay clean; wraps under the dots on
+       narrow widths without shifting them. */
+    .activity-status { color: var(--muted); opacity: 0.7; font-size: 12px; }
+    .activity-status .as-sep { opacity: 0.5; margin: 0 5px; }
     .dots { display: inline-flex; gap: 3px; }
     .dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); opacity: 0.4; animation: blink 1.2s infinite ease-in-out; }
     .dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -3018,6 +3024,22 @@
         scrollDown(true);
       }
 
+      // Friendly German label for a running tool (#695). Falls back to the raw
+      // tool name so an unmapped tool still reads sensibly in the status line.
+      var TOOL_LABELS = {
+        ha_list_entities: "prüfe Geräte",
+        ha_call_service: "steuere Geräte",
+        play_music: "starte Musik",
+        notes_search: "suche in Notizen",
+        notes_read: "lese Notizen",
+        web_search: "suche im Web",
+        web_fetch: "lese Webseite",
+        memory_search: "durchsuche Erinnerungen",
+      };
+      function toolLabel(name) {
+        return TOOL_LABELS[name] || String(name || "tool");
+      }
+
       function addAssistant() {
         var el = document.createElement("div");
         el.className = "msg sol";
@@ -3025,7 +3047,8 @@
         activity.className = "activity";
         activity.innerHTML =
           '<span class="dots"><span></span><span></span><span></span></span>' +
-          '<span class="activity-text">thinking…</span>';
+          '<span class="activity-text">thinking…</span>' +
+          '<span class="activity-status" hidden></span>';
         el.appendChild(activity);
         // Reasoning (#231) renders as its own collapsible block above the
         // answer. gemma4 delivers it in one shot near turn-end (a distinct
@@ -3062,6 +3085,32 @@
         var started = Date.now();
         var done = false;
         function fmtSecs(s) { return (typeof s === "number" ? s.toFixed(1) : "?") + "s"; }
+
+        // Progressive status line (#695): stays hidden for the first few seconds
+        // so short turns keep the bare indicator, then ticks elapsed time + the
+        // answering model + live tool/step activity. The model label is derived
+        // client-side from the persona speed (schnell vs the Thinking/deep mode).
+        var statusEl = activity.querySelector(".activity-status");
+        var modelLabel = currentReasoning() === "high" ? "Solaris Gründlich" : "Solaris schnell";
+        var curTool = null, doneSteps = 0;
+        var STATUS_DELAY_MS = 3500;
+        function renderStatus() {
+          if (done || !statusEl) return;
+          var elapsed = Math.round((Date.now() - started) / 1000);
+          if (elapsed * 1000 < STATUS_DELAY_MS) return;
+          var parts = [elapsed + " s", modelLabel];
+          if (curTool) parts.push(toolLabel(curTool) + "…");
+          else if (doneSteps > 0) parts.push(doneSteps + (doneSteps === 1 ? " Schritt fertig" : " Schritte fertig"));
+          statusEl.innerHTML = parts.map(function (p) {
+            var span = document.createElement("span"); span.textContent = p; return span.outerHTML;
+          }).join('<span class="as-sep">·</span>');
+          statusEl.hidden = false;
+        }
+        var statusTimer = setInterval(renderStatus, 1000);
+        function stopStatus() {
+          if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+          if (statusEl) statusEl.hidden = true;
+        }
         return {
           setActivity: function (txt) { var t = activity.querySelector(".activity-text"); if (t) t.textContent = txt; },
           // A completed LLM pass (#347/#406): persona/model + tokens + duration.
@@ -3083,6 +3132,7 @@
             openRow.innerHTML = '<span class="ab-label"></span><span class="ab-num">…</span>';
             openRow.querySelector(".ab-label").textContent = label;
             bubbleRows.appendChild(openRow); bubbleCount++; syncSummary();
+            curTool = label; renderStatus();
             scrollDown(atBottom());
           },
           endStep: function (wallS) {
@@ -3090,6 +3140,7 @@
             openRow.classList.remove("running");
             openRow.querySelector(".ab-num").textContent = fmtSecs(wallS);
             openRow = null;
+            curTool = null; doneSteps++; renderStatus();
           },
           // Read-only HA cards for the turn (#475), rendered under the answer
           // body as the cards event arrives near turn-end.
@@ -3134,6 +3185,7 @@
           },
           append: function (delta) {
             var stick = atBottom();
+            stopStatus();
             if (activity.parentNode) el.removeChild(activity);
             buffer += delta;
             body.innerHTML = renderReply(buffer);
@@ -3141,6 +3193,7 @@
           },
           finish: function () {
             if (done) return; done = true;
+            stopStatus();
             if (activity.parentNode) el.removeChild(activity);
             // The live bubble was the during-turn view; the persisted rich step
             // list (loadSessionTrace, #406) now replaces it as the single trace
@@ -3156,6 +3209,7 @@
           },
           stopped: function () {
             if (done) return; done = true;
+            stopStatus();
             // Keep whatever streamed before the stop, with a "stopped" note (#192).
             if (activity.parentNode) el.removeChild(activity);
             // Mirror finish() (#406): drop the live bubble so the persisted step
@@ -3170,7 +3224,7 @@
             el.appendChild(meta);
             scrollDown(atBottom());
           },
-          fail: function (msg) { if (activity.parentNode) el.removeChild(activity); el.className = "msg system"; body.textContent = msg; },
+          fail: function (msg) { stopStatus(); if (activity.parentNode) el.removeChild(activity); el.className = "msg system"; body.textContent = msg; },
           // Resume support (#452): a mobile transport drop rejects the fetch
           // reader mid-stream, but the turn usually finished server-side and is
           // persisted. hasContent() lets the caller tell a partial render from a
@@ -3180,6 +3234,7 @@
           contentLength: function () { return buffer.length; },
           replace: function (raw) {
             if (done) return; done = true;
+            stopStatus();
             if (activity.parentNode) el.removeChild(activity);
             if (bubble && bubble.parentNode) el.removeChild(bubble);
             buffer = String(raw == null ? "" : raw);
