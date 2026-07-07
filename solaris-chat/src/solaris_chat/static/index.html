@@ -913,9 +913,11 @@
 
     /* ---------- Mobile ---------- */
     @media (max-width: 760px) {
-      /* One merged header (#411): burger · chat caption · Solaris wordmark.
-         The standalone .topbar is gone — these were two stacked bars. */
-      .header-burger { display: inline-flex; }
+      /* One merged header (#411): chat caption · Solaris wordmark.
+         The standalone .topbar is gone — these were two stacked bars. The
+         burger is hidden on mobile (#667): the bottom bar's "Chats" tab now
+         opens the rail drawer, so the header toggle is redundant. */
+      .header-burger { display: none; }
       .brand-wordmark { display: inline-flex; align-items: baseline; }
       .rail {
         position: fixed; top: 0; left: 0; bottom: 0; z-index: 30;
@@ -946,7 +948,12 @@
         font-size: 10.5px; line-height: 1;
       }
       #tabbar button .ic { width: 22px; height: 22px; }
-      #tabbar button.active { color: var(--accent); }
+      /* Active tab (#667): clear accent highlight — colour, weight, a soft
+         tint and a top indicator bar so it reads as selected at a glance. */
+      #tabbar button.active {
+        color: var(--accent); font-weight: 600;
+        background: var(--accent-soft); box-shadow: inset 0 2px 0 var(--accent);
+      }
       /* Leave room for the tab bar so the composer/log are never covered. */
       .composer-bar { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
     }
@@ -3975,15 +3982,28 @@
         if (location.hash) location.hash = "";
         closeRail();
         startHouseholdChat();
+        syncTabbar();
       });
-      tabChats.addEventListener("click", function () { document.body.classList.add("rail-open"); });
-      tabFavorites.addEventListener("click", function () { location.hash = "#/p/start"; });
+      tabChats.addEventListener("click", function () {
+        document.body.classList.add("rail-open");
+        syncTabbar();
+      });
+      // Favoriten navigates to the standalone #/p/start page (#668). Re-tapping
+      // while already there sets the same hash (no hashchange), so route
+      // explicitly rather than relying on the hashchange listener.
+      tabFavorites.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/start") === 0) routeFromLocation();
+        else location.hash = "#/p/start";
+        syncTabbar();
+      });
       function syncTabbar() {
         var onStart = (location.hash || "").indexOf("#/p/start") === 0;
-        var onHome = !onStart && householdBtn.classList.contains("active");
+        var onChats = !onStart && document.body.classList.contains("rail-open");
+        var onHome = !onStart && !onChats && householdBtn.classList.contains("active");
         tabFavorites.classList.toggle("active", onStart);
         tabHome.classList.toggle("active", onHome);
-        tabChats.classList.toggle("active", false);
+        tabChats.classList.toggle("active", onChats);
       }
       window.addEventListener("hashchange", syncTabbar);
 
@@ -4305,6 +4325,10 @@
       function openPortal(type) {
         if (type !== "energy" && type !== "start") { showView("chat"); return; }
         closeRail();
+        // A portal (#/p/start, #/p/energy) is a standalone page, not another
+        // card stacked on the current chat (#668): clear the transcript so it
+        // fills the view — and re-tapping Favoriten doesn't pile up duplicates.
+        clearLog();
         var card = document.createElement("div");
         card.className = "msg info concept-card";
         card.textContent = "Lade…";

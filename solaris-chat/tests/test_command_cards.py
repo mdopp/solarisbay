@@ -286,17 +286,19 @@ def test_pinned_household_row_opens_the_durable_session():
     assert pre and "pendingTopic = HOUSEHOLD_TOPIC;" in pre.group(1)
 
 
-def test_burger_and_wordmark_are_mobile_only():
-    # On desktop the rail provides this chrome, so both are hidden; the mobile
-    # media query reveals them.
+def test_wordmark_mobile_only_burger_hidden_everywhere():
+    # On desktop the rail provides this chrome, so both are hidden. The mobile
+    # media query reveals the wordmark, but the burger stays hidden on mobile
+    # too (#667): the bottom bar's "Chats" tab opens the rail drawer, so the
+    # header burger is redundant there.
     assert ".header-burger { display: none; }" in _HTML
     assert ".brand-wordmark { display: none; }" in _HTML
     mobile = re.search(
-        r"@media \(max-width: 760px\) \{\s*/\* One merged header.*?\.header-burger \{ display: inline-flex; \}",
+        r"@media \(max-width: 760px\) \{\s*/\* One merged header.*?\.header-burger \{ display: none; \}",
         _HTML,
         re.S,
     )
-    assert mobile, "mobile reveal of the merged header missing"
+    assert mobile, "mobile header block missing"
 
 
 def test_ha_card_phase3_controls_act_via_the_scoped_endpoint():
