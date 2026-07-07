@@ -153,6 +153,66 @@ async def test_frequent_excluded_from_curated(aiohttp_client, tmp_path):
     assert j["frequent"] and j["frequent"][0]["kind"] == "action"
 
 
+async def test_addable_groups_by_room_and_marks_state(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    """The picker aggregator (#669) groups controllable actuators by room,
+    marks the already-pinned one, and flags a garage cover as sensitive."""
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "Bürolicht", {"entity_id": "light.buero"}
+    )
+
+    async def _fake_addable(url, token, entity_area):
+        return [
+            ha.card_spec("light.buero", "on", {"friendly_name": "Bürolicht"})
+            | {"room": "Büro"},
+            ha.card_spec("light.kueche", "off", {"friendly_name": "Küchenlicht"})
+            | {"room": "Küche"},
+            ha.card_spec(
+                "cover.garage",
+                "closed",
+                {"friendly_name": "Garagentor", "device_class": "garage"},
+            )
+            | {"room": "Garage"},
+        ]
+
+    async def _fake_snapshot(self):
+        from solaris_chat.engine.areas import AreaSnapshot
+
+        return AreaSnapshot(rooms=[], entity_area={})
+
+    monkeypatch.setattr("solaris_chat.server.fetch_addable_cards", _fake_addable)
+    monkeypatch.setattr(
+        "solaris_chat.engine.areas.AreaRegistry.snapshot", _fake_snapshot
+    )
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get("/api/portal/start/addable", headers={"Remote-User": "mdopp"})
+    ).json()
+    rooms = {g["room"]: g["cards"] for g in j["rooms"]}
+    assert rooms["Büro"][0]["pinned"] is True
+    assert rooms["Küche"][0]["pinned"] is False
+    assert rooms["Garage"][0]["sensitive"] is True
+    assert rooms["Küche"][0]["sensitive"] is False
+
+
+async def test_addable_503_without_ha(aiohttp_client, tmp_path):
+    app = _app(tmp_path)  # no hass_url/hass_token
+    client = await aiohttp_client(app)
+    r = await client.get("/api/portal/start/addable", headers={"Remote-User": "mdopp"})
+    assert r.status == 503
+
+
 async def test_create_delete_reorder(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     app = build_app(

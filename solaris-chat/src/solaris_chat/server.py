@@ -44,9 +44,11 @@ from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
+from solaris_chat.engine.areas import AreaRegistry
 from solaris_chat.engine.tools.ha import (
     _SERVICE_ALIASES,
     call_service_scoped,
+    fetch_addable_cards,
     fetch_card,
     fetch_energy,
 )
@@ -1604,6 +1606,13 @@ def build_app(
             STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
         )
 
+    # Room data for the start-page picker (#669): a long-lived registry so the
+    # WS snapshot is TTL-cached across picker opens (same source as the engine's
+    # `list_rooms`). Only built when HA is configured.
+    area_registry = (
+        AreaRegistry(hass_url, hass_token) if hass_url and hass_token else None
+    )
+
     def _action_is_sensitive(payload: dict[str, Any]) -> bool:
         """Re-check whether a pinned action would be confirm-gated (#646).
 
@@ -1668,6 +1677,46 @@ def build_app(
                 "frequent": frequent,
             }
         )
+
+    async def portal_start_addable(request: web.Request) -> web.Response:
+        """Addable entity cards for the start-page picker, grouped by room (#669).
+
+        The resident opens the picker in edit mode and ticks cards to pin. This
+        lists the house's controllable actuators (reusing the room-card domain
+        set + live state), grouped by room, marking those already pinned
+        (personal or household) so they aren't offered twice. A cover whose
+        one-tap toggle would be confirm-gated (garage/door/gate) is marked
+        `sensitive` — the client renders it disabled, mirroring the pin-time
+        refusal the favorites store enforces for actions."""
+        if not hass_url or not hass_token or area_registry is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unconfigured"}, status=503
+            )
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        snap = await area_registry.snapshot()
+        cards = await fetch_addable_cards(hass_url, hass_token, snap.entity_area)
+        if cards is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unavailable"}, status=502
+            )
+        pinned = {
+            str(f["payload"].get("entity_id") or "")
+            for f in favorites_store.list_favorites(solaris_db_path, uid)
+            if f["kind"] == "entity"
+        }
+        rooms: dict[str, list[dict[str, Any]]] = {}
+        for card in cards:
+            eid = str(card.get("entity_id") or "")
+            card["pinned"] = eid in pinned
+            card["sensitive"] = card.get("domain") == "cover" and confirm.is_sensitive(
+                "cover", "toggle", card.get("device_class")
+            )
+            rooms.setdefault(card.pop("room") or "", []).append(card)
+        grouped = [
+            {"room": room, "cards": rooms[room]}
+            for room in sorted(rooms, key=lambda r: (r == "", r.lower()))
+        ]
+        return web.json_response({"ok": True, "rooms": grouped})
 
     async def favorites_create(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
@@ -2154,6 +2203,7 @@ def build_app(
     app.router.add_get("/c/{id}", concept_page)
     app.router.add_get("/api/portal/energy", portal_energy)
     app.router.add_get("/api/portal/start", portal_start)
+    app.router.add_get("/api/portal/start/addable", portal_start_addable)
     app.router.add_post("/api/favorites", favorites_create)
     app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
     app.router.add_put("/api/favorites/{fav_id}", favorites_reorder)
