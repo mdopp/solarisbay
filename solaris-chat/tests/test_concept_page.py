@@ -392,6 +392,106 @@ async def test_anchors_resolve_degrades_when_db_missing(aiohttp_client, tmp_path
     assert (await resp.json())["resolved"] == {}
 
 
+async def test_anchors_aliases_lists_okf_names_and_aliases(aiohttp_client, tmp_path):
+    # #694: the auto-linkify index exposes each OKF entity's canonical name and
+    # its aliases, both pointing at the entity id its concept page resolves under.
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/anchors/aliases", headers={"Remote-User": "mdopp"})
+    assert resp.status == 200
+    aliases = (await resp.json())["aliases"]
+    pairs = {(a["alias"], a["id"]) for a in aliases}
+    assert ("Anna", "ent-anna") in pairs
+    assert ("Anni", "ent-anna") in pairs
+    # Longest-alias-first ordering so the client prefers the most specific match.
+    lengths = [len(a["alias"]) for a in aliases]
+    assert lengths == sorted(lengths, reverse=True)
+
+
+async def test_anchors_aliases_per_resident(aiohttp_client, tmp_path):
+    # lena's index never surfaces mdopp's "Anna" (linkable_aliases is owner-scoped).
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/anchors/aliases", headers={"Remote-User": "lena"})
+    ids = {a["id"] for a in (await resp.json())["aliases"]}
+    assert ids == {"ent-anna-lena"}
+
+
+async def test_anchors_aliases_includes_ha_names_and_ids(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # #694: HA entities contribute both friendly_name and entity_id, each →
+    # the raw entity_id (which /c/<id> takes directly). A ≤2-char alias is
+    # dropped so the client-side regex stays cheap.
+    async def _fake_names(url, token):
+        return [
+            {"entity_id": "light.sofalicht", "name": "Sofalicht"},
+            {"entity_id": "switch.fernseher", "name": "Fernseher"},
+            {"entity_id": "sensor.x", "name": "TV"},  # ≤2 chars → dropped
+        ]
+
+    monkeypatch.setattr("solaris_chat.server.fetch_entity_names", _fake_names)
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get("/api/anchors/aliases", headers={"Remote-User": "mdopp"})
+    pairs = {(a["alias"], a["id"]) for a in (await resp.json())["aliases"]}
+    assert ("Sofalicht", "light.sofalicht") in pairs
+    assert ("light.sofalicht", "light.sofalicht") in pairs
+    assert ("Fernseher", "switch.fernseher") in pairs
+    # The ≤2-char friendly_name never enters the index (its entity_id still can).
+    assert not any(a[0] == "TV" for a in pairs)
+
+
+async def test_anchors_aliases_cached_across_calls(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # The index is server-cached (TTL) per uid: a second call within the window
+    # does not re-hit HA.
+    calls = {"n": 0}
+
+    async def _fake_names(url, token):
+        calls["n"] += 1
+        return [{"entity_id": "light.sofalicht", "name": "Sofalicht"}]
+
+    monkeypatch.setattr("solaris_chat.server.fetch_entity_names", _fake_names)
+    app = build_app(
+        hermes=object(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=_db(tmp_path),
+        notes_dir=_notes(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+    client = await aiohttp_client(app)
+    for _ in range(2):
+        resp = await client.get(
+            "/api/anchors/aliases", headers={"Remote-User": "mdopp"}
+        )
+        assert resp.status == 200
+    assert calls["n"] == 1
+
+
 async def test_concept_shell_serves_spa(aiohttp_client, tmp_path):
     app = build_app(
         hermes=object(),

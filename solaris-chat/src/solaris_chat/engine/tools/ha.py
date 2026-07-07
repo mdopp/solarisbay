@@ -205,6 +205,32 @@ async def fetch_card(
     return card_spec(entity_id, body.get("state"), body.get("attributes") or {})
 
 
+async def fetch_entity_names(
+    hass_url: str, hass_token: str
+) -> list[dict[str, str]] | None:
+    """`[{entity_id, name}]` for every HA entity, for the auto-linkify index
+    (#694). One read-only `/api/states`; `name` is the friendly_name (falling
+    back to the entity_id). Returns None on any HA error."""
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                if resp.status >= 400:
+                    return None
+                states = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    names: list[dict[str, str]] = []
+    for s in states:
+        eid = str(s.get("entity_id") or "")
+        if not eid:
+            continue
+        attrs = s.get("attributes") or {}
+        names.append({"entity_id": eid, "name": str(attrs.get("friendly_name") or eid)})
+    return names
+
+
 async def fetch_addable_cards(
     hass_url: str, hass_token: str, entity_area: dict[str, str]
 ) -> list[dict[str, Any]] | None:

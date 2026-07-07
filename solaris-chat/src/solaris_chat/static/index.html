@@ -2175,6 +2175,90 @@
           .catch(function () {});
       }
 
+      // Deterministic entity auto-linking (#694): the small household model
+      // rarely emits [[..]]/ANCHORS, so upgrade known references in a rendered
+      // ASSISTANT reply to concept-page links in code. Fetches a bounded alias
+      // index once (HA friendly_names + entity_ids, OKF canonical names +
+      // aliases → #/c/<id>), builds one case-insensitive whole-word regex from
+      // it (longest alias first), and links the FIRST occurrence per reply of
+      // each id — skipping code/pre and existing links. Raw entity_id tokens
+      // survive markdown (#693) and match as their own alias. Cached in memory,
+      // refreshed lazily; a failed/empty fetch is a no-op (chips still work).
+      var _aliasIndex = null, _aliasPromise = null;
+      function loadAliasIndex() {
+        if (_aliasIndex) return Promise.resolve(_aliasIndex);
+        if (_aliasPromise) return _aliasPromise;
+        _aliasPromise = fetch("/api/anchors/aliases")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            var aliases = (j && j.ok && j.aliases) || [];
+            _aliasIndex = buildAliasIndex(aliases);
+            _aliasPromise = null;
+            return _aliasIndex;
+          })
+          .catch(function () { _aliasPromise = null; return null; });
+        return _aliasPromise;
+      }
+      function buildAliasIndex(aliases) {
+        // longest-alias-first so the regex prefers the most specific match.
+        var sorted = aliases.slice().sort(function (a, b) {
+          return b.alias.length - a.alias.length;
+        });
+        var byLower = {}, parts = [];
+        sorted.forEach(function (row) {
+          var lower = row.alias.toLowerCase();
+          if (byLower[lower]) return;
+          byLower[lower] = row.id;
+          parts.push(row.alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        });
+        // \b doesn't fence dotted entity_ids or non-ASCII names, so bound the
+        // match on non-word / string edge explicitly.
+        var re = parts.length
+          ? new RegExp("(^|[^\\w.])(" + parts.join("|") + ")(?![\\w.])", "gi")
+          : null;
+        return { re: re, byLower: byLower };
+      }
+      function autoLinkifyEntities(rootEl) {
+        if (!rootEl) return;
+        loadAliasIndex().then(function (idx) {
+          if (!idx || !idx.re) return;
+          var linked = {}; // id -> first occurrence already linked this reply
+          var walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, null);
+          var nodes = [], node;
+          while ((node = walker.nextNode())) {
+            var p = node.parentNode;
+            if (p && (p.closest("code") || p.closest("pre") || p.closest("a"))) continue;
+            nodes.push(node);
+          }
+          nodes.forEach(function (textNode) {
+            var text = textNode.nodeValue, last = 0, m;
+            var frag = null;
+            idx.re.lastIndex = 0;
+            while ((m = idx.re.exec(text))) {
+              var id = idx.byLower[m[2].toLowerCase()];
+              if (!id || linked[id]) continue; // first occurrence per id only
+              linked[id] = true;
+              frag = frag || document.createDocumentFragment();
+              var matchStart = m.index + m[1].length;
+              if (matchStart > last) {
+                frag.appendChild(document.createTextNode(text.slice(last, matchStart)));
+              }
+              var a = document.createElement("a");
+              a.className = "wikilink resolved";
+              a.href = "#/c/" + encodeURIComponent(id);
+              a.textContent = m[2];
+              a.title = m[2] + " öffnen";
+              frag.appendChild(a);
+              last = matchStart + m[2].length;
+            }
+            if (frag) {
+              if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+              textNode.parentNode.replaceChild(frag, textNode);
+            }
+          });
+        });
+      }
+
       // One entity's card. `row` renders it as a compact group row (no card
       // chrome) reusing the same controls; otherwise as a standalone card.
       function renderHaCard(c, row, opts) {
@@ -3066,6 +3150,7 @@
             else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
             linkifyWikiLinks(body);
+            autoLinkifyEntities(body);
             el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
           },
@@ -3076,7 +3161,7 @@
             // Mirror finish() (#406): drop the live bubble so the persisted step
             // list stays the single trace surface, with no ghost on a stopped turn.
             if (bubble && bubble.parentNode) el.removeChild(bubble);
-            if (buffer) { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); renderMermaidIn(body); linkifyWikiLinks(body); }
+            if (buffer) { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); renderMermaidIn(body); linkifyWikiLinks(body); autoLinkifyEntities(body); }
             else { body.textContent = "(stopped)"; }
             var note = document.createElement("span");
             note.className = "stopped-note"; note.textContent = "stopped";
@@ -3102,6 +3187,7 @@
             else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
             linkifyWikiLinks(body);
+            autoLinkifyEntities(body);
             el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
           }
@@ -4113,6 +4199,7 @@
                 body.innerHTML = renderReply(m.content);
                 renderMermaidIn(body);
                 linkifyWikiLinks(body);
+                autoLinkifyEntities(body);
                 el.appendChild(body);
                 if (ts) el.appendChild(metaLine(ts));
                 log.appendChild(el);
@@ -5255,6 +5342,7 @@
           body.innerHTML = renderReply(body.getAttribute("data-raw"));
           renderMermaidIn(body);
           linkifyWikiLinks(body);
+          autoLinkifyEntities(body);
         });
       }
       thinkBtns.forEach(function (b) {

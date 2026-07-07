@@ -28,6 +28,36 @@ def test_log_first_child_pushed_to_bottom():
     assert "justify-content: flex-end" not in body
 
 
+def test_auto_linkify_pass_wired_and_scoped_to_assistant():
+    # #694: the deterministic entity auto-linker fetches the bounded alias index,
+    # builds one case-insensitive whole-word regex, links the first occurrence
+    # per id into a `wikilink resolved` #/c/<id> link, and skips code/pre/links.
+    assert "function autoLinkifyEntities(rootEl)" in _HTML
+    assert '"/api/anchors/aliases"' in _HTML
+    fn = re.search(
+        r"function autoLinkifyEntities\(rootEl\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert fn, "autoLinkifyEntities body not found"
+    body = fn.group(1)
+    # First occurrence per id only; upgrades to the shared resolved-link style.
+    assert "if (!id || linked[id]) continue;" in body
+    assert 'a.className = "wikilink resolved";' in body
+    assert 'a.href = "#/c/" + encodeURIComponent(id);' in body
+    # Skip code/pre/existing links (same guard the [[..]] pass uses).
+    assert 'p.closest("code") || p.closest("pre") || p.closest("a")' in body
+    # The regex is built once from the alias list (longest-first), not per word.
+    build = re.search(
+        r"function buildAliasIndex\(aliases\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert build, "buildAliasIndex not found"
+    assert "b.alias.length - a.alias.length" in build.group(1)
+    # Runs on assistant bodies, never on the user's own bubble (only .msg.sol
+    # render paths call it; the two `linkifyWikiLinks(el)` user-bubble sites
+    # do not get an autoLinkifyEntities(el) sibling).
+    assert "autoLinkifyEntities(el)" not in _HTML
+    assert _HTML.count("autoLinkifyEntities(body)") >= 4
+
+
 def test_visual_viewport_fits_shell_above_keyboard():
     # A visualViewport resize listener pins body to the visible height so the
     # composer + latest messages stay above the mobile keyboard, re-sticking the
