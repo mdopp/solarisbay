@@ -592,6 +592,28 @@
     .energy-tile .et-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: var(--ink); }
     .energy-tile .et-value .et-unit { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 4px; }
     .energy-tile .et-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    /* Notizen portal (#696): search box, note rows, compact frontmatter block. */
+    .notes-search {
+      width: 100%; box-sizing: border-box; margin: 12px 0 4px;
+      padding: 10px 12px; border-radius: 10px; font: inherit;
+      background: var(--panel-solid); color: var(--ink); border: 1px solid var(--line);
+    }
+    .notes-list { display: flex; flex-direction: column; }
+    .note-row {
+      display: block; padding: 9px 10px; border-radius: 8px;
+      color: var(--ink); text-decoration: none; font-size: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .note-row:last-child { border-bottom: 0; }
+    .note-row:hover { background: var(--bubble-sol); }
+    .note-back { margin-right: 6px; }
+    .note-frontmatter {
+      display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
+      margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px;
+      background: var(--panel-solid); border: 1px solid var(--line); font-size: 13px;
+    }
+    .note-frontmatter dt { color: var(--muted); }
+    .note-frontmatter dd { margin: 0; color: var(--ink); }
     /* Circuits flow in the same packed multi-column masonry as the card groups
        (#692): 1-3 columns by width, tightly packed. Each tile carries its own
        surface (zebra striping doesn't read across columns). */
@@ -1263,6 +1285,7 @@
     <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M5 21V9a7 7 0 0 1 14 0v12l-2.5-2-2 2-2-2-2 2-2-2z"/><circle cx="9" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></symbol>
     <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 9.5V21h5v-6h4v6h5V9.5"/></symbol>
     <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6M8 13h8M8 17h6"/></symbol>
   </svg>
 
   <aside class="rail">
@@ -1286,6 +1309,9 @@
       </button>
       <button id="rail-energy" type="button" title="Energie — Hausverbrauch">
         <svg class="ic"><use href="#i-bolt"></use></svg><span>Energie</span>
+      </button>
+      <button id="rail-notes" type="button" title="Notizen — Wissen des Haushalts">
+        <svg class="ic"><use href="#i-note"></use></svg><span>Notizen</span>
       </button>
     </nav>
 
@@ -1666,6 +1692,7 @@
     <button id="tab-home" type="button" aria-label="Zuhause"><svg class="ic"><use href="#i-home"></use></svg>Zuhause</button>
     <button id="tab-chats" type="button" aria-label="Chats"><svg class="ic"><use href="#i-chat"></use></svg>Chats</button>
     <button id="tab-favorites" type="button" aria-label="Favoriten"><svg class="ic"><use href="#i-star"></use></svg>Favoriten</button>
+    <button id="tab-notes" type="button" aria-label="Notizen"><svg class="ic"><use href="#i-note"></use></svg>Notizen</button>
   </nav>
 
   <script src="/static/markdown.js"></script>
@@ -4394,6 +4421,7 @@
       });
       var railFavorites = document.getElementById("rail-favorites");
       var railEnergy = document.getElementById("rail-energy");
+      var railNotes = document.getElementById("rail-notes");
       railFavorites.addEventListener("click", function () {
         closeRail();
         if ((location.hash || "").indexOf("#/p/start") === 0) routeFromLocation();
@@ -4406,6 +4434,12 @@
         else location.hash = "#/p/energy";
         syncTabbar();
       });
+      railNotes.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/notes") === 0) routeFromLocation();
+        else location.hash = "#/p/notes";
+        syncTabbar();
+      });
 
       // Mobile bottom tab bar (#648): the three tabs reuse existing behaviors,
       // no new routing model. Active state: Favoriten while on #/p/start,
@@ -4413,6 +4447,13 @@
       var tabHome = document.getElementById("tab-home");
       var tabChats = document.getElementById("tab-chats");
       var tabFavorites = document.getElementById("tab-favorites");
+      var tabNotes = document.getElementById("tab-notes");
+      tabNotes.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/notes") === 0) routeFromLocation();
+        else location.hash = "#/p/notes";
+        syncTabbar();
+      });
       tabHome.addEventListener("click", function () {
         if (location.hash) location.hash = "";
         closeRail();
@@ -4442,16 +4483,19 @@
         var railOpen = document.body.classList.contains("rail-open");
         var onStart = (location.hash || "").indexOf("#/p/start") === 0;
         var onEnergy = (location.hash || "").indexOf("#/p/energy") === 0;
-        var onHome = !onStart && !onEnergy && isHouseholdView();
-        var onChats = railOpen || (!onStart && !onEnergy && !onHome);
+        var onNotes = (location.hash || "").indexOf("#/p/notes") === 0;
+        var onHome = !onStart && !onEnergy && !onNotes && isHouseholdView();
+        var onChats = railOpen || (!onStart && !onEnergy && !onNotes && !onHome);
         tabFavorites.classList.toggle("active", onStart && !railOpen);
         tabHome.classList.toggle("active", onHome && !railOpen);
+        tabNotes.classList.toggle("active", onNotes && !railOpen);
         tabChats.classList.toggle("active", onChats);
         // Desktop rail entries (#681/#700) highlight strictly from the current
-        // view — exactly one of the three, or none for another session's chat.
+        // view — exactly one of the four, or none for another session's chat.
         railHome.classList.toggle("active", onHome);
         railFavorites.classList.toggle("active", onStart);
         railEnergy.classList.toggle("active", onEnergy);
+        railNotes.classList.toggle("active", onNotes);
         // The header title tracks the route too (#671): "Favoriten" on start,
         // the session/"Zuhause" title elsewhere.
         refreshChatTitle();
@@ -4774,11 +4818,11 @@
       // the home-energy picture (the data the "Energieverbrauch" answer used to
       // dump into chat belongs here).
       function openPortal(type) {
-        if (type !== "energy" && type !== "start") { showView("chat"); return; }
+        if (type !== "energy" && type !== "start" && type !== "notes") { showView("chat"); return; }
         closeRail();
-        // A portal (#/p/start, #/p/energy) is a standalone page, not another
-        // card stacked on the current chat (#668): clear the transcript so it
-        // fills the view — and re-tapping Favoriten doesn't pile up duplicates.
+        // A portal (#/p/start, #/p/energy, #/p/notes) is a standalone page, not
+        // another card stacked on the current chat (#668): clear the transcript so
+        // it fills the view — and re-tapping a nav entry doesn't pile up duplicates.
         clearLog();
         var card = document.createElement("div");
         card.className = "msg info concept-card";
@@ -4787,6 +4831,10 @@
         card.scrollIntoView({ block: "start" });
         if (type === "start") {
           loadStartPage(card);
+          return;
+        }
+        if (type === "notes") {
+          loadNotesPage(card);
           return;
         }
         fetch("/api/portal/energy")
@@ -4806,6 +4854,230 @@
             renderStartPage(card, j);
           })
           .catch(function () { card.textContent = "Konnte die Startseite nicht laden."; });
+      }
+
+      // ---- Notizen portal (#696): overview → search → browse → viewer ----
+      function loadNotesPage(card) {
+        fetch("/api/portal/notes")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) { card.textContent = "Notizen nicht verfügbar."; return; }
+            renderNotesPage(card, j);
+          })
+          .catch(function () { card.textContent = "Konnte die Notizen nicht laden."; });
+      }
+
+      function renderNotesPage(card, data) {
+        card.textContent = "";
+        card.classList.add("start-page");
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = "Notizen";
+        head.appendChild(title);
+        card.appendChild(head);
+
+        // Überblick: total notes / fact files / inbox / last Bibliothekar run.
+        var c = data.counts || {};
+        var tiles = document.createElement("div");
+        tiles.className = "energy-tiles";
+        [
+          ["Notizen", c.notes],
+          ["Fakten", c.facts],
+          ["Posteingang", c.inbox],
+        ].forEach(function (t) {
+          var tile = document.createElement("div");
+          tile.className = "energy-tile";
+          var val = document.createElement("div");
+          val.className = "et-value";
+          val.textContent = t[1] == null ? "—" : String(t[1]);
+          var lab = document.createElement("div");
+          lab.className = "et-label";
+          lab.textContent = t[0];
+          tile.appendChild(val);
+          tile.appendChild(lab);
+          tiles.appendChild(tile);
+        });
+        card.appendChild(tiles);
+        if (data.librarian && data.librarian.length) {
+          var lib = document.createElement("p");
+          lib.className = "concept-desc";
+          lib.textContent = "Bibliothekar: " + data.librarian[data.librarian.length - 1];
+          card.appendChild(lib);
+        }
+
+        // Suche über die vereinheitlichte notes_search.
+        var search = document.createElement("input");
+        search.type = "search";
+        search.className = "notes-search";
+        search.placeholder = "Notizen durchsuchen…";
+        card.appendChild(search);
+        var results = document.createElement("div");
+        results.className = "notes-list";
+        card.appendChild(results);
+        var searchTimer = null;
+        search.addEventListener("input", function () {
+          if (searchTimer) clearTimeout(searchTimer);
+          var q = search.value.trim();
+          searchTimer = setTimeout(function () {
+            if (!q) { results.textContent = ""; return; }
+            fetch("/api/portal/notes/search?q=" + encodeURIComponent(q))
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (j) {
+                results.textContent = "";
+                if (!j || !j.ok || !j.hits.length) {
+                  results.textContent = "Nichts gefunden.";
+                  return;
+                }
+                j.hits.forEach(function (h) {
+                  results.appendChild(noteRow(h.path, h.title || h.path));
+                });
+              })
+              .catch(function () { results.textContent = "Suche fehlgeschlagen."; });
+          }, 250);
+        });
+
+        // Durchstöbern: chips that swap the list below to a grouped browse.
+        card.appendChild(conceptSectionTitle("Durchstöbern"));
+        var chips = document.createElement("div");
+        chips.className = "anchor-chips";
+        card.appendChild(chips);
+        var browse = document.createElement("div");
+        browse.className = "notes-browse";
+        card.appendChild(browse);
+        [
+          ["#Themen", "topic"],
+          ["@Personen", "person"],
+          ["Journal", "journal"],
+          ["OKF", "okf"],
+          ["Ordner", "folder"],
+        ].forEach(function (b) {
+          var chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "anchor-chip";
+          chip.textContent = b[0];
+          chip.addEventListener("click", function () {
+            Array.prototype.forEach.call(chips.children, function (el) {
+              el.classList.toggle("resolved", el === chip);
+            });
+            loadNotesBrowse(browse, b[1]);
+          });
+          chips.appendChild(chip);
+        });
+
+        // Recently modified.
+        if (data.recent && data.recent.length) {
+          card.appendChild(conceptSectionTitle("Zuletzt geändert"));
+          var recent = document.createElement("div");
+          recent.className = "notes-list";
+          data.recent.forEach(function (r) {
+            recent.appendChild(noteRow(r.path, r.title || r.path));
+          });
+          card.appendChild(recent);
+        }
+      }
+
+      function loadNotesBrowse(container, by) {
+        container.textContent = "Lade…";
+        fetch("/api/portal/notes/browse?by=" + encodeURIComponent(by))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            container.textContent = "";
+            if (!j || !j.ok || !j.groups.length) {
+              container.textContent = "Nichts vorhanden.";
+              return;
+            }
+            j.groups.forEach(function (g) {
+              container.appendChild(conceptSectionTitle(g.group));
+              var list = document.createElement("div");
+              list.className = "notes-list";
+              g.items.forEach(function (it) {
+                list.appendChild(noteRow(it.path, it.title || it.path));
+              });
+              container.appendChild(list);
+            });
+          })
+          .catch(function () { container.textContent = "Konnte nicht laden."; });
+      }
+
+      function noteRow(path, title) {
+        var a = document.createElement("a");
+        a.className = "note-row";
+        a.href = "#/p/notes";
+        a.textContent = title;
+        a.title = path;
+        a.addEventListener("click", function (e) {
+          e.preventDefault();
+          openNoteViewer(path);
+        });
+        return a;
+      }
+
+      // The note viewer: rendered markdown (chat renderer + [[..]] linkified to
+      // /c/<id>), a compact frontmatter block, and a back button to the overview.
+      function openNoteViewer(path) {
+        clearLog();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card start-page";
+        card.textContent = "Lade…";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+        fetch("/api/portal/notes/note?path=" + encodeURIComponent(path))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok) { card.textContent = "Notiz nicht gefunden."; return; }
+            renderNoteViewer(card, j);
+          })
+          .catch(function () { card.textContent = "Konnte die Notiz nicht laden."; });
+      }
+
+      function renderNoteViewer(card, note) {
+        card.textContent = "";
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var back = document.createElement("button");
+        back.type = "button";
+        back.className = "icon-btn note-back";
+        back.setAttribute("aria-label", "Zurück");
+        back.innerHTML = '<svg class="ic"><use href="#i-back"></use></svg>';
+        back.addEventListener("click", function () { location.hash = "#/p/notes"; routeFromLocation(); });
+        head.appendChild(back);
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = note.title || note.path;
+        head.appendChild(title);
+        card.appendChild(head);
+
+        var fm = note.frontmatter || {};
+        var keys = Object.keys(fm);
+        if (keys.length) {
+          var meta = document.createElement("dl");
+          meta.className = "note-frontmatter";
+          keys.forEach(function (k) {
+            var dt = document.createElement("dt");
+            dt.textContent = k;
+            var dd = document.createElement("dd");
+            dd.textContent = fm[k];
+            meta.appendChild(dt);
+            meta.appendChild(dd);
+          });
+          card.appendChild(meta);
+        }
+
+        var body = document.createElement("div");
+        body.className = "md";
+        body.innerHTML = renderReply(stripFrontmatter(note.content || ""));
+        linkifyWikiLinks(body);
+        renderMermaidIn(body);
+        card.appendChild(body);
+      }
+
+      // Drop a leading `--- … ---` block so the viewer body renders prose only
+      // (the frontmatter is shown as its own compact key/value block above).
+      function stripFrontmatter(text) {
+        var m = /^---\n[\s\S]*?\n---\s*\n?/.exec(text);
+        return m ? text.slice(m[0].length) : text;
       }
 
       function renderEnergyPage(card, e) {
