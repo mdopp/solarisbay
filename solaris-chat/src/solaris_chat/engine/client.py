@@ -30,7 +30,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from solaris_chat import favorites_store
-from solaris_chat.engine import confirm, store
+from solaris_chat.engine import confirm, remember, store
 from solaris_chat.engine.bus import SessionBus
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.registry import EntityRegistry
@@ -797,6 +797,10 @@ class EngineClient:
         # A confirmed action already ran a tool this turn, so the model's report
         # ("Garagentor ist offen") is grounded, not a fabrication (#570/#356).
         tool_dispatched = confirmed_executed
+        # Whether the model itself stored the fact this turn (#621): if the user
+        # said "merk dir …" and no store tool ran, the loop enforces it at turn
+        # end. e4b obeys the SOUL only sometimes, so we detect the gap and fill it.
+        stored_fact = False
         corrected = False
         final_content = ""
         final_thinking = ""
@@ -894,6 +898,8 @@ class EngineClient:
                     except ValueError:
                         args = {}
                 tool_dispatched = True
+                if name in ("fact_store", "note_write"):
+                    stored_fact = True
                 held: str | None = None
                 if name == "ha_call_service" and isinstance(args, dict):
                     held = await self._gate_sensitive(
@@ -971,6 +977,19 @@ class EngineClient:
                 final_content
                 or "Entschuldige, das hat zu viele Schritte gebraucht — ich breche hier ab."
             )
+
+        # Code-enforced remember-this (#621): the SOUL asks e4b to store a
+        # "merk dir …" via fact_store/note_write, but it confirms conversationally
+        # and skips the tool about as often as it obeys. When the user's turn was
+        # an explicit remember directive and no store tool ran, persist the fact
+        # here — scoped to the speaker via the turn's pinned uid — so the second
+        # brain actually remembers. Mirrors the confirm-gate enforcement style.
+        if has_tools and not stored_fact:
+            fact = remember.wants_remember(_last_user_text(messages))
+            if fact and "fact_store" in self._profile.toolbox.names():
+                if uid:
+                    current_uid.set(uid)
+                await self._profile.toolbox.dispatch("fact_store", {"fact": fact})
 
         final_content, anchors = _split_anchors(final_content)
         final_content, suggestions = _split_followups(final_content)

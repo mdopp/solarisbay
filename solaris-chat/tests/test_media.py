@@ -251,6 +251,81 @@ def test_find_podcast_description_excludes_music(monkeypatch):
     assert "play_music" in desc
 
 
+# -- group-cast fallback (#638/#573): a 500 on a Cast group → same-area device --
+
+
+def _stub_cast_seq(monkeypatch, results):
+    """Stub media's call_service_scoped with a queued result sequence, recording targets."""
+    calls: list[tuple] = []
+    seq = list(results)
+
+    async def _fake_cast(hass_url, hass_token, entity_id, service, data):
+        calls.append((entity_id, data))
+        return seq[min(len(calls) - 1, len(seq) - 1)]
+
+    monkeypatch.setattr(media_mod, "call_service_scoped", _fake_cast)
+    return calls
+
+
+def _tool_with_fallback(fallbacks):
+    async def _area_fallback(entity_id):
+        return list(fallbacks)
+
+    return build_media_tools("http://ha", "tok", area_fallback=_area_fallback)[0]
+
+
+async def test_podcast_group_500_falls_back_to_same_area_device(monkeypatch):
+    # Resolve is stubbed via aiohttp; the play goes through call_service_scoped.
+    _stub(monkeypatch)
+    calls = _stub_cast_seq(
+        monkeypatch,
+        [
+            {"ok": False, "error": "HA 500: group reject"},
+            {"ok": True, "state": "playing"},
+        ],
+    )
+    play = _tool_with_fallback(["media_player.voice_pe"])
+    out = json.loads(
+        await play.handler(
+            {"name": "Lage der Nation", "entity_id": "media_player.wohnzimmer"}
+        )
+    )
+    assert out["ok"] is True and out["played"] is True
+    # Reports the device that ACTUALLY played, not the failed group.
+    assert out["entity_id"] == "media_player.voice_pe"
+    assert calls[0][0] == "media_player.wohnzimmer"
+    assert calls[1][0] == "media_player.voice_pe"
+
+
+async def test_podcast_group_500_no_candidate_returns_play_failed(monkeypatch):
+    _stub(monkeypatch)
+    calls = _stub_cast_seq(
+        monkeypatch, [{"ok": False, "error": "HA 500: group reject"}]
+    )
+    play = _tool_with_fallback([])  # no same-area device
+    out = json.loads(
+        await play.handler(
+            {"name": "Lage der Nation", "entity_id": "media_player.wohnzimmer"}
+        )
+    )
+    assert out["ok"] is False and out["reason"] == "play_failed"
+    assert out["detail"] == "HA 500: group reject"
+    assert len(calls) == 1  # honest failure, no extra cast
+
+
+async def test_podcast_non_500_failure_no_fallback(monkeypatch):
+    _stub(monkeypatch)
+    calls = _stub_cast_seq(monkeypatch, [{"ok": False, "error": "HA 404: not found"}])
+    play = _tool_with_fallback(["media_player.voice_pe"])
+    out = json.loads(
+        await play.handler(
+            {"name": "Lage der Nation", "entity_id": "media_player.wohnzimmer"}
+        )
+    )
+    assert out["ok"] is False and out["reason"] == "play_failed"
+    assert len(calls) == 1  # a 404 must NOT trigger the same-area fallback
+
+
 async def test_show_not_found_is_graceful(monkeypatch):
     _stub(monkeypatch, search={"data": []})
     out = json.loads(

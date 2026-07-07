@@ -492,6 +492,10 @@ def test_wire_skips_without_token(pd, monkeypatch):
 def test_wire_skips_agent_when_engine_down(pd, monkeypatch):
     wired = []
     monkeypatch.setattr(pd, "ensure_wyoming_entry", lambda *a, **k: wired.append(a[1]))
+    # Isolate the optional-bridge probe (:10203 openai/Martin): unpatched it
+    # makes a real socket connect, so a host with that port up wires a third
+    # "openai" entry and the assert flakes local-vs-CI (#609).
+    monkeypatch.setattr(pd, "_port_open", lambda host, port, timeout=2.0: False)
     monkeypatch.setattr(pd, "wait_for_chat", lambda port, timeout_secs=120: False)
     monkeypatch.setattr(
         pd,

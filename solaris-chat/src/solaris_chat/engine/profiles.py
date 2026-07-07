@@ -140,7 +140,9 @@ def build_engine_clients(
     household_tools += research_tools
     household_tools += choice_tools
     if hass_url and hass_token:
-        household_tools += build_media_tools(hass_url, hass_token)
+        household_tools += build_media_tools(
+            hass_url, hass_token, area_fallback=registry.media_player_fallbacks
+        )
         # play_radio (#u94): casts a resident's favorite station via the same
         # scoped HA play_media path; the favorite is a per-user note, so it needs
         # the vault as well. Household + deep share this list (not guest).

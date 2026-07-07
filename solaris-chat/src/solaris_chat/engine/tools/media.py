@@ -23,6 +23,7 @@ import aiohttp
 
 from solaris_chat.engine.tools import Tool
 from solaris_chat.engine.tools.ha import call_service_scoped
+from solaris_chat.engine.tools.radio import cast_with_fallback
 
 _FYYD_SEARCH = "https://api.fyyd.de/0.2/search/podcast"
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
@@ -135,7 +136,9 @@ def _newest_enclosure(feed_xml: str) -> dict[str, str] | None:
     return best[1] if best else None
 
 
-def build_media_tools(hass_url: str, hass_token: str) -> list[Tool]:
+def build_media_tools(
+    hass_url: str, hass_token: str, *, area_fallback=None
+) -> list[Tool]:
     async def find_podcast(args: dict[str, Any]) -> str:
         name = str(args.get("name") or "").strip()
         if not name:
@@ -184,13 +187,18 @@ def build_media_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 ensure_ascii=False,
             )
 
-        result = await call_service_scoped(
-            hass_url,
-            hass_token,
-            entity_id,
-            "media_player.play_media",
-            {"media_content_type": "music", "media_content_id": episode["url"]},
-        )
+        async def _cast(target: str) -> dict[str, Any]:
+            return await call_service_scoped(
+                hass_url,
+                hass_token,
+                target,
+                "media_player.play_media",
+                {"media_content_type": "music", "media_content_id": episode["url"]},
+            )
+
+        # A Cast GROUP 500s on URL play_media (#638); on that, retry once on a
+        # single device in the same area (the room's Voice PE preferred).
+        result, used = await cast_with_fallback(_cast, entity_id, area_fallback)
         if not result.get("ok"):
             return json.dumps(
                 {
@@ -208,7 +216,7 @@ def build_media_tools(hass_url: str, hass_token: str) -> list[Tool]:
                 "show": show["title"],
                 "episode": episode["title"],
                 "media_url": episode["url"],
-                "entity_id": entity_id,
+                "entity_id": used,
                 "played": True,
             },
             ensure_ascii=False,
