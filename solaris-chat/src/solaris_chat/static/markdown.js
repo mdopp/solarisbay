@@ -37,22 +37,33 @@
       out += escapeHtml(ch);
       i++;
     }
-    // Links: [text](url) — drop javascript: targets, keep the label.
+    // Links: [text](url) — drop javascript: targets, keep the label. An
+    // entity-id / relative target maps to its in-app concept page (#/c/<id>)
+    // rather than an external URL, so a model-emitted [Sofalicht](light.x) tap
+    // lands on the concept page, not a broken https://…/light.x.
     out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (_m, label, url) {
       if (/^\s*javascript:/i.test(url)) return label;
-      return (
-        '<a href="' +
-        url +
-        '" target="_blank" rel="noopener noreferrer">' +
-        label +
-        "</a>"
-      );
+      var href = url;
+      var extern = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|mailto:)/i.test(url);
+      if (!extern) href = "#/c/" + encodeURIComponent(url);
+      var attrs = /^https?:/i.test(href)
+        ? ' target="_blank" rel="noopener noreferrer"'
+        : "";
+      return '<a href="' + href + '"' + attrs + ">" + label + "</a>";
+    });
+    // Protect entity-id-like tokens (domain.object_id with snake_case /
+    // digits, e.g. light.dimmer_2_5) and [[..]] wikilink spans from the
+    // emphasis rules below — their underscores must survive so the token
+    // renders verbatim and linkifyWikiLinks can process it afterwards.
+    out = out.replace(/\[\[[^\[\]]+\]\]|\b[a-z_]+\.[a-z0-9_]+\b/g, function (m) {
+      codes.push(m);
+      return SENTINEL + (codes.length - 1) + SENTINEL;
     });
     out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     out = out.replace(/__([^_]+)__/g, "<strong>$1</strong>");
     out = out.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
     out = out.replace(/(^|[^_])_([^_]+)_/g, "$1<em>$2</em>");
-    // Restore code spans.
+    // Restore code spans and protected tokens.
     out = out.replace(new RegExp(SENTINEL + "(\\d+)" + SENTINEL, "g"), function (_m, n) {
       return codes[Number(n)];
     });
