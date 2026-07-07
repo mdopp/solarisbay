@@ -412,7 +412,7 @@
       flex: 0 1 auto; min-width: 120px; max-width: 240px;
       box-sizing: border-box;
       border: 1px solid var(--line); border-radius: 10px;
-      padding: 8px 12px; background: rgba(127,127,127,0.05);
+      padding: 6px 10px; background: rgba(127,127,127,0.05);
     }
     /* Inside a grid a card fills its column (no 240px cap, no shrink-overflow):
        border-box + min-width:0 keep its contents within the column edge. */
@@ -451,7 +451,7 @@
     /* #538: a light card is compact — the on/off badge + brightness slider
        share one row (.hc-compact); the slider drops its own top margin and
        grows to fill, the colour picker stays on its own row below. */
-    .hc-compact { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+    .hc-compact { display: flex; align-items: center; gap: 8px; margin-top: 3px; flex-wrap: wrap; }
     .hc-compact .hc-badge { margin-top: 0; flex: 0 0 auto; }
     .hc-compact .hc-state { margin-top: 0; flex: 0 0 auto; }
     .hc-compact .hc-ctrl-inline { flex: 1 1 100%; margin-top: 0; min-width: 0; max-width: 100%; }
@@ -471,7 +471,7 @@
        (.hc-span2 / .hc-span3) while staying aligned to the same grid.
        Supersedes the loose #539 grid. */
     .hc-grid {
-      --hc-col: 300px;
+      --hc-col: 220px;
       display: grid; gap: 8px;
       /* min(100%, --hc-col) forces ONE full-width column when the container is
          narrower than the base (phone), so cards never get cramped/overflow;
@@ -511,7 +511,7 @@
       display: block; font-size: 11px; color: var(--muted); margin-top: 2px;
     }
     .hc-row {
-      display: block; padding: 8px 12px;
+      display: block; padding: 6px 10px;
       border-top: 1px solid var(--line);
     }
     .hc-row:first-child { border-top: none; }
@@ -561,12 +561,14 @@
       flex: 1 1 auto; margin-top: 0;
       background: none; border: none; box-shadow: none; padding: 4px 0;
     }
-    /* Favorite/frequent rows lay out as a single full-width column of cards, so a
-       row's badge/slider aren't cramped into a shrink-to-fit flex item (the
-       source of the clipped "a"/"au" toggle label). */
+    /* Favorite/frequent cards flow on the same responsive base-unit grid as the
+       chat card groups (#688): 2-3 per row when the viewport allows, collapsing
+       to one full-width column when narrow (min(100%,--hc-col) guard) so a row's
+       badge/slider still isn't cramped into a shrink-to-fit flex item. */
     .start-favs {
-      display: flex; flex-direction: column; gap: 8px;
-      margin: 8px 0 2px; max-width: 100%;
+      --hc-col: 220px;
+      display: grid; gap: 8px; margin: 8px 0 2px; max-width: 100%;
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--hc-col)), 1fr));
     }
     .start-favs > .hc-row {
       box-sizing: border-box; width: 100%; min-width: 0;
@@ -592,12 +594,18 @@
     .energy-tile .et-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: var(--ink); }
     .energy-tile .et-value .et-unit { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 4px; }
     .energy-tile .et-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-    .energy-circuits { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 2px; }
+    /* Circuits flow on the same responsive base-unit grid as the card groups
+       (#688): 2-3 compact tiles per row when wide, one column when narrow. Each
+       tile carries its own surface (zebra striping doesn't read across a grid). */
+    .energy-circuits {
+      --hc-col: 220px;
+      display: grid; gap: 6px; margin: 4px 0 2px;
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--hc-col)), 1fr));
+    }
     .energy-circuit {
       display: flex; align-items: baseline; gap: 10px;
-      padding: 8px 10px; border-radius: 8px;
+      padding: 6px 10px; border-radius: 8px; background: rgba(127,127,127,0.05);
     }
-    .energy-circuit:nth-child(odd) { background: rgba(127,127,127,0.05); }
     .energy-circuit .ec-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .energy-circuit .ec-value { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 600; }
     .energy-circuit .ec-unit { color: var(--muted); font-weight: 500; margin-left: 3px; }
@@ -651,41 +659,41 @@
     .card-picker-foot .cp-add[disabled] { opacity: 0.5; cursor: default; }
     .hc-group .hc-state { font-size: 18px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
     .hc-group .hc-unit { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 3px; }
-    .hc-group .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .hc-group .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
     .hc-group .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 0; max-width: 100%; }
     .hc-group .hc-ctrl input[type="color"] {
       flex: 0 0 auto; width: 28px; height: 24px; padding: 0;
       border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer;
     }
     .hc-group .hc-ctrl .hc-val { font-size: 12px; color: var(--muted); min-width: 34px; text-align: right; }
-    .hc-group .hc-btns { display: flex; gap: 6px; margin-top: 6px; }
+    .hc-group .hc-btns { display: flex; gap: 6px; margin-top: 4px; }
     .hc-group .hc-btns button, .hc-group select.hc-mode {
       font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer;
       border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08);
       color: inherit;
     }
-    .hc-group .hc-set { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+    .hc-group .hc-set { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
     .hc-group .hc-set button {
       font: inherit; width: 26px; height: 26px; cursor: pointer; line-height: 1;
       border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08); color: inherit;
     }
     .hc-group .hc-set .hc-target { font-size: 16px; font-weight: 600; min-width: 52px; text-align: center; }
     /* Phase 3 (#477): slider / colour / climate controls on a card. */
-    .ha-card .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .ha-card .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
     .ha-card .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 0; max-width: 100%; }
     .ha-card .hc-ctrl input[type="color"] {
       flex: 0 0 auto; width: 28px; height: 24px; padding: 0;
       border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer;
     }
     .ha-card .hc-ctrl .hc-val { font-size: 12px; color: var(--muted); min-width: 34px; text-align: right; }
-    .ha-card .hc-btns { display: flex; gap: 6px; margin-top: 6px; }
+    .ha-card .hc-btns { display: flex; gap: 6px; margin-top: 4px; }
     .ha-card .hc-btns button, .ha-card select.hc-mode {
       font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer;
       border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08);
       color: inherit;
     }
     .ha-card .hc-btns button:hover { border-color: var(--accent); }
-    .ha-card .hc-set { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+    .ha-card .hc-set { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
     .ha-card .hc-set button {
       font: inherit; width: 26px; height: 26px; cursor: pointer; line-height: 1;
       border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08); color: inherit;
