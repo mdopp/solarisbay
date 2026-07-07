@@ -18,8 +18,9 @@ unique sender *first* so each event's `with →` edge resolves (the writer drops
 unresolved edges silently).
 
 **Parser registry:** `_PARSERS` is a list of `(detect, parse)` pairs keyed on the
-filename + first sniffed lines. v1 ships the WhatsApp parser only; Signal and
-SMS/RCS-JSON are follow-up issues on this same registry (do not pre-build them).
+filename + first sniffed lines. Ships the WhatsApp text/zip parser and the
+signal-cli JSON parser; SMS/RCS-JSON is a follow-up on this same registry (do not
+pre-build it).
 
 **Locale trap:** the WhatsApp detect regexes match ONLY `DD.MM.YY` German
 exports. A month-first US export would swap day/month and silently corrupt
@@ -31,9 +32,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import re
 import time
 import zipfile
+from datetime import datetime, timezone
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,6 +99,7 @@ class _Chat:
     """The parsed result of one export file."""
 
     name: str
+    platform: str = "WhatsApp"
     messages: list[_Message] = field(default_factory=list)
 
 
@@ -190,7 +194,9 @@ class ExportsIngest:
         for m in chat.messages:
             by_day.setdefault(m.date, []).append(m)
         for day in sorted(by_day):
-            self._write_day(chat.name, day, by_day[day], relpath, uid, stats)
+            self._write_day(
+                chat.name, chat.platform, day, by_day[day], relpath, uid, stats
+            )
 
         # All days written — record the file-level marker and move the file into
         # the sibling `processed/` dir (inside the synced subtree, so the move
@@ -222,6 +228,7 @@ class ExportsIngest:
     def _write_day(
         self,
         chat: str,
+        platform: str,
         day: str,
         messages: list[_Message],
         relpath: str,
@@ -233,7 +240,7 @@ class ExportsIngest:
         body = "\n".join(f"{m.time} {m.sender}: {m.text}" for m in messages)
         rec = ConceptRecord(
             type="event",
-            title=f"WhatsApp {chat} {day}",
+            title=f"{platform} {chat} {day}",
             source=_SOURCE,
             external_id=f"{relpath}#{day}",
             resident=uid,
@@ -323,6 +330,93 @@ def _chat_name(name: str) -> str:
     return stem
 
 
+# --- Signal (signal-cli JSON) parser ------------------------------------------
+#
+# signal-cli emits one JSON *envelope* per received message. An export is either a
+# JSON array of those envelopes or newline-delimited JSON (one envelope per line).
+# The shape we read (documented signal-cli `--json`):
+#   {"envelope": {"timestamp": <ms>, "sourceName": "Anna", "sourceNumber": "+49…",
+#                 "dataMessage": {"message": "text", "groupInfo": {"name": "…"}}}}
+# Only envelopes carrying a `dataMessage.message` are chat lines; typing/receipt/
+# sync envelopes and attachment-only messages (no `message`) are skipped, matching
+# the WhatsApp parser's system-line + media-omitted skips.
+
+
+def _detect_signal(name: str, first_lines: list[str]) -> bool:
+    if not name.endswith(".json"):
+        return False
+    # signal-cli's `"envelope"` key is the signature; a compact array is one line,
+    # so sniff textually here and let `_iter_signal_envelopes` do the real parse.
+    return any('"envelope"' in line for line in first_lines)
+
+
+def _iter_signal_envelopes(text: str) -> Iterable[dict]:
+    """Yield envelope dicts from a JSON array or newline-delimited JSON export."""
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        try:
+            arr = json.loads(text)
+        except ValueError:
+            return
+        if isinstance(arr, list):
+            yield from (o for o in arr if isinstance(o, dict))
+        return
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            yield obj
+
+
+def _parse_signal(name: str, text: str) -> _Chat:
+    chat = _Chat(name=_chat_name_signal(name), platform="Signal")
+    group_name = ""
+    for obj in _iter_signal_envelopes(text):
+        env = obj.get("envelope") if isinstance(obj.get("envelope"), dict) else obj
+        data = env.get("dataMessage")
+        if not isinstance(data, dict):
+            continue
+        msg = data.get("message")
+        if not isinstance(msg, str) or not msg:
+            continue  # typing/receipt/attachment-only — no text to ingest.
+        ts = env.get("timestamp") or data.get("timestamp")
+        iso = _signal_ts(ts)
+        if iso is None:
+            continue
+        day, hhmm = iso
+        sender = env.get("sourceName") or env.get("sourceNumber") or "Unknown"
+        group = data.get("groupInfo")
+        if isinstance(group, dict) and group.get("name"):
+            group_name = str(group["name"])
+        chat.messages.append(
+            _Message(date=day, time=hhmm, sender=str(sender).strip(), text=msg)
+        )
+    if group_name:
+        chat.name = group_name
+    return chat
+
+
+def _signal_ts(ts: object) -> tuple[str, str] | None:
+    """`(YYYY-MM-DD, HH:MM)` in local time from a signal-cli ms epoch, else None."""
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        return None
+    dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).astimezone()
+    return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")
+
+
+def _chat_name_signal(name: str) -> str:
+    stem = Path(name).stem
+    for prefix in ("signal-", "signal_"):
+        if stem.lower().startswith(prefix):
+            stem = stem[len(prefix) :]
+    return stem or "chat"
+
+
 def _text_of(path: Path, raw: bytes) -> tuple[str, str | None]:
     """`(display_name, text)` for an export file; text is None when undecodable.
 
@@ -348,7 +442,8 @@ def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-# The parser registry: `(detect, parse)`. v1 = WhatsApp only.
+# The parser registry: `(detect, parse)`. WhatsApp text/zip + signal-cli JSON.
 _PARSERS: list[tuple[Callable[[str, list[str]], bool], Callable[[str, str], _Chat]]] = [
     (_detect_whatsapp, _parse_whatsapp),
+    (_detect_signal, _parse_signal),
 ]
