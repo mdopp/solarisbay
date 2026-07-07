@@ -545,6 +545,30 @@
       cursor: pointer; padding: 1px 7px; font-size: 12px; color: var(--muted);
     }
     .start-toast { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    /* #672: the start page is a full-page portal, not a chat bubble — it fills
+       the chat viewport (full width AND height) like the transcript, dropping the
+       narrow-bubble cap, accent tint and shadow so it reads as the page itself. */
+    .msg.info.start-page {
+      align-self: stretch; max-width: 100%; width: 100%;
+      flex: 1 1 auto; margin-top: 0;
+      background: none; border: none; box-shadow: none; padding: 4px 0;
+    }
+    /* Favorite/frequent rows lay out as a single full-width column of cards, so a
+       row's badge/slider aren't cramped into a shrink-to-fit flex item (the
+       source of the clipped "a"/"au" toggle label). */
+    .start-favs {
+      display: flex; flex-direction: column; gap: 8px;
+      margin: 8px 0 2px; max-width: 100%;
+    }
+    .start-favs > .hc-row {
+      box-sizing: border-box; width: 100%; min-width: 0;
+      border: 1px solid var(--line); border-top: 1px solid var(--line);
+      border-radius: 10px; background: rgba(127,127,127,0.05);
+    }
+    /* The frequent/action row keeps its badge + controls on one tidy line with a
+       consistent baseline; the slider grows, the percent/toggle stay put. */
+    .start-favs > .hc-row .hc-compact { align-items: center; }
+    .start-frequent .hc-name, .start-frequent > span:first-child { flex: 1 1 auto; min-width: 0; }
     /* Card picker (#669): the "+ Karten hinzufügen" button lives beside
        Bearbeiten but only shows once the page is in edit mode; the overlay is a
        room-grouped grid of selectable tiles. */
@@ -4504,6 +4528,7 @@
       // a single Bearbeiten toggle revealing per-card remove/reorder controls.
       function renderStartPage(card, data) {
         card.textContent = "";
+        card.classList.add("start-page");
         var head = document.createElement("div");
         head.className = "concept-head";
         var title = document.createElement("span");
@@ -4546,7 +4571,17 @@
         section("Meine Favoriten", data.personal || []);
         section("Haushalt", data.household || []);
 
-        var freq = (data.frequent || []).filter(function (f) { return f.kind === "action"; });
+        // Dedup by label (#672): the personal + household usage counters can
+        // carry the same action under two rows (e.g. "play_radio"), which would
+        // otherwise list it twice under "Häufig genutzt".
+        var seen = {};
+        var freq = (data.frequent || []).filter(function (f) {
+          if (f.kind !== "action") return false;
+          var key = f.label || "";
+          if (seen[key]) return false;
+          seen[key] = true;
+          return true;
+        });
         if (freq.length) {
           card.appendChild(conceptSectionTitle("Häufig genutzt"));
           var fwrap = document.createElement("div");
