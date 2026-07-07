@@ -32,3 +32,7 @@ dist/
 
 # stray design screenshots / scratch images (assets live elsewhere)
 servicebay design Screenshot*.png
+
+# uv lock file (not tracked for this project)
+uv.lock
+**/uv.lock
