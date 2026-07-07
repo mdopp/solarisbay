@@ -349,6 +349,28 @@ def entity_aliases(conn: sqlite3.Connection, entity_id: str) -> list[str]:
     return [r["alias"] for r in rows]
 
 
+def linkable_aliases(
+    conn: sqlite3.Connection, resident_uid: str
+) -> list[tuple[str, str]]:
+    """(alias, entity_id) pairs for the client's auto-linkify index (#694).
+
+    Canonical names plus recorded aliases for the resident's OKF entities, each
+    pointing at the entity id its concept page resolves under. Per-resident (§6)
+    so one resident's "Anna" never links to another's. The caller caps/filters
+    the list; this just unions both name sources.
+    """
+    rows = conn.execute(
+        "SELECT e.canonical_name AS alias, e.id AS id FROM entities e"
+        " WHERE e.resident_uid = ?"
+        " UNION"
+        " SELECT a.alias AS alias, e.id AS id FROM entity_aliases a"
+        " JOIN entities e ON e.id = a.entity_id"
+        " WHERE e.resident_uid = ?",
+        (resident_uid, resident_uid),
+    ).fetchall()
+    return [(r["alias"], r["id"]) for r in rows]
+
+
 def entity_okf_path(conn: sqlite3.Connection, entity_id: str) -> str | None:
     row = conn.execute(
         "SELECT okf_path FROM concepts WHERE ref_kind = 'entity' AND ref_id = ?",

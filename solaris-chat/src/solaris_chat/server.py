@@ -52,6 +52,7 @@ from solaris_chat.engine.tools.ha import (
     fetch_card,
     fetch_energy,
     fetch_energy_history,
+    fetch_entity_names,
 )
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
 from solaris_chat.logging import log
@@ -1870,6 +1871,59 @@ def build_app(
                 conn.close()
         return web.json_response({"ok": True, "resolved": resolved})
 
+    # Auto-linkify alias index (#694): a bounded, server-cached list the client
+    # uses to upgrade known references in a rendered reply into concept-page
+    # links, code-enforced (the small model rarely emits [[..]]/ANCHORS). Two
+    # sources, reusing the existing accessors: HA entities (friendly_name +
+    # entity_id → the raw entity_id, which /c/<id> takes directly) and OKF
+    # entities (canonical_name + aliases → the entity id). Short aliases (≤2
+    # chars) and an over-cap payload are dropped so the single client-side regex
+    # stays cheap.
+    _ALIAS_CACHE: dict[str, tuple[float, list[dict[str, str]]]] = {}
+    _ALIAS_TTL = 300.0
+    _ALIAS_CAP = 400
+
+    async def anchors_aliases(request: web.Request) -> web.Response:
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        cached = _ALIAS_CACHE.get(uid)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < _ALIAS_TTL:
+            return web.json_response({"ok": True, "aliases": cached[1]})
+
+        seen: set[str] = set()
+        pairs: list[tuple[str, str]] = []
+
+        def add(alias: str, target: str) -> None:
+            alias = (alias or "").strip()
+            key = alias.lower()
+            if len(alias) <= 2 or not target or key in seen:
+                return
+            seen.add(key)
+            pairs.append((alias, target))
+
+        if hass_url and hass_token:
+            ha_names = await fetch_entity_names(hass_url, hass_token)
+            for row in ha_names or []:
+                eid = row["entity_id"]
+                add(row["name"], eid)
+                add(eid, eid)
+        if Path(solaris_db_path).exists():
+            conn = projection.open_conn(solaris_db_path)
+            try:
+                for alias, entity_id in projection.linkable_aliases(conn, uid):
+                    add(alias, entity_id)
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+
+        # Longest alias first so the client prefers the most specific match;
+        # cap the payload so the single-pass regex stays cheap.
+        pairs.sort(key=lambda p: len(p[0]), reverse=True)
+        aliases = [{"alias": a, "id": i} for a, i in pairs[:_ALIAS_CAP]]
+        _ALIAS_CACHE[uid] = (now, aliases)
+        return web.json_response({"ok": True, "aliases": aliases})
+
     async def mentions_tags(request: web.Request) -> web.Response:
         # Autosuggest for `#tag` (#279): the resident's already-used tags,
         # prefix-filtered. Per-resident scope (owner_uid = resolve_uid).
@@ -2231,6 +2285,7 @@ def build_app(
     app.router.add_post("/api/favorites/{fav_id}/run", favorites_run)
     app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
+    app.router.add_get("/api/anchors/aliases", anchors_aliases)
     app.router.add_get("/api/mentions/tags", mentions_tags)
     app.router.add_get("/api/mentions/persons", mentions_persons)
     app.router.add_get("/api/sessions/{session_id}/mentions", session_mentions)

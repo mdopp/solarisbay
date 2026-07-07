@@ -205,6 +205,32 @@ async def fetch_card(
     return card_spec(entity_id, body.get("state"), body.get("attributes") or {})
 
 
+async def fetch_entity_names(
+    hass_url: str, hass_token: str
+) -> list[dict[str, str]] | None:
+    """`[{entity_id, name}]` for every HA entity, for the auto-linkify index
+    (#694). One read-only `/api/states`; `name` is the friendly_name (falling
+    back to the entity_id). Returns None on any HA error."""
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                if resp.status >= 400:
+                    return None
+                states = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    names: list[dict[str, str]] = []
+    for s in states:
+        eid = str(s.get("entity_id") or "")
+        if not eid:
+            continue
+        attrs = s.get("attributes") or {}
+        names.append({"entity_id": eid, "name": str(attrs.get("friendly_name") or eid)})
+    return names
+
+
 async def fetch_addable_cards(
     hass_url: str, hass_token: str, entity_area: dict[str, str]
 ) -> list[dict[str, Any]] | None:
@@ -238,33 +264,45 @@ async def fetch_addable_cards(
     return cards
 
 
-# Headline buckets for the home-energy picture (#503). Each matches a sensor by
-# substrings in its friendly_name (lower-cased); the first matching bucket wins,
-# so leftover power sensors fall through to the per-circuit list. German + a few
-# English/SENEC terms cover the common naming.
-_ENERGY_HEADLINES = (
-    (
-        "house",
-        "Hausverbrauch",
-        ("hausverbrauch", "house consumption", "verbrauch haus"),
-    ),
-    ("pv", "PV-Erzeugung", ("pv", "solar", "erzeugung", "production")),
-    ("grid_import", "Netzbezug", ("netzbezug", "import", "bezug")),
-    ("grid_export", "Einspeisung", ("einspeisung", "export")),
-    ("battery", "Akku", ("akku", "battery", "speicher")),
+# Current-power (W) flow sensors for the "Jetzt" picture + the trend chart
+# (#691). Matched by EXACT friendly_name and require device_class=power / unit W
+# so the kWh lifetime counters (PV Erzeugung, Netzbezug, …) never leak into the
+# flow. `sense` fixes the sign convention:
+#   supply  → ≥0 means "liefert/erzeugt" (green)
+#   draw    → ≥0 means "Verbrauch" (red)
+#   grid    → +W = Bezug (draw/red), −W = Einspeisung (supply/green)
+#   battery → −W = entlädt (supply/green), +W = lädt (draw/red)
+_ENERGY_FLOW = (
+    ("pv", "PV", "Aktuell erzeugter PV-Strom", "supply"),
+    ("house", "Haus", "Aktueller Hausverbrauch", "draw"),
+    ("grid", "Netz", "Aktuelle Netz Leistung", "grid"),
+    ("battery", "Akku", "Aktuelle Akku Leistung", "battery"),
+)
+# Lifetime energy (kWh) counters — the "Energie gesamt" totals, NEVER the flow.
+_ENERGY_TOTALS = (
+    ("PV Erzeugung", "PV-Erzeugung"),
+    ("Netzeinspeisung", "Einspeisung"),
+    ("Netzbezug", "Netzbezug"),
+    ("Batterie laden", "Batterie geladen"),
+    ("Batterie entladen", "Batterie entladen"),
 )
 
 
 def _bucket_energy_states(
     states: list[dict[str, Any]],
-) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    """Sort HA states into headline buckets + a per-circuit power list (#503).
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Sort HA states into flow (W) / totals (kWh) / per-circuit power (#691).
 
     Shared by `fetch_energy` (live picture) and `fetch_energy_history` (which
-    needs the same headline entity_ids to query their history). First matching
-    headline wins; leftover power sensors fall through to the circuit list.
+    reuses the flow entity_ids to query their history). Flow buckets are keyed
+    by exact friendly_name and require device_class=power; totals by exact
+    friendly_name and device_class=energy; leftover power sensors fall through
+    to the circuit list.
     """
-    headlines: dict[str, dict[str, Any]] = {}
+    flow_by_name = {name: key for key, _, name, _ in _ENERGY_FLOW}
+    totals_by_name = {name: label for name, label in _ENERGY_TOTALS}
+    flow: dict[str, dict[str, Any]] = {}
+    totals: dict[str, dict[str, Any]] = {}
     circuits: list[dict[str, Any]] = []
     for s in states:
         eid = str(s.get("entity_id") or "")
@@ -282,24 +320,27 @@ def _bucket_energy_states(
             "unit": attrs.get("unit_of_measurement"),
             "device_class": dclass,
         }
-        lname = name.lower()
-        for key, _, needles in _ENERGY_HEADLINES:
-            if key not in headlines and any(n in lname for n in needles):
-                headlines[key] = spec
-                break
-        else:
-            if dclass == "power":
-                circuits.append(spec)
-    return headlines, circuits
+        if (
+            dclass == "power"
+            and name in flow_by_name
+            and flow_by_name[name] not in flow
+        ):
+            flow[flow_by_name[name]] = spec
+        elif dclass == "energy" and name in totals_by_name:
+            totals.setdefault(name, {**spec, "label": totals_by_name[name]})
+        elif dclass == "power":
+            circuits.append(spec)
+    return flow, totals, circuits
 
 
 async def fetch_energy(hass_url: str, hass_token: str) -> dict[str, Any] | None:
-    """Compose the home-energy picture from live HA state (read-only, #503).
+    """Compose the home-energy picture from live HA state (read-only, #503/#691).
 
-    One `/api/states` read; power/energy `device_class` sensors are sorted into
-    the headline buckets (Hausverbrauch/PV/Netzbezug/Einspeisung/Akku) plus a
-    per-circuit power list (the data the "Energieverbrauch" answer dumped as ~30
-    chat cards belongs on this page). Returns None on any HA error.
+    One `/api/states` read. The "Jetzt" flow (PV/Haus/Netz/Akku) comes from the
+    current-power (W) sensors with a sign-corrected direction; the lifetime kWh
+    counters are returned separately as `totals` ("Energie gesamt"), never mixed
+    into the flow. Leftover power sensors become the per-circuit list. Returns
+    None on any HA error.
     """
     headers = {"Authorization": f"Bearer {hass_token}"}
     url = hass_url.rstrip("/")
@@ -311,14 +352,15 @@ async def fetch_energy(hass_url: str, hass_token: str) -> dict[str, Any] | None:
                 states = await resp.json()
     except aiohttp.ClientError:
         return None
-    headlines, circuits = _bucket_energy_states(states)
+    flow, totals, circuits = _bucket_energy_states(states)
     circuits.sort(key=lambda c: c["name"].lower())
     return {
-        "headlines": [
-            {**headlines[key], "label": label}
-            for key, label, _ in _ENERGY_HEADLINES
-            if key in headlines
+        "flow": [
+            {**flow[key], "label": label, "sense": sense}
+            for key, label, _, sense in _ENERGY_FLOW
+            if key in flow
         ],
+        "totals": [totals[name] for name, _ in _ENERGY_TOTALS if name in totals],
         "circuits": circuits,
     }
 
@@ -338,13 +380,15 @@ def _downsample(points: list[dict[str, Any]], target: int) -> list[dict[str, Any
 async def fetch_energy_history(
     hass_url: str, hass_token: str, hours: int
 ) -> dict[str, Any] | None:
-    """Per-series power history for the headline energy sensors (#689).
+    """Per-series current-power (W) history for the flow sensors (#689/#691).
 
-    Resolves the same headline sensors `fetch_energy` finds (one `/api/states`
-    read, reusing its bucketing), then one batched `/api/history/period` query
-    for their entity_ids. Each series is downsampled to a small point count so
-    the payload stays light. Returns None on any HA error; empty `series` when
-    no headline sensors resolve (the frontend degrades gracefully).
+    Resolves the same current-power (W) flow sensors `fetch_energy` finds (one
+    `/api/states` read, reusing its bucketing) — the kWh lifetime counters are
+    deliberately excluded so the chart is single-axis (W). Then one batched
+    `/api/history/period` query for their entity_ids. Each series is downsampled
+    to a small point count so the payload stays light. Returns None on any HA
+    error; empty `series` when no flow sensors resolve (the frontend degrades
+    gracefully).
     """
     headers = {"Authorization": f"Bearer {hass_token}"}
     url = hass_url.rstrip("/")
@@ -355,11 +399,11 @@ async def fetch_energy_history(
                 if resp.status >= 400:
                     return None
                 states = await resp.json()
-            headlines, _ = _bucket_energy_states(states)
+            flow, _, _ = _bucket_energy_states(states)
             ordered = [
-                {**headlines[key], "label": label}
-                for key, label, _ in _ENERGY_HEADLINES
-                if key in headlines
+                {**flow[key], "label": label}
+                for key, label, _, _ in _ENERGY_FLOW
+                if key in flow
             ]
             if not ordered:
                 return {"hours": hours, "series": []}

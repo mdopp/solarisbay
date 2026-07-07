@@ -185,16 +185,6 @@
     .trash:hover { background: rgba(194,72,58,.14); color: var(--danger); }
     .sessions-empty { padding: 12px 14px; color: var(--muted); font-size: 13px; }
 
-    /* Pinned household chat (#237): a fixed entry above the session list that
-       starts a new chat pre-bound to the `household` topic (e2b + household
-       soul). Pinned layout + home icon only — the active highlight comes from
-       the shared `.session.active` rule, toggled from selection state (#262),
-       so the row is neutral unless the household chat is the current chat. */
-    .session.pinned {
-      width: calc(100% - 16px); margin: 4px 8px 2px; text-align: left;
-    }
-    .session.pinned .pin-ic { flex: 0 0 26px; display: flex; align-items: center; justify-content: center; color: var(--accent); }
-
     .rail-foot { border-top: 1px solid var(--line); padding: 10px 12px; }
     .rail-user { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 6px; }
     .rail-user .who { font-weight: 600; }
@@ -417,6 +407,14 @@
     /* Inside a grid a card fills its column (no 240px cap, no shrink-overflow):
        border-box + min-width:0 keep its contents within the column edge. */
     .hc-grid > .ha-card { max-width: 100%; min-width: 0; }
+    /* #692: the card header — name on the left, the on/off toggle (light/switch)
+       + cover open/stop/close + the ☆ pin right-aligned. Keeping the toggle here
+       (not on its own body row) makes a light card just header + slider + %. */
+    .hc-head {
+      display: flex; align-items: center; gap: 6px; min-width: 0;
+    }
+    .hc-head .hc-name { flex: 1 1 auto; min-width: 0; }
+    .hc-head .hc-compact { flex: 0 0 auto; margin-top: 0; }
     .ha-card .hc-name { font-size: 12px; color: var(--muted); }
     .ha-card .hc-state { font-size: 18px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
     .ha-card .hc-unit { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 3px; }
@@ -464,32 +462,26 @@
        the per-entity control. Group fills the answer width; rows share the
        card's badge/toggle/busy affordances via .hc-row. */
     .ha-card.hc-group { max-width: 100%; flex: 1 1 100%; padding: 4px 0; }
-    /* #551: a group's cards sit on a UNIFORM base-unit grid — every column is
-       the same base width (--hc-col), so 2-3 normal cards align side by side
-       when there's room and collapse to a single column when narrow. Large
-       cards (media_player now-playing) span a MULTIPLE of the base unit
-       (.hc-span2 / .hc-span3) while staying aligned to the same grid.
-       Supersedes the loose #539 grid. */
+    /* #692: cards have very different heights (a light with a slider is tall, a
+       toggle-only or media card is short), so a fixed-row CSS grid (#551/#688)
+       left large empty cells under the short ones. A responsive CSS multi-column
+       layout PACKS varying-height cards tightly with no vertical gaps: the column
+       width is the base unit (--hc-col), the browser fits as many columns as the
+       width allows (1 on a phone, 2-3 when wide), and break-inside:avoid keeps a
+       card whole. A wide card (media_player now-playing) spans all columns. */
     .hc-grid {
       --hc-col: 220px;
-      display: grid; gap: 8px;
-      /* min(100%, --hc-col) forces ONE full-width column when the container is
-         narrower than the base (phone), so cards never get cramped/overflow;
-         2-3 uniform columns only appear when there's genuinely >= 2x the base. */
-      grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--hc-col)), 1fr));
+      columns: var(--hc-col); column-gap: 8px;
     }
-    /* Span large cards across multiple base columns. On a narrow/phone layout
-       the grid is a single column (the min(100%,...) guard above), so a spanning
-       card must NOT force a 2/3-wide track — default to full-width (span 1) and
-       only widen once the viewport is wide enough to hold that many base cols. */
-    .hc-grid .hc-span2,
-    .hc-grid .hc-span3 { grid-column: 1 / -1; }
-    @media (min-width: 640px) {
-      .hc-grid .hc-span2 { grid-column: span 2; }
+    .hc-grid > .ha-card,
+    .hc-grid > .hc-row {
+      break-inside: avoid; -webkit-column-break-inside: avoid;
+      margin-bottom: 8px;
     }
-    @media (min-width: 940px) {
-      .hc-grid .hc-span3 { grid-column: span 3; }
-    }
+    /* A wide card (media_player now-playing) breaks out of the columns and spans
+       the full width so its title/transport row isn't cramped. */
+    .hc-grid > .hc-span2,
+    .hc-grid > .hc-span3 { column-span: all; }
     .hc-grid .hc-row { border-top: none; }
     /* #553: nothing inside a card may extend past its edge on a narrow/phone
        layout. Control rows are border-box + can wrap + allow their flex items to
@@ -525,13 +517,15 @@
     .hc-row.off .hc-badge { background: rgba(127,127,127,0.18); }
     .hc-row.hc-toggle { cursor: pointer; user-select: none; }
     .hc-row.busy { opacity: 0.6; pointer-events: none; }
-    /* ☆ pin affordance + start-page controls (#646). */
+    /* ☆ pin affordance + start-page controls (#646). #692: on a card the pin now
+       sits as the last flex child of the header (right-aligned by the name's
+       flex-grow), no longer absolutely positioned over the card corner. */
     .hc-pinnable { position: relative; }
     .hc-pin {
-      position: absolute; top: 4px; right: 6px;
       background: none; border: none; cursor: pointer;
-      font-size: 16px; line-height: 1; color: var(--muted); padding: 2px;
+      font-size: 16px; line-height: 1; color: var(--muted); padding: 0 2px;
     }
+    .hc-head .hc-pin { flex: 0 0 auto; }
     .hc-pin:hover { color: var(--fg); }
     .start-edit {
       margin-left: auto; background: none; border: 1px solid var(--line);
@@ -561,17 +555,16 @@
       flex: 1 1 auto; margin-top: 0;
       background: none; border: none; box-shadow: none; padding: 4px 0;
     }
-    /* Favorite/frequent cards flow on the same responsive base-unit grid as the
-       chat card groups (#688): 2-3 per row when the viewport allows, collapsing
-       to one full-width column when narrow (min(100%,--hc-col) guard) so a row's
-       badge/slider still isn't cramped into a shrink-to-fit flex item. */
+    /* Favorite/frequent cards flow in the same packed multi-column masonry as the
+       chat card groups (#692): the browser fits 1-3 base-width columns by width
+       and break-inside:avoid packs the varying-height cards with no empty cells. */
     .start-favs {
       --hc-col: 220px;
-      display: grid; gap: 8px; margin: 8px 0 2px; max-width: 100%;
-      grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--hc-col)), 1fr));
+      columns: var(--hc-col); column-gap: 8px; margin: 8px 0 2px; max-width: 100%;
     }
     .start-favs > .hc-row {
       box-sizing: border-box; width: 100%; min-width: 0;
+      break-inside: avoid; -webkit-column-break-inside: avoid; margin-bottom: 8px;
       border: 1px solid var(--line); border-top: 1px solid var(--line);
       border-radius: 10px; background: rgba(127,127,127,0.05);
     }
@@ -594,16 +587,16 @@
     .energy-tile .et-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: var(--ink); }
     .energy-tile .et-value .et-unit { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 4px; }
     .energy-tile .et-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-    /* Circuits flow on the same responsive base-unit grid as the card groups
-       (#688): 2-3 compact tiles per row when wide, one column when narrow. Each
-       tile carries its own surface (zebra striping doesn't read across a grid). */
+    /* Circuits flow in the same packed multi-column masonry as the card groups
+       (#692): 1-3 columns by width, tightly packed. Each tile carries its own
+       surface (zebra striping doesn't read across columns). */
     .energy-circuits {
       --hc-col: 220px;
-      display: grid; gap: 6px; margin: 4px 0 2px;
-      grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--hc-col)), 1fr));
+      columns: var(--hc-col); column-gap: 6px; margin: 4px 0 2px;
     }
     .energy-circuit {
       display: flex; align-items: baseline; gap: 10px;
+      break-inside: avoid; -webkit-column-break-inside: avoid; margin-bottom: 6px;
       padding: 6px 10px; border-radius: 8px; background: rgba(127,127,127,0.05);
     }
     .energy-circuit .ec-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -758,7 +751,13 @@
     .md blockquote { margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
     .md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
 
-    .activity { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    .activity { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+    /* Progressive status line (#695): after a few seconds the bare "thinking…"
+       gains a compact live line — elapsed time · model · current tool/steps.
+       Hidden until revealed so short turns stay clean; wraps under the dots on
+       narrow widths without shifting them. */
+    .activity-status { color: var(--muted); opacity: 0.7; font-size: 12px; }
+    .activity-status .as-sep { opacity: 0.5; margin: 0 5px; }
     .dots { display: inline-flex; gap: 3px; }
     .dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); opacity: 0.4; animation: blink 1.2s infinite ease-in-out; }
     .dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -1270,27 +1269,27 @@
       </div>
     </div>
 
+    <!-- Primary nav (#681/#700): Zuhause = the household chat, Favoriten +
+         Energie the two portals. One prominent group above the CHATS list; the
+         household chat lives here, not as a session row below. -->
+    <nav class="rail-nav">
+      <button id="rail-home" type="button" title="Zuhause — Haushalts-Chat (Solaris, schnelles Modell)">
+        <svg class="ic"><use href="#i-home"></use></svg><span>Zuhause</span>
+      </button>
+      <button id="rail-favorites" type="button" title="Favoriten — Startseite">
+        <svg class="ic"><use href="#i-star"></use></svg><span>Favoriten</span>
+      </button>
+      <button id="rail-energy" type="button" title="Energie — Hausverbrauch">
+        <svg class="ic"><use href="#i-bolt"></use></svg><span>Energie</span>
+      </button>
+    </nav>
+
     <div class="rail-sessions">
       <div class="rs-head">
         <span>Chats</span><span class="grow"></span>
         <button class="icon-btn" id="new-incognito" type="button" title="Temporärer Chat (incognito) — wird beim Schließen gelöscht, nichts wird gespeichert" aria-label="Temporärer Chat"><svg class="ic"><use href="#i-ghost"></use></svg></button>
         <button class="icon-btn" id="new-session" type="button" title="New chat" aria-label="New chat"><svg class="ic"><use href="#i-plus"></use></svg></button>
       </div>
-      <button class="session pinned" id="pinned-household" type="button" hidden
-              title="Zuhause — Haushalts-Chat (Solaris, schnelles Modell)">
-        <span class="pin-ic"><svg class="ic"><use href="#i-home"></use></svg></span>
-        <span class="title">Zuhause</span>
-      </button>
-      <button class="session pinned" id="rail-favorites" type="button"
-              title="Favoriten — Startseite">
-        <span class="pin-ic"><svg class="ic"><use href="#i-star"></use></svg></span>
-        <span class="title">Favoriten</span>
-      </button>
-      <button class="session pinned" id="rail-energy" type="button"
-              title="Energie — Hausverbrauch">
-        <span class="pin-ic"><svg class="ic"><use href="#i-bolt"></use></svg></span>
-        <span class="title">Energie</span>
-      </button>
       <div id="sessions"></div>
     </div>
 
@@ -1655,8 +1654,9 @@
   </div>
 
   <!-- Mobile bottom tab bar (#648): shown <=760px only (CSS). Same hash-router
-       targets, no new routing model — Zuhause reuses the pinned-household path,
-       Chats opens the rail drawer, Favoriten routes to #/p/start. -->
+       targets, no new routing model — Zuhause reuses the household-chat path
+       (startHouseholdChat, #700), Chats opens the rail drawer, Favoriten routes
+       to #/p/start. -->
   <nav id="tabbar" aria-label="Navigation">
     <button id="tab-home" type="button" aria-label="Zuhause"><svg class="ic"><use href="#i-home"></use></svg>Zuhause</button>
     <button id="tab-chats" type="button" aria-label="Chats"><svg class="ic"><use href="#i-chat"></use></svg>Chats</button>
@@ -1702,7 +1702,7 @@
       var sessionsEl = document.getElementById("sessions");
       var newBtn = document.getElementById("new-session");
       var incognitoBtn = document.getElementById("new-incognito");
-      var householdBtn = document.getElementById("pinned-household");
+      var railHome = document.getElementById("rail-home");
       var incognitoBadge = document.getElementById("incognito-badge");
       var backdrop = document.getElementById("backdrop");
       var adminBadge = document.getElementById("admin-badge");
@@ -1744,9 +1744,6 @@
             topicsList = (j && j.topics) || [];
             topicsBySlug = {};
             topicsList.forEach(function (t) { topicsBySlug[t.slug] = t; });
-            // Surface the pinned household chat only when the resident can see
-            // the household topic (it's a shared system topic — #237).
-            householdBtn.hidden = !topicsBySlug[HOUSEHOLD_TOPIC];
           })
           .catch(function () {});
       }
@@ -2172,30 +2169,106 @@
           .catch(function () {});
       }
 
+      // Deterministic entity auto-linking (#694): the small household model
+      // rarely emits [[..]]/ANCHORS, so upgrade known references in a rendered
+      // ASSISTANT reply to concept-page links in code. Fetches a bounded alias
+      // index once (HA friendly_names + entity_ids, OKF canonical names +
+      // aliases → #/c/<id>), builds one case-insensitive whole-word regex from
+      // it (longest alias first), and links the FIRST occurrence per reply of
+      // each id — skipping code/pre and existing links. Raw entity_id tokens
+      // survive markdown (#693) and match as their own alias. Cached in memory,
+      // refreshed lazily; a failed/empty fetch is a no-op (chips still work).
+      var _aliasIndex = null, _aliasPromise = null;
+      function loadAliasIndex() {
+        if (_aliasIndex) return Promise.resolve(_aliasIndex);
+        if (_aliasPromise) return _aliasPromise;
+        _aliasPromise = fetch("/api/anchors/aliases")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            var aliases = (j && j.ok && j.aliases) || [];
+            _aliasIndex = buildAliasIndex(aliases);
+            _aliasPromise = null;
+            return _aliasIndex;
+          })
+          .catch(function () { _aliasPromise = null; return null; });
+        return _aliasPromise;
+      }
+      function buildAliasIndex(aliases) {
+        // longest-alias-first so the regex prefers the most specific match.
+        var sorted = aliases.slice().sort(function (a, b) {
+          return b.alias.length - a.alias.length;
+        });
+        var byLower = {}, parts = [];
+        sorted.forEach(function (row) {
+          var lower = row.alias.toLowerCase();
+          if (byLower[lower]) return;
+          byLower[lower] = row.id;
+          parts.push(row.alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        });
+        // \b doesn't fence dotted entity_ids or non-ASCII names, so bound the
+        // match on non-word / string edge explicitly.
+        var re = parts.length
+          ? new RegExp("(^|[^\\w.])(" + parts.join("|") + ")(?![\\w.])", "gi")
+          : null;
+        return { re: re, byLower: byLower };
+      }
+      function autoLinkifyEntities(rootEl) {
+        if (!rootEl) return;
+        loadAliasIndex().then(function (idx) {
+          if (!idx || !idx.re) return;
+          var linked = {}; // id -> first occurrence already linked this reply
+          var walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, null);
+          var nodes = [], node;
+          while ((node = walker.nextNode())) {
+            var p = node.parentNode;
+            if (p && (p.closest("code") || p.closest("pre") || p.closest("a"))) continue;
+            nodes.push(node);
+          }
+          nodes.forEach(function (textNode) {
+            var text = textNode.nodeValue, last = 0, m;
+            var frag = null;
+            idx.re.lastIndex = 0;
+            while ((m = idx.re.exec(text))) {
+              var id = idx.byLower[m[2].toLowerCase()];
+              if (!id || linked[id]) continue; // first occurrence per id only
+              linked[id] = true;
+              frag = frag || document.createDocumentFragment();
+              var matchStart = m.index + m[1].length;
+              if (matchStart > last) {
+                frag.appendChild(document.createTextNode(text.slice(last, matchStart)));
+              }
+              var a = document.createElement("a");
+              a.className = "wikilink resolved";
+              a.href = "#/c/" + encodeURIComponent(id);
+              a.textContent = m[2];
+              a.title = m[2] + " öffnen";
+              frag.appendChild(a);
+              last = matchStart + m[2].length;
+            }
+            if (frag) {
+              if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+              textNode.parentNode.replaceChild(frag, textNode);
+            }
+          });
+        });
+      }
+
       // One entity's card. `row` renders it as a compact group row (no card
       // chrome) reusing the same controls; otherwise as a standalone card.
       function renderHaCard(c, row, opts) {
         var card = document.createElement("div");
         card.className = row ? "hc-row" : "ha-card";
+        // #692: the card is a header row [name .... controls ☆] + a body. The
+        // on/off toggle (light/switch) and the cover open/stop/close controls
+        // live top-right in the header (next to the ☆ pin), so the body holds
+        // only the slider + % / media controls — making light cards short.
+        var head = document.createElement("div");
+        head.className = "hc-head";
+        card.appendChild(head);
         var name = document.createElement("div");
         name.className = "hc-name";
         name.textContent = c.name || c.entity_id || "";
-        card.appendChild(name);
-        // ☆ pin affordance, chat renderers only (#646). stopPropagation is
-        // load-bearing: a light/switch card is itself a click-toggle.
-        if (opts && opts.pin && c.entity_id) {
-          card.classList.add("hc-pinnable");
-          var pin = document.createElement("button");
-          pin.className = "hc-pin";
-          pin.type = "button";
-          pin.textContent = "☆";
-          pin.title = "Auf die Startseite pinnen";
-          pin.addEventListener("click", function (ev) {
-            ev.stopPropagation();
-            pinEntity(pin, c);
-          });
-          card.appendChild(pin);
-        }
+        head.appendChild(name);
         var st = String(c.state == null ? "" : c.state);
         if (c.domain === "sensor") {
           var val = document.createElement("div");
@@ -2232,14 +2305,14 @@
           } else {
             badge.textContent = haStateLabel(c.domain, st);
           }
-          // #550: every controllable card packs its on/off badge + its primary
-          // controls onto ONE compact row (.hc-compact), like the #538 light.
-          // A read-only badge (binary_sensor) keeps the badge directly.
+          // #692: the on/off toggle (light/switch) + the cover open/stop/close
+          // controls ride the header row, top-right by the ☆ pin. A read-only
+          // badge (binary_sensor) keeps its label directly in the card body.
           var badgeHost = card;
           if (c.domain === "light" || c.domain === "switch" || c.domain === "cover") {
             badgeHost = document.createElement("div");
             badgeHost.className = "hc-compact";
-            card.appendChild(badgeHost);
+            head.appendChild(badgeHost);
           }
           badgeHost.appendChild(badge);
           // Phase 2 (#476): light/switch badge becomes an on/off toggle.
@@ -2259,9 +2332,27 @@
               if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
             });
           }
-          // Phase 3 (#477): richer controls on the compact badge row, gated.
-          if (c.domain === "light") renderLightControls(card, c, badgeHost);
+          // #692: the light brightness slider drops into the card BODY (below the
+          // header toggle); the cover open/stop/close buttons stay in the header
+          // host, its position slider goes to the body.
+          if (c.domain === "light") renderLightControls(card, c, card);
           else if (c.domain === "cover") renderCoverControls(card, c, badgeHost);
+        }
+        // ☆ pin affordance, chat renderers only (#646). It sits last in the
+        // header so the row reads [name] .... [toggle] [☆]. stopPropagation is
+        // load-bearing: a light/switch card is itself a click-toggle.
+        if (opts && opts.pin && c.entity_id) {
+          card.classList.add("hc-pinnable");
+          var pin = document.createElement("button");
+          pin.className = "hc-pin";
+          pin.type = "button";
+          pin.textContent = "☆";
+          pin.title = "Auf die Startseite pinnen";
+          pin.addEventListener("click", function (ev) {
+            ev.stopPropagation();
+            pinEntity(pin, c);
+          });
+          head.appendChild(pin);
         }
         return card;
       }
@@ -2921,6 +3012,22 @@
         scrollDown(true);
       }
 
+      // Friendly German label for a running tool (#695). Falls back to the raw
+      // tool name so an unmapped tool still reads sensibly in the status line.
+      var TOOL_LABELS = {
+        ha_list_entities: "prüfe Geräte",
+        ha_call_service: "steuere Geräte",
+        play_music: "starte Musik",
+        notes_search: "suche in Notizen",
+        notes_read: "lese Notizen",
+        web_search: "suche im Web",
+        web_fetch: "lese Webseite",
+        memory_search: "durchsuche Erinnerungen",
+      };
+      function toolLabel(name) {
+        return TOOL_LABELS[name] || String(name || "tool");
+      }
+
       function addAssistant() {
         var el = document.createElement("div");
         el.className = "msg sol";
@@ -2928,7 +3035,8 @@
         activity.className = "activity";
         activity.innerHTML =
           '<span class="dots"><span></span><span></span><span></span></span>' +
-          '<span class="activity-text">thinking…</span>';
+          '<span class="activity-text">thinking…</span>' +
+          '<span class="activity-status" hidden></span>';
         el.appendChild(activity);
         // Reasoning (#231) renders as its own collapsible block above the
         // answer. gemma4 delivers it in one shot near turn-end (a distinct
@@ -2965,6 +3073,32 @@
         var started = Date.now();
         var done = false;
         function fmtSecs(s) { return (typeof s === "number" ? s.toFixed(1) : "?") + "s"; }
+
+        // Progressive status line (#695): stays hidden for the first few seconds
+        // so short turns keep the bare indicator, then ticks elapsed time + the
+        // answering model + live tool/step activity. The model label is derived
+        // client-side from the persona speed (schnell vs the Thinking/deep mode).
+        var statusEl = activity.querySelector(".activity-status");
+        var modelLabel = currentReasoning() === "high" ? "Solaris Gründlich" : "Solaris schnell";
+        var curTool = null, doneSteps = 0;
+        var STATUS_DELAY_MS = 3500;
+        function renderStatus() {
+          if (done || !statusEl) return;
+          var elapsed = Math.round((Date.now() - started) / 1000);
+          if (elapsed * 1000 < STATUS_DELAY_MS) return;
+          var parts = [elapsed + " s", modelLabel];
+          if (curTool) parts.push(toolLabel(curTool) + "…");
+          else if (doneSteps > 0) parts.push(doneSteps + (doneSteps === 1 ? " Schritt fertig" : " Schritte fertig"));
+          statusEl.innerHTML = parts.map(function (p) {
+            var span = document.createElement("span"); span.textContent = p; return span.outerHTML;
+          }).join('<span class="as-sep">·</span>');
+          statusEl.hidden = false;
+        }
+        var statusTimer = setInterval(renderStatus, 1000);
+        function stopStatus() {
+          if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+          if (statusEl) statusEl.hidden = true;
+        }
         return {
           setActivity: function (txt) { var t = activity.querySelector(".activity-text"); if (t) t.textContent = txt; },
           // A completed LLM pass (#347/#406): persona/model + tokens + duration.
@@ -2986,6 +3120,7 @@
             openRow.innerHTML = '<span class="ab-label"></span><span class="ab-num">…</span>';
             openRow.querySelector(".ab-label").textContent = label;
             bubbleRows.appendChild(openRow); bubbleCount++; syncSummary();
+            curTool = label; renderStatus();
             scrollDown(atBottom());
           },
           endStep: function (wallS) {
@@ -2993,6 +3128,7 @@
             openRow.classList.remove("running");
             openRow.querySelector(".ab-num").textContent = fmtSecs(wallS);
             openRow = null;
+            curTool = null; doneSteps++; renderStatus();
           },
           // Read-only HA cards for the turn (#475), rendered under the answer
           // body as the cards event arrives near turn-end.
@@ -3037,6 +3173,7 @@
           },
           append: function (delta) {
             var stick = atBottom();
+            stopStatus();
             if (activity.parentNode) el.removeChild(activity);
             buffer += delta;
             body.innerHTML = renderReply(buffer);
@@ -3044,6 +3181,7 @@
           },
           finish: function () {
             if (done) return; done = true;
+            stopStatus();
             if (activity.parentNode) el.removeChild(activity);
             // The live bubble was the during-turn view; the persisted rich step
             // list (loadSessionTrace, #406) now replaces it as the single trace
@@ -3053,17 +3191,19 @@
             else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
             linkifyWikiLinks(body);
+            autoLinkifyEntities(body);
             el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
           },
           stopped: function () {
             if (done) return; done = true;
+            stopStatus();
             // Keep whatever streamed before the stop, with a "stopped" note (#192).
             if (activity.parentNode) el.removeChild(activity);
             // Mirror finish() (#406): drop the live bubble so the persisted step
             // list stays the single trace surface, with no ghost on a stopped turn.
             if (bubble && bubble.parentNode) el.removeChild(bubble);
-            if (buffer) { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); renderMermaidIn(body); linkifyWikiLinks(body); }
+            if (buffer) { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); renderMermaidIn(body); linkifyWikiLinks(body); autoLinkifyEntities(body); }
             else { body.textContent = "(stopped)"; }
             var note = document.createElement("span");
             note.className = "stopped-note"; note.textContent = "stopped";
@@ -3072,7 +3212,7 @@
             el.appendChild(meta);
             scrollDown(atBottom());
           },
-          fail: function (msg) { if (activity.parentNode) el.removeChild(activity); el.className = "msg system"; body.textContent = msg; },
+          fail: function (msg) { stopStatus(); if (activity.parentNode) el.removeChild(activity); el.className = "msg system"; body.textContent = msg; },
           // Resume support (#452): a mobile transport drop rejects the fetch
           // reader mid-stream, but the turn usually finished server-side and is
           // persisted. hasContent() lets the caller tell a partial render from a
@@ -3082,6 +3222,7 @@
           contentLength: function () { return buffer.length; },
           replace: function (raw) {
             if (done) return; done = true;
+            stopStatus();
             if (activity.parentNode) el.removeChild(activity);
             if (bubble && bubble.parentNode) el.removeChild(bubble);
             buffer = String(raw == null ? "" : raw);
@@ -3089,6 +3230,7 @@
             else { body.setAttribute("data-raw", buffer); body.innerHTML = renderReply(buffer); }
             renderMermaidIn(body);
             linkifyWikiLinks(body);
+            autoLinkifyEntities(body);
             el.appendChild(metaLine(new Date(), Date.now() - started));
             scrollDown(atBottom());
           }
@@ -3944,18 +4086,20 @@
         return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
       }
 
-      // Drive the pinned household row's highlight from selection state, the
-      // same mechanism that toggles .active on a normal .session row (#262):
-      // it's active when the open chat is bound to the household topic, or when
-      // a fresh no-session chat is pre-bound to it before its first turn. The
-      // row is otherwise neutral. Generalizes to any future pinned topic row.
       // The header title is context-aware (#671): "Favoriten" on the #/p/start
       // portal (matching the bottom tab, #677), "Zuhause" in the household chat,
       // otherwise the session title — never the "Neuer Chat" placeholder on the
       // start/household views.
-      function isHouseholdActive(activeS) {
+      // The household chat IS the current view when the open session is the
+      // resident's durable household session (#345/#419, from whoami), or — before
+      // that session's first turn exists — when a fresh no-session chat is
+      // pre-bound to the household topic (#242). A portal route is never it.
+      // This is the single source of truth for the Zuhause highlight (#700):
+      // derived from the view, so it can't latch on stale button state.
+      function isHouseholdView() {
+        if ((location.hash || "").indexOf("#/p/") === 0) return false;
         return sessionId
-          ? !!(activeS && activeS.primary_topic === HOUSEHOLD_TOPIC)
+          ? !!(householdSessionId && sessionId === householdSessionId)
           : pendingTopic === HOUSEHOLD_TOPIC;
       }
       function syncChatTitle(activeS) {
@@ -3963,16 +4107,11 @@
         if (!ct) return;
         if ((location.hash || "").indexOf("#/p/start") === 0) {
           ct.textContent = "Favoriten";
-        } else if (isHouseholdActive(activeS) && !(activeS && (activeS.title || activeS.preview))) {
+        } else if (isHouseholdView() && !(activeS && (activeS.title || activeS.preview))) {
           ct.textContent = (topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name) || "Zuhause";
         } else {
           ct.textContent = (activeS && (activeS.title || activeS.preview)) || "Neuer Chat";
         }
-      }
-
-      function syncPinnedActive(activeS) {
-        householdBtn.classList.toggle("active", isHouseholdActive(activeS));
-        if (typeof syncTabbar === "function") syncTabbar();
       }
 
       var lastSessions = [];
@@ -3992,7 +4131,10 @@
         // Mirror the active session's name into the chat header.
         var activeS = lastSessions.find(function (s) { return s.id === sessionId; });
         syncChatTitle(activeS);
-        syncPinnedActive(activeS);
+        syncTabbar();
+        // The household chat lives in the nav group (#700), not the CHATS list —
+        // drop its durable session row so "Zuhause" appears exactly once.
+        list = lastSessions.filter(function (s) { return !(householdSessionId && s.id === householdSessionId); });
         sessionsEl.textContent = "";
         if (!list.length) {
           var empty = document.createElement("div");
@@ -4100,6 +4242,7 @@
                 body.innerHTML = renderReply(m.content);
                 renderMermaidIn(body);
                 linkifyWikiLinks(body);
+                autoLinkifyEntities(body);
                 el.appendChild(body);
                 if (ts) el.appendChild(metaLine(ts));
                 log.appendChild(el);
@@ -4182,16 +4325,20 @@
       function startHouseholdPrebind() {
         newSession();
         pendingTopic = HOUSEHOLD_TOPIC;
-        syncPinnedActive(null);
+        syncTabbar();
       }
 
       newBtn.addEventListener("click", newSession);
       incognitoBtn.addEventListener("click", newIncognito);
-      householdBtn.addEventListener("click", startHouseholdChat);
 
-      // Desktop rail nav (#681): Favoriten + Energie are prominent pinned
-      // entries beside Zuhause, not small footer links. Both route to their
-      // portal hash; syncTabbar lights the active one on its route.
+      // Desktop rail nav (#681/#700): Zuhause opens the household chat, Favoriten
+      // + Energie route to their portal hash. syncTabbar lights the active one
+      // from the current view.
+      railHome.addEventListener("click", function () {
+        closeRail();
+        startHouseholdChat();
+        syncTabbar();
+      });
       var railFavorites = document.getElementById("rail-favorites");
       var railEnergy = document.getElementById("rail-energy");
       railFavorites.addEventListener("click", function () {
@@ -4235,20 +4382,21 @@
       function syncTabbar() {
         // Active tab tracks the current VIEW, not transient drawer state (#675).
         // Favoriten = on #/p/start; Zuhause = the household session is the open
-        // chat (syncPinnedActive keeps householdBtn.active in sync); Chats = any
-        // other session is the current view — OR while the drawer is open and
-        // being browsed. Picking a chat calls closeRail(), so Chats must stay lit
-        // from the view (a non-household chat), not from rail-open.
+        // chat (isHouseholdView, #700); Chats = any other session is the current
+        // view — OR while the drawer is open and being browsed. Picking a chat
+        // calls closeRail(), so Chats must stay lit from the view (a non-household
+        // chat), not from rail-open.
         var railOpen = document.body.classList.contains("rail-open");
         var onStart = (location.hash || "").indexOf("#/p/start") === 0;
         var onEnergy = (location.hash || "").indexOf("#/p/energy") === 0;
-        var onHome = !railOpen && !onStart && !onEnergy && householdBtn.classList.contains("active");
+        var onHome = !onStart && !onEnergy && isHouseholdView();
         var onChats = railOpen || (!onStart && !onEnergy && !onHome);
         tabFavorites.classList.toggle("active", onStart && !railOpen);
-        tabHome.classList.toggle("active", onHome);
+        tabHome.classList.toggle("active", onHome && !railOpen);
         tabChats.classList.toggle("active", onChats);
-        // Desktop rail entries (#681) highlight on their portal routes, mirroring
-        // the mobile tab highlighting.
+        // Desktop rail entries (#681/#700) highlight strictly from the current
+        // view — exactly one of the three, or none for another session's chat.
+        railHome.classList.toggle("active", onHome);
         railFavorites.classList.toggle("active", onStart);
         railEnergy.classList.toggle("active", onEnergy);
         // The header title tracks the route too (#671): "Favoriten" on start,
@@ -4619,35 +4767,37 @@
         title.textContent = "Energie";
         head.appendChild(title);
         card.appendChild(head);
-        // Headlines → prominent metric tiles (big value + unit + label).
-        if (e.headlines && e.headlines.length) {
-          var tiles = document.createElement("div");
-          tiles.className = "energy-tiles";
-          e.headlines.forEach(function (h) {
+        // "Jetzt": flow summary — PV / Haus / Netz / Akku with a direction cue.
+        // No unlabeled top metric row (#691): the flow IS the headline.
+        renderEnergyFlow(card, e.flow || []);
+        // 24h / 7d trend chart with a range toggle (#689).
+        renderEnergyTrend(card);
+        // Lifetime kWh totals — a clearly-labeled section, never mixed with W.
+        if (e.totals && e.totals.length) {
+          card.appendChild(conceptSectionTitle("Energie gesamt"));
+          var totals = document.createElement("div");
+          totals.className = "energy-tiles";
+          e.totals.forEach(function (t) {
             var tile = document.createElement("div");
             tile.className = "energy-tile";
             var val = document.createElement("div");
             val.className = "et-value";
-            val.textContent = h.state == null ? "—" : fmtNum(h.state);
-            if (h.unit) {
+            val.textContent = t.state == null ? "—" : fmtNum(t.state);
+            if (t.unit) {
               var u = document.createElement("span");
               u.className = "et-unit";
-              u.textContent = h.unit;
+              u.textContent = t.unit;
               val.appendChild(u);
             }
             var lbl = document.createElement("div");
             lbl.className = "et-label";
-            lbl.textContent = h.label;
+            lbl.textContent = t.label;
             tile.appendChild(val);
             tile.appendChild(lbl);
-            tiles.appendChild(tile);
+            totals.appendChild(tile);
           });
-          card.appendChild(tiles);
+          card.appendChild(totals);
         }
-        // "Jetzt": flow summary — PV / Haus / Netz / Akku with a direction cue.
-        renderEnergyFlow(card, e.headlines || []);
-        // 24h / 7d trend chart with a range toggle (#689).
-        renderEnergyTrend(card);
         // Circuits → a readable value-aligned list, ordered by current power.
         if (e.circuits && e.circuits.length) {
           card.appendChild(conceptSectionTitle("Stromkreise"));
@@ -4677,7 +4827,7 @@
             });
           card.appendChild(list);
         }
-        if (!(e.headlines && e.headlines.length) && !(e.circuits && e.circuits.length)) {
+        if (!(e.flow && e.flow.length) && !(e.circuits && e.circuits.length)) {
           var none = document.createElement("p");
           none.className = "concept-desc";
           none.textContent = "Keine Energie-Sensoren gefunden.";
@@ -4685,30 +4835,18 @@
         }
       }
 
-      // "Jetzt" flow tiles: PV/Haus/Netz/Akku from the headline sensors, with a
-      // direction cue. Grid import (Netzbezug) and battery-discharge read as
-      // draw (neg); export (Einspeisung) and battery-charge read as supply.
-      function renderEnergyFlow(card, headlines) {
-        var byLabel = {};
-        headlines.forEach(function (h) { byLabel[h.label] = h; });
-        // {label shown, source headline label, dir hint}. Netz collapses the two
-        // grid headlines: import wins if present, else export.
-        var tiles = [];
-        function push(h, shown, sense) {
-          if (!h || h.state == null) return;
-          var n = parseFloat(h.state);
-          tiles.push({ h: h, shown: shown, val: isNaN(n) ? null : n, sense: sense });
-        }
-        push(byLabel["PV-Erzeugung"], "PV-Erzeugung", "supply");
-        push(byLabel["Hausverbrauch"], "Hausverbrauch", "draw");
-        if (byLabel["Netzbezug"] && parseFloat(byLabel["Netzbezug"].state) > 0) {
-          push(byLabel["Netzbezug"], "Netzbezug", "draw");
-        } else if (byLabel["Einspeisung"]) {
-          push(byLabel["Einspeisung"], "Einspeisung", "supply");
-        } else if (byLabel["Netzbezug"]) {
-          push(byLabel["Netzbezug"], "Netzbezug", "draw");
-        }
-        push(byLabel["Akku"], "Akku", "battery");
+      // "Jetzt" flow tiles: PV/Haus/Netz/Akku from the current-power (W) sensors
+      // (#691). `sense` from the server fixes the sign convention:
+      //   supply → liefert/erzeugt (green); draw → Verbrauch (red)
+      //   grid:    +W = Bezug (red), −W = Einspeisung (green)
+      //   battery: −W = entlädt (green, supplies), +W = lädt (red, draws)
+      function renderEnergyFlow(card, flow) {
+        var tiles = flow
+          .filter(function (f) { return f.state != null; })
+          .map(function (f) {
+            var n = parseFloat(f.state);
+            return { f: f, val: isNaN(n) ? null : n, sense: f.sense };
+          });
         if (!tiles.length) return;
         card.appendChild(conceptSectionTitle("Jetzt"));
         var wrap = document.createElement("div");
@@ -4717,27 +4855,29 @@
           var tile = document.createElement("div");
           tile.className = "flow-tile";
           var dir = "";
-          // sense drives the arrow + pos/neg colour. battery: charge(+)=supply.
           if (t.val != null) {
             if (t.sense === "supply") { tile.classList.add("pos"); dir = "↑ liefert"; }
             else if (t.sense === "draw") { tile.classList.add("neg"); dir = "↓ Verbrauch"; }
-            else if (t.sense === "battery") {
-              if (t.val > 0) { tile.classList.add("pos"); dir = "↑ lädt"; }
-              else if (t.val < 0) { tile.classList.add("neg"); dir = "↓ entlädt"; }
+            else if (t.sense === "grid") {
+              if (t.val > 0) { tile.classList.add("neg"); dir = "↓ Bezug"; }
+              else if (t.val < 0) { tile.classList.add("pos"); dir = "↑ Einspeisung"; }
+            } else if (t.sense === "battery") {
+              if (t.val > 0) { tile.classList.add("neg"); dir = "↓ lädt"; }
+              else if (t.val < 0) { tile.classList.add("pos"); dir = "↑ entlädt"; }
             }
           }
           var val = document.createElement("div");
           val.className = "ft-value";
           val.textContent = t.val == null ? "—" : fmtNum(Math.abs(t.val));
-          if (t.h.unit) {
+          if (t.f.unit) {
             var u = document.createElement("span");
             u.className = "ft-unit";
-            u.textContent = t.h.unit;
+            u.textContent = t.f.unit;
             val.appendChild(u);
           }
           var lbl = document.createElement("div");
           lbl.className = "ft-label";
-          lbl.textContent = t.shown;
+          lbl.textContent = t.f.label;
           tile.appendChild(val);
           tile.appendChild(lbl);
           if (dir) {
@@ -5250,6 +5390,7 @@
           body.innerHTML = renderReply(body.getAttribute("data-raw"));
           renderMermaidIn(body);
           linkifyWikiLinks(body);
+          autoLinkifyEntities(body);
         });
       }
       thinkBtns.forEach(function (b) {
@@ -6428,8 +6569,10 @@
       // Load the persona catalog + identity so `/persona` can offer the full
       // cross (and, for an Authelia admin, the admin profile #293 — the server
       // re-enforces the gate, so a non-admin can never reach it).
-      Promise.all([loadPersonalities(), loadWhoami()]);
-      loadTopics().then(loadSessions).then(routeFromLocation).then(syncTabbar);
+      // whoami first: it sets householdSessionId, which loadSessions needs to
+      // filter the household chat out of the list + drive the Zuhause highlight (#700).
+      Promise.all([loadPersonalities(), loadWhoami(), loadTopics()])
+        .then(loadSessions).then(routeFromLocation).then(syncTabbar);
     })();
   </script>
 </body>

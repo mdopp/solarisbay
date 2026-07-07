@@ -42,7 +42,9 @@ def test_group_rows_reuse_the_per_entity_controls():
     body = fn.group(1)
     assert 'card.className = row ? "hc-row" : "ha-card";' in body
     assert "haToggle(card, badge, c)" in body
-    assert "renderLightControls(card, c, badgeHost)" in body
+    # #692: the brightness slider drops into the card BODY (card host); the cover
+    # open/stop/close buttons stay on the header badge host.
+    assert "renderLightControls(card, c, card)" in body
     assert "renderCoverControls(card, c, badgeHost)" in body
     assert "renderClimateCard(card, c, st)" in body
 
@@ -78,19 +80,27 @@ def test_room_grouping_renders_room_header_or_label():
     assert ".hc-room-label {" in _HTML
 
 
-def test_light_card_is_compact_badge_and_slider_one_row():
-    # #538: a light card packs the on/off badge + the brightness slider onto ONE
-    # compact row (.hc-compact); the colour picker stays its own row below.
+def test_light_card_header_toggle_body_slider():
+    # #692: a light card is header [name .... toggle ☆] + a body that is just the
+    # brightness slider + %. The on/off badge routes into a .hc-compact host that
+    # is appended to the HEADER, and the slider drops into the card body (host =
+    # card), so the card is noticeably shorter than the old badge-then-slider row.
     fn = re.search(
         r"function renderHaCard\(c, row, opts\) \{(.*?)\n      \}", _HTML, re.S
     )
     assert fn, "renderHaCard not found"
     body = fn.group(1)
-    # The light routes its badge into a .hc-compact host instead of the card.
+    # The card builds a header row and the name lives in it.
+    assert 'head.className = "hc-head"' in body
+    assert "head.appendChild(name)" in body
+    # The on/off badge routes into a .hc-compact host mounted on the HEADER.
     assert 'badgeHost.className = "hc-compact"' in body
+    assert "head.appendChild(badgeHost)" in body
     assert "badgeHost.appendChild(badge)" in body
-    # The brightness slider is mounted on that same compact row.
-    assert "renderLightControls(card, c, badgeHost)" in body
+    # The brightness slider goes into the card BODY (host = card), not the header.
+    assert "renderLightControls(card, c, card)" in body
+    # The ☆ pin is the last child of the header: [name] .... [toggle] [☆].
+    assert "head.appendChild(pin)" in body
 
     lc = re.search(
         r"function renderLightControls\(card, c, brightHost\) \{(.*?)\n      \}",
@@ -99,7 +109,7 @@ def test_light_card_is_compact_badge_and_slider_one_row():
     )
     assert lc, "renderLightControls not found"
     lcb = lc.group(1)
-    # Brightness slider goes onto the compact host as an inline control.
+    # Brightness slider mounts on the given body host as an inline control.
     assert "makeSlider(brightHost || card, pct" in lcb
     assert "true);" in lcb  # inline flag
 
@@ -114,7 +124,8 @@ def test_light_card_is_compact_badge_and_slider_one_row():
     assert 'inline ? "hc-ctrl hc-ctrl-inline" : "hc-ctrl"' in msb
     assert "stopPropagation" in msb
 
-    # Compact-row styling: badge + slider laid out on one flex row.
+    # Header styling: name grows, the toggle/pin sit right-aligned on one row.
+    assert ".hc-head {" in _HTML
     assert ".hc-compact { display: flex;" in _HTML
     assert ".hc-compact .hc-ctrl-inline" in _HTML
 
@@ -210,29 +221,25 @@ def test_group_cards_lay_out_side_by_side_on_a_grid():
     )  # room-group rows
     assert "grid.appendChild(row)" in body  # ungrouped rows
     assert "group.appendChild(grid)" in body
-    # CSS grid: a fixed base column width repeated to fill, degrading to 1 column;
-    # large cards span a multiple of the same base unit.
+    # #692: cards have very different heights, so the container is a packed
+    # multi-column (masonry) layout — CSS columns of the base width, as many as
+    # the container fits (1 on a phone), tightly packed with break-inside:avoid.
     assert ".hc-grid {" in _HTML
-    assert "display: grid;" in _HTML
-    # #553: the min(100%, --hc-col) guard forces a single full-width column when
-    # the container is narrower than the base (phone), so cards never get cramped.
-    assert (
-        "grid-template-columns: repeat(auto-fill, "
-        "minmax(min(100%, var(--hc-col)), 1fr));" in _HTML
-    )
+    assert "columns: var(--hc-col);" in _HTML
     assert "--hc-col:" in _HTML
-    # Spanning cards degrade to full-width (span 1) when the grid is 1 column and
-    # only widen at a viewport breakpoint, so they never leave half-empty rows.
-    assert ".hc-grid .hc-span2 { grid-column: span 2; }" in _HTML
+    assert "break-inside: avoid;" in _HTML
+    # A wide card (media_player now-playing) spans all columns.
+    assert (
+        ".hc-grid > .hc-span2,\n    .hc-grid > .hc-span3 { column-span: all; }" in _HTML
+    )
 
 
 def test_grid_renders_one_full_width_column_on_narrow_no_overflow():
-    # #553: on a phone the grid must be ONE full-width column (the min(100%, base)
-    # guard), cards fill the column (no 240px cap inside the grid), and control
-    # rows / sliders never extend past the card edge.
-    # Single-column guard: the track min is min(100%, base), so a viewport
-    # narrower than the base collapses to one full-width column.
-    assert "minmax(min(100%, var(--hc-col)), 1fr)" in _HTML
+    # #692: the masonry uses CSS `columns` of the base width, so a viewport
+    # narrower than the base yields ONE full-width column; cards fill it (no 240px
+    # cap inside the grid), and control rows / sliders never extend past the edge.
+    # A base-width column count collapses to one on a phone.
+    assert "columns: var(--hc-col);" in _HTML
     # Cards in the grid drop the 240px cap and can shrink to fit the column.
     assert ".hc-grid > .ha-card { max-width: 100%; min-width: 0; }" in _HTML
     # Cards are border-box so padding/border stay within the column.
@@ -245,8 +252,8 @@ def test_grid_renders_one_full_width_column_on_narrow_no_overflow():
         "min-width: 0; max-width: 100%; }",
     ):
         assert rule in _HTML
-    # Spanning cards default to full-width (span 1 == "1 / -1") on narrow.
-    assert "grid-column: 1 / -1;" in _HTML
+    # A card is kept whole in its column (never split across a column break).
+    assert "break-inside: avoid;" in _HTML
 
 
 def test_answer_container_is_full_width():
