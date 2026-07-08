@@ -166,6 +166,34 @@ def _notes_visible_files(notes_dir: str, uid: str):
             yield rel, text, path
 
 
+def _dedup_note_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse note-list rows that resolve to the same note (#709 safety net).
+
+    Two collapse keys, first row (by input order) wins and later duplicates drop:
+    a canonical journal date (`journal/…<YYYY-MM-DD>…` under any convention → one
+    entry per day), and — when a row carries its `text` — a `title`+content-hash
+    identity so a hand-copied stray shows once. Rows are expected pre-sorted
+    (newest first), so the surviving row is the freshest. Purely presentational —
+    the underlying files are untouched (the librarian owns consolidation)."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        date = notes_search.journal_date(str(row.get("path") or ""))
+        if date is not None:
+            key = f"journal:{date}"
+        elif row.get("text") is not None:
+            digest = hashlib.sha1(str(row["text"]).encode("utf-8")).hexdigest()
+            key = f"note:{row.get('title', '')}:{digest}"
+        else:
+            out.append(row)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
 def _notes_recent(notes_dir: str, uid: str, limit: int = 10) -> list[dict[str, Any]]:
     """The most recently modified notes the caller may see: `[{path, mtime, title}]`."""
     rows: list[dict[str, Any]] = []
@@ -175,10 +203,18 @@ def _notes_recent(notes_dir: str, uid: str, limit: int = 10) -> list[dict[str, A
         except OSError:
             continue
         rows.append(
-            {"path": rel, "mtime": mtime, "title": _note_title(text, path.stem)}
+            {
+                "path": rel,
+                "mtime": mtime,
+                "title": _note_title(text, path.stem),
+                "text": text,
+            }
         )
     rows.sort(key=lambda r: r["mtime"], reverse=True)
-    return rows[:limit]
+    deduped = _dedup_note_rows(rows)[:limit]
+    for r in deduped:
+        r.pop("text", None)
+    return deduped
 
 
 # TTL for the notes-portal overview (#705): a single prune-bounded vault walk is
@@ -217,9 +253,17 @@ def _notes_overview_scan(notes_dir: str, uid: str) -> dict[str, Any]:
         if norm.split("/", 1)[0] == "facts" or "/facts/" in norm:
             facts += 1
         rows.append(
-            {"path": rel, "mtime": mtime, "title": _note_title(text, path.stem)}
+            {
+                "path": rel,
+                "mtime": mtime,
+                "title": _note_title(text, path.stem),
+                "text": text,
+            }
         )
     rows.sort(key=lambda r: r["mtime"], reverse=True)
+    recent = _dedup_note_rows(rows)[:10]
+    for r in recent:
+        r.pop("text", None)
     return {
         "ok": True,
         "counts": {
@@ -229,7 +273,7 @@ def _notes_overview_scan(notes_dir: str, uid: str) -> dict[str, Any]:
         },
         "truncated": md_seen >= notes_search._VAULT_WALK_BUDGET,
         "librarian": _notes_last_librarian(notes_dir),
-        "recent": rows[:10],
+        "recent": recent,
     }
 
 
@@ -2369,16 +2413,27 @@ def build_app(
                 groups.setdefault(domain, []).append(
                     {"path": rel, "title": _note_title(text, path.stem)}
                 )
-        elif by in ("journal", "folder"):
-            prefix = "journal" if by == "journal" else None
+        elif by == "journal":
+            # One entry per journal DAY: same-day variants under the three path
+            # conventions (#709) collapse; the canonical `journal/<YYYY>/<date>.md`
+            # wins when present, else the first-seen variant represents the day.
+            by_date: dict[str, dict[str, Any]] = {}
             for rel, text, path in _notes_visible_files(notes_dir, uid):
                 norm = rel.replace("\\", "/")
-                if by == "journal" and not (
-                    norm.startswith("journal/") or "/journal/" in norm
-                ):
+                date = notes_search.journal_date(norm)
+                if date is None:
                     continue
+                item = {"path": rel, "title": _note_title(text, path.stem)}
+                is_canon = norm == notes_search.canonical_journal_path(norm)
+                if date not in by_date or is_canon:
+                    by_date[date] = item
+            for date, item in by_date.items():
+                groups.setdefault(f"journal/{date[:4]}", []).append(item)
+        elif by == "folder":
+            for rel, text, path in _notes_visible_files(notes_dir, uid):
+                norm = rel.replace("\\", "/")
                 folder = norm.rsplit("/", 1)[0] if "/" in norm else "(Wurzel)"
-                groups.setdefault(folder if prefix is None else norm, []).append(
+                groups.setdefault(folder, []).append(
                     {"path": rel, "title": _note_title(text, path.stem)}
                 )
         elif by == "person":

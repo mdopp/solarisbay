@@ -82,6 +82,37 @@ def iter_vault_md(root: Path, budget: int = _VAULT_WALK_BUDGET) -> Iterator[Path
             yield Path(dirpath) / name
 
 
+# A journal entry's date, wherever the daily-chronicle model dropped it (#709):
+# `journal/<date>.md`, `journal/journal_<date>.md`, or `journal/<YYYY>/<date>.md`.
+# The path is prompt-driven, so the small model varies the convention; a match
+# here recovers the `<YYYY-MM-DD>` the entry is FOR so every variant collapses to
+# one canonical file.
+_JOURNAL_DATE_RE = re.compile(
+    r"(?:^|/)journal/(?:[^/]*/)?(?:journal_)?(\d{4}-\d{2}-\d{2})(?:[^/]*)?\.md$"
+)
+
+
+def journal_date(relpath: str) -> str | None:
+    """The `YYYY-MM-DD` a vault path is a journal entry for, else None (#709).
+
+    Matches any of the three seen conventions (`journal/<date>.md`,
+    `journal/journal_<date>.md`, `journal/<YYYY>/<date>.md`) so a same-day
+    duplicate under any of them resolves to the same date."""
+    m = _JOURNAL_DATE_RE.search(relpath.replace("\\", "/"))
+    return m.group(1) if m else None
+
+
+def canonical_journal_path(relpath: str) -> str | None:
+    """The one canonical path a journal entry must live at, else None (#709).
+
+    `journal/<YYYY>/<YYYY-MM-DD>.md` — deterministic from the date, so a nightly
+    re-run overwrites in place instead of spawning a new variant."""
+    date = journal_date(relpath)
+    if date is None:
+        return None
+    return f"journal/{date[:4]}/{date}.md"
+
+
 def resident_for_path(relpath: str) -> str | None:
     """The uid a vault-relative path scopes to, or None when it's shared.
 
