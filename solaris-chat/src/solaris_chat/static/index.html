@@ -614,6 +614,40 @@
     }
     .note-frontmatter dt { color: var(--muted); }
     .note-frontmatter dd { margin: 0; color: var(--ink); }
+    .note-edit { margin-left: auto; }
+    /* Inline note editor (#698): a plain monospace source textarea. */
+    .note-editor {
+      width: 100%; box-sizing: border-box; min-height: 340px; resize: vertical;
+      margin: 8px 0; padding: 12px; border-radius: 10px; tab-size: 2;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px; line-height: 1.5; white-space: pre;
+      background: var(--panel-solid); color: var(--ink); border: 1px solid var(--line);
+    }
+    /* Statistik (#699): ranked bar lists + a category breakdown. */
+    .notes-stats {
+      --hc-col: 320px; columns: var(--hc-col); column-gap: 14px; margin: 4px 0;
+    }
+    .stat-block {
+      break-inside: avoid; margin-bottom: 12px; padding: 10px 12px;
+      border-radius: 10px; background: var(--panel-solid); border: 1px solid var(--line);
+    }
+    .stat-head {
+      font-size: 12px; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.04em; margin-bottom: 6px;
+    }
+    .stat-rank { display: flex; flex-direction: column; gap: 4px; }
+    .stat-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .stat-label {
+      flex: 0 0 42%; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; color: var(--ink);
+    }
+    .stat-bar {
+      flex: 1 1 auto; height: 8px; min-width: 2px; border-radius: 4px;
+      background: var(--accent, #4a90d9);
+    }
+    .stat-count {
+      flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums;
+    }
     /* Circuits flow in the same packed multi-column masonry as the card groups
        (#692): 1-3 columns by width, tightly packed. Each tile carries its own
        surface (zebra striping doesn't read across columns). */
@@ -5008,6 +5042,15 @@
           chips.appendChild(chip);
         });
 
+        // Statistik (#699): frequent tags/persons, category breakdown, monthly
+        // growth, and the most-linked entities — one owner-scoped scan.
+        card.appendChild(conceptSectionTitle("Statistik"));
+        var stats = document.createElement("div");
+        stats.className = "notes-stats";
+        stats.textContent = "Lade…";
+        card.appendChild(stats);
+        loadNotesStats(stats);
+
         // Recently modified.
         if (data.recent && data.recent.length) {
           card.appendChild(conceptSectionTitle("Zuletzt geändert"));
@@ -5018,6 +5061,117 @@
           });
           card.appendChild(recent);
         }
+      }
+
+      function loadNotesStats(container) {
+        fetch("/api/portal/notes/stats")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            container.textContent = "";
+            if (!j || !j.ok) { container.textContent = "Keine Statistik."; return; }
+            renderNotesStats(container, j);
+          })
+          .catch(function () { container.textContent = "Statistik nicht verfügbar."; });
+      }
+
+      function renderNotesStats(container, s) {
+        // A ranked list of {value, count} with a proportional bar per row.
+        function rankList(items, prefix) {
+          var wrap = document.createElement("div");
+          wrap.className = "stat-rank";
+          if (!items || !items.length) {
+            wrap.textContent = "—";
+            return wrap;
+          }
+          var max = items[0].count || 1;
+          items.forEach(function (it) {
+            var row = document.createElement("div");
+            row.className = "stat-row";
+            var lbl = document.createElement("span");
+            lbl.className = "stat-label";
+            lbl.textContent = (prefix || "") + it.value;
+            var bar = document.createElement("span");
+            bar.className = "stat-bar";
+            bar.style.width = Math.round((it.count / max) * 100) + "%";
+            var cnt = document.createElement("span");
+            cnt.className = "stat-count";
+            cnt.textContent = it.count;
+            row.appendChild(lbl);
+            row.appendChild(bar);
+            row.appendChild(cnt);
+            wrap.appendChild(row);
+          });
+          return wrap;
+        }
+        function block(title, node) {
+          var b = document.createElement("div");
+          b.className = "stat-block";
+          var h = document.createElement("div");
+          h.className = "stat-head";
+          h.textContent = title;
+          b.appendChild(h);
+          b.appendChild(node);
+          return b;
+        }
+        container.appendChild(block("Häufige Schlagwörter", rankList(s.tags, "#")));
+        container.appendChild(block("Häufige Personen", rankList(s.persons, "@")));
+        container.appendChild(block("Kategorien", rankList(s.categories, "")));
+        container.appendChild(block("Wachstum", growthChart(s.months || [])));
+        container.appendChild(block("Meist verlinkt", rankList(s.linked, "")));
+      }
+
+      // Monthly-growth bar chart — the inline-SVG approach from the energy page
+      // (#689), simplified to bars.
+      function growthChart(months) {
+        var svgns = "http://www.w3.org/2000/svg";
+        var wrap = document.createElement("div");
+        wrap.className = "energy-chart";
+        if (!months.length) { wrap.textContent = "—"; return wrap; }
+        var W = 720, H = 160, padL = 8, padR = 8, padT = 10, padB = 26;
+        var max = Math.max.apply(null, months.map(function (m) { return m.count; }));
+        if (max <= 0) max = 1;
+        var n = months.length;
+        var gap = 6;
+        var bw = (W - padL - padR - gap * (n - 1)) / n;
+        var svg = document.createElementNS(svgns, "svg");
+        svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+        svg.setAttribute("preserveAspectRatio", "none");
+        months.forEach(function (m, i) {
+          var h = (m.count / max) * (H - padT - padB);
+          var x = padL + i * (bw + gap);
+          var rect = document.createElementNS(svgns, "rect");
+          rect.setAttribute("x", x);
+          rect.setAttribute("y", H - padB - h);
+          rect.setAttribute("width", bw);
+          rect.setAttribute("height", Math.max(h, 0));
+          rect.setAttribute("rx", "2");
+          rect.setAttribute("fill", TREND_COLORS[0]);
+          var t = document.createElementNS(svgns, "title");
+          t.textContent = m.month + ": " + m.count;
+          rect.appendChild(t);
+          svg.appendChild(rect);
+          if (m.count > 0) {
+            var cv = document.createElementNS(svgns, "text");
+            cv.setAttribute("x", x + bw / 2);
+            cv.setAttribute("y", H - padB - h - 3);
+            cv.setAttribute("text-anchor", "middle");
+            cv.setAttribute("font-size", "9");
+            cv.setAttribute("fill", "var(--muted)");
+            cv.textContent = m.count;
+            svg.appendChild(cv);
+          }
+          // Month label (MM) under each bar.
+          var lb = document.createElementNS(svgns, "text");
+          lb.setAttribute("x", x + bw / 2);
+          lb.setAttribute("y", H - padB + 14);
+          lb.setAttribute("text-anchor", "middle");
+          lb.setAttribute("font-size", "9");
+          lb.setAttribute("fill", "var(--muted)");
+          lb.textContent = m.month.slice(5);
+          svg.appendChild(lb);
+        });
+        wrap.appendChild(svg);
+        return wrap;
       }
 
       // Posteingang V2 (#697): list unconsolidated facts with per-entry actions.
@@ -5166,6 +5320,15 @@
         title.className = "concept-title";
         title.textContent = note.title || note.path;
         head.appendChild(title);
+        // Edit toggle (#698): swap the rendered view for a source textarea.
+        var edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "anchor-chip note-edit";
+        edit.textContent = "Bearbeiten";
+        edit.addEventListener("click", function () {
+          openNoteEditor(card, note);
+        });
+        head.appendChild(edit);
         card.appendChild(head);
 
         var fm = note.frontmatter || {};
@@ -5190,6 +5353,103 @@
         linkifyWikiLinks(body);
         renderMermaidIn(body);
         card.appendChild(body);
+      }
+
+      // Inline editor (#698): a monospace textarea over the full source (incl.
+      // frontmatter), Speichern/Abbrechen, an unsaved-changes guard, and the
+      // GET's content hash carried back so a concurrent edit becomes a 409.
+      function openNoteEditor(card, note) {
+        card.textContent = "";
+        var original = note.content || "";
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = (note.title || note.path) + " — bearbeiten";
+        head.appendChild(title);
+        card.appendChild(head);
+
+        var ta = document.createElement("textarea");
+        ta.className = "note-editor";
+        ta.value = original;
+        ta.spellcheck = false;
+        card.appendChild(ta);
+
+        var actions = document.createElement("div");
+        actions.className = "anchor-chips";
+        var save = document.createElement("button");
+        save.type = "button";
+        save.className = "btn-primary";
+        save.textContent = "Speichern";
+        var cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "anchor-chip";
+        cancel.textContent = "Abbrechen";
+        actions.appendChild(save);
+        actions.appendChild(cancel);
+        card.appendChild(actions);
+        var status = document.createElement("div");
+        status.className = "concept-desc";
+        card.appendChild(status);
+
+        function dirty() { return ta.value !== original; }
+        cancel.addEventListener("click", function () {
+          if (dirty() && !window.confirm("Änderungen verwerfen?")) return;
+          renderNoteViewer(card, note);
+        });
+        save.addEventListener("click", function () {
+          if (!dirty()) { renderNoteViewer(card, note); return; }
+          save.disabled = true;
+          status.textContent = "Speichere…";
+          fetch("/api/portal/notes/note?path=" + encodeURIComponent(note.path), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: ta.value, hash: note.hash }),
+          })
+            .then(function (r) {
+              return r.json().catch(function () { return null; }).then(function (j) {
+                return { status: r.status, body: j };
+              });
+            })
+            .then(function (res) {
+              save.disabled = false;
+              var j = res.body;
+              if (res.status === 409) {
+                status.textContent =
+                  "Die Notiz wurde zwischenzeitlich geändert — bitte neu laden.";
+                return;
+              }
+              if (!j || !j.ok) {
+                status.textContent = "Speichern fehlgeschlagen.";
+                return;
+              }
+              // Re-open the viewer with the freshly saved source + new hash.
+              note.content = ta.value;
+              note.hash = j.hash;
+              note.frontmatter = parseFrontmatter(ta.value);
+              renderNoteViewer(card, note);
+            })
+            .catch(function () {
+              save.disabled = false;
+              status.textContent = "Speichern fehlgeschlagen.";
+            });
+        });
+      }
+
+      // Parse a leading `--- … ---` block into flat key/value pairs — mirrors the
+      // server's `_note_frontmatter` so the viewer's meta block refreshes after a
+      // save without a round-trip.
+      function parseFrontmatter(text) {
+        var m = /^---\n([\s\S]*?)\n---/.exec(text);
+        var out = {};
+        if (!m) return out;
+        m[1].split("\n").forEach(function (line) {
+          var i = line.indexOf(":");
+          if (i <= 0 || line[0] === " ") return;
+          var k = line.slice(0, i).trim();
+          if (k) out[k] = line.slice(i + 1).trim().replace(/^['"]|['"]$/g, "");
+        });
+        return out;
       }
 
       // Drop a leading `--- … ---` block so the viewer body renders prose only

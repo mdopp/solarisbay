@@ -9,6 +9,7 @@ engine's store; the server itself stays a thin routing layer.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -16,7 +17,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -443,6 +444,158 @@ def _notes_archive_fact(notes_dir: str, src: Path, uid: str) -> dict[str, Any]:
     rel_dest = str(dest.relative_to(root))
     _notes_log_append(notes_dir, f"archive {rel_src} → {rel_dest} (portal, {uid})")
     return {"ok": True, "archived": rel_dest, "source": rel_src}
+
+
+# ---- Notes portal V3 (#698): inline note editor -------------------------------
+# The viewer's Edit toggle PUTs the full source (frontmatter verbatim, #657). A
+# content hash from the GET rides the PUT so a concurrent edit is a 409 instead
+# of a silent overwrite; the write is atomic (tmp+replace) and owner-scoped.
+
+
+def _note_hash(text: str) -> str:
+    """A short content hash for the optimistic-concurrency guard (#698)."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _notes_resolve_note(notes_dir: str, rel: str, uid: str) -> Path | None:
+    """Path-jail + owner-scope a caller-supplied vault note path (#698).
+
+    Like `_notes_resolve_owned` but for any visible note (not just facts): resolve
+    under the vault, reject a `..`-escape, and return the path only when the caller
+    may see it (own subtree or shared pool, default-deny) and it is a real file."""
+    return _notes_resolve_owned(notes_dir, rel, uid)
+
+
+def _notes_write_note(
+    notes_dir: str, path: Path, content: str, prev_hash: str
+) -> dict[str, Any]:
+    """Overwrite a note's source verbatim, guarded by a content hash (#698).
+
+    Rejects (409-mapped) when the on-disk file changed since the caller's GET
+    (its hash no longer matches `prev_hash`) — no silent overwrite. The write is
+    atomic (tmp+replace); frontmatter and body are written exactly as supplied."""
+    root = Path(notes_dir).resolve()
+    try:
+        current = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"ok": False, "error": "not_found", "status": 404}
+    if _note_hash(current) != prev_hash:
+        return {
+            "ok": False,
+            "error": "stale",
+            "status": 409,
+            "hash": _note_hash(current),
+        }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+    return {
+        "ok": True,
+        "path": str(path.relative_to(root)),
+        "hash": _note_hash(content),
+    }
+
+
+# ---- Notes portal statistics (#699) -------------------------------------------
+# A "Statistik" section over the vault: frequent #tags/topics and @persons (by
+# note count), notes per folder/OKF domain, notes-created per month (~12 months),
+# and most-[[..]]-linked entities. Computed off-loop in one prune-bounded walk
+# (#705), owner-scoped like the rest, and TTL-cached (the vault is small).
+
+_NOTES_STATS_TTL = 600.0
+_notes_stats_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+_HASHTAG_RE = re.compile(r"(?<![\w/])#([\w/-]+)")
+_PERSON_RE = re.compile(r"(?<![\w@])@([\wäöüß-]+)", re.IGNORECASE)
+_CREATED_RE = re.compile(r"(?mi)^created:\s*(\d{4}-\d{2})")
+
+
+def _note_month(rel: str, text: str) -> str | None:
+    """The `YYYY-MM` a note was created: `created:` frontmatter first, else a
+    leading `YYYY-MM-DD` in the filename (journal/fact naming). None when neither."""
+    m = _CREATED_RE.search(text)
+    if m:
+        return m.group(1)
+    stem = rel.replace("\\", "/").rsplit("/", 1)[-1]
+    return stem[:7] if re.match(r"\d{4}-\d{2}-\d{2}", stem) else None
+
+
+def _note_category(rel: str) -> str:
+    """The folder/OKF domain a note belongs to for the category breakdown.
+
+    An `okf/<domain>/…` note is its OKF domain; anything else is its top-level
+    folder, or `(Wurzel)` at the vault root."""
+    parts = rel.replace("\\", "/").split("/")
+    if parts[0] == "okf":
+        return f"okf/{parts[1]}" if len(parts) > 2 else "okf"
+    return parts[0] if len(parts) > 1 else "(Wurzel)"
+
+
+def _notes_stats_scan(notes_dir: str, uid: str, top_n: int = 12) -> dict[str, Any]:
+    """Compute the notes-statistics payload in one prune-bounded walk (#699/#705).
+
+    Blocking (walks the vault, reads files) — callers run it off the event loop.
+    Every count is owner-scoped (caller ∪ shared, default-deny). Tags/persons are
+    counted by the number of notes that mention them; `[[..]]` link targets by the
+    number of notes linking them (backlink counts). `truncated` is set when the
+    walk hit `iter_vault_md`'s file budget."""
+    root = Path(notes_dir)
+    tags: dict[str, int] = {}
+    persons: dict[str, int] = {}
+    categories: dict[str, int] = {}
+    months: dict[str, int] = {}
+    links: dict[str, int] = {}
+    total = 0
+    md_seen = 0
+    for path in sorted(notes_search.iter_vault_md(root)):
+        md_seen += 1
+        try:
+            if path.stat().st_size > notes_search._MAX_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel = str(path.relative_to(root))
+        if not notes_search.is_visible(notes_search.owner_of(rel, text), uid):
+            continue
+        total += 1
+        categories[_note_category(rel)] = categories.get(_note_category(rel), 0) + 1
+        month = _note_month(rel, text)
+        if month:
+            months[month] = months.get(month, 0) + 1
+        # Each tag/person/link counted once per note (a note that mentions #x
+        # twice still counts as one note for #x).
+        for tag in {t.lower() for t in _HASHTAG_RE.findall(text)}:
+            tags[tag] = tags.get(tag, 0) + 1
+        for person in {p.lower() for p in _PERSON_RE.findall(text)}:
+            persons[person] = persons.get(person, 0) + 1
+        for m in notes_search._WIKILINK_RE.findall(text):
+            target = notes_search._wikilink_target(m).strip()
+            if target:
+                links[target] = links.get(target, 0) + 1
+
+    def _top(counts: dict[str, int]) -> list[dict[str, Any]]:
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return [{"value": k, "count": v} for k, v in ranked[:top_n]]
+
+    # A dense, gap-free last-12-months series for the growth bars.
+    now = datetime.now(timezone.utc)
+    series: list[dict[str, Any]] = []
+    for i in range(11, -1, -1):
+        y, m = divmod((now.year * 12 + now.month - 1) - i, 12)
+        key = f"{y:04d}-{m + 1:02d}"
+        series.append({"month": key, "count": months.get(key, 0)})
+
+    return {
+        "ok": True,
+        "counts": {"notes": total},
+        "truncated": md_seen >= notes_search._VAULT_WALK_BUDGET,
+        "tags": _top(tags),
+        "persons": _top(persons),
+        "categories": _top(categories),
+        "months": series,
+        "linked": _top(links),
+    }
 
 
 def _favorite_label(payload: dict[str, Any]) -> str:
@@ -2282,8 +2435,56 @@ def build_app(
                 "title": _note_title(text, path.stem),
                 "frontmatter": _note_frontmatter(text),
                 "content": text,
+                "hash": _note_hash(text),
             }
         )
+
+    async def portal_notes_note_put(request: web.Request) -> web.Response:
+        """Save an edited note back to the vault (#698).
+
+        `?path=…` + `{content, hash}`. Path-jailed to `notes_dir` and owner-scoped
+        (a resident edits only own+household notes). The `hash` is the one the GET
+        returned; a mismatch means the file changed since and the write is refused
+        with 409 (no silent overwrite of a concurrent edit). The write is atomic
+        (tmp+replace) and the frontmatter is stored verbatim (#657). Off the event
+        loop so a slow disk can't wedge the request."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        rel = request.query.get("path", "")
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        content = body.get("content")
+        prev_hash = str(body.get("hash") or "")
+        if not isinstance(content, str) or not prev_hash:
+            return web.json_response({"ok": False, "error": "bad_args"}, status=400)
+        path = _notes_resolve_note(notes_dir, rel, uid)
+        if path is None:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        result = await asyncio.to_thread(
+            _notes_write_note, notes_dir, path, content, prev_hash
+        )
+        status = result.pop("status", 200 if result.get("ok") else 400)
+        _notes_overview_cache.pop(uid, None)
+        _notes_stats_cache.pop(uid, None)
+        return web.json_response(result, status=status)
+
+    async def portal_notes_stats(request: web.Request) -> web.Response:
+        """Notes statistics for the `#/p/notes` Statistik section (#699).
+
+        Frequent `#tags`/topics and `@persons` (by note count), notes per
+        folder/OKF category, notes created per month (~12 months), and the
+        most-`[[..]]`-linked entities — owner-scoped, computed off the event loop
+        in one prune-bounded vault walk (#705) and TTL-cached (the vault is
+        small)."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        now = time.monotonic()
+        cached = _notes_stats_cache.get(uid)
+        if cached and now - cached[0] < _NOTES_STATS_TTL:
+            return web.json_response(cached[1])
+        payload = await asyncio.to_thread(_notes_stats_scan, notes_dir, uid)
+        _notes_stats_cache[uid] = (now, payload)
+        return web.json_response(payload)
 
     async def portal_notes_search(request: web.Request) -> web.Response:
         """Search over the unified notes_search machinery (#696): a thin GET
@@ -2921,6 +3122,8 @@ def build_app(
     app.router.add_get("/api/portal/notes", portal_notes)
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
     app.router.add_get("/api/portal/notes/note", portal_notes_note)
+    app.router.add_put("/api/portal/notes/note", portal_notes_note_put)
+    app.router.add_get("/api/portal/notes/stats", portal_notes_stats)
     app.router.add_get("/api/portal/notes/search", portal_notes_search)
     app.router.add_get("/api/portal/notes/inbox", portal_notes_inbox)
     app.router.add_post("/api/portal/notes/assign", portal_notes_assign)
