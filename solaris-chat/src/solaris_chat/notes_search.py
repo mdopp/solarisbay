@@ -26,7 +26,9 @@ are treated as shared and shown. Default-deny: an unknown/unauthenticated caller
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,46 @@ SHARED_UID = "household"
 
 # A note under `users/<uid>/...` is private to `<uid>`, whatever its frontmatter.
 _USER_PATH_RE = re.compile(r"^users/([^/]+)/")
+
+# The vault is a Syncthing folder: it carries a `.stversions/` tree with tens of
+# thousands of historical file copies, plus `.stfolder`, and other tool droppings
+# (`.git`, `.obsidian`, `.trash`). None are notes; recursing into them made an
+# `rglob("*.md")` walk of the real vault never finish (#705). `processed/` holds
+# already-consolidated inbox exports, also not browsable notes. Prune these whole
+# subtrees at the directory boundary — an `rglob` cannot prune, `os.walk` can.
+_PRUNE_DIRS = frozenset({"processed", "exports"})
+
+
+# Cap the vault walk so a pathological (Syncthing-runaway) vault can never wedge
+# the caller: the walk degrades to a partial result once it hits this many `.md`
+# files. Far above any plausible household note count.
+_VAULT_WALK_BUDGET = 20000
+
+
+def iter_vault_md(root: Path, budget: int = _VAULT_WALK_BUDGET) -> Iterator[Path]:
+    """Yield `.md` file paths under `root`, pruning non-note subtrees (#705).
+
+    Skips any dot-directory (`.stversions`, `.stfolder`, `.git`, `.obsidian`,
+    `.trash`, …) and the `_PRUNE_DIRS` (already-consolidated inbox trees), so a
+    Syncthing vault's history copies never inflate the walk. Bounded: stops after
+    `budget` files so a pathological vault can never wedge the caller — the walk
+    degrades to partial rather than hanging. Directory order is sorted for stable
+    output; callers that need a global sort still sort the yielded paths.
+    """
+    if not root.is_dir():
+        return
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d for d in dirnames if not d.startswith(".") and d not in _PRUNE_DIRS
+        )
+        for name in sorted(filenames):
+            if not name.endswith(".md"):
+                continue
+            if seen >= budget:
+                return
+            seen += 1
+            yield Path(dirpath) / name
 
 
 def resident_for_path(relpath: str) -> str | None:
@@ -119,9 +161,7 @@ def notes_for_topic(
         return []
     pattern = _topic_pattern(slug)
     out: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*.md")):
-        if not path.is_file():
-            continue
+    for path in sorted(iter_vault_md(root)):
         try:
             if path.stat().st_size > _MAX_BYTES:
                 continue
@@ -154,8 +194,8 @@ def notes_mentioning(
         re.compile(rf"(?<!\w){re.escape(n)}(?!\w)", re.IGNORECASE) for n in wanted
     ]
     out: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*.md")):
-        if not path.is_file() or "okf" in path.relative_to(root).parts[:1]:
+    for path in sorted(iter_vault_md(root)):
+        if "okf" in path.relative_to(root).parts[:1]:
             continue
         try:
             if path.stat().st_size > _MAX_BYTES:
@@ -203,8 +243,8 @@ def notes_wikilinking(
     if not wanted or not root.is_dir():
         return []
     out: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*.md")):
-        if not path.is_file() or "okf" in path.relative_to(root).parts[:1]:
+    for path in sorted(iter_vault_md(root)):
+        if "okf" in path.relative_to(root).parts[:1]:
             continue
         try:
             if path.stat().st_size > _MAX_BYTES:

@@ -146,16 +146,14 @@ def _notes_inbox_count(notes_dir: str, uid: str) -> int:
 
 
 def _notes_visible_files(notes_dir: str, uid: str):
-    """Yield `(relpath, text)` for every vault `.md` the caller may see.
+    """Yield `(relpath, text, path)` for every vault `.md` the caller may see.
 
     Owner-scoped via `is_visible(owner_of(...))` (caller ∪ shared, default-deny);
-    skips pathological files, matching the notes_search readers."""
+    skips pathological files, matching the notes_search readers. Walks via the
+    prune-aware, bounded `iter_vault_md` so a Syncthing vault's `.stversions/`
+    history (tens of thousands of copies) can't wedge the scan (#705)."""
     root = Path(notes_dir)
-    if not root.is_dir():
-        return
-    for path in sorted(root.rglob("*.md")):
-        if not path.is_file():
-            continue
+    for path in sorted(notes_search.iter_vault_md(root)):
         try:
             if path.stat().st_size > notes_search._MAX_BYTES:
                 continue
@@ -180,6 +178,58 @@ def _notes_recent(notes_dir: str, uid: str, limit: int = 10) -> list[dict[str, A
         )
     rows.sort(key=lambda r: r["mtime"], reverse=True)
     return rows[:limit]
+
+
+# TTL for the notes-portal overview (#705): a single prune-bounded vault walk is
+# cheap, but repeated portal opens shouldn't re-scan on every request. Short
+# enough that a fresh note shows up within a minute.
+_NOTES_OVERVIEW_TTL = 60.0
+_notes_overview_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _notes_overview_scan(notes_dir: str, uid: str) -> dict[str, Any]:
+    """Compute the portal overview in one prune-bounded walk (#705).
+
+    Blocking (walks the vault, reads files) — callers run it off the event loop.
+    Returns the counts, the recent list, and a `truncated` flag set when the walk
+    hit `iter_vault_md`'s file budget (so the UI can show "≥N"). The librarian
+    trail is a bounded tail read, kept out of the walk."""
+    root = Path(notes_dir)
+    total = 0
+    facts = 0
+    md_seen = 0
+    rows: list[dict[str, Any]] = []
+    for path in sorted(notes_search.iter_vault_md(root)):
+        md_seen += 1
+        try:
+            if path.stat().st_size > notes_search._MAX_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        rel = str(path.relative_to(root))
+        if not notes_search.is_visible(notes_search.owner_of(rel, text), uid):
+            continue
+        total += 1
+        norm = rel.replace("\\", "/")
+        if norm.split("/", 1)[0] == "facts" or "/facts/" in norm:
+            facts += 1
+        rows.append(
+            {"path": rel, "mtime": mtime, "title": _note_title(text, path.stem)}
+        )
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    return {
+        "ok": True,
+        "counts": {
+            "notes": total,
+            "facts": facts,
+            "inbox": _notes_inbox_count(notes_dir, uid),
+        },
+        "truncated": md_seen >= notes_search._VAULT_WALK_BUDGET,
+        "librarian": _notes_last_librarian(notes_dir),
+        "recent": rows[:10],
+    }
 
 
 def _notes_last_librarian(notes_dir: str, lines: int = 8) -> list[str]:
@@ -1927,35 +1977,24 @@ def build_app(
     async def portal_notes(request: web.Request) -> web.Response:
         """Notes-portal overview for `#/p/notes` (#696): counts, the last
         Bibliothekar run, and the recently modified notes — read-only, owner-scoped
-        (caller ∪ shared, default-deny), all reads path-jailed to `notes_dir`."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
-        total = 0
-        facts = 0
-        for rel, _text, _path in _notes_visible_files(notes_dir, uid):
-            total += 1
-            head = rel.replace("\\", "/").split("/", 1)[0]
-            if head == "facts" or "/facts/" in rel.replace("\\", "/"):
-                facts += 1
-        return web.json_response(
-            {
-                "ok": True,
-                "counts": {
-                    "notes": total,
-                    "facts": facts,
-                    "inbox": _notes_inbox_count(notes_dir, uid),
-                },
-                "librarian": _notes_last_librarian(notes_dir),
-                "recent": _notes_recent(notes_dir, uid),
-            }
-        )
+        (caller ∪ shared, default-deny), all reads path-jailed to `notes_dir`.
 
-    async def portal_notes_browse(request: web.Request) -> web.Response:
-        """Grouped vault listing for the Durchstöbern chips (#696).
-
-        `by=topic|person|journal|okf|folder` — reusing the notes_search readers and
-        the vault tree. Every result is owner-scoped (caller ∪ shared)."""
+        The vault is a Syncthing folder; its scan runs off the event loop and is
+        prune-bounded + TTL-cached so a slow/huge vault can never wedge the request
+        (#705)."""
         uid = resolve_uid(request, remote_user_header, default_uid)
-        by = request.query.get("by", "topic")
+        now = time.monotonic()
+        cached = _notes_overview_cache.get(uid)
+        if cached and now - cached[0] < _NOTES_OVERVIEW_TTL:
+            return web.json_response(cached[1])
+        payload = await asyncio.to_thread(_notes_overview_scan, notes_dir, uid)
+        _notes_overview_cache[uid] = (now, payload)
+        return web.json_response(payload)
+
+    def _browse_groups(uid: str, by: str) -> dict[str, list[dict[str, Any]]] | None:
+        """Build the Durchstöbern groups for `by` — blocking (walks the vault via
+        the prune-bounded `iter_vault_md`), so the coroutine runs it off the event
+        loop (#705). None signals a bad `by`."""
         groups: dict[str, list[dict[str, Any]]] = {}
         if by == "topic":
             for rel, text, path in _notes_visible_files(notes_dir, uid):
@@ -1992,6 +2031,20 @@ def build_app(
                 if hits:
                     groups[name] = hits
         else:
+            return None
+        return groups
+
+    async def portal_notes_browse(request: web.Request) -> web.Response:
+        """Grouped vault listing for the Durchstöbern chips (#696).
+
+        `by=topic|person|journal|okf|folder` — reusing the notes_search readers and
+        the vault tree. Every result is owner-scoped (caller ∪ shared). The vault
+        walk runs off the event loop so a huge Syncthing vault can't wedge the
+        request (#705)."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        by = request.query.get("by", "topic")
+        groups = await asyncio.to_thread(_browse_groups, uid, by)
+        if groups is None:
             return web.json_response({"ok": False, "error": "bad_by"}, status=400)
         out = [
             {"group": g, "items": groups[g]}
