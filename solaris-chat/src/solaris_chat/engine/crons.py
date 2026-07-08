@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from solaris_chat import compaction
+from solaris_chat import compaction, notes_search
 from solaris_chat.engine import store
 from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.ingest.runner import _run_obsidian
@@ -70,6 +70,11 @@ _BIBLIOTHEKAR_WATERMARK = "bibliothekar-watermark"
 _BIBLIOTHEKAR_MAX_PATHS = 40
 _BIBLIOTHEKAR_STALE_DAYS = 3
 
+# Journal-dedup pass (#709): how many same-day duplicate journal files the code
+# pass consolidates per nightly run. Bounded so a vault that accumulated many
+# stray variants heals over a few nights rather than in one long walk.
+_JOURNAL_DEDUP_MAX = 50
+
 BIBLIOTHEKAR_PROMPT = (
     "[system: nightly librarian run — unattended, no resident present]\n"
     "Du bist der Bibliothekar. Regeln (bindend):\n"
@@ -91,7 +96,8 @@ CHRONICLE_PROMPT = (
     "do not ask anyone for highlights; compile from the day's "
     "ingested notes and household events you can see, and write a "
     "short honest entry (or skip a section) rather than inventing. "
-    "Write it with note_write to journal/<YYYY>/<YYYY-MM-DD>.md."
+    "Write it with note_write to journal/<YYYY>/<YYYY-MM-DD>.md — one file "
+    "per day; note_write canonicalizes and overwrites that day in place."
 )
 
 PROBLEM_SUMMARIZER_PROMPT = (
@@ -488,6 +494,93 @@ class CronRunner:
         candidates = list(dict.fromkeys(in_scope + stale_facts))
         return candidates[:_BIBLIOTHEKAR_MAX_PATHS]
 
+    def _consolidate_journal_duplicates(self, notes_dir: str) -> int:
+        """Merge same-day journal duplicates into one canonical file (#709).
+
+        The daily-chronicle path is prompt-driven, so a day accumulated across
+        `journal/<date>.md`, `journal/journal_<date>.md`, and
+        `journal/<YYYY>/<date>.md`. Group every journal file by the date it is
+        FOR, keep the canonical `journal/<YYYY>/<date>.md` carrying the
+        newest/most-complete content, and rewrite the other same-day variants as
+        `merged_into:` stubs (never delete, #653 contract) — each logged to
+        `okf/log.md`. Uses the prune-bounded off-loop vault walk (#705), bounded
+        at `_JOURNAL_DEDUP_MAX` per run. Returns the number of stubs written."""
+        root = Path(notes_dir)
+        by_date: dict[str, list[Path]] = {}
+        for path in notes_search.iter_vault_md(root):
+            try:
+                rel = str(path.relative_to(root))
+            except ValueError:
+                continue
+            date = notes_search.journal_date(rel)
+            if date is not None:
+                by_date.setdefault(date, []).append(path)
+
+        stubs = 0
+        for date in sorted(by_date):
+            if stubs >= _JOURNAL_DEDUP_MAX:
+                break
+            variants = by_date[date]
+            if len(variants) < 2:
+                continue
+            canon_rel = notes_search.canonical_journal_path(f"journal/{date}.md")
+            canon_path = (root / canon_rel).resolve()
+
+            # Pick the surviving content: the longest body (most complete), the
+            # newest mtime breaking a tie. A pure stub (already `merged_into:`)
+            # never wins.
+            def _weight(p: Path) -> tuple[int, float]:
+                try:
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                    mtime = p.stat().st_mtime
+                except OSError:
+                    return (-1, 0.0)
+                if "merged_into:" in text:
+                    return (-1, mtime)
+                return (len(text), mtime)
+
+            winner = max(variants, key=_weight)
+            try:
+                winner_text = winner.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+
+            canon_path.parent.mkdir(parents=True, exist_ok=True)
+            if winner.resolve() != canon_path:
+                canon_path.write_text(winner_text, encoding="utf-8")
+
+            for variant in variants:
+                if stubs >= _JOURNAL_DEDUP_MAX:
+                    break
+                if variant.resolve() == canon_path:
+                    continue
+                try:
+                    text = variant.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if "merged_into:" in text:
+                    continue
+                var_rel = str(variant.relative_to(root))
+                variant.write_text(
+                    f"---\nmerged_into: {canon_rel}\n---\n\n"
+                    f"Journaleintrag zusammengeführt → [[{canon_rel}]]\n",
+                    encoding="utf-8",
+                )
+                self._journal_log_append(
+                    root, f"journal-dedup: {var_rel} → {canon_rel}"
+                )
+                stubs += 1
+        return stubs
+
+    @staticmethod
+    def _journal_log_append(root: Path, line: str) -> None:
+        """Append one journal-dedup line to `okf/log.md` (#709, never-delete trail)."""
+        log_path = root / "okf" / "log.md"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"- {stamp} {line}\n")
+
     async def _bibliothekar(self) -> None:
         """The nightly vault curation (#653): one librarian turn per ownership
         scope over a bounded candidate set, editing vault files through the
@@ -505,6 +598,14 @@ class CronRunner:
             return
         since = _last_run(self._db_path, _BIBLIOTHEKAR_WATERMARK)
         now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            stubs = await asyncio.to_thread(
+                self._consolidate_journal_duplicates, notes_dir
+            )
+            if stubs:
+                log.info("engine.night.journal_dedup", stubs=stubs)
+        except Exception as e:  # noqa: BLE001 — a bad file must not abort the run.
+            log.error("engine.night.journal_dedup_failed", error=str(e))
         for scope in self._bibliothekar_scopes(notes_dir):
             try:
                 candidates = self._bibliothekar_candidates(notes_dir, scope, since)

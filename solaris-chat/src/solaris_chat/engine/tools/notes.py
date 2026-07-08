@@ -360,6 +360,21 @@ def build_notes_tools(
             path = (root / rel).resolve()
             if not str(path).startswith(str(root.resolve())):
                 return '{"error": "path outside the vault"}'
+        # Journal-path canonicalization (#709): the daily-chronicle path is
+        # prompt-driven, so the small model writes the same day under varying
+        # conventions (`journal/<date>.md`, `journal/journal_<date>.md`,
+        # `journal/<YYYY>/<date>.md`). Force every journal write to the one
+        # canonical `journal/<YYYY>/<YYYY-MM-DD>.md` (rooted at the same owner
+        # base) and overwrite in place, so a nightly re-run is idempotent and can
+        # never spawn a new variant regardless of the path string passed.
+        canon_rel = notes_search.canonical_journal_path(rel)
+        if canon_rel is not None:
+            base = (
+                root if owner == notes_search.SHARED_UID else (root / "users" / owner)
+            )
+            path = (base.resolve() / canon_rel).resolve()
+            rel = str(path.relative_to(root.resolve()))
+            args = {**args, "append": False}
         path.parent.mkdir(parents=True, exist_ok=True)
         if bool(args.get("append")) and path.is_file():
             with path.open("a", encoding="utf-8") as f:

@@ -122,6 +122,32 @@ async def test_browse_by_journal(aiohttp_client, tmp_path):
     assert "journal/2026-07-01.md" in paths
 
 
+async def test_browse_by_journal_dedups_same_day(aiohttp_client, tmp_path):
+    # #709: the same day written under all three path conventions must show ONCE,
+    # and the canonical `journal/<YYYY>/<date>.md` is the entry that survives.
+    root = _vault(tmp_path)
+    (root / "journal" / "2024").mkdir(parents=True, exist_ok=True)
+    (root / "journal" / "2024-05-27.md").write_text("a\n", encoding="utf-8")
+    (root / "journal" / "journal_2024-05-27.md").write_text("b\n", encoding="utf-8")
+    (root / "journal" / "2024" / "2024-05-27.md").write_text("c\n", encoding="utf-8")
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=str(tmp_path / "solaris.db"),
+        notes_dir=str(root),
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get(
+            "/api/portal/notes/browse?by=journal", headers={"Remote-User": "household"}
+        )
+    ).json()
+    paths = [it["path"] for g in j["groups"] for it in g["items"]]
+    same_day = [p for p in paths if "2024-05-27" in p]
+    assert same_day == ["journal/2024/2024-05-27.md"]
+
+
 async def test_note_viewer_returns_frontmatter_and_body(aiohttp_client, tmp_path):
     client = await aiohttp_client(_app(tmp_path))
     j = await (
