@@ -2256,6 +2256,27 @@ def build_app(
         with live HA state via the read-only `fetch_card` path."""
         uid = resolve_uid(request, remote_user_header, default_uid)
         favorites = favorites_store.list_favorites(solaris_db_path, uid)
+
+        # Live-refresh tick (#711): the client polls the pinned entities' state
+        # while #/p/start is the active view. `state_only=1` re-fetches just the
+        # HA card state for the entity favorites — no usage/frequent queries — so
+        # each card updates in place without re-rendering the whole page.
+        if request.query.get("state_only") in ("1", "true") and hass_url and hass_token:
+            entity_ids = [
+                str(f["payload"].get("entity_id") or "")
+                for f in favorites
+                if f["kind"] == "entity" and f["payload"].get("entity_id")
+            ]
+            cards = await asyncio.gather(
+                *(fetch_card(hass_url, hass_token, eid) for eid in entity_ids)
+            )
+            states: dict[str, dict[str, Any]] = {}
+            for eid, card in zip(entity_ids, cards):
+                if card is not None:
+                    card["sensitive"] = _entity_card_sensitive(card)
+                    states[eid] = card
+            return web.json_response({"ok": True, "states": states})
+
         personal: list[dict[str, Any]] = []
         household: list[dict[str, Any]] = []
 
