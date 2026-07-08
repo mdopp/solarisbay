@@ -106,6 +106,7 @@ async def _run() -> None:
         sb_mcp_token_path=settings.sb_mcp_token_path,
         hass_url=settings.hass_url,
         hass_token=settings.hass_token,
+        crons=crons,
     )
 
 
