@@ -9,8 +9,10 @@ without it), so the vault is built as plain files on disk.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 
+from solaris_chat import notes_search
 from solaris_chat.server import STATIC_DIR, build_app
 
 
@@ -169,6 +171,95 @@ async def test_search_empty_query(aiohttp_client, tmp_path):
         )
     ).json()
     assert j == {"ok": True, "hits": []}
+
+
+# --- #705: the real Syncthing vault (huge .stversions/, processed/, media) ---
+
+
+def _syncthing_vault(tmp_path, versions=3000):
+    """A vault that mirrors the real box: a handful of real notes plus a
+    Syncthing `.stversions/` tree of thousands of historical `.md` copies, a
+    `.stfolder` marker, a `processed/` inbox-export tree, and binary media. The
+    pre-fix `rglob("*.md")` recursed the whole `.stversions/` tree → the overview
+    scan never finished on the box; the fix prunes those subtrees."""
+    root = _vault(tmp_path)
+    (root / ".stfolder").mkdir()
+    stv = root / ".stversions" / "journal"
+    stv.mkdir(parents=True)
+    for i in range(versions):
+        (stv / f"2026-07-01~{i}.md").write_text(
+            f"# ghost {i}\n#topic/projekt\nold copy\n", encoding="utf-8"
+        )
+    proc = root / "processed"
+    proc.mkdir()
+    for i in range(200):
+        (proc / f"export-{i}.md").write_text(
+            f"# consolidated {i}\n#topic/projekt\n", encoding="utf-8"
+        )
+    (root / "media").mkdir()
+    (root / "media" / "photo.jpg").write_bytes(b"\xff\xd8\xff" * 4096)
+    return root
+
+
+def _big_app(tmp_path):
+    return build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=str(tmp_path / "solaris.db"),
+        notes_dir=str(_syncthing_vault(tmp_path)),
+    )
+
+
+def test_iter_vault_md_prunes_stversions_and_processed(tmp_path):
+    # The load-bearing fix: the walk skips .stversions/.stfolder/processed and
+    # media entirely — an unpruned rglob would return thousands of ghost copies.
+    root = _syncthing_vault(tmp_path)
+    rels = {str(p.relative_to(root)).replace("\\", "/") for p in iter_paths(root)}
+    assert not any(r.startswith(".stversions/") for r in rels)
+    assert not any(r.startswith("processed/") for r in rels)
+    assert not any(r.endswith(".jpg") for r in rels)
+    assert "shared.md" in rels
+    # Only the ~6 real notes remain, not thousands.
+    assert len(rels) < 20
+
+
+def iter_paths(root):
+    return list(notes_search.iter_vault_md(root))
+
+
+async def test_overview_survives_the_real_vault(aiohttp_client, tmp_path):
+    # Against the pre-fix rglob this scanned 3200+ ghost/export copies and hung on
+    # the box; the pruned+off-loop scan answers fast and excludes .stversions.
+    client = await aiohttp_client(_big_app(tmp_path))
+    started = time.monotonic()
+    j = await (
+        await client.get("/api/portal/notes", headers={"Remote-User": "household"})
+    ).json()
+    elapsed = time.monotonic() - started
+    assert j["ok"]
+    assert elapsed < 5.0
+    # The counts reflect only real notes, never the .stversions history copies.
+    assert j["counts"]["notes"] < 20
+    assert all(".stversions" not in r["path"] for r in j["recent"])
+    assert all("processed/" not in r["path"] for r in j["recent"])
+
+
+async def test_browse_excludes_stversions_and_processed(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_big_app(tmp_path))
+    started = time.monotonic()
+    j = await (
+        await client.get(
+            "/api/portal/notes/browse?by=topic", headers={"Remote-User": "household"}
+        )
+    ).json()
+    elapsed = time.monotonic() - started
+    assert j["ok"] and elapsed < 5.0
+    paths = [it["path"] for g in j["groups"] for it in g["items"]]
+    # #topic/projekt is stamped on the ghost + processed copies too — none surface.
+    assert paths, "the real shared note should still group under projekt"
+    assert all(".stversions" not in p for p in paths)
+    assert all(not p.startswith("processed/") for p in paths)
 
 
 # --- Frontend-contract checks (real check = box-verify) ---

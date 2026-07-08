@@ -108,9 +108,11 @@ def build_notes_tools(
         query: str, terms: list[str], caller_uid: str, boost_paths: set[str]
     ) -> dict[str, tuple[float, dict[str, Any]]]:
         by_path: dict[str, tuple[float, dict[str, Any]]] = {}
-        for path in sorted(root.rglob("*.md")):
+        # Prune-bounded walk (#705): the vault is a Syncthing folder whose
+        # `.stversions/` history would make an rglob never finish on the box.
+        for path in sorted(notes_search.iter_vault_md(root)):
             try:
-                if not path.is_file() or path.stat().st_size > _MAX_BYTES:
+                if path.stat().st_size > _MAX_BYTES:
                     continue
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:

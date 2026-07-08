@@ -4883,7 +4883,7 @@
         var tiles = document.createElement("div");
         tiles.className = "energy-tiles";
         [
-          ["Notizen", c.notes],
+          ["Notizen", c.notes, data.truncated],
           ["Fakten", c.facts],
           ["Posteingang", c.inbox],
         ].forEach(function (t) {
@@ -4891,7 +4891,9 @@
           tile.className = "energy-tile";
           var val = document.createElement("div");
           val.className = "et-value";
-          val.textContent = t[1] == null ? "—" : String(t[1]);
+          // #705: the vault walk is bounded; a truncated scan shows "≥N".
+          val.textContent =
+            t[1] == null ? "—" : (t[2] ? "≥" : "") + String(t[1]);
           var lab = document.createElement("div");
           lab.className = "et-label";
           lab.textContent = t[0];
