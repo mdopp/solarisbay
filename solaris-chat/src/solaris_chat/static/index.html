@@ -2670,6 +2670,12 @@
         val.textContent = value + unit;
         slider.addEventListener("input", function () { val.textContent = slider.value + unit; });
         slider.addEventListener("change", function () { onset(Number(slider.value)); });
+        // #711: the start-page live refresh must not yank a slider out from under
+        // a drag — flag the drag window so the in-place update skips this tick.
+        slider.addEventListener("pointerdown", function () { hcSliderDragging = true; });
+        var endDrag = function () { hcSliderDragging = false; };
+        slider.addEventListener("pointerup", endDrag);
+        slider.addEventListener("pointercancel", endDrag);
         if (inline) row.addEventListener("click", function (e) { e.stopPropagation(); });
         row.appendChild(slider); row.appendChild(val);
         card.appendChild(row);
@@ -2726,7 +2732,14 @@
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (res) { if (res && res.ok && res.state != null) c.state = res.state; })
           .catch(function () {})
-          .finally(function () { card.classList.remove("busy"); });
+          .finally(function () { card.classList.remove("busy"); reconcileStartPage(); });
+      }
+
+      // After an optimistic card action, reconcile the start page from HA a beat
+      // later (state settles async) — a no-op off the start page (#711).
+      function reconcileStartPage() {
+        if (!startRefreshActive()) return;
+        setTimeout(refreshStartPage, 1000);
       }
 
       // German status label for a read-only badge card, keyed off domain + state.
@@ -2790,7 +2803,7 @@
             else apply(was);
           })
           .catch(function () { apply(was); })
-          .finally(function () { card.classList.remove("busy"); });
+          .finally(function () { card.classList.remove("busy"); reconcileStartPage(); });
       }
 
       function renderStepTrace(steps) {
@@ -4228,6 +4241,11 @@
         }
       }
 
+      // #711: the start page is a live dashboard — a timer re-fetches the pinned
+      // entities' state while #/p/start is active and updates each card in place.
+      var startTimer = null, startPageCard = null, hcSliderDragging = false;
+      var START_REFRESH_MS = 12000;
+
       var lastSessions = [];
       // Re-derive + apply the header title from the last-known session list, so
       // routing changes (#/p/start ⇄ chat) update it without a sessions fetch.
@@ -4237,8 +4255,63 @@
       // Opening a real chat leaves a lingering portal route (#671), so the
       // header title stops reading "Favoriten" once we're back in a chat.
       function leavePortal() {
+        stopStartRefresh();
         if ((location.hash || "").indexOf("#/p/") === 0) location.hash = "";
       }
+
+      // ---- Start-page live refresh (#711) ----
+      function stopStartRefresh() {
+        if (startTimer) { clearInterval(startTimer); startTimer = null; }
+        startPageCard = null;
+      }
+      function startRefreshActive() {
+        // Only refresh while #/p/start is the visible view and the page card is
+        // still mounted — a re-render (loadStartPage) or a leave drops it.
+        return (
+          startPageCard &&
+          startPageCard.isConnected &&
+          (location.hash || "").indexOf("#/p/start") === 0 &&
+          !document.hidden
+        );
+      }
+      function startRefreshBusy() {
+        // Don't yank the DOM out from under an interaction: edit mode, the card
+        // picker overlay, an active slider drag, or a card mid-call all suspend
+        // the in-place update. (window.confirm blocks JS, so a dialog can't race
+        // a tick.)
+        return (
+          !startPageCard ||
+          startPageCard.classList.contains("editing") ||
+          hcSliderDragging ||
+          document.querySelector(".card-picker") != null ||
+          startPageCard.querySelector(".hc-row.busy, .ha-card.busy") != null
+        );
+      }
+      function refreshStartPage() {
+        if (!startRefreshActive() || startRefreshBusy()) return;
+        var page = startPageCard;
+        fetch("/api/portal/start?state_only=1")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok || !j.states) return;
+            // A late response after a leave/re-render must not touch a stale node.
+            if (page !== startPageCard || !page.isConnected || startRefreshBusy()) return;
+            var favs = page.startFavs || [];
+            favs.forEach(function (rec) {
+              var next = j.states[rec.entityId];
+              if (!next || !rec.el.isConnected) return;
+              rec.f.card = next;
+              var fresh = renderFavorite(page, rec.f);
+              rec.el.parentNode.replaceChild(fresh, rec.el);
+              rec.el = fresh;
+            });
+          })
+          .catch(function () {});
+      }
+      // Regaining focus (tab/app) refreshes immediately, not on the next tick.
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) refreshStartPage();
+      });
 
       function renderSessions(list) {
         lastSessions = list || [];
@@ -4853,6 +4926,8 @@
       // dump into chat belongs here).
       function openPortal(type) {
         if (type !== "energy" && type !== "start" && type !== "notes") { showView("chat"); return; }
+        // Leaving the start page for another portal stops its refresh timer (#711).
+        if (type !== "start") stopStartRefresh();
         closeRail();
         // A portal (#/p/start, #/p/energy, #/p/notes) is a standalone page, not
         // another card stacked on the current chat (#668): clear the transcript so
@@ -4886,6 +4961,9 @@
           .then(function (j) {
             if (!j || !j.ok) { card.textContent = "Startseite nicht verfügbar."; return; }
             renderStartPage(card, j);
+            // #711: arm the live-refresh timer once the page is mounted; a
+            // re-render (edit/reorder) reuses the single existing timer.
+            if (!startTimer) startTimer = setInterval(refreshStartPage, START_REFRESH_MS);
           })
           .catch(function () { card.textContent = "Konnte die Startseite nicht laden."; });
       }
@@ -5779,6 +5857,10 @@
       function renderStartPage(card, data) {
         card.textContent = "";
         card.classList.add("start-page");
+        // #711: this card is the live dashboard the refresh timer updates in
+        // place; track each entity favorite's node + spec by entity_id.
+        startPageCard = card;
+        card.startFavs = [];
         var head = document.createElement("div");
         head.className = "concept-head";
         var add = document.createElement("button");
@@ -5809,7 +5891,11 @@
           var wrap = document.createElement("div");
           wrap.className = "ha-cards start-favs";
           favs.forEach(function (f) {
-            wrap.appendChild(renderFavorite(card, f));
+            var el = renderFavorite(card, f);
+            if (f.kind === "entity" && f.card && f.payload && f.payload.entity_id) {
+              card.startFavs.push({ entityId: f.payload.entity_id, f: f, el: el });
+            }
+            wrap.appendChild(el);
           });
           card.appendChild(wrap);
         }

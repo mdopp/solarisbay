@@ -135,6 +135,44 @@ async def test_start_enriches_entity_with_live_card(
     assert card["domain"] == "light" and card["state"] == "on"
 
 
+async def test_start_state_only_returns_pinned_card_state(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    """The live-refresh tick (#711): `?state_only=1` re-fetches just the pinned
+    entities' card state (keyed by entity_id), no frequent/usage lists — so the
+    client updates each card in place while #/p/start is the active view."""
+
+    async def _fake_fetch(url, token, entity_id):
+        return ha.card_spec(
+            entity_id, "open", {"friendly_name": "Garagentor", "device_class": "garage"}
+        )
+
+    monkeypatch.setattr("solaris_chat.server.fetch_card", _fake_fetch)
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "garage", {"entity_id": "cover.garage"}
+    )
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get(
+            "/api/portal/start?state_only=1", headers={"Remote-User": "mdopp"}
+        )
+    ).json()
+    assert j["ok"] is True
+    assert "personal" not in j and "frequent" not in j
+    card = j["states"]["cover.garage"]
+    assert card["state"] == "open" and card["sensitive"] is True
+
+
 async def test_frequent_excluded_from_curated(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     favorites_store.record_usage(db, "mdopp", "play_radio", {"station": "NDR"})
