@@ -4902,11 +4902,51 @@
           tiles.appendChild(tile);
         });
         card.appendChild(tiles);
+
+        // Posteingang (#697): unkonsolidierte Fakten kuratieren — je Eintrag
+        // → Thema / → Person / Archivieren, plus "Jetzt kuratieren" (Bibliothekar).
+        card.appendChild(conceptSectionTitle("Posteingang"));
+        var curateBtn = document.createElement("button");
+        curateBtn.type = "button";
+        curateBtn.className = "anchor-chip";
+        curateBtn.textContent = "Jetzt kuratieren";
+        card.appendChild(curateBtn);
+        var inbox = document.createElement("div");
+        inbox.className = "notes-list";
+        card.appendChild(inbox);
+        loadNotesInbox(inbox);
+        curateBtn.addEventListener("click", function () {
+          curateBtn.disabled = true;
+          curateBtn.textContent = "Kuratiere…";
+          fetch("/api/portal/notes/curate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          })
+            .then(function (r) { return r.json().catch(function () { return null; }); })
+            .then(function (j) {
+              curateBtn.disabled = false;
+              curateBtn.textContent = "Jetzt kuratieren";
+              if (j && j.ok) loadNotesInbox(inbox);
+            })
+            .catch(function () {
+              curateBtn.disabled = false;
+              curateBtn.textContent = "Jetzt kuratieren";
+            });
+        });
+
+        // Bibliothekar: die letzten okf/log.md-Läufe lesbar.
         if (data.librarian && data.librarian.length) {
-          var lib = document.createElement("p");
-          lib.className = "concept-desc";
-          lib.textContent = "Bibliothekar: " + data.librarian[data.librarian.length - 1];
-          card.appendChild(lib);
+          card.appendChild(conceptSectionTitle("Bibliothekar"));
+          var libList = document.createElement("div");
+          libList.className = "notes-list";
+          data.librarian.slice().reverse().forEach(function (ln) {
+            var row = document.createElement("div");
+            row.className = "note-row";
+            row.textContent = ln;
+            libList.appendChild(row);
+          });
+          card.appendChild(libList);
         }
 
         // Suche über die vereinheitlichte notes_search.
@@ -4978,6 +5018,83 @@
           });
           card.appendChild(recent);
         }
+      }
+
+      // Posteingang V2 (#697): list unconsolidated facts with per-entry actions.
+      function loadNotesInbox(container) {
+        container.textContent = "Lade…";
+        fetch("/api/portal/notes/inbox")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            container.textContent = "";
+            if (!j || !j.ok || !j.items.length) {
+              container.textContent = "Posteingang leer.";
+              return;
+            }
+            j.items.forEach(function (it) {
+              container.appendChild(inboxRow(container, it));
+            });
+          })
+          .catch(function () { container.textContent = "Konnte den Posteingang nicht laden."; });
+      }
+
+      function inboxRow(container, it) {
+        var wrap = document.createElement("div");
+        wrap.className = "inbox-entry";
+        var body = document.createElement("a");
+        body.className = "note-row";
+        body.href = "#/p/notes";
+        body.textContent = (it.title || it.path) + (it.snippet ? " — " + it.snippet : "");
+        body.title = it.path;
+        body.addEventListener("click", function (e) {
+          e.preventDefault();
+          openNoteViewer(it.path);
+        });
+        wrap.appendChild(body);
+
+        var acts = document.createElement("div");
+        acts.className = "anchor-chips";
+        function assignBtn(label, target) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "anchor-chip";
+          b.textContent = label;
+          b.addEventListener("click", function () {
+            var name = window.prompt(
+              target === "topic" ? "In welches Thema?" : "Zu welcher Person?"
+            );
+            if (!name || !name.trim()) return;
+            inboxAction(container, "assign", {
+              path: it.path, target: target, name: name.trim(),
+            });
+          });
+          return b;
+        }
+        acts.appendChild(assignBtn("→ Thema", "topic"));
+        acts.appendChild(assignBtn("→ Person", "person"));
+        var arch = document.createElement("button");
+        arch.type = "button";
+        arch.className = "anchor-chip";
+        arch.textContent = "Archivieren";
+        arch.addEventListener("click", function () {
+          inboxAction(container, "archive", { path: it.path });
+        });
+        acts.appendChild(arch);
+        wrap.appendChild(acts);
+        return wrap;
+      }
+
+      function inboxAction(container, kind, payload) {
+        fetch("/api/portal/notes/" + kind, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then(function (r) { return r.json().catch(function () { return null; }); })
+          .then(function (j) {
+            if (j && j.ok) loadNotesInbox(container);
+          })
+          .catch(function () {});
       }
 
       function loadNotesBrowse(container, by) {

@@ -535,6 +535,46 @@ class CronRunner:
         # re-curates the same candidates rather than dropping them.
         _mark_run(self._db_path, _BIBLIOTHEKAR_WATERMARK, now_utc)
 
+    async def curate_scope(self, notes_dir: str, scope: str) -> dict[str, object]:
+        """Run one on-demand librarian turn for a single scope (#697).
+
+        The Notizen-portal "Jetzt kuratieren" button reuses the nightly
+        Bibliothekar machinery (candidates + prompt + per-scope ephemeral
+        session) bounded to the one scope the caller may curate — no watermark
+        advance, so the nightly run still sweeps the full candidate set. Returns
+        `{ok, scope, candidates, summary}`; a missing librarian degrades to
+        `ok: False` rather than raising into the request."""
+        if self._librarian is None:
+            return {"ok": False, "scope": scope, "error": "no_librarian"}
+        since = _last_run(self._db_path, _BIBLIOTHEKAR_WATERMARK)
+        candidates = self._bibliothekar_candidates(notes_dir, scope, since)
+        if not candidates:
+            return {"ok": True, "scope": scope, "candidates": 0, "summary": ""}
+        prompt = (
+            BIBLIOTHEKAR_PROMPT
+            + "\n".join(candidates)
+            + "\n\nArbeite sie mit notes_read/note_write ab."
+            " Antworte nur mit einer Zusammenfassung."
+        )
+        session_id = await self._librarian.create_session(scope, ephemeral=True)
+        try:
+            reply = await self._librarian.chat(session_id, prompt, None, "high")
+        finally:
+            await self._librarian.delete_session(session_id, scope)
+        log.info(
+            "engine.night.bibliothekar_scope",
+            scope=scope,
+            candidates=len(candidates),
+            reply_len=len(reply),
+            on_demand=True,
+        )
+        return {
+            "ok": True,
+            "scope": scope,
+            "candidates": len(candidates),
+            "summary": reply,
+        }
+
     async def _stenograph(self) -> None:
         """Distil each active session's day into durable facts (#652).
 

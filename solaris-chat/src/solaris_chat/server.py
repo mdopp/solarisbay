@@ -243,6 +243,208 @@ def _notes_last_librarian(notes_dir: str, lines: int = 8) -> list[str]:
     return [ln for ln in text.splitlines() if ln.strip()][-lines:]
 
 
+# ---- Notes portal V2 (#697): inbox curation workbench -------------------------
+# The inbox is the same signal the nightly Bibliothekar curates (#653): stale,
+# unconsolidated fact files, scoped to the caller ∪ shared pool. Assign folds a
+# fact into a topic/person note and stamps the source `consolidated: true`;
+# archive moves it under `archive/` — both honour the never-delete contract
+# (#653) and log every move to `okf/log.md`.
+
+_ARCHIVE_DIR = "archive"
+
+
+def _notes_inbox_dirs(notes_dir: str, uid: str) -> list[Path]:
+    """The fact directories the caller's inbox draws from: the shared `facts/`
+    pool plus, for a real resident, their own `users/<uid>/facts/` (mirrors the
+    Bibliothekar's per-scope candidate dirs)."""
+    root = Path(notes_dir)
+    dirs = [root / "facts"]
+    if uid != notes_search.SHARED_UID:
+        dirs.append(root / "users" / uid / "facts")
+    return dirs
+
+
+def _notes_inbox_list(
+    notes_dir: str, uid: str, limit: int = 200
+) -> list[dict[str, Any]]:
+    """The unconsolidated fact files older than the stale threshold (#697).
+
+    The same query the librarian queues (#653): a `YYYY-MM-DD-` name prefix older
+    than `_BIBLIOTHEKAR_STALE_DAYS` and no `consolidated: true` stamp. Owner-scoped
+    to the caller ∪ shared pool; bounded to `limit` files so a large vault can't
+    wedge the request. Returns `[{path, title, date, snippet}]`."""
+    from datetime import timedelta, timezone
+
+    from solaris_chat.engine.crons import _BIBLIOTHEKAR_STALE_DAYS
+
+    root = Path(notes_dir)
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=_BIBLIOTHEKAR_STALE_DAYS)
+    ).strftime("%Y-%m-%d")
+    rows: list[dict[str, Any]] = []
+    for facts_dir in _notes_inbox_dirs(notes_dir, uid):
+        if not facts_dir.is_dir():
+            continue
+        for path in sorted(facts_dir.glob("*.md")):
+            if path.name[:10] >= cutoff:
+                continue
+            try:
+                if path.stat().st_size > notes_search._MAX_BYTES:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if "consolidated: true" in text:
+                continue
+            body = _NOTES_FM_RE.sub("", text).strip()
+            rows.append(
+                {
+                    "path": str(path.relative_to(root)),
+                    "title": _note_title(text, path.stem),
+                    "date": path.name[:10],
+                    "snippet": body[:200],
+                }
+            )
+            if len(rows) >= limit:
+                return rows
+    return rows
+
+
+def _notes_resolve_owned(notes_dir: str, rel: str, uid: str) -> Path | None:
+    """Path-jail + owner-scope a caller-supplied vault-relative fact path (#697).
+
+    Resolves `rel` under the vault, rejects a `..`-escape, and returns the path
+    only when the caller may see it (own subtree or shared pool, default-deny) and
+    it is a real file. None on any failure — the caller maps that to 400/404."""
+    root = Path(notes_dir).resolve()
+    try:
+        path = (root / rel).resolve()
+        path.relative_to(root)
+    except (ValueError, OSError):
+        return None
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    canon = str(path.relative_to(root))
+    if not notes_search.is_visible(notes_search.owner_of(canon, text), uid):
+        return None
+    return path
+
+
+def _notes_log_append(notes_dir: str, line: str) -> None:
+    """Append one dated line to `okf/log.md` — the Bibliothekar's run trail (#653).
+
+    Every portal curation writes here too, so the "Bibliothekar" report block
+    shows hand-curations alongside the nightly runs. Path-jailed to the vault."""
+    root = Path(notes_dir).resolve()
+    log_path = root / "okf" / "log.md"
+    from datetime import timezone
+
+    try:
+        log_path.relative_to(root)
+    except ValueError:
+        return
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(f"{day} {line}\n")
+
+
+def _notes_stamp_consolidated(text: str) -> str:
+    """Add `consolidated: true` to a fact file's frontmatter, verbatim otherwise.
+
+    Mirrors the Bibliothekar's stamp (#653) and the verbatim-frontmatter rule
+    (#657): insert the key into the existing `--- … ---` block without rewriting
+    the rest; synthesize a block when the file has none. Idempotent."""
+    if "consolidated: true" in text:
+        return text
+    m = _NOTES_FM_RE.match(text)
+    if m:
+        fm = m.group(1)
+        rest = text[m.end() :]
+        return f"---\n{fm}\nconsolidated: true\n---\n{rest}"
+    return f"---\nconsolidated: true\n---\n\n{text}"
+
+
+def _notes_assign_fact(
+    notes_dir: str, src: Path, target: str, name: str, uid: str
+) -> dict[str, Any]:
+    """Fold a fact into its topic/person note, then stamp the source (#697).
+
+    The Bibliothekar's merge convention for a fact (#653): append the fact's body
+    under the target note (a `#topic/<slug>` note for `topic`, a `@person` note
+    for `person`), keep the source file, and write `consolidated: true` into its
+    frontmatter. Writes are atomic (tmp+replace) and owner-scoped: a resident's
+    target lands in their `users/<uid>/` subtree, the shared pool at the root. The
+    source is never deleted (never-delete contract)."""
+    root = Path(notes_dir).resolve()
+    slug = re.sub(r"[^a-z0-9äöüß/-]+", "-", name.lower()).strip("-/")
+    if not slug:
+        return {"ok": False, "error": "bad_name"}
+    src_text = src.read_text(encoding="utf-8", errors="replace")
+    body = _NOTES_FM_RE.sub("", src_text).strip()
+    rel_src = str(src.relative_to(root))
+
+    base = root if uid == notes_search.SHARED_UID else (root / "users" / uid)
+    sub = "topics" if target == "topic" else "people"
+    tgt = (base / sub / f"{slug}.md").resolve()
+    try:
+        tgt.relative_to(base.resolve())
+    except ValueError:
+        return {"ok": False, "error": "bad_target"}
+    anchor = f"#topic/{slug}" if target == "topic" else f"@{slug}"
+    block = f"\n\n<!-- aus {rel_src} -->\n{anchor} {body}\n"
+    tgt.parent.mkdir(parents=True, exist_ok=True)
+    if tgt.is_file():
+        with tgt.open("a", encoding="utf-8") as f:
+            f.write(block)
+    else:
+        header = (
+            "added_by: household"
+            if uid == notes_search.SHARED_UID
+            else f"added_by: {uid}"
+        )
+        tmp = tgt.with_suffix(".md.tmp")
+        tmp.write_text(f"---\n{header}\n---\n\n# {name}{block}", encoding="utf-8")
+        tmp.replace(tgt)
+
+    stamped = _notes_stamp_consolidated(src_text)
+    tmp = src.with_suffix(".md.tmp")
+    tmp.write_text(stamped, encoding="utf-8")
+    tmp.replace(src)
+    rel_tgt = str(tgt.relative_to(root))
+    _notes_log_append(notes_dir, f"assign {rel_src} → {rel_tgt} (portal, {uid})")
+    return {"ok": True, "target_path": rel_tgt, "source": rel_src}
+
+
+def _notes_archive_fact(notes_dir: str, src: Path, uid: str) -> dict[str, Any]:
+    """Move a fact under `archive/` — never delete (#697, mirrors #653).
+
+    Preserves the source subtree under the archive folder so a resident's private
+    fact stays in `archive/users/<uid>/…`. If the destination already exists a
+    numeric suffix is added rather than clobbering. Logs to `okf/log.md`."""
+    root = Path(notes_dir).resolve()
+    rel_src = str(src.relative_to(root))
+    dest = (root / _ARCHIVE_DIR / rel_src).resolve()
+    try:
+        dest.relative_to(root / _ARCHIVE_DIR)
+    except ValueError:
+        return {"ok": False, "error": "bad_path"}
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        n = 1
+        while dest.with_name(f"{dest.stem}-{n}.md").exists():
+            n += 1
+        dest = dest.with_name(f"{dest.stem}-{n}.md")
+    src.replace(dest)
+    rel_dest = str(dest.relative_to(root))
+    _notes_log_append(notes_dir, f"archive {rel_src} → {rel_dest} (portal, {uid})")
+    return {"ok": True, "archived": rel_dest, "source": rel_src}
+
+
 def _favorite_label(payload: dict[str, Any]) -> str:
     """A short label for a usage-counted action (#646) — the tool's most telling
     argument, else the tool name. `payload` is `{tool, args}` from the counter."""
@@ -474,6 +676,7 @@ def build_app(
     sb_mcp_token_path: str = "",
     hass_url: str = "",
     hass_token: str = "",
+    crons: Any = None,
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -2097,6 +2300,84 @@ def build_app(
         hits = json.loads(await search({"query": query}))
         return web.json_response({"ok": True, "hits": hits})
 
+    async def portal_notes_inbox(request: web.Request) -> web.Response:
+        """The inbox curation list for `#/p/notes` V2 (#697): the unconsolidated
+        fact files older than the Bibliothekar's stale threshold — the same query
+        the nightly librarian queues (#653) — owner-scoped, bounded. The fact scan
+        runs off the event loop so a huge vault can't wedge the request (#705)."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        items = await asyncio.to_thread(_notes_inbox_list, notes_dir, uid)
+        return web.json_response({"ok": True, "items": items})
+
+    async def portal_notes_assign(request: web.Request) -> web.Response:
+        """Fold an inbox fact into a topic/person note (#697).
+
+        `{path, target:"topic"|"person", name}`. Path-jailed to the vault and
+        owner-scoped (a caller may only act on their own or shared facts). Applies
+        the Bibliothekar's merge convention (#653): append into the target note,
+        stamp the source `consolidated: true`, log to `okf/log.md` — never delete.
+        The file writes run off the event loop."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        rel = str(body.get("path") or "")
+        target = str(body.get("target") or "")
+        name = str(body.get("name") or "").strip()
+        if target not in ("topic", "person") or not name:
+            return web.json_response({"ok": False, "error": "bad_args"}, status=400)
+        src = _notes_resolve_owned(notes_dir, rel, uid)
+        if src is None:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        result = await asyncio.to_thread(
+            _notes_assign_fact, notes_dir, src, target, name, uid
+        )
+        status = 200 if result.get("ok") else 400
+        return web.json_response(result, status=status)
+
+    async def portal_notes_archive(request: web.Request) -> web.Response:
+        """Move an inbox fact under the vault's `archive/` folder (#697).
+
+        `{path}`. Path-jailed + owner-scoped like assign. Never deletes — the file
+        is relocated (source subtree preserved) and the move logged to
+        `okf/log.md`. Runs off the event loop."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        rel = str(body.get("path") or "")
+        src = _notes_resolve_owned(notes_dir, rel, uid)
+        if src is None:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        result = await asyncio.to_thread(_notes_archive_fact, notes_dir, src, uid)
+        status = 200 if result.get("ok") else 400
+        return web.json_response(result, status=status)
+
+    async def portal_notes_curate(request: web.Request) -> web.Response:
+        """Trigger a targeted Bibliothekar run for a scope (#697).
+
+        `{scope}` — the shared household pool or the caller's own uid; any other
+        scope is coerced to the caller's (a resident may only curate their own or
+        shared facts, default-deny). Reuses the #653 librarian machinery bounded to
+        the one scope (`CronRunner.curate_scope`), off-loop, and returns the run's
+        summary. 503 when no librarian client is wired (offline-test topology)."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        if crons is None:
+            return web.json_response({"ok": False, "error": "no_librarian"}, status=503)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        scope = str(body.get("scope") or "").strip()
+        if scope != notes_search.SHARED_UID:
+            scope = uid
+        result = await crons.curate_scope(notes_dir, scope)
+        _notes_overview_cache.pop(uid, None)
+        status = 200 if result.get("ok") else 503
+        return web.json_response(result, status=status)
+
     async def favorites_create(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
@@ -2641,6 +2922,10 @@ def build_app(
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
     app.router.add_get("/api/portal/notes/note", portal_notes_note)
     app.router.add_get("/api/portal/notes/search", portal_notes_search)
+    app.router.add_get("/api/portal/notes/inbox", portal_notes_inbox)
+    app.router.add_post("/api/portal/notes/assign", portal_notes_assign)
+    app.router.add_post("/api/portal/notes/archive", portal_notes_archive)
+    app.router.add_post("/api/portal/notes/curate", portal_notes_curate)
     app.router.add_post("/api/favorites", favorites_create)
     app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
     app.router.add_put("/api/favorites/{fav_id}", favorites_reorder)
@@ -2929,6 +3214,7 @@ async def serve(
     sb_mcp_token_path: str = "",
     hass_url: str = "",
     hass_token: str = "",
+    crons: Any = None,
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -2961,6 +3247,7 @@ async def serve(
         sb_mcp_token_path=sb_mcp_token_path,
         hass_url=hass_url,
         hass_token=hass_token,
+        crons=crons,
     )
     runner = web.AppRunner(app)
     await runner.setup()
