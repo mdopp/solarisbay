@@ -23,6 +23,60 @@ A spoken command answers in ≈1.3 s after speech end (whisper GPU 0.38 s +
 engine ≤1 s); the household prompt is ~2.1k tokens with the HA entity
 registry injected.
 
+## Features
+
+Detail docs live in [`docs/features/`](docs/features/); the architecture record
+is [`solaris-architecture.md`](solaris-architecture.md) and the design
+rationale [`docs/solaris-concept.md`](docs/solaris-concept.md).
+
+### Assistant
+
+- **Voice + Chat, German, GPU-fast.** Talk to the Voice PE (wake word
+  **"Solaris"**, on-device) or chat in the browser; a spoken command answers in
+  ≈1.3 s. Two chat modes: **Zuhause** (fast `gemma4:e2b`) and **Solaris
+  Gründlich** (thorough `gemma4:12b`). → [chat-and-voice.md](docs/features/chat-and-voice.md)
+- **Home control via Home Assistant.** Lights, covers, media, sensors — with a
+  confirmation gate on locks and garage/gate covers. Chat offers 2–4 quick-reply
+  chips; voice re-opens the mic when the answer ends in a question.
+- **Music & radio.** „Spiele Musik von <Künstler>" plays from Jellyfin; „Spiele
+  Radio" resolves a station and remembers your favorite.
+- **Timers & reminders.** „Stelle einen Timer auf 10 Minuten" — the engine's
+  scheduler rings the speaker back when it fires.
+
+### Household surfaces
+
+- **Favorites start page** (`/p/start`). Pin devices/actions by voice („packe
+  das Bürolicht auf meine Startseite"), by ☆ tap, or via the room-grouped card
+  picker. **Häufig genutzt** surfaces what you use most; PWA install + mobile
+  bottom nav (🏠 Zuhause · 💬 Chats · ⭐ Favoriten).
+  → [favorites-start-page.md](docs/features/favorites-start-page.md)
+- **Energy page** (`/p/energy`). Live **PV / Haus / Netz / Akku** flow with
+  correct directions, lifetime kWh totals, per-circuit power, and 24h/7d trend
+  charts. → [energy.md](docs/features/energy.md)
+- **Notizen tab** (`/p/notes`). Browse / search / read / edit the vault, see
+  stats, and curate the inbox of loose facts.
+  → [notes-tab.md](docs/features/notes-tab.md)
+- **Concept pages** (`/c/<id>`) render any knowledge entity; `#tag` / `@person`
+  mentions in chat auto-link and drive grouping.
+
+### Knowledge
+
+- **One household knowledge graph.** Ask „Wen habe ich letzte Woche gesehen?" —
+  a nightly **Stenograph** captures facts from your conversations, a
+  **Bibliothekar** consolidates them, and everything is stored as OKF concept
+  files (people/events/places/…) with a rebuildable `solaris.db` projection.
+  → [knowledge-system.md](docs/features/knowledge-system.md)
+- **Unified semantic search.** `okf_vectors` + numpy cosine top-k folded into
+  one `notes_search` tool that blends fuzzy, entity/alias, date-range event, and
+  semantic hits — all default-deny scoped.
+
+### Ingest
+
+- **Pulls in your on-box data**, read-only and idempotent: Obsidian notes,
+  Immich photos, CalDAV/CardDAV calendar & contacts, Jellyfin music, per-person
+  IMAP email, and WhatsApp/Signal/SMS export drops.
+  → [ingest.md](docs/features/ingest.md)
+
 ## What's in this repo
 
 - **Solaris Engine + chat surface** (`solaris-chat/`) — one process owning the
