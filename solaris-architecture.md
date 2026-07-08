@@ -45,9 +45,10 @@ saved KV budget is what fits all three models on the GPU.
 Speculative decoding / MTP is not attainable on the current CUDA/GGUF stack;
 that decision is final (see repo history / #189).
 
-No embeddings are wired yet. When semantic search is added it will target a
-dedicated `nomic-embed-text` instance on a separate Ollama runner so it does
-not compete for the generation slot.
+Embeddings are wired: `nomic-embed-text` runs on its own Ollama runner (never
+competing for the generation slot) and drives the OKF semantic search — the
+drain worker fills `okf_vectors`, and `notes_search` does numpy cosine top-k
+over it. See [`docs/features/knowledge-system.md`](docs/features/knowledge-system.md).
 
 ---
 
@@ -274,14 +275,17 @@ Bibliothekar curation — is defined in the
 
 | Layer | Store | Status |
 |---|---|---|
-| **L1 — episodic / user facts** | dated fact files in the vault (`fact_store` tool + nightly Stenograph extraction) + `okf_vectors` semantic index in `solaris.db`, drained from the OKF embedding queue (`nomic-embed-text`) | fact files active; vector index per concept §3.1 |
-| **L2 — freeform text** | Obsidian notes vault (`/opt/data/notes`, Syncthing) + `notes_search` tool (keyword/fuzzy today; unified semantic+structured retrieval per concept §3.1) | active |
-| **L3 — structured knowledge** | `solaris.db` OKF projection — `entities`, `entity_aliases`, `facts`, `events`, `event_entities`, `concepts`, `ingest_log` (migration 0016), rebuildable from the OKF files under `notes/okf/`; fed by the `engine/ingest/` adapters (Obsidian, Immich, CalDAV/CardDAV, Jellyfin music) | active (write side); agent-readable retrieval per concept §3.1 |
+| **L1 — episodic / user facts** | dated fact files in the vault (`fact_store` tool + nightly Stenograph extraction) + `okf_vectors` semantic index in `solaris.db`, drained from the OKF embedding queue (`nomic-embed-text`) | active |
+| **L2 — freeform text** | Obsidian notes vault (`/opt/data/notes`, Syncthing) + unified `notes_search` tool (fuzzy + entity/alias + date-range events + semantic top-k) | active |
+| **L3 — structured knowledge** | `solaris.db` OKF projection — `entities`, `entity_aliases`, `facts`, `events`, `event_entities`, `concepts`, `ingest_log` (migration 0016) + `okf_vectors` (0018), rebuildable from the OKF files under `notes/okf/`; fed by the `engine/ingest/` adapters (Obsidian, messenger exports, Immich, CalDAV/CardDAV, Jellyfin music, per-person IMAP) | active |
 | **L4 — live device state** | HA-native `ha_*` tools | active |
 
 The former Hermes-native `holographic` provider (the original L1) was removed
-with Hermes (§2); nothing episodic survived it — L1 is being rebuilt on the
-OKF pipeline as described above.
+with Hermes (§2); nothing episodic survived it — L1 was rebuilt on the OKF
+pipeline as described above. The full read/curation loop (Stenograph capture,
+Bibliothekar curation, semantic retrieval, the ingest adapters) is documented
+in [`docs/features/knowledge-system.md`](docs/features/knowledge-system.md) and
+[`docs/features/ingest.md`](docs/features/ingest.md).
 
 The `solaris.db` schema is managed by Alembic migrations in `database/`
 (hand-rolled SQL via `op.execute`; portable to Postgres if the graph layer
