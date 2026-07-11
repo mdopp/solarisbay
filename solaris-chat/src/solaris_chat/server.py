@@ -3363,6 +3363,8 @@ def build_app(
             api_key=api_key,
             default_uid=default_uid,
             solaris_db_path=solaris_db_path,
+            event_bus=event_bus,
+            notifier=notifier,
         )
     return app
 

@@ -32,6 +32,7 @@ from aiohttp import web
 from solaris_chat import trace_store
 from solaris_chat.engine import store
 from solaris_chat.engine.client import EngineClient, EngineError, current_room
+from solaris_chat.engine.notify import EventBus, Notifier, emit_chat
 from solaris_chat.logging import log
 from solaris_chat.voice_uid_stash import consume_uid
 
@@ -162,6 +163,8 @@ def add_facade_routes(
     api_key: str,
     default_uid: str,
     solaris_db_path: str,
+    event_bus: EventBus | None = None,
+    notifier: Notifier | None = None,
 ) -> None:
     async def tags(request: web.Request) -> web.Response:
         if not _authorized(request, api_key):
@@ -262,6 +265,7 @@ def add_facade_routes(
             answer = _strip_wikilinks(answer)
             if answer and _question_pending(answer, offered_choices):
                 answer = _as_question(answer)
+            await _emit_voice_turn(event_bus, notifier, client, uid, answer)
             return web.Response(
                 body=_chunk(model, answer, done=True),
                 content_type="application/json",
@@ -313,12 +317,33 @@ def add_facade_routes(
             await resp.write(_chunk(model, "", done=True, done_reason="error"))
             return resp
         persist_trace()
+        await _emit_voice_turn(event_bus, notifier, client, uid, streamed)
         await resp.write(_chunk(model, "", done=True))
         return resp
 
     app.router.add_get("/ollama/api/tags", tags)
     app.router.add_get("/ollama/api/version", version)
     app.router.add_post("/ollama/api/chat", chat)
+
+
+async def _emit_voice_turn(
+    event_bus: EventBus | None,
+    notifier: Notifier | None,
+    client: EngineClient,
+    uid: str,
+    reply: str,
+) -> None:
+    """Propagate a completed voice turn to the resident (#715, #724).
+
+    A voice reply is spoken on the Voice PE speaker but fires no browser turn,
+    so — like the non-stream `/api/chat` caller — it may Web Push (`push=True`)
+    so a backgrounded phone still surfaces the reply, while an open SSE tab is
+    updated live instead of self-pushed (`emit_chat` reuses `has_subscriber`).
+    Ephemeral guest turns persist nothing and stay silent."""
+    if event_bus is None or client.ephemeral or not reply.strip():
+        return
+    session_id = store.household_session_id(uid)
+    await emit_chat(event_bus, notifier, uid, session_id, reply)
 
 
 def _persist_voice_trace(
