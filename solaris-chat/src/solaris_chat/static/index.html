@@ -2498,13 +2498,19 @@
         var dimmable = c.brightness != null ||
           (c.supported_color_modes || []).some(function (m) { return m !== "onoff"; });
         if (dimmable) {
-          var pct = c.brightness != null ? Math.round(c.brightness / 255 * 100) : 100;
+          // #733: cache the % whenever the light reports a real brightness; when
+          // it's off (brightness null) fall back to the last-known %. If we've
+          // never seen it on, render neutral (0, no readout) — never a fake 100%.
+          var known = c.brightness != null;
+          if (known) hcLastBrightness[c.entity_id] = Math.round(c.brightness / 255 * 100);
+          var cached = hcLastBrightness[c.entity_id];
+          var pct = known ? cached : (cached != null ? cached : 0);
           // #538: append the brightness slider to the compact badge row (one
           // line), not as a fresh row under the card. inline=true keeps the
           // slider on the badge row and stops its drag toggling the light.
           var slider = makeSlider(brightHost || card, pct, "%", function (v) {
             haCall(card, c, "light.turn_on", { brightness_pct: v });
-          }, true);
+          }, true, !known && cached == null);
           card.hcBrightness = slider;
         }
         var hasColour = (c.supported_color_modes || []).some(function (m) {
@@ -2708,7 +2714,7 @@
       // A labelled range row whose committed value (on change) fires onset(int).
       // inline=true mounts it on the given host (the compact badge row) instead
       // of as its own row, and stops a slider drag from toggling the card.
-      function makeSlider(card, value, unit, onset, inline) {
+      function makeSlider(card, value, unit, onset, inline, neutral) {
         var row = document.createElement("div");
         row.className = inline ? "hc-ctrl hc-ctrl-inline" : "hc-ctrl";
         var slider = document.createElement("input");
@@ -2716,7 +2722,8 @@
         slider.min = "0"; slider.max = "100"; slider.value = String(value);
         var val = document.createElement("span");
         val.className = "hc-val";
-        val.textContent = value + unit;
+        // #733: no known brightness yet — show a dash instead of a fake %.
+        val.textContent = neutral ? "–" : value + unit;
         slider.addEventListener("input", function () { val.textContent = slider.value + unit; });
         slider.addEventListener("change", function () { onset(Number(slider.value)); });
         // #711: the start-page live refresh must not yank a slider out from under
@@ -4319,6 +4326,11 @@
       // (or the window lapses). Keeps the SSE/poll fallback converging.
       var HC_PENDING_MS = 2500;
       var hcPending = {};
+      // #733: HA reports brightness:null for an OFF light, so an off dimmable card
+      // has no % to show. Cache the last-known brightness % per entity_id (updated
+      // on every render that sees a non-null brightness — initial + SSE/poll) so an
+      // off card shows its last level instead of a fake 100%.
+      var hcLastBrightness = {};
       function hcExpect(entityId, state) {
         if (entityId) hcPending[entityId] = { state: state, until: Date.now() + HC_PENDING_MS };
       }
