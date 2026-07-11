@@ -256,3 +256,60 @@ async def test_revoke_endpoint_is_owner_checked(aiohttp_client, tmp_path):
     )
     assert r2.status == 200
     assert device_token_store.resolve(db, token) is None
+
+
+# ---- /pair-device page (#751) ---------------------------------------------
+
+
+async def test_pair_device_page_renders_and_mints_nothing(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.get("/pair-device", headers={"Remote-User": "mdopp"})
+    assert r.status == 200
+    assert "Dieses Gerät koppeln" in await r.text()
+    # A GET must NOT mint a token (drive-by / CSRF protection).
+    assert device_token_store.list_for_uid(db, "mdopp") == []
+
+
+async def test_pair_device_page_rejects_without_remote_user(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.get("/pair-device")
+    assert r.status == 401
+    assert device_token_store.list_for_uid(db, "household") == []
+
+
+async def test_pair_device_confirm_mints_one_and_deep_link_redirects(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.post(
+        "/pair-device",
+        data={"label": "Mein Pixel"},
+        headers={"Remote-User": "mdopp"},
+        allow_redirects=False,
+    )
+    assert r.status == 302
+    tokens = device_token_store.list_for_uid(db, "mdopp")
+    assert len(tokens) == 1 and tokens[0]["label"] == "Mein Pixel"
+    loc = r.headers["Location"]
+    assert loc.startswith("cloud.dopp.solaris://pair#token=sol_device_")
+    assert f"&id={tokens[0]['id']}" in loc
+
+
+async def test_pair_device_confirm_rejects_device_token_bearer(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "mdopp")
+    client = await aiohttp_client(_app(tmp_path, db))
+    # A device token / service key can NOT mint via the page (fail-closed).
+    r = await client.post(
+        "/pair-device",
+        data={"label": "x"},
+        headers={"Authorization": f"Bearer {token}"},
+        allow_redirects=False,
+    )
+    assert r.status == 401
+    assert len(device_token_store.list_for_uid(db, "mdopp")) == 1
