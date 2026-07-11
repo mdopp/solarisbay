@@ -67,6 +67,34 @@ def list_favorites(db_path: str, uid: str) -> list[dict[str, Any]]:
     return out
 
 
+def pinned_entity_owners(db_path: str) -> dict[str, set[str]]:
+    """Every pinned HA entity → the owner uids that pinned it (#714).
+
+    The source of truth for the HA-WS watcher's subscribed set and for routing a
+    `card_state` event to the right uids. The shared `household` pin has no
+    single owner, so its entity maps to the sentinel `HOUSEHOLD` — the caller
+    expands that to every resident. Empty when the DB/table is missing."""
+    if not Path(db_path).exists():
+        return {}
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT owner_uid, payload FROM favorites WHERE kind = 'entity'"
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    out: dict[str, set[str]] = {}
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"])
+        except (TypeError, ValueError):
+            continue
+        entity_id = str(payload.get("entity_id") or "")
+        if entity_id:
+            out.setdefault(entity_id, set()).add(r["owner_uid"])
+    return out
+
+
 def add_favorite(
     db_path: str, owner_uid: str, kind: str, label: str, payload: dict[str, Any]
 ) -> str:

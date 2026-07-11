@@ -4266,7 +4266,40 @@
       // ---- Start-page live refresh (#711) ----
       function stopStartRefresh() {
         if (startTimer) { clearInterval(startTimer); startTimer = null; }
+        stopStartEvents();
         startPageCard = null;
+      }
+      // Swap one entity favorite's card in place by entity_id — shared by the
+      // 12s poll (#711) and the SSE event stream (#714).
+      function applyCardState(page, entityId, card) {
+        if (!card || page !== startPageCard || !page.isConnected || startRefreshBusy()) return;
+        (page.startFavs || []).forEach(function (rec) {
+          if (rec.entityId !== entityId || !rec.el.isConnected) return;
+          rec.f.card = card;
+          var fresh = renderFavorite(page, rec.f);
+          rec.el.parentNode.replaceChild(fresh, rec.el);
+          rec.el = fresh;
+        });
+      }
+      // ---- Start-page live SSE (#714): instant card_state pushes ----
+      // An EventSource on /api/events streams card_state events (the HA-WS
+      // watcher publishes them) so a pinned entity updates within ~1s instead
+      // of the 12s poll. The poll stays armed as a fallback for when SSE is
+      // unavailable or drops.
+      var startEvents = null;
+      function stopStartEvents() {
+        if (startEvents) { try { startEvents.close(); } catch (e) {} startEvents = null; }
+      }
+      function startEventsSubscribe() {
+        stopStartEvents();
+        if (typeof EventSource === "undefined") return;
+        var es = new EventSource("/api/events");
+        startEvents = es;
+        es.addEventListener("card_state", function (e) {
+          if (!startRefreshActive()) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.entity_id && d.card) applyCardState(startPageCard, d.entity_id, d.card);
+        });
       }
       function startRefreshActive() {
         // Only refresh while #/p/start is the visible view and the page card is
@@ -4300,14 +4333,8 @@
             if (!j || !j.ok || !j.states) return;
             // A late response after a leave/re-render must not touch a stale node.
             if (page !== startPageCard || !page.isConnected || startRefreshBusy()) return;
-            var favs = page.startFavs || [];
-            favs.forEach(function (rec) {
-              var next = j.states[rec.entityId];
-              if (!next || !rec.el.isConnected) return;
-              rec.f.card = next;
-              var fresh = renderFavorite(page, rec.f);
-              rec.el.parentNode.replaceChild(fresh, rec.el);
-              rec.el = fresh;
+            (page.startFavs || []).forEach(function (rec) {
+              applyCardState(page, rec.entityId, j.states[rec.entityId]);
             });
           })
           .catch(function () {});
@@ -5017,6 +5044,8 @@
             // #711: arm the live-refresh timer once the page is mounted; a
             // re-render (edit/reorder) reuses the single existing timer.
             if (!startTimer) startTimer = setInterval(refreshStartPage, START_REFRESH_MS);
+            // #714: SSE pushes instant card updates; the poll above is fallback.
+            startEventsSubscribe();
           })
           .catch(function () { card.textContent = "Konnte die Startseite nicht laden."; });
       }

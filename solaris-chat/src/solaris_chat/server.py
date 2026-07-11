@@ -870,6 +870,7 @@ def build_app(
     residents: list[str] | None = None,
     api_key: str = "",
     bus: Any = None,
+    event_bus: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
     hass_url: str = "",
@@ -1328,6 +1329,45 @@ def build_app(
                     await _send_event(resp, name, data)
         except (ConnectionResetError, asyncio.CancelledError):
             pass
+        return resp
+
+    async def portal_events(request: web.Request) -> web.StreamResponse:
+        # Live status propagation (#714): an open /p/start client subscribes to
+        # its uid's event bus and receives `card_state` (and later `chat`)
+        # events the HA-WS watcher publishes, so a pinned entity's card updates
+        # within ~1s instead of on the 12s poll. Owner-scoped like the session
+        # mirror: a client only sees its own uid's events plus the shared
+        # `household` stream, never another resident's — the second subscription
+        # carries the household-pinned entities everyone shares.
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        resp = web.StreamResponse(
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            }
+        )
+        await resp.prepare(request)
+        if event_bus is None:
+            await _send_event(resp, "done", {})
+            return resp
+
+        async def _pump(stream) -> None:
+            async for event in stream:
+                if event.get("kind") == "card_state":
+                    await _send_event(resp, "card_state", event.get("data") or {})
+
+        own = asyncio.ensure_future(_pump(event_bus.subscribe(uid)))
+        shared = asyncio.ensure_future(
+            _pump(event_bus.subscribe(favorites_store.HOUSEHOLD))
+        )
+        try:
+            await asyncio.gather(own, shared)
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        finally:
+            own.cancel()
+            shared.cancel()
         return resp
 
     async def trace_detail(request: web.Request) -> web.Response:
@@ -3256,6 +3296,7 @@ def build_app(
     app.router.add_get("/api/portal/energy/history", portal_energy_history)
     app.router.add_get("/api/portal/start", portal_start)
     app.router.add_get("/api/portal/start/addable", portal_start_addable)
+    app.router.add_get("/api/events", portal_events)
     app.router.add_get("/api/portal/notes", portal_notes)
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
     app.router.add_get("/api/portal/notes/note", portal_notes_note)
@@ -3552,6 +3593,7 @@ async def serve(
     trace_recorder: Any = None,
     api_key: str = "",
     bus: Any = None,
+    event_bus: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
     hass_url: str = "",
@@ -3586,6 +3628,7 @@ async def serve(
         trace_recorder=trace_recorder,
         api_key=api_key,
         bus=bus,
+        event_bus=event_bus,
         sb_mcp_url=sb_mcp_url,
         sb_mcp_token_path=sb_mcp_token_path,
         hass_url=hass_url,

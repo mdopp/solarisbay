@@ -20,6 +20,53 @@ from typing import Any
 from solaris_chat import push_store
 from solaris_chat.logging import log
 
+# The typed event kinds the bus carries (#714). `card_state` is a live HA card
+# update, `reminder` a fired timer, `chat` a backgrounded turn (Phase 1c).
+EVENT_KINDS = frozenset({"reminder", "card_state", "chat"})
+
+
+class EventBus:
+    """In-process asyncio pub/sub for live-status propagation, keyed by uid.
+
+    One process, one box: a plain in-memory fan-out (the #341 no-broker
+    decision the SessionBus already follows). A subscriber registers a queue
+    for its uid and drains typed events (`reminder · card_state · chat`);
+    `publish(uid, kind, data)` fans the event out to every queue of that uid.
+    Per-resident privacy: an event is delivered only to the uid it targets, so
+    one resident never observes another's card state.
+
+    An open SSE client subscribes; the HA-WS watcher and the timer scheduler
+    publish; the `Notifier` (web push) is one more consumer, driven selectively
+    for noteworthy events when no SSE client is listening for that uid.
+    """
+
+    def __init__(self) -> None:
+        self._subs: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
+
+    def publish(self, uid: str, kind: str, data: dict[str, Any]) -> None:
+        event = {"kind": kind, "data": data}
+        for q in self._subs.get(uid, set()):
+            q.put_nowait(event)
+
+    def has_subscriber(self, uid: str) -> bool:
+        """True when a client currently holds an open subscription for `uid` —
+        the selective-push gate: an SSE client already got the event live."""
+        return bool(self._subs.get(uid))
+
+    async def subscribe(self, uid: str):
+        """Yield `{kind, data}` events for `uid` until the client drops."""
+        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._subs.setdefault(uid, set()).add(q)
+        try:
+            while True:
+                yield await q.get()
+        finally:
+            subs = self._subs.get(uid)
+            if subs is not None:
+                subs.discard(q)
+                if not subs:
+                    self._subs.pop(uid, None)
+
 
 class Notifier:
     def __init__(
