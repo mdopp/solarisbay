@@ -729,22 +729,71 @@ def test_colour_picker_suspends_live_rerender():
     # blur/change, and startRefreshBusy honours the flag — so an open native
     # overlay isn't destroyed by an SSE/poll in-place card re-render.
     assert "var hcColorPicking = false;" in _HTML
-    assert (
-        'picker.addEventListener("focus", function () { hcColorPicking = true; });'
-        in _HTML
+    focus = re.search(
+        r'picker\.addEventListener\("focus", function \(\) \{(.*?)\}\);', _HTML, re.S
     )
-    assert (
-        'picker.addEventListener("blur", function () { hcColorPicking = false; });'
-        in _HTML
+    assert focus and "hcColorPicking = true;" in focus.group(1)
+    blur = re.search(
+        r'picker\.addEventListener\("blur", function \(\) \{(.*?)\n          \}\);',
+        _HTML,
+        re.S,
     )
+    assert blur and "hcColorPicking = false;" in blur.group(1)
     fn = re.search(r"function startRefreshBusy\(\) \{(.*?)\n      \}", _HTML, re.S)
     assert fn, "startRefreshBusy not found"
     assert "hcColorPicking ||" in fn.group(1)
     # change must also clear the flag (belt-and-braces if blur didn't fire first)
     change = re.search(
-        r'picker\.addEventListener\("change", function \(\) \{(.*?)\}\);', _HTML, re.S
+        r'picker\.addEventListener\("change", function \(\) \{(.*?)\n          \}\);',
+        _HTML,
+        re.S,
     )
     assert change and "hcColorPicking = false;" in change.group(1)
+
+
+# --- #738: colour picker previews live, reverts on cancel, keeps on confirm ---
+# (live preview / cancel-revert behaviour is device-verified — source contract here)
+
+
+def test_colour_picker_wires_live_preview_and_cancel_revert():
+    # <input type=color> has no native cancel event: focus records the original
+    # rgb + a committed flag, input previews live (debounced), change commits,
+    # and blur without a commit reverts to the recorded original.
+    for evt in ("focus", "input", "change", "blur"):
+        assert 'picker.addEventListener("%s"' % evt in _HTML
+    # focus captures the original colour + clears the committed flag
+    focus = re.search(
+        r'picker\.addEventListener\("focus", function \(\) \{(.*?)\}\);', _HTML, re.S
+    )
+    assert focus
+    assert "pickOriginal = rgbToHex(c.rgb_color);" in focus.group(1)
+    assert "pickCommitted = false;" in focus.group(1)
+    # input previews live via the debounce helper
+    inp = re.search(
+        r'picker\.addEventListener\("input", function \(\) \{(.*?)\}\);', _HTML, re.S
+    )
+    assert inp and "previewColour(picker.value);" in inp.group(1)
+    # change commits — sets the flag and keeps the picked value
+    change = re.search(
+        r'picker\.addEventListener\("change", function \(\) \{(.*?)\n          \}\);',
+        _HTML,
+        re.S,
+    )
+    assert change and "pickCommitted = true;" in change.group(1)
+    # blur without a commit reverts to the recorded original
+    blur = re.search(
+        r'picker\.addEventListener\("blur", function \(\) \{(.*?)\n          \}\);',
+        _HTML,
+        re.S,
+    )
+    assert blur
+    assert "if (!pickCommitted && pickOriginal != null) sendColour(pickOriginal);" in (
+        blur.group(1)
+    )
+    # the debounce coalesces a rapid drag to the latest value
+    assert "function previewColour(hex) {" in _HTML
+    assert "clearTimeout(pickTimer)" in _HTML
+    assert "setTimeout(function () {" in _HTML
 
 
 def test_ha_watch_status_getter():
