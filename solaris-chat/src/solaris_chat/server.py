@@ -26,6 +26,7 @@ from aiohttp import web
 
 from solaris_chat import (
     compaction,
+    device_token_store,
     favorites_store,
     mentions_store,
     notes_search,
@@ -860,13 +861,38 @@ def _title_from(text: str) -> str:
     return snippet[:57].rstrip() + "…" if len(snippet) > 60 else snippet
 
 
-def resolve_uid(request: web.Request, header: str, default_uid: str) -> str:
+def resolve_uid(
+    request: web.Request,
+    header: str,
+    default_uid: str,
+    solaris_db_path: str | None = None,
+) -> str:
     """Map the Authelia trusted-proxy identity header to a Hermes uid.
 
-    NPM sets `Remote-User` after Authelia authenticates; we fold that into
-    the Hermes uid so there is no second login. Absent header (e.g. direct
-    loopback access for offline testing) falls back to `default_uid`.
+    Precedence (unchanged for the existing paths):
+
+    1. A `sol_device_`-prefixed `Authorization: Bearer` — a native-client
+       device token (#717). Resolved via `device_token_store` to its owner_uid,
+       so the token authenticates as the resident that minted it. FAIL-CLOSED: an
+       unknown/revoked/malformed device token resolves to no uid (empty string),
+       NOT `default_uid` — an invalid token must never inherit the loopback
+       identity. Only taken when `solaris_db_path` is threaded in; a bearer that
+       is NOT `sol_device_`-prefixed (e.g. the SOLARIS_API_KEY service key) is
+       left untouched and falls through to the header path below exactly as
+       today.
+    2. NPM sets `Remote-User` after Authelia authenticates; we fold that into
+       the Hermes uid so there is no second login.
+    3. Absent header (e.g. direct loopback access for offline testing) falls
+       back to `default_uid`.
     """
+    if solaris_db_path is not None:
+        auth = request.headers.get("Authorization", "").strip()
+        if auth.startswith("Bearer "):
+            token = auth[len("Bearer ") :].strip()
+            if token.startswith(device_token_store.TOKEN_PREFIX):
+                # Fail closed: an invalid/revoked device token resolves to no
+                # uid, never the default — it must not inherit loopback privilege.
+                return device_token_store.resolve(solaris_db_path, token) or ""
     value = request.headers.get(header, "").strip()
     return value or default_uid
 
@@ -1318,7 +1344,7 @@ def build_app(
         # The persisted per-turn LLM trace for one chat (#306): the ordered steps
         # the proxy captured, each with model/wall_s/tokens/detail_id, so the
         # panel renders the same trace on reopen. Per-resident scope.
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         session_id = request.match_info["session_id"]
         steps = trace_store.list_session_trace(
             solaris_db_path, session_id, effective_uid(uid, session_id)
@@ -1334,7 +1360,7 @@ def build_app(
         # stream. The originating request keeps its own /api/chat/stream; this
         # only carries the OTHER clients' view.
         uid = effective_uid(
-            resolve_uid(request, remote_user_header, default_uid),
+            resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             request.match_info["session_id"],
         )
         session_id = request.match_info["session_id"]
@@ -1383,7 +1409,7 @@ def build_app(
         # mirror: a client only sees its own uid's events plus the shared
         # `household` stream, never another resident's — the second subscription
         # carries the household-pinned entities everyone shares.
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         resp = web.StreamResponse(
             headers={
                 "Content-Type": "text/event-stream",
@@ -1421,7 +1447,7 @@ def build_app(
         # body lives in the trace store (#451), so it survives a reload/restart;
         # the in-flight turn still carries the recorder's bare integer ring id,
         # served live. Try the persisted body first, then the ring.
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         detail_id = request.match_info["detail_id"]
         body = trace_store.detail_for(solaris_db_path, uid, detail_id)
         if body is not None:
@@ -1533,7 +1559,7 @@ def build_app(
         return web.json_response(result, status=200 if result.get("ok") else 400)
 
     async def whoami(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         return web.json_response(
             {
                 "ok": True,
@@ -1628,7 +1654,7 @@ def build_app(
         output = await mcp.dispatch(tool.strip(), arguments)
         log.info(
             "chat.mcp.test",
-            uid=resolve_uid(request, remote_user_header, default_uid),
+            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             server=request.match_info["server"],
             tool=tool.strip(),
         )
@@ -1649,7 +1675,7 @@ def build_app(
         event.set()
         log.info(
             "chat.stream.cancelled",
-            uid=resolve_uid(request, remote_user_header, default_uid),
+            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             session_id=session_id,
         )
         return web.json_response({"ok": True, "cancelled": True})
@@ -1691,7 +1717,7 @@ def build_app(
             return web.json_response({"ok": False, "reason": "not_found"}, status=404)
         log.info(
             "chat.skill.edited",
-            uid=resolve_uid(request, remote_user_header, default_uid),
+            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             skill=skill_id,
             frontmatter_changed=result["frontmatter_changed"],
         )
@@ -1757,7 +1783,7 @@ def build_app(
             )
         log.info(
             "chat.def.edited",
-            uid=resolve_uid(request, remote_user_header, default_uid),
+            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             kind=kind,
             def_id=def_id,
             created=result["created"],
@@ -1784,7 +1810,7 @@ def build_app(
             return web.json_response({"ok": False, "reason": "not_found"}, status=404)
         log.info(
             "chat.def.deleted",
-            uid=resolve_uid(request, remote_user_header, default_uid),
+            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             kind=kind,
             def_id=def_id,
         )
@@ -1829,7 +1855,7 @@ def build_app(
             )
         log.info(
             "chat.soul.edited",
-            uid=resolve_uid(request, remote_user_header, default_uid),
+            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
         )
         return web.json_response({"ok": True})
 
@@ -1893,7 +1919,9 @@ def build_app(
             settings_store.set_household_model(solaris_db_path, household_value)
             log.info(
                 "chat.model.household.set",
-                uid=resolve_uid(request, remote_user_header, default_uid),
+                uid=resolve_uid(
+                    request, remote_user_header, default_uid, solaris_db_path
+                ),
                 model=household_value,
             )
             return web.json_response({"ok": True, "household_current": household_value})
@@ -1909,7 +1937,7 @@ def build_app(
         settings_store.set_other_model_pref(solaris_db_path, value)
         log.info(
             "chat.model.set",
-            uid=resolve_uid(request, remote_user_header, default_uid),
+            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             pref=value,
         )
         return web.json_response({"ok": True, "current": value})
@@ -1959,7 +1987,7 @@ def build_app(
         settings_store.set_tts_voice(solaris_db_path, value)
         log.info(
             "chat.voice.set",
-            uid=resolve_uid(request, remote_user_header, default_uid),
+            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             voice=value,
         )
         return web.json_response({"ok": True, "current": value})
@@ -2022,7 +2050,7 @@ def build_app(
             return web.json_response({"ok": False, "reason": "no_model"}, status=400)
         log.info(
             "chat.model.pull",
-            uid=resolve_uid(request, remote_user_header, default_uid),
+            uid=resolve_uid(request, remote_user_header, default_uid, solaris_db_path),
             model=model,
         )
         resp = web.StreamResponse()
@@ -2038,7 +2066,7 @@ def build_app(
         return resp
 
     async def list_sessions(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
             sessions = await hermes.list_sessions(uid)
         except EngineError:
@@ -2054,7 +2082,7 @@ def build_app(
         return web.json_response({"ok": True, "sessions": sessions})
 
     async def create_session(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
 
         # The ServiceBay-maintenance lock (#229) is keyed off the URL QUERY
         # STRING, not the POST body: the iframe `src` is set by ServiceBay and
@@ -2100,7 +2128,7 @@ def build_app(
         return web.json_response({"ok": True, "session_id": session_id})
 
     async def get_session(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         session_id = request.match_info["session_id"]
         try:
             session = await hermes.get_session(
@@ -2125,7 +2153,7 @@ def build_app(
         # Owner-scoped (#438): a caller can only delete their own session. A
         # wrong-owner id is indistinguishable from a missing one (like
         # get_session), so a cross-resident delete leaks nothing.
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         session_id = request.match_info["session_id"]
         try:
             ok = await hermes.delete_session(session_id, uid)
@@ -2140,7 +2168,7 @@ def build_app(
         return web.json_response({"ok": True})
 
     async def list_topics(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         return web.json_response(
             {"ok": True, "topics": topics_store.list_topics(solaris_db_path, uid)}
         )
@@ -2149,7 +2177,7 @@ def build_app(
         # Create a resident-scoped topic from a confirmed suggestion (D4, #245).
         # The topic-suggester skill POSTs here only after the resident says yes;
         # the proxy never auto-creates. Idempotent on slug (see topics_store).
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001 — any malformed JSON
@@ -2169,13 +2197,13 @@ def build_app(
         return web.json_response({"ok": True, "slug": slug})
 
     async def get_session_topics(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         session_id = request.match_info["session_id"]
         assigned = topics_store.get_session_topics(solaris_db_path, session_id, uid)
         return web.json_response({"ok": True, **assigned})
 
     async def set_session_topics(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         session_id = request.match_info["session_id"]
         try:
             body = await request.json()
@@ -2214,7 +2242,7 @@ def build_app(
         # scope (D3): only the caller's own (or unowned/shared) notes. The slug
         # may be hierarchical (projekt/wintergarten), so the route captures the
         # rest of the path into `slug`.
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         slug = request.match_info["slug"].strip("/")
         items = notes_search.notes_for_topic(notes_dir, slug, uid)
         return web.json_response({"ok": True, "slug": slug, "items": items})
@@ -2228,7 +2256,7 @@ def build_app(
         it, and chat/note backlinks. `<id>` resolves via `entity_aliases`/
         `entities` (migration 0016) or is taken as an HA entity id directly.
         """
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         ref = request.match_info["id"].strip()
         view: dict[str, Any] = {
             "id": ref,
@@ -2387,7 +2415,7 @@ def build_app(
         """Aggregate the resident's start page (#646): their pins + the shared
         household ones + their most-used actions. Entity favorites are enriched
         with live HA state via the read-only `fetch_card` path."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         favorites = favorites_store.list_favorites(solaris_db_path, uid)
 
         configured = bool(hass_url and hass_token)
@@ -2570,7 +2598,7 @@ def build_app(
             return web.json_response(
                 {"ok": False, "error": "ha_unconfigured"}, status=503
             )
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         snap = await area_registry.snapshot()
         cards = await fetch_addable_cards(hass_url, hass_token, snap.entity_area)
         if cards is None:
@@ -2634,7 +2662,7 @@ def build_app(
         The vault is a Syncthing folder; its scan runs off the event loop and is
         prune-bounded + TTL-cached so a slow/huge vault can never wedge the request
         (#705)."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         now = time.monotonic()
         cached = _notes_overview_cache.get(uid)
         if cached and now - cached[0] < _NOTES_OVERVIEW_TTL:
@@ -2704,7 +2732,7 @@ def build_app(
         the vault tree. Every result is owner-scoped (caller ∪ shared). The vault
         walk runs off the event loop so a huge Syncthing vault can't wedge the
         request (#705)."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         by = request.query.get("by", "topic")
         groups = await asyncio.to_thread(_browse_groups, uid, by)
         if groups is None:
@@ -2721,7 +2749,7 @@ def build_app(
         Path-jail: resolve under `notes_dir` and reject anything escaping it (a
         `..` traversal). Owner-scoped via `is_visible` — a caller may only read
         their own or shared notes, never another resident's private one."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         rel = request.query.get("path", "")
         root = Path(notes_dir).resolve()
         try:
@@ -2755,7 +2783,7 @@ def build_app(
         with 409 (no silent overwrite of a concurrent edit). The write is atomic
         (tmp+replace) and the frontmatter is stored verbatim (#657). Off the event
         loop so a slow disk can't wedge the request."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         rel = request.query.get("path", "")
         try:
             body = await request.json()
@@ -2784,7 +2812,7 @@ def build_app(
         most-`[[..]]`-linked entities — owner-scoped, computed off the event loop
         in one prune-bounded vault walk (#705) and TTL-cached (the vault is
         small)."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         now = time.monotonic()
         cached = _notes_stats_cache.get(uid)
         if cached and now - cached[0] < _NOTES_STATS_TTL:
@@ -2797,7 +2825,7 @@ def build_app(
         """Search over the unified notes_search machinery (#696): a thin GET
         wrapper around the engine `notes_search` tool (fuzzy + alias + #topic /
         @person + semantic fallback), owner-scoped to the caller."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         query = request.query.get("q", "").strip()
         if not query:
             return web.json_response({"ok": True, "hits": []})
@@ -2813,7 +2841,7 @@ def build_app(
         fact files older than the Bibliothekar's stale threshold — the same query
         the nightly librarian queues (#653) — owner-scoped, bounded. The fact scan
         runs off the event loop so a huge vault can't wedge the request (#705)."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         items = await asyncio.to_thread(_notes_inbox_list, notes_dir, uid)
         return web.json_response({"ok": True, "items": items})
 
@@ -2825,7 +2853,7 @@ def build_app(
         the Bibliothekar's merge convention (#653): append into the target note,
         stamp the source `consolidated: true`, log to `okf/log.md` — never delete.
         The file writes run off the event loop."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -2850,7 +2878,7 @@ def build_app(
         `{path}`. Path-jailed + owner-scoped like assign. Never deletes — the file
         is relocated (source subtree preserved) and the move logged to
         `okf/log.md`. Runs off the event loop."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -2871,7 +2899,7 @@ def build_app(
         shared facts, default-deny). Reuses the #653 librarian machinery bounded to
         the one scope (`CronRunner.curate_scope`), off-loop, and returns the run's
         summary. 503 when no librarian client is wired (offline-test topology)."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         if crons is None:
             return web.json_response({"ok": False, "error": "no_librarian"}, status=503)
         try:
@@ -2886,13 +2914,64 @@ def build_app(
         status = 200 if result.get("ok") else 503
         return web.json_response(result, status=status)
 
+    def _interactive_uid(request: web.Request) -> str | None:
+        """The resident behind a real Authelia session, or None (#717).
+
+        Minting/listing/revoking a device token is only allowed from an
+        interactive session — the trusted-proxy `Remote-User` header set by
+        Authelia. A device-token bearer or the SOLARIS_API_KEY service key does
+        NOT satisfy this: a device token must not be usable to mint another
+        device token, and the service key is not a resident. So this reads the
+        header directly and does NOT go through `resolve_uid` (which would honour
+        the bearer path and the loopback `default_uid` fallback)."""
+        value = request.headers.get(remote_user_header, "").strip()
+        return value or None
+
+    async def device_token_create(request: web.Request) -> web.Response:
+        """Mint a long-lived device token for a native client (#717).
+
+        Body `{label}`. Returns `{id, token}` — the plaintext is shown ONCE and
+        never recoverable. Requires an interactive Authelia session; a device
+        token or the service key can NOT mint another token."""
+        owner = _interactive_uid(request)
+        if owner is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        label = str(body.get("label") or "")[:128]
+        token_id, token = device_token_store.create(solaris_db_path, owner, label)
+        return web.json_response({"ok": True, "id": token_id, "token": token})
+
+    async def device_token_list(request: web.Request) -> web.Response:
+        """The caller's device tokens — metadata only, no hash/plaintext (#717)."""
+        owner = _interactive_uid(request)
+        if owner is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        return web.json_response(
+            {
+                "ok": True,
+                "tokens": device_token_store.list_for_uid(solaris_db_path, owner),
+            }
+        )
+
+    async def device_token_revoke(request: web.Request) -> web.Response:
+        """Revoke one of the caller's device tokens (owner-checked, #717)."""
+        owner = _interactive_uid(request)
+        if owner is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        token_id = request.match_info["id"]
+        ok = device_token_store.revoke(solaris_db_path, owner, token_id)
+        return web.json_response({"ok": ok}, status=200 if ok else 404)
+
     async def push_subscribe(request: web.Request) -> web.Response:
         """Register a browser PushSubscription for the caller (#713).
 
         Body is the `PushSubscription.toJSON()` shape: `endpoint` + `keys.p256dh`
         / `keys.auth`. Owner-scoped to the Authelia identity; the endpoint URL is
         the unique key, so a re-subscribe upserts."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -2909,7 +2988,7 @@ def build_app(
 
     async def push_unsubscribe(request: web.Request) -> web.Response:
         """Drop the caller's subscription for one endpoint (owner-scoped, #713)."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -2925,7 +3004,7 @@ def build_app(
         return web.json_response({"ok": True})
 
     async def favorites_create(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -2953,7 +3032,7 @@ def build_app(
     def _owner_for(request: web.Request, fav_id: str) -> str | None:
         """The owner_uid a resident may mutate this favorite under: their own
         uid or `household`, whichever holds the row. None → not found/forbidden."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         for fav in favorites_store.list_favorites(solaris_db_path, uid):
             if fav["id"] == fav_id:
                 return fav["owner_uid"]
@@ -2987,7 +3066,7 @@ def build_app(
         """Move a favorite between the resident's personal scope and household
         (#745). Owner-checked like delete/reorder — the row must already belong
         to the caller (own uid or `household`) before it can be re-owned."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         fav_id = request.match_info["fav_id"]
         owner = _owner_for(request, fav_id)
         if owner is None:
@@ -3006,7 +3085,7 @@ def build_app(
         """Execute a pinned action favorite verbatim (#646). Re-checks the
         confirm policy — a one-tap start-page bypass of the gate must not
         exist — then dispatches on the household gateway toolbox."""
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         fav_id = request.match_info["fav_id"]
         row = next(
             (
@@ -3051,7 +3130,7 @@ def build_app(
         a known entity; unresolved tokens are absent so the client keeps phase
         1's `/search` filter chip (anchors) or plain text (`[[ ]]`).
         """
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         body = await request.json()
         anchors = [str(a) for a in (body.get("anchors") or [])]
         resolved: dict[str, str] = {}
@@ -3088,7 +3167,7 @@ def build_app(
     _ALIAS_CAP = 400
 
     async def anchors_aliases(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         cached = _ALIAS_CACHE.get(uid)
         now = time.monotonic()
         if cached is not None and now - cached[0] < _ALIAS_TTL:
@@ -3131,7 +3210,7 @@ def build_app(
     async def mentions_tags(request: web.Request) -> web.Response:
         # Autosuggest for `#tag` (#279): the resident's already-used tags,
         # prefix-filtered. Per-resident scope (owner_uid = resolve_uid).
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         prefix = request.rel_url.query.get("q", "").strip().lstrip("#").lower()
         values = mentions_store.known_tags_for(solaris_db_path, uid, prefix)
         return web.json_response(
@@ -3142,7 +3221,7 @@ def build_app(
         # Autosuggest for `@person` (#279): used persons unioned with the seed
         # (residents/uid registry + manual list; CardDAV later, #207). The
         # caller's own uid is always a resident; other residents come from config.
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         prefix = request.rel_url.query.get("q", "").strip().lstrip("@").lower()
         seed = seeded_persons([uid, *resident_uids])
         used = mentions_store.known_persons_for(solaris_db_path, uid)
@@ -3158,7 +3237,7 @@ def build_app(
         # The tag-cloud for one chat (#279c): the resident's `#tag` / `@person`
         # mentions in this session, each with the message_ref that carried it
         # (first appearance) for jump-to-message. Per-resident scope.
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         session_id = request.match_info["session_id"]
         items = mentions_store.list_session_mentions(solaris_db_path, session_id, uid)
         return web.json_response({"ok": True, "mentions": items})
@@ -3171,7 +3250,7 @@ def build_app(
         log.info("chat.hook.event", event=_IMAGE_UPLOAD_EVENT, hooks=bound)
 
     async def chat(request: web.Request) -> web.Response:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001 — any malformed JSON
@@ -3271,7 +3350,7 @@ def build_app(
         )
 
     async def chat_stream(request: web.Request) -> web.StreamResponse:
-        uid = resolve_uid(request, remote_user_header, default_uid)
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001 — any malformed JSON
@@ -3522,6 +3601,9 @@ def build_app(
     app.router.add_post("/api/favorites/{fav_id}/run", favorites_run)
     app.router.add_post("/api/push/subscribe", push_subscribe)
     app.router.add_post("/api/push/unsubscribe", push_unsubscribe)
+    app.router.add_post("/api/device-tokens", device_token_create)
+    app.router.add_get("/api/device-tokens", device_token_list)
+    app.router.add_delete("/api/device-tokens/{id}", device_token_revoke)
     app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/anchors/aliases", anchors_aliases)
