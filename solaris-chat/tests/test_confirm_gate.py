@@ -428,6 +428,103 @@ async def test_blind_set_cover_position_not_gated(db, soul, monkeypatch):
     assert not any(e["type"] == "quick_replies" for e in events)
 
 
+# -- #632: gate on the entity's real domain, not the model's routing ------
+
+
+@pytest.mark.asyncio
+async def test_misrouted_domain_garage_open_is_gated(db, soul, monkeypatch):
+    # e4b mis-routes a garage open as the WRONG domain (light.open_cover on a
+    # real garage cover). The gate must key on the entity's true domain (cover)
+    # and still hold the call for confirmation (#632).
+    posts = _stub_ha(monkeypatch)
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            ChatResult(
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "ha_call_service",
+                            "arguments": {
+                                "domain": "light",
+                                "service": "open_cover",
+                                "entity_id": "cover.garage_door",
+                            },
+                        }
+                    }
+                ]
+            ),
+            ChatResult(content="Soll ich das Garagentor wirklich öffnen?"),
+        ],
+        {"cover.garage_door": "garage"},
+    )
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Garage auf")]
+    # NOT executed on turn 1 despite the bogus domain — held for confirmation.
+    assert posts == []
+    qr = [e for e in events if e["type"] == "quick_replies"]
+    assert qr and qr[0]["data"]["options"] == ["ja", "nein"]
+    assert client._pending.peek(sid) is not None
+
+
+@pytest.mark.asyncio
+async def test_misrouted_bare_open_alias_on_garage_is_gated(db, soul, monkeypatch):
+    # The natural verb "open" mis-routed to domain=switch on a real garage
+    # cover: alias normalisation keys on the true domain (cover), so "open"
+    # becomes open_cover and the gate fires (#632).
+    posts = _stub_ha(monkeypatch)
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            ChatResult(
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "ha_call_service",
+                            "arguments": {
+                                "domain": "switch",
+                                "service": "open",
+                                "entity_id": "cover.garage_door",
+                            },
+                        }
+                    }
+                ]
+            ),
+            ChatResult(content="Soll ich das Garagentor wirklich öffnen?"),
+        ],
+        {"cover.garage_door": "garage"},
+    )
+    sid = await client.create_session("anna")
+    _ = [e async for e in client.chat_stream(sid, "Garage auf")]
+    assert posts == []
+    pending = client._pending.peek(sid)
+    assert pending is not None and pending.service == "open_cover"
+
+
+@pytest.mark.asyncio
+async def test_cover_domain_turn_on_not_gated(db, soul, monkeypatch):
+    # A cover-domain call with a non-cover-open service (turn_on) is not a
+    # perimeter-opening action, so it must NOT be gated (#632 acceptance).
+    posts = _stub_ha(monkeypatch)
+    client = _client_with_registry(
+        db,
+        soul,
+        [
+            _cover_call("turn_on", "cover.living_blind"),
+            ChatResult(content="Ok."),
+        ],
+        {"cover.living_blind": "blind"},
+    )
+    sid = await client.create_session("anna")
+    events = [e async for e in client.chat_stream(sid, "Rollo an")]
+    # Not held — turn_on is not a cover-open service.
+    assert client._pending.peek(sid) is None
+    assert not any(e["type"] == "quick_replies" for e in events)
+    assert len(posts) == 1
+
+
 # -- F2: a fresh request must not detonate the pending action -------------
 
 
