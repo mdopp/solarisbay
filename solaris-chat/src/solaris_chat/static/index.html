@@ -454,6 +454,25 @@
     .on .hc-badge.hc-switch::after { transform: translateX(20px); }
     .off .hc-badge.hc-switch { background: rgba(127,127,127,0.45); }
     .ha-card.busy { opacity: 0.6; pointer-events: none; }
+    /* #729: start-page HA-connection notice. `unreachable` reads as a warning,
+       `unconfigured` as a calmer info note; both auto-lift when HA recovers. */
+    .ha-notice {
+      border: 1px solid var(--line); border-radius: 10px;
+      padding: 10px 12px; margin: 4px 0 10px; font-size: 13px; line-height: 1.4;
+      background: rgba(234,179,8,0.10); border-color: rgba(234,179,8,0.45);
+    }
+    .ha-notice.calm { background: rgba(127,127,127,0.08); border-color: var(--line); }
+    .ha-notice .ha-notice-title { font-weight: 600; }
+    .ha-notice .ha-notice-hint { color: var(--muted); margin-top: 3px; }
+    /* #729: an entity favorite HA can't reach — greyed, non-interactive, with a
+       small "nicht verfügbar" label instead of a bare name that looks broken. */
+    .ha-card.hc-unavailable {
+      opacity: 0.55; pointer-events: none;
+      border-style: dashed;
+    }
+    .ha-card.hc-unavailable .hc-unavail-label {
+      font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 2px;
+    }
     /* #702: a picker-inert tile is selection-only — no control inside it may
        fire a device action. The card renderer skips the handler wiring; this
        kills pointer events on any residual control as a backstop, and the whole
@@ -4329,10 +4348,38 @@
         (page.startFavs || []).forEach(function (rec) {
           if (rec.entityId !== entityId || !rec.el.isConnected) return;
           rec.f.card = card;
+          rec.f.card_unavailable = false;
           var fresh = renderFavorite(page, rec.f);
           rec.el.parentNode.replaceChild(fresh, rec.el);
           rec.el = fresh;
         });
+      }
+      // #729: flip an entity favorite into the greyed "nicht verfügbar" state
+      // when a poll reports it unreachable (HA dropped mid-session).
+      function applyCardUnavailable(page, entityId) {
+        if (page !== startPageCard || !page.isConnected || startRefreshBusy()) return;
+        (page.startFavs || []).forEach(function (rec) {
+          if (rec.entityId !== entityId || !rec.el.isConnected) return;
+          if (rec.f.card_unavailable) return;
+          rec.f.card = null;
+          rec.f.card_unavailable = true;
+          var fresh = renderFavorite(page, rec.f);
+          rec.el.parentNode.replaceChild(fresh, rec.el);
+          rec.el = fresh;
+        });
+      }
+      // #729: lift or (re)show the HA-connection banner in place when the poll's
+      // reported `ha` health changes, without re-rendering the whole page.
+      function updateHaBanner(page, ha) {
+        if (!page || page.haStatus === ha) return;
+        page.haStatus = ha;
+        var existing = page.querySelector(":scope > .ha-notice");
+        if (existing) existing.parentNode.removeChild(existing);
+        var banner = renderHaBanner(ha);
+        if (!banner) return;
+        var head = page.querySelector(":scope > .concept-head");
+        if (head && head.nextSibling) page.insertBefore(banner, head.nextSibling);
+        else page.appendChild(banner);
       }
       // ---- Start-page live SSE (#714): instant card_state pushes ----
       // An EventSource on /api/events streams card_state events (the HA-WS
@@ -4386,8 +4433,12 @@
             if (!j || !j.ok || !j.states) return;
             // A late response after a leave/re-render must not touch a stale node.
             if (page !== startPageCard || !page.isConnected || startRefreshBusy()) return;
+            updateHaBanner(page, j.ha || "ok");
+            var down = {};
+            (j.unavailable || []).forEach(function (eid) { down[eid] = true; });
             (page.startFavs || []).forEach(function (rec) {
-              applyCardState(page, rec.entityId, j.states[rec.entityId]);
+              if (j.states[rec.entityId]) applyCardState(page, rec.entityId, j.states[rec.entityId]);
+              else if (down[rec.entityId]) applyCardUnavailable(page, rec.entityId);
             });
           })
           .catch(function () {});
@@ -6014,6 +6065,12 @@
         head.appendChild(edit);
         card.appendChild(head);
 
+        // #729: HA-connection notice at the top when HA isn't "ok". Tracked on
+        // the card so the live poll can lift it in place on reconnect.
+        card.haStatus = data.ha || "ok";
+        var banner = renderHaBanner(card.haStatus);
+        if (banner) card.appendChild(banner);
+
         function section(label, favs) {
           card.appendChild(conceptSectionTitle(label));
           if (!favs.length) {
@@ -6027,7 +6084,9 @@
           wrap.className = "ha-cards start-favs";
           favs.forEach(function (f) {
             var el = renderFavorite(card, f);
-            if (f.kind === "entity" && f.card && f.payload && f.payload.entity_id) {
+            // Track every entity favorite (card present OR unavailable) so the
+            // live poll can update it in place and repopulate it on reconnect.
+            if (f.kind === "entity" && f.payload && f.payload.entity_id) {
               card.startFavs.push({ entityId: f.payload.entity_id, f: f, el: el });
             }
             wrap.appendChild(el);
@@ -6242,10 +6301,61 @@
         return tools;
       }
 
+      // #729: an entity favorite HA can't reach right now. Greyed + inert, with
+      // the pinned name and a small "nicht verfügbar" label (the ☆-edit controls
+      // are still appended by the caller so it can be unpinned).
+      function renderUnavailableCard(f) {
+        var el = document.createElement("div");
+        el.className = "ha-card hc-unavailable";
+        var name = document.createElement("div");
+        name.className = "hc-name";
+        name.textContent =
+          f.label || (f.payload && f.payload.entity_id) || "";
+        el.appendChild(name);
+        var lbl = document.createElement("div");
+        lbl.className = "hc-unavail-label";
+        lbl.textContent = "nicht verfügbar";
+        el.appendChild(lbl);
+        return el;
+      }
+
+      // #729: the start-page HA-connection notice. `ha` is "ok" | "unreachable"
+      // | "unconfigured"; returns null when ok (no banner).
+      function renderHaBanner(ha) {
+        if (ha === "ok" || !ha) return null;
+        var box = document.createElement("div");
+        box.className = "ha-notice";
+        var title = document.createElement("div");
+        title.className = "ha-notice-title";
+        var hint = document.createElement("div");
+        hint.className = "ha-notice-hint";
+        if (ha === "unconfigured") {
+          box.classList.add("calm");
+          title.textContent = "Home Assistant ist nicht eingerichtet.";
+          hint.textContent =
+            "Gerätestatus und -steuerung sind nicht verfügbar, bis die " +
+            "Home-Assistant-Verbindung konfiguriert ist.";
+        } else {
+          title.textContent =
+            "⚠️ Home Assistant ist gerade nicht erreichbar — Gerätestatus und " +
+            "Steuerung sind vorübergehend nicht verfügbar.";
+          hint.textContent =
+            "Die Verbindung wird automatisch wiederhergestellt. Falls das " +
+            "länger anhält, bitte die Home-Assistant-Verbindung prüfen.";
+        }
+        box.appendChild(title);
+        box.appendChild(hint);
+        return box;
+      }
+
       function renderFavorite(page, f) {
         var el;
         if (f.kind === "entity" && f.card) {
           el = renderHaCard(f.card, true);
+        } else if (f.kind === "entity" && f.card_unavailable) {
+          // #729: HA is configured but couldn't return this card (HA down / bad
+          // token) — an explicit greyed "nicht verfügbar" tile, not a bare name.
+          el = renderUnavailableCard(f);
         } else if (f.kind === "action") {
           el = document.createElement("button");
           el.className = "hc-row start-action";

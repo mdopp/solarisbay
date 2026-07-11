@@ -879,6 +879,7 @@ def build_app(
     hass_token: str = "",
     crons: Any = None,
     vapid_public_key: str = "",
+    ha_watcher: Any = None,
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -2322,11 +2323,32 @@ def build_app(
         uid = resolve_uid(request, remote_user_header, default_uid)
         favorites = favorites_store.list_favorites(solaris_db_path, uid)
 
+        configured = bool(hass_url and hass_token)
+
+        def _ha_health(any_entity: bool, any_card: bool) -> str:
+            """HA health for the client banner (#729): the WS watcher's live state
+            is authoritative when wired in; otherwise infer from configuration +
+            whether any card enrich succeeded. `unconfigured` = no url/token,
+            `unreachable` = configured but the WS is down / every fetch failed,
+            `ok` otherwise."""
+            if not configured:
+                return "unconfigured"
+            if ha_watcher is not None:
+                status = ha_watcher.status
+                if status == "disabled":
+                    return "unconfigured"
+                return "ok" if status == "connected" else "unreachable"
+            # No watcher: a configured HA with pinned entities where every fetch
+            # returned None means HA is unreachable; no entities means no signal.
+            if any_entity and not any_card:
+                return "unreachable"
+            return "ok"
+
         # Live-refresh tick (#711): the client polls the pinned entities' state
         # while #/p/start is the active view. `state_only=1` re-fetches just the
         # HA card state for the entity favorites — no usage/frequent queries — so
         # each card updates in place without re-rendering the whole page.
-        if request.query.get("state_only") in ("1", "true") and hass_url and hass_token:
+        if request.query.get("state_only") in ("1", "true") and configured:
             entity_ids = [
                 str(f["payload"].get("entity_id") or "")
                 for f in favorites
@@ -2336,11 +2358,21 @@ def build_app(
                 *(fetch_card(hass_url, hass_token, eid) for eid in entity_ids)
             )
             states: dict[str, dict[str, Any]] = {}
+            unavailable: list[str] = []
             for eid, card in zip(entity_ids, cards):
                 if card is not None:
                     card["sensitive"] = _entity_card_sensitive(card)
                     states[eid] = card
-            return web.json_response({"ok": True, "states": states})
+                else:
+                    unavailable.append(eid)
+            return web.json_response(
+                {
+                    "ok": True,
+                    "states": states,
+                    "unavailable": unavailable,
+                    "ha": _ha_health(bool(entity_ids), bool(states)),
+                }
+            )
 
         personal: list[dict[str, Any]] = []
         household: list[dict[str, Any]] = []
@@ -2358,7 +2390,7 @@ def build_app(
                     else "personal"
                 ),
             }
-            if fav["kind"] == "entity" and hass_url and hass_token:
+            if fav["kind"] == "entity" and configured:
                 entity_id = str(fav["payload"].get("entity_id") or "")
                 card = (
                     await fetch_card(hass_url, hass_token, entity_id)
@@ -2367,12 +2399,23 @@ def build_app(
                 )
                 if card is not None:
                     card["sensitive"] = _entity_card_sensitive(card)
-                item["card"] = card
+                    item["card"] = card
+                elif entity_id:
+                    # Configured HA but no card (fetch failed / HA down) — flag it
+                    # so the client renders an explicit "nicht verfügbar" state
+                    # instead of a bare name (#729).
+                    item["card_unavailable"] = True
             return item
 
         enriched = await asyncio.gather(*(enrich(f) for f in favorites))
+        any_entity = False
+        any_card = False
         for item in enriched:
             (household if item["scope"] == "household" else personal).append(item)
+            if item["kind"] == "entity":
+                any_entity = True
+                if item.get("card") is not None:
+                    any_card = True
 
         frequent: list[dict[str, Any]] = []
         for row in favorites_store.top_usage(solaris_db_path, uid, 6):
@@ -2385,6 +2428,7 @@ def build_app(
                 "personal": personal,
                 "household": household,
                 "frequent": frequent,
+                "ha": _ha_health(any_entity, any_card),
             }
         )
 
@@ -3625,6 +3669,7 @@ async def serve(
     hass_token: str = "",
     crons: Any = None,
     vapid_public_key: str = "",
+    ha_watcher: Any = None,
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -3661,6 +3706,7 @@ async def serve(
         hass_token=hass_token,
         crons=crons,
         vapid_public_key=vapid_public_key,
+        ha_watcher=ha_watcher,
     )
     runner = web.AppRunner(app)
     await runner.setup()
