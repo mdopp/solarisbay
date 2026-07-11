@@ -2523,16 +2523,52 @@
           picker.type = "color";
           picker.value = rgbToHex(c.rgb_color);
           picker.title = "Farbe";
+          // #738: <input type=color> has no native cancel event — infer it. On
+          // open (focus) record the device's original rgb and clear a committed
+          // flag; each `input` previews live on the device; `change` (Festlegen)
+          // commits; blur WITHOUT a commit since open = cancel → revert to the
+          // recorded original. A trailing debounce coalesces a rapid drag to the
+          // latest value so we don't spam HA (input can fire many times).
+          var pickOriginal = null;
+          var pickCommitted = false;
+          var pickTimer = null;
+          function sendColour(hex) {
+            haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(hex) });
+          }
+          function previewColour(hex) {
+            if (pickTimer) clearTimeout(pickTimer);
+            pickTimer = setTimeout(function () {
+              pickTimer = null;
+              sendColour(hex);
+            }, 150);
+          }
           // #736: focus brackets the native overlay being open (both desktop and
           // mobile); blur/change close it. While open, hcColorPicking suspends
           // the live card re-render (see startRefreshBusy) so the overlay isn't
           // yanked away. blur always clears the flag even if the user dismissed
           // the overlay without picking.
-          picker.addEventListener("focus", function () { hcColorPicking = true; });
-          picker.addEventListener("blur", function () { hcColorPicking = false; });
+          picker.addEventListener("focus", function () {
+            hcColorPicking = true;
+            pickOriginal = rgbToHex(c.rgb_color);
+            pickCommitted = false;
+          });
+          picker.addEventListener("input", function () {
+            previewColour(picker.value);
+          });
           picker.addEventListener("change", function () {
+            pickCommitted = true;
             hcColorPicking = false;
-            haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(picker.value) });
+            if (pickTimer) { clearTimeout(pickTimer); pickTimer = null; }
+            sendColour(picker.value);
+          });
+          picker.addEventListener("blur", function () {
+            hcColorPicking = false;
+            if (pickTimer) { clearTimeout(pickTimer); pickTimer = null; }
+            // No commit since the overlay opened → treat the dismiss as cancel
+            // and revert the device to the colour it had when the picker opened.
+            if (!pickCommitted && pickOriginal != null) sendColour(pickOriginal);
+            pickCommitted = false;
+            pickOriginal = null;
           });
           // #726: tapping the swatch must open the native colour overlay only —
           // without bubbling to the card's power toggle (which would flip the
