@@ -311,10 +311,7 @@ def test_ha_card_phase3_controls_act_via_the_scoped_endpoint():
     assert "function haCall(card, c, service, data, confirmed)" in _HTML
     # light: brightness_pct slider + rgb_color picker, gated on colour modes.
     assert 'haCall(card, c, "light.turn_on", { brightness_pct: v })' in _HTML
-    assert (
-        'haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(hex) })'
-        in _HTML
-    )
+    assert 'haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(hex) })' in _HTML
     # cover: position slider (SET_POSITION bit) + verb services; a sensitive
     # (garage/door/gate) cover is confirm-first and sends confirmed=true (#702).
     assert "COVER_SET_POSITION" in _HTML
