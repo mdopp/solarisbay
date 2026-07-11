@@ -2456,6 +2456,40 @@ def build_app(
                 if item.get("card") is not None:
                     any_card = True
 
+        # Collapse (#745): when the acting uid IS `household`, the personal and
+        # household buckets are the same owner — render ONE "Favoriten" section
+        # and hide the scope choice/move (both are meaningless). A distinct
+        # resident gets two sections as before.
+        single_scope = uid == favorites_store.HOUSEHOLD
+
+        # Cross-scope display dedup (#745): a device MAY be pinned in BOTH scopes.
+        # If the same entity_id appears in both lists, render it ONCE — keep the
+        # PERSONAL copy ("Meine Favoriten") and drop the household duplicate.
+        if not single_scope:
+            personal_entities = {
+                str(item["payload"].get("entity_id") or "")
+                for item in personal
+                if item["kind"] == "entity" and item["payload"].get("entity_id")
+            }
+            household = [
+                item
+                for item in household
+                if not (
+                    item["kind"] == "entity"
+                    and str(item["payload"].get("entity_id") or "") in personal_entities
+                )
+            ]
+
+        # The ☆ reflects "already pinned in EITHER scope" (#745): expose every
+        # pinned entity_id the caller can see (own ∪ household) so the client can
+        # render the ☆ filled for it.
+        owners = favorites_store.pinned_entity_owners(solaris_db_path)
+        pinned_entities = sorted(
+            eid
+            for eid, uids in owners.items()
+            if uid in uids or favorites_store.HOUSEHOLD in uids
+        )
+
         top = favorites_store.top_usage(solaris_db_path, uid, 6)
         # Resolve entity_id → friendly_name once for the whole frequent list so
         # HA-service rows read "Bürolicht — Aus" not "dimmer 2 — turn_off" (#741).
@@ -2486,6 +2520,8 @@ def build_app(
                 "personal": personal,
                 "household": household,
                 "frequent": frequent,
+                "single_scope": single_scope,
+                "pinned_entities": pinned_entities,
                 "ha": _ha_health(any_entity, any_card),
             }
         )
@@ -2917,6 +2953,25 @@ def build_app(
         except (TypeError, ValueError):
             return web.json_response({"ok": False, "error": "bad_request"}, status=400)
         favorites_store.set_position(solaris_db_path, owner, fav_id, position)
+        return web.json_response({"ok": True})
+
+    async def favorites_scope(request: web.Request) -> web.Response:
+        """Move a favorite between the resident's personal scope and household
+        (#745). Owner-checked like delete/reorder — the row must already belong
+        to the caller (own uid or `household`) before it can be re-owned."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        fav_id = request.match_info["fav_id"]
+        owner = _owner_for(request, fav_id)
+        if owner is None:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        to_owner = (
+            favorites_store.HOUSEHOLD if body.get("scope") == "household" else uid
+        )
+        favorites_store.move_scope(solaris_db_path, owner, fav_id, to_owner)
         return web.json_response({"ok": True})
 
     async def favorites_run(request: web.Request) -> web.Response:
@@ -3434,6 +3489,7 @@ def build_app(
     app.router.add_post("/api/favorites", favorites_create)
     app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
     app.router.add_put("/api/favorites/{fav_id}", favorites_reorder)
+    app.router.add_post("/api/favorites/{fav_id}/scope", favorites_scope)
     app.router.add_post("/api/favorites/{fav_id}/run", favorites_run)
     app.router.add_post("/api/push/subscribe", push_subscribe)
     app.router.add_post("/api/push/unsubscribe", push_unsubscribe)

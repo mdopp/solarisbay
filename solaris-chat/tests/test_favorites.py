@@ -183,6 +183,38 @@ def test_add_favorite_distinct_still_added(tmp_path):
     assert len(favorites_store.list_favorites(db, "mdopp")) == 4
 
 
+def test_move_scope_reowns_both_directions_owner_checked(tmp_path):
+    """move_scope re-owns a favorite personal↔household, owner-checked (#745)."""
+    db = _db(tmp_path)
+    fav_id = favorites_store.add_favorite(
+        db, "mdopp", "entity", "Büro", {"entity_id": "light.buro"}
+    )
+    # personal → household
+    assert favorites_store.move_scope(db, "mdopp", fav_id, "household") == 1
+    assert favorites_store.list_favorites(db, "mdopp")[0]["owner_uid"] == "household"
+    # household → personal
+    assert favorites_store.move_scope(db, "household", fav_id, "mdopp") == 1
+    assert favorites_store.list_favorites(db, "mdopp")[0]["owner_uid"] == "mdopp"
+    # owner-checked: a wrong from_owner moves nothing.
+    assert favorites_store.move_scope(db, "lena", fav_id, "household") == 0
+    assert favorites_store.list_favorites(db, "mdopp")[0]["owner_uid"] == "mdopp"
+
+
+def test_create_allows_pinning_entity_already_pinned_in_other_scope(tmp_path):
+    """A device MAY be pinned in BOTH scopes (#745): the per-owner #743 dedup does
+    NOT prevent creating the second row in the other scope."""
+    db = _db(tmp_path)
+    first = favorites_store.add_favorite(
+        db, "mdopp", "entity", "Büro", {"entity_id": "light.buro"}
+    )
+    other = favorites_store.add_favorite(
+        db, "household", "entity", "Büro", {"entity_id": "light.buro"}
+    )
+    assert other != first  # a distinct row in the household scope
+    owners = favorites_store.pinned_entity_owners(db)
+    assert owners["light.buro"] == {"mdopp", "household"}
+
+
 # ---- pin_favorite handler -------------------------------------------------
 
 

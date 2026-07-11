@@ -6091,6 +6091,12 @@
         setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 2500);
       }
 
+      // Default scope for a device ☆ pin (#745): an HA entity/device is a shared
+      // physical thing, so it defaults to "household" — flip this one constant to
+      // change the default. Pure personal actions (play_radio etc.) stay personal.
+      // The resident can always move a favorite personal↔household in edit mode.
+      var DEVICE_PIN_SCOPE = "household";
+
       // Pin the last real action of a conversation is handled by the pin_favorite
       // tool; here the ☆ on a chat card pins the ENTITY it renders (#646).
       function pinEntity(btn, c) {
@@ -6102,6 +6108,7 @@
           body: JSON.stringify({
             kind: "entity",
             label: c.name || c.entity_id || "",
+            scope: DEVICE_PIN_SCOPE,
             payload: { entity_id: c.entity_id },
           }),
         })
@@ -6123,6 +6130,13 @@
         // place; track each entity favorite's node + spec by entity_id.
         startPageCard = card;
         card.startFavs = [];
+        // #745: the set of entity_ids already pinned in EITHER scope (own ∪
+        // household), so the ☆ can render filled/active for an already-pinned
+        // device instead of offering a duplicate pin.
+        card.pinnedEntities = {};
+        (data.pinned_entities || []).forEach(function (eid) {
+          card.pinnedEntities[eid] = true;
+        });
         var head = document.createElement("div");
         head.className = "concept-head";
         var add = document.createElement("button");
@@ -6170,8 +6184,16 @@
           card.appendChild(wrap);
         }
 
-        section("Meine Favoriten", data.personal || []);
-        section("Haushalt", data.household || []);
+        // Collapse (#745): when the acting uid IS household, personal and
+        // household are the same bucket — render ONE "Favoriten" section and skip
+        // the (meaningless) scope move. A distinct resident gets two sections.
+        card.singleScope = !!data.single_scope;
+        if (card.singleScope) {
+          section("Favoriten", (data.personal || []).concat(data.household || []));
+        } else {
+          section("Meine Favoriten", data.personal || []);
+          section("Haushalt", data.household || []);
+        }
 
         // Dedup (#672/#743): a device's on+off count as two rows but pin the one
         // card, so collapse them by entity_id (keying off the ha_call_service
@@ -6375,7 +6397,29 @@
         }
         up.addEventListener("click", function (ev) { ev.stopPropagation(); move(-2); });
         down.addEventListener("click", function (ev) { ev.stopPropagation(); move(2); });
-        tools.appendChild(up); tools.appendChild(down); tools.appendChild(del);
+        tools.appendChild(up); tools.appendChild(down);
+        // Scope move (#745): flip a favorite personal↔household in place. Hidden
+        // when single_scope (uid==household) — the two scopes are one bucket then,
+        // so a move would mean nothing.
+        if (!page.singleScope) {
+          var toHousehold = f.scope !== "household";
+          var scopeBtn = document.createElement("button");
+          scopeBtn.type = "button"; scopeBtn.className = "fav-scope";
+          scopeBtn.textContent = toHousehold ? "→ Haushalt" : "→ Meine";
+          scopeBtn.title = toHousehold
+            ? "In den Haushalt verschieben"
+            : "In meine Favoriten verschieben";
+          scopeBtn.addEventListener("click", function (ev) {
+            ev.stopPropagation();
+            fetch("/api/favorites/" + encodeURIComponent(f.id) + "/scope", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ scope: toHousehold ? "household" : "personal" }),
+            }).then(function () { loadStartPage(page); });
+          });
+          tools.appendChild(scopeBtn);
+        }
+        tools.appendChild(del);
         return tools;
       }
 
@@ -6471,17 +6515,29 @@
         el.appendChild(name);
         var star = document.createElement("button");
         star.type = "button";
-        star.className = "hc-pin"; star.textContent = "☆"; star.title = "Anpinnen";
+        star.className = "hc-pin";
+        // #745: reflect "already pinned in EITHER scope" — a device already on the
+        // start page wears a filled ★, and re-tapping it is a no-op (the deliberate
+        // also-pin/move happens via the edit-mode scope control, not the ☆).
+        var alreadyPinned =
+          isDevice && page.pinnedEntities && page.pinnedEntities[p.args.entity_id];
+        if (alreadyPinned) {
+          star.textContent = "★"; star.title = "Bereits angepinnt"; star.disabled = true;
+        } else {
+          star.textContent = "☆"; star.title = "Anpinnen";
+        }
         star.addEventListener("click", function (ev) {
           ev.stopPropagation();
+          if (star.disabled) return;
           star.disabled = true;
           // A frequent DEVICE (ha_call_service with an entity_id) pins the full
           // device CARD (#743), which resolves its own name + live controls;
           // only a non-device tool action stays a one-shot action button.
           var p = f.payload || {};
           var entityId = p.tool === "ha_call_service" && p.args && p.args.entity_id;
+          // A device ☆ pin defaults to household (#745); a pure action stays personal.
           var body = entityId
-            ? { kind: "entity", payload: { entity_id: entityId } }
+            ? { kind: "entity", scope: DEVICE_PIN_SCOPE, payload: { entity_id: entityId } }
             : { kind: "action", label: f.label, payload: f.payload };
           fetch("/api/favorites", {
             method: "POST",

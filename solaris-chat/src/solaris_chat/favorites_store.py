@@ -191,6 +191,21 @@ def remove_by_entity(db_path: str, owner_uid: str, entity_id: str) -> int:
         return len(ids)
 
 
+def move_scope(db_path: str, from_owner: str, favorite_id: str, to_owner: str) -> int:
+    """Re-own a favorite between the resident's uid and `household` (#745).
+
+    Moving a favorite between the personal and household scopes is just an
+    UPDATE of `owner_uid` — no migration. Owner-checked: only the row the
+    resident already owns (`from_owner`) is moved. Returns rows updated."""
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE favorites SET owner_uid = ? WHERE owner_uid = ? AND id = ?",
+            (to_owner, from_owner, favorite_id),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
 def set_position(db_path: str, owner_uid: str, favorite_id: str, position: int) -> None:
     """Move a favorite to an explicit position (owner-scoped)."""
     with _connect(db_path) as conn:

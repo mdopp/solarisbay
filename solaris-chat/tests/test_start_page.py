@@ -536,6 +536,95 @@ async def test_create_delete_reorder(aiohttp_client, tmp_path):
     assert favorites_store.list_favorites(db, "mdopp") == []
 
 
+async def test_start_dedups_both_scoped_entity_into_personal(aiohttp_client, tmp_path):
+    """A device pinned in BOTH scopes renders once, in the PERSONAL list (#745)."""
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "Büro", {"entity_id": "light.buro"}
+    )
+    favorites_store.add_favorite(
+        db, "household", "entity", "Büro", {"entity_id": "light.buro"}
+    )
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get("/api/portal/start", headers={"Remote-User": "mdopp"})
+    ).json()
+    personal_ids = [f["payload"].get("entity_id") for f in j["personal"]]
+    household_ids = [f["payload"].get("entity_id") for f in j["household"]]
+    assert personal_ids == ["light.buro"]  # kept in personal (preferred)
+    assert household_ids == []  # household duplicate dropped from display
+    assert j["pinned_entities"] == ["light.buro"]
+
+
+async def test_start_single_scope_when_uid_is_household(aiohttp_client, tmp_path):
+    """uid==household collapses the two buckets → single_scope true (#745)."""
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "household", "entity", "Flur", {"entity_id": "light.flur"}
+    )
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get("/api/portal/start", headers={"Remote-User": "household"})
+    ).json()
+    assert j["single_scope"] is True
+    # A distinct resident is NOT collapsed.
+    j2 = await (
+        await client.get("/api/portal/start", headers={"Remote-User": "mdopp"})
+    ).json()
+    assert j2["single_scope"] is False
+
+
+async def test_favorites_scope_move_reowns_both_directions(aiohttp_client, tmp_path):
+    """POST /api/favorites/{id}/scope re-owns the row, owner-checked (#745)."""
+    db = _db(tmp_path)
+    fav_id = favorites_store.add_favorite(
+        db, "mdopp", "entity", "Büro", {"entity_id": "light.buro"}
+    )
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    r = await client.post(
+        f"/api/favorites/{fav_id}/scope",
+        json={"scope": "household"},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert r.status == 200
+    assert favorites_store.list_favorites(db, "mdopp")[0]["owner_uid"] == "household"
+    r = await client.post(
+        f"/api/favorites/{fav_id}/scope",
+        json={"scope": "personal"},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert r.status == 200
+    assert favorites_store.list_favorites(db, "mdopp")[0]["owner_uid"] == "mdopp"
+    # A resident who doesn't own it gets 404.
+    r = await client.post(
+        f"/api/favorites/{fav_id}/scope",
+        json={"scope": "household"},
+        headers={"Remote-User": "lena"},
+    )
+    assert r.status == 404
+
+
 async def test_create_action_rejects_unlisted_tool(aiohttp_client, tmp_path):
     app = _app(tmp_path)
     client = await aiohttp_client(app)
@@ -815,5 +904,26 @@ def test_frequent_star_pins_device_as_card_else_action():
         'var entityId = p.tool === "ha_call_service" && p.args && p.args.entity_id;'
         in _HTML
     )
-    assert '? { kind: "entity", payload: { entity_id: entityId } }' in _HTML
+    assert (
+        '? { kind: "entity", scope: DEVICE_PIN_SCOPE, payload: { entity_id: entityId } }'
+        in _HTML
+    )
     assert ': { kind: "action", label: f.label, payload: f.payload };' in _HTML
+
+
+def test_device_pin_defaults_to_household_scope():
+    # #745 source contract: the ☆ posts scope:"household" for a device pin — the
+    # default lives in one flippable constant.
+    assert 'var DEVICE_PIN_SCOPE = "household";' in _HTML
+    assert "scope: DEVICE_PIN_SCOPE," in _HTML
+
+
+def test_single_scope_renders_one_section_and_hides_move():
+    # #745 source contract: uid==household collapses to one "Favoriten" section
+    # and the scope-move affordance is hidden when single_scope.
+    assert "card.singleScope = !!data.single_scope;" in _HTML
+    assert (
+        'section("Favoriten", (data.personal || []).concat(data.household || []));'
+        in _HTML
+    )
+    assert "if (!page.singleScope) {" in _HTML
