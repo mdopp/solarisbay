@@ -95,12 +95,44 @@ def pinned_entity_owners(db_path: str) -> dict[str, set[str]]:
     return out
 
 
+def _existing_favorite_id(
+    conn: sqlite3.Connection, owner_uid: str, kind: str, payload: dict[str, Any]
+) -> str | None:
+    """The owner's already-pinned favorite that duplicates this one, or None.
+
+    Dedup key (#743): an `entity` favorite matches by `entity_id` (one card per
+    device); an `action` favorite matches by identical tool+args, compared via a
+    canonical json dump so argument order doesn't split a pin into two rows."""
+    rows = conn.execute(
+        "SELECT id, payload FROM favorites WHERE owner_uid = ? AND kind = ?",
+        (owner_uid, kind),
+    ).fetchall()
+    target = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    for r in rows:
+        try:
+            existing = json.loads(r["payload"])
+        except (TypeError, ValueError):
+            continue
+        if kind == "entity":
+            if existing.get("entity_id") == payload.get("entity_id"):
+                return r["id"]
+        elif json.dumps(existing, sort_keys=True, ensure_ascii=False) == target:
+            return r["id"]
+    return None
+
+
 def add_favorite(
     db_path: str, owner_uid: str, kind: str, label: str, payload: dict[str, Any]
 ) -> str:
-    """Append a favorite at the end of the owner's list; returns its id."""
-    fav_id = uuid.uuid4().hex
+    """Append a favorite at the end of the owner's list; returns its id.
+
+    Idempotent (#743): re-pinning a device (same `entity_id`) or an identical
+    action returns the existing favorite's id instead of inserting a duplicate."""
     with _connect(db_path) as conn:
+        existing = _existing_favorite_id(conn, owner_uid, kind, payload)
+        if existing is not None:
+            return existing
+        fav_id = uuid.uuid4().hex
         row = conn.execute(
             "SELECT COALESCE(MAX(position), -1) AS m FROM favorites WHERE owner_uid = ?",
             (owner_uid,),
