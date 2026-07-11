@@ -107,6 +107,21 @@
     "noAutoGenerate": true,
     "description": "Post-deploy-managed — you need NOT set this. The post-deploy converges the `solaris` Jellyfin service-user credential on every deploy (#626): it persists a managed password under DATA_DIR, resets the lldap `solaris` user to it, and stamps it into the deployed pod env, so a template re-render no longer zeroes it and breaks music auth. Set a value only to pin your own password for a Jellyfin account other than the managed `solaris` user."
   },
+  "VAPID_PUBLIC_KEY": {
+    "type": "text",
+    "description": "Optional: Web Push VAPID public key (#713). Surfaced to the browser via /api/whoami so it can subscribe to Web Push notifications. Generate the VAPID keypair once (e.g. `npx web-push generate-vapid-keys`) and set the public half here and the private half in VAPID_PRIVATE_KEY. Leave blank to disable Web Push — the engine no-ops end-to-end when unset.",
+    "default": ""
+  },
+  "VAPID_PRIVATE_KEY": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: Web Push VAPID private key (#713) — signs the push messages. Pair with VAPID_PUBLIC_KEY (the matching public half of the same generated keypair) and VAPID_SUBJECT. Leave blank to disable Web Push."
+  },
+  "VAPID_SUBJECT": {
+    "type": "text",
+    "description": "Optional: Web Push VAPID subject (#713) — a `mailto:` URL or site URL identifying the push sender to the push service, e.g. `mailto:you@example.com`. Required by the Web Push spec once VAPID keys are set; leave blank to disable Web Push.",
+    "default": ""
+  },
   "GATEKEEPER_IMAGE": {
     "type": "text",
     "description": "Image tag for Solaris's gatekeeper container. Leave default for the base bridge. For speaker-ID set this to ghcr.io/mdopp/solaris-gatekeeper-ml:latest (bakes in SpeechBrain/torch) and turn on SOLARIS_SPEAKER_ID_ENABLED.",

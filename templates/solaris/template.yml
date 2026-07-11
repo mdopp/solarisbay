@@ -252,6 +252,16 @@ spec:
       value: "{{JELLYFIN_USERNAME}}"
     - name: JELLYFIN_PASSWORD
       value: "{{JELLYFIN_PASSWORD}}"
+    # Web Push / VAPID keys (#713): VAPID_PUBLIC_KEY is surfaced to the browser
+    # via /api/whoami so it can subscribe; VAPID_PRIVATE_KEY (secret) + subject
+    # sign the push. An operator prerequisite (generated once). All empty ⇒
+    # Web Push no-ops end-to-end, so a deploy without them still boots.
+    - name: VAPID_PUBLIC_KEY
+      value: "{{VAPID_PUBLIC_KEY}}"
+    - name: VAPID_PRIVATE_KEY
+      value: "{{VAPID_PRIVATE_KEY}}"
+    - name: VAPID_SUBJECT
+      value: "{{VAPID_SUBJECT}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint
