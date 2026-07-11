@@ -133,6 +133,161 @@ async def test_start_enriches_entity_with_live_card(
     ).json()
     card = j["personal"][0]["card"]
     assert card["domain"] == "light" and card["state"] == "on"
+    # HA reachable → the happy-path signal stays "ok" (#729).
+    assert j["ha"] == "ok"
+
+
+async def test_start_reports_ha_ok_when_reachable(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    async def _fake_fetch(url, token, entity_id):
+        return ha.card_spec(entity_id, "on", {"friendly_name": "Bürolicht"})
+
+    monkeypatch.setattr("solaris_chat.server.fetch_card", _fake_fetch)
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "buerolicht", {"entity_id": "light.buero"}
+    )
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get("/api/portal/start", headers={"Remote-User": "mdopp"})
+    ).json()
+    assert j["ha"] == "ok"
+    assert j["personal"][0].get("card") is not None
+    assert "card_unavailable" not in j["personal"][0]
+
+
+async def test_start_flags_unreachable_when_fetch_returns_none(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    """HA is configured (token present) but every fetch_card returns None (HA
+    down / bad token): ha == "unreachable" and the entity item is flagged
+    card_unavailable so the client greys it instead of a bare name (#729)."""
+
+    async def _fake_fetch(url, token, entity_id):
+        return None
+
+    monkeypatch.setattr("solaris_chat.server.fetch_card", _fake_fetch)
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "buerolicht", {"entity_id": "light.buero"}
+    )
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get("/api/portal/start", headers={"Remote-User": "mdopp"})
+    ).json()
+    assert j["ha"] == "unreachable"
+    item = j["personal"][0]
+    assert item.get("card") is None
+    assert item["card_unavailable"] is True
+
+
+async def test_start_reports_unconfigured_without_ha(aiohttp_client, tmp_path):
+    """No hass_url/hass_token → ha == "unconfigured" (a calmer notice) and no
+    entity is fetched or flagged unavailable (#729)."""
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "buerolicht", {"entity_id": "light.buero"}
+    )
+    app = build_app(  # no hass_url/hass_token → HA unconfigured
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get("/api/portal/start", headers={"Remote-User": "mdopp"})
+    ).json()
+    assert j["ha"] == "unconfigured"
+    assert "card" not in j["personal"][0]
+    assert "card_unavailable" not in j["personal"][0]
+
+
+async def test_start_ha_status_prefers_watcher(aiohttp_client, tmp_path, monkeypatch):
+    """When the HA-WS watcher is wired in, its live status is authoritative: a
+    successful fetch but a disconnected watcher still reports "unreachable"."""
+
+    async def _fake_fetch(url, token, entity_id):
+        return ha.card_spec(entity_id, "on", {"friendly_name": "Bürolicht"})
+
+    monkeypatch.setattr("solaris_chat.server.fetch_card", _fake_fetch)
+
+    class _Watcher:
+        status = "disconnected"
+
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "buerolicht", {"entity_id": "light.buero"}
+    )
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+        ha_watcher=_Watcher(),
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get("/api/portal/start", headers={"Remote-User": "mdopp"})
+    ).json()
+    assert j["ha"] == "unreachable"
+
+
+async def test_state_only_flags_unavailable_on_ha_drop(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    """A mid-session HA drop is reflected on the poll branch: ha == "unreachable"
+    and the pinned entity id is listed under `unavailable` (#729)."""
+
+    async def _fake_fetch(url, token, entity_id):
+        return None
+
+    monkeypatch.setattr("solaris_chat.server.fetch_card", _fake_fetch)
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "garage", {"entity_id": "cover.garage"}
+    )
+    app = build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get(
+            "/api/portal/start?state_only=1", headers={"Remote-User": "mdopp"}
+        )
+    ).json()
+    assert j["ha"] == "unreachable"
+    assert j["unavailable"] == ["cover.garage"]
+    assert j["states"] == {}
 
 
 async def test_start_state_only_returns_pinned_card_state(
@@ -528,3 +683,30 @@ def test_sensitive_card_tap_confirms_and_sends_confirmed():
     assert 'var sensitive = c.sensitive || c.device_class === "garage";' in _HTML
     assert 'haCall(card, c, "cover." + b[1], {}, sensitive);' in _HTML
     assert "confirmed: confirmed === true," in _HTML
+
+
+# --- #729: HA-unreachable notice + unavailable cards (real check = box-verify) ---
+
+
+def test_start_page_renders_ha_notice_and_unavailable_card():
+    # The start page renders the connection banner from data.ha and a greyed
+    # "nicht verfügbar" tile for a card_unavailable entity favorite.
+    assert "function renderHaBanner(ha)" in _HTML
+    assert "function renderUnavailableCard(f)" in _HTML
+    assert "nicht erreichbar" in _HTML  # unreachable copy
+    assert "nicht eingerichtet" in _HTML  # unconfigured copy
+    assert '"nicht verfügbar"' in _HTML  # the disabled-card label
+    assert "f.card_unavailable" in _HTML
+    assert "updateHaBanner(page, j.ha" in _HTML  # banner lifts on the live poll
+
+
+def test_ha_watch_status_getter():
+    from solaris_chat.engine.ha_watch import HaStateWatcher
+    from solaris_chat.engine.notify import EventBus
+
+    disabled = HaStateWatcher("", "", EventBus(), ":memory:")
+    assert disabled.status == "disabled"
+    configured = HaStateWatcher("http://ha", "t", EventBus(), ":memory:")
+    assert configured.status == "disconnected"
+    configured._connected = True
+    assert configured.status == "connected"

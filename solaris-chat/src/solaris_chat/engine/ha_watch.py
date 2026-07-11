@@ -71,6 +71,18 @@ class HaStateWatcher:
         # entity_id -> owner uids that pinned it (HOUSEHOLD for the shared pin).
         self._owners: dict[str, set[str]] = {}
         self._refresh_at = 0.0
+        # Live WS reachability, flipped on the loop thread; a plain bool read is
+        # atomic in CPython so `status` needs no lock.
+        self._connected = False
+
+    @property
+    def status(self) -> str:
+        """Authoritative HA health for the start page (#729): 'disabled' when no
+        url/token is configured, 'connected' while the WS is authenticated and
+        live, 'disconnected' when configured but the WS is down / auth failing."""
+        if not self._hass_url or not self._hass_token:
+            return "disabled"
+        return "connected" if self._connected else "disconnected"
 
     def start(self) -> None:
         if not self._hass_url or not self._hass_token:
@@ -95,6 +107,8 @@ class HaStateWatcher:
                 raise
             except Exception as e:  # noqa: BLE001 — the watcher must outlive any drop
                 log.error("engine.ha_watch.error", error=str(e))
+            finally:
+                self._connected = False
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, _BACKOFF_MAX_S)
 
@@ -107,6 +121,7 @@ class HaStateWatcher:
                 await ws.send_json(
                     {"id": 1, "type": "subscribe_events", "event_type": "state_changed"}
                 )
+                self._connected = True
                 log.info("engine.ha_watch.connected", pinned=len(self._owners))
                 loop = asyncio.get_event_loop()
                 self._refresh_at = loop.time() + _PIN_REFRESH_S

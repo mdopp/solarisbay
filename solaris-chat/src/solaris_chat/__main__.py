@@ -132,6 +132,7 @@ async def _run() -> None:
         hass_token=settings.hass_token,
         crons=crons,
         vapid_public_key=settings.vapid_public_key,
+        ha_watcher=ha_watcher,
     )
 
 
