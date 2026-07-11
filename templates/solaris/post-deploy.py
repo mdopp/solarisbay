@@ -1245,6 +1245,107 @@ def _ollama_entry_id(token: str, facade_url: str) -> str:
     return ""
 
 
+def _ollama_entry_matches_facade(entry: dict, facade_url: str) -> bool:
+    """True when `entry` is the ollama config entry pointing at the engine's
+    /ollama facade — match on domain + the facade URL in data.url so an
+    unrelated ollama entry (if any) is never clobbered."""
+    if entry.get("domain") != "ollama":
+        return False
+    data = entry.get("data")
+    return isinstance(data, dict) and str(data.get("url") or "") == facade_url
+
+
+def _reassert_ollama_key_in_storage(
+    entries: list[object], facade_url: str, api_key: str
+) -> tuple[list[object], bool]:
+    """Re-assert the facade ollama entry's `data.api_key` = `api_key` (pure).
+
+    Returns (entries, changed). `changed` is True only when a matching entry
+    carried a different key — so the caller writes `.storage` only on real
+    drift (idempotent). A missing entry is a clean no-op (voice not set up)."""
+    changed = False
+    for entry in entries:
+        if not isinstance(entry, dict) or not _ollama_entry_matches_facade(
+            entry, facade_url
+        ):
+            continue
+        if str(entry["data"].get("api_key") or "") != api_key:
+            entry["data"]["api_key"] = api_key
+            changed = True
+    return entries, changed
+
+
+def reassert_ollama_api_key(token: str, chat_port: str, api_key: str, data_dir: str):
+    """Heal a drifted HA ollama-integration api_key so `conversation.sol` can't
+    red-blink (#557).
+
+    The ollama integration (provides `conversation.sol`) stores an `api_key`;
+    when it drifts from the pod's current SOLARIS_API_KEY the integration goes
+    `setup_error: unauthorized (401)` → `conversation.sol` unavailable → the
+    Assist pipeline red-blinks. The integration has NO async_step_reconfigure,
+    so it can't self-heal — we re-assert the key directly in HA's
+    `.storage/core.config_entries` (atomic tmp+rename), matching the facade
+    ollama entry on domain + data.url. A running HA holds config entries in
+    memory and won't re-read `.storage` on its own (and would overwrite our
+    edit on its next write), so on a real change we ask HA to restart — HA then
+    reloads the entry from the patched file and the 401'd setup re-attempts.
+    (main()'s final restart is the `solaris` service, not HA, so it can't do
+    this — this is the box-confirmed manual fix: patch `.storage` + restart HA.)
+
+    Idempotent (writes only on real drift, so a converged box never restarts HA)
+    + fail-soft (a missing entry / file is a clean no-op — voice may not be set
+    up on this box). The api_key is never logged."""
+    if not api_key:
+        return
+    facade_url = f"http://127.0.0.1:{chat_port}/ollama"
+    storage = os.path.join(
+        data_dir,
+        "home-assistant",
+        "homeassistant",
+        ".storage",
+        "core.config_entries",
+    )
+    try:
+        with open(storage, encoding="utf-8") as f:
+            store = json.load(f)
+    except OSError:
+        jlog(
+            "info",
+            "voice",
+            "no HA .storage config_entries — ollama key re-assert skipped",
+        )
+        return
+    except json.JSONDecodeError as e:
+        jlog("warn", "voice", "HA config_entries not valid JSON", error=str(e))
+        return
+    entries = store.get("data", {}).get("entries")
+    if not isinstance(entries, list):
+        jlog("warn", "voice", "HA config_entries has no entries list")
+        return
+    _, changed = _reassert_ollama_key_in_storage(entries, facade_url, api_key)
+    if not changed:
+        jlog("info", "voice", "ollama api_key already current — no re-assert")
+        return
+    tmp = f"{storage}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(store, f)
+        os.replace(tmp, storage)
+    except OSError as e:
+        jlog("warn", "voice", "could not write patched HA config_entries", error=str(e))
+        return
+    jlog("info", "voice", "re-asserted ollama api_key in HA .storage (heals 401 drift)")
+    # HA won't re-read the patched .storage while running (and would clobber it
+    # on its next write) — restart so it reloads the entry with the fixed key.
+    status, _ = _ha_post("/api/services/homeassistant/restart", token, {})
+    jlog(
+        "info" if status == 200 else "warn",
+        "voice",
+        "requested HA restart to reload ollama entry",
+        status=status,
+    )
+
+
 def ensure_conversation_agent(token: str, chat_port: str, api_key: str) -> str:
     """Wire Solaris as an HA conversation agent: an `ollama` config entry pointing
     at the engine's /ollama facade + a `conversation` subentry on model `solaris`.
@@ -1799,6 +1900,12 @@ def wire_voice_pipeline(
             prefer_gatekeeper_stt=speaker_id,
             wake_word_id=wake_word,
         )
+    # Re-assert the ollama entry's stored api_key = the current SOLARIS_API_KEY
+    # (#557): the integration has no reconfigure flow, so a drifted key leaves it
+    # setup_error/401 → conversation.sol unavailable → the pipeline red-blinks.
+    # Last, so the pipeline wiring above finishes before a (drift-only) HA
+    # restart; a converged key is a no-op and never restarts HA.
+    reassert_ollama_api_key(token, chat_port, api_key, data_dir)
 
 
 # ════════════════════════════════════════════════════════════════════════════
