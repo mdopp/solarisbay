@@ -8,7 +8,9 @@ import threading
 from solaris_chat.config import settings
 from solaris_chat.context import build_context_window
 from solaris_chat.engine.crons import CronRunner
+from solaris_chat.engine.ha_watch import HaStateWatcher
 from solaris_chat.engine.ingest import run_ingest
+from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.profiles import build_engine_clients
 from solaris_chat.engine.scheduler import TimerScheduler
 from solaris_chat.logging import log
@@ -43,14 +45,34 @@ async def _run() -> None:
         jellyfin_username=settings.jellyfin_username,
         jellyfin_password=settings.jellyfin_password,
     )
+    notifier = Notifier(
+        settings.solaris_db_path,
+        settings.vapid_public_key,
+        settings.vapid_private_key,
+        settings.vapid_subject,
+    )
     scheduler = TimerScheduler(
         settings.solaris_db_path,
         settings.hass_url,
         settings.hass_token,
         settings.alarm_sound_media_id,
         settings.alarm_sound_path,
+        notifier=notifier,
     )
     scheduler.start()
+    # Live status propagation (#714): the event bus fans HA state changes to
+    # every open /p/start client via SSE; the HA-WS watcher feeds it, bounded to
+    # the residents' pinned entities, and pushes only noteworthy transitions when
+    # no client is watching that uid.
+    event_bus = EventBus()
+    ha_watcher = HaStateWatcher(
+        settings.hass_url,
+        settings.hass_token,
+        event_bus,
+        settings.solaris_db_path,
+        notifier=notifier,
+    )
+    ha_watcher.start()
     crons = CronRunner(
         db_path=settings.solaris_db_path,
         deep=deep,
@@ -102,11 +124,14 @@ async def _run() -> None:
         trace_recorder=recorder,
         api_key=settings.api_key,
         bus=bus,
+        event_bus=event_bus,
+        notifier=notifier,
         sb_mcp_url=settings.sb_mcp_url,
         sb_mcp_token_path=settings.sb_mcp_token_path,
         hass_url=settings.hass_url,
         hass_token=settings.hass_token,
         crons=crons,
+        vapid_public_key=settings.vapid_public_key,
     )
 
 

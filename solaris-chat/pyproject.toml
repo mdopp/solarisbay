@@ -19,6 +19,8 @@ dependencies = [
   "mcp>=1.9",
   # Brute-force cosine over the OKF embedding vectors (float32 blobs); #650/#651.
   "numpy>=1.26",
+  # Web Push (VAPID) for timer/reminder phone notifications (#713); no FCM.
+  "pywebpush>=1.14",
 ]
 
 [project.optional-dependencies]

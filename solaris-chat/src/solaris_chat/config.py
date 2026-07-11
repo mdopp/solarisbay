@@ -120,6 +120,9 @@ class Settings:
     jellyfin_password: str
     jellyfin_library_owners: dict[str, str]
     imap_accounts: tuple[ImapAccount, ...]
+    vapid_public_key: str
+    vapid_private_key: str
+    vapid_subject: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -272,6 +275,14 @@ class Settings:
             # Curated IMAP mailboxes the email-ingest adapter reads (read-only,
             # #654). Numbered flat env `IMAP_<n>_*`; no account ⇒ ingest skipped.
             imap_accounts=_parse_imap_accounts(dict(os.environ)),
+            # Web Push / VAPID keys (#713): the public key is surfaced to the
+            # browser via /api/whoami so it can subscribe; the private key +
+            # subject sign the push. An operator prerequisite (generated once,
+            # dropped in the pod env) — NOT in the repo. Empty ⇒ Web Push
+            # no-ops end-to-end, so the box is safe before they are set.
+            vapid_public_key=os.environ.get("VAPID_PUBLIC_KEY", "").strip(),
+            vapid_private_key=os.environ.get("VAPID_PRIVATE_KEY", "").strip(),
+            vapid_subject=os.environ.get("VAPID_SUBJECT", "").strip(),
         )
 
 

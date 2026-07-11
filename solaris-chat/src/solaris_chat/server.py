@@ -30,6 +30,7 @@ from solaris_chat import (
     mentions_store,
     notes_search,
     personalities,
+    push_store,
     reasoning,
     settings_store,
     skills,
@@ -42,6 +43,7 @@ from solaris_chat.engine import confirm, store
 from solaris_chat.engine.client import EngineClient, EngineError, current_uid
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
+from solaris_chat.engine.notify import emit_chat
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
@@ -869,11 +871,14 @@ def build_app(
     residents: list[str] | None = None,
     api_key: str = "",
     bus: Any = None,
+    event_bus: Any = None,
+    notifier: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
     hass_url: str = "",
     hass_token: str = "",
     crons: Any = None,
+    vapid_public_key: str = "",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -1328,6 +1333,46 @@ def build_app(
             pass
         return resp
 
+    async def portal_events(request: web.Request) -> web.StreamResponse:
+        # Live status propagation (#714): an open /p/start client subscribes to
+        # its uid's event bus and receives `card_state` (and later `chat`)
+        # events the HA-WS watcher publishes, so a pinned entity's card updates
+        # within ~1s instead of on the 12s poll. Owner-scoped like the session
+        # mirror: a client only sees its own uid's events plus the shared
+        # `household` stream, never another resident's — the second subscription
+        # carries the household-pinned entities everyone shares.
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        resp = web.StreamResponse(
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            }
+        )
+        await resp.prepare(request)
+        if event_bus is None:
+            await _send_event(resp, "done", {})
+            return resp
+
+        async def _pump(stream) -> None:
+            async for event in stream:
+                kind = event.get("kind")
+                if kind in ("card_state", "chat"):
+                    await _send_event(resp, kind, event.get("data") or {})
+
+        own = asyncio.ensure_future(_pump(event_bus.subscribe(uid)))
+        shared = asyncio.ensure_future(
+            _pump(event_bus.subscribe(favorites_store.HOUSEHOLD))
+        )
+        try:
+            await asyncio.gather(own, shared)
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        finally:
+            own.cancel()
+            shared.cancel()
+        return resp
+
     async def trace_detail(request: web.Request) -> web.Response:
         # Exact per-call content for one trace step (#307 panel → #305 detail).
         # A persisted turn carries a stable `<trace_id>:<order>` detail_id whose
@@ -1355,6 +1400,22 @@ def build_app(
         # cached, so mobile keeps showing a stale UI and deploys don't land.
         return web.FileResponse(
             STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+        )
+
+    async def service_worker(_request: web.Request) -> web.Response:
+        """Serve the push service worker at ROOT scope (#713).
+
+        A service worker's control scope is capped at its own URL path, so the
+        push SW must be served from `/` — not `/static/` — to control the whole
+        PWA. `Service-Worker-Allowed: /` widens the allowed scope and `no-cache`
+        makes an updated SW land on the next deploy."""
+        return web.FileResponse(
+            STATIC_DIR / "sw.js",
+            headers={
+                "Content-Type": "application/javascript",
+                "Service-Worker-Allowed": "/",
+                "Cache-Control": "no-cache",
+            },
         )
 
     async def health(_request: web.Request) -> web.Response:
@@ -1418,6 +1479,10 @@ def build_app(
                 # household) and typed turns are the same conversation, visible
                 # to every logged-in resident instead of split per-uid.
                 "household_session_id": shared_household_id,
+                # The Web Push VAPID public key (#713) the browser needs to
+                # subscribe. Empty ⇒ Web Push is unconfigured, so the UI hides
+                # the notification bell.
+                "vapid_public_key": vapid_public_key,
             }
         )
 
@@ -2655,6 +2720,44 @@ def build_app(
         status = 200 if result.get("ok") else 503
         return web.json_response(result, status=status)
 
+    async def push_subscribe(request: web.Request) -> web.Response:
+        """Register a browser PushSubscription for the caller (#713).
+
+        Body is the `PushSubscription.toJSON()` shape: `endpoint` + `keys.p256dh`
+        / `keys.auth`. Owner-scoped to the Authelia identity; the endpoint URL is
+        the unique key, so a re-subscribe upserts."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        endpoint = str(body.get("endpoint") or "")
+        keys = body.get("keys") if isinstance(body.get("keys"), dict) else {}
+        p256dh = str(keys.get("p256dh") or "")
+        auth = str(keys.get("auth") or "")
+        if not (endpoint and p256dh and auth):
+            return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+        user_agent = request.headers.get("User-Agent", "")[:256]
+        push_store.upsert(solaris_db_path, uid, endpoint, p256dh, auth, user_agent)
+        return web.json_response({"ok": True})
+
+    async def push_unsubscribe(request: web.Request) -> web.Response:
+        """Drop the caller's subscription for one endpoint (owner-scoped, #713)."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        endpoint = str(body.get("endpoint") or "")
+        if not endpoint:
+            return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+        # Owner-scope: only remove an endpoint that belongs to the caller, so a
+        # resident can't drop another's device by guessing its endpoint.
+        owned = {s["endpoint"] for s in push_store.list_for_uid(solaris_db_path, uid)}
+        if endpoint in owned:
+            push_store.remove_by_endpoint(solaris_db_path, endpoint)
+        return web.json_response({"ok": True})
+
     async def favorites_create(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
@@ -2965,6 +3068,13 @@ def build_app(
         total_ms = clock() * 1000.0 - t_start
         trace = _trace_from_phases([], total_ms)
 
+        # A completed turn propagates to the owner (#715): live to an open SSE
+        # client, or a Web Push with the session deep-link when the app is
+        # backgrounded. The non-stream path is the background/voice/API caller —
+        # it may push (no live stream is showing the reply).
+        if event_bus is not None and not ephemeral:
+            await emit_chat(event_bus, notifier, owner_uid, session_id, reply)
+
         return web.json_response(
             {
                 "ok": True,
@@ -3141,6 +3251,18 @@ def build_app(
                     suggestions=suggestions,
                     anchors=anchors,
                 )
+                # Fan the completed turn to the owner's OTHER open tabs over SSE
+                # (#715). This is a foreground typed turn — the requesting client
+                # is watching the reply stream live — so it never self-pushes.
+                if event_bus is not None and not ephemeral:
+                    await emit_chat(
+                        event_bus,
+                        notifier,
+                        owner_uid,
+                        session_id,
+                        answer_buf,
+                        push=False,
+                    )
         except EngineError:
             await _send_event(resp, "error", {"reason": "engine_unavailable"})
         finally:
@@ -3158,6 +3280,7 @@ def build_app(
 
     app = web.Application(middlewares=[csp])
     app.router.add_get("/", index)
+    app.router.add_get("/sw.js", service_worker)
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", whoami)
     app.router.add_post("/api/ha/call", ha_call)
@@ -3195,6 +3318,7 @@ def build_app(
     app.router.add_get("/api/portal/energy/history", portal_energy_history)
     app.router.add_get("/api/portal/start", portal_start)
     app.router.add_get("/api/portal/start/addable", portal_start_addable)
+    app.router.add_get("/api/events", portal_events)
     app.router.add_get("/api/portal/notes", portal_notes)
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
     app.router.add_get("/api/portal/notes/note", portal_notes_note)
@@ -3209,6 +3333,8 @@ def build_app(
     app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
     app.router.add_put("/api/favorites/{fav_id}", favorites_reorder)
     app.router.add_post("/api/favorites/{fav_id}/run", favorites_run)
+    app.router.add_post("/api/push/subscribe", push_subscribe)
+    app.router.add_post("/api/push/unsubscribe", push_unsubscribe)
     app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/anchors/aliases", anchors_aliases)
@@ -3489,11 +3615,14 @@ async def serve(
     trace_recorder: Any = None,
     api_key: str = "",
     bus: Any = None,
+    event_bus: Any = None,
+    notifier: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
     hass_url: str = "",
     hass_token: str = "",
     crons: Any = None,
+    vapid_public_key: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -3522,11 +3651,14 @@ async def serve(
         trace_recorder=trace_recorder,
         api_key=api_key,
         bus=bus,
+        event_bus=event_bus,
+        notifier=notifier,
         sb_mcp_url=sb_mcp_url,
         sb_mcp_token_path=sb_mcp_token_path,
         hass_url=hass_url,
         hass_token=hass_token,
         crons=crons,
+        vapid_public_key=vapid_public_key,
     )
     runner = web.AppRunner(app)
     await runner.setup()
