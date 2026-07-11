@@ -125,6 +125,7 @@ async def _run() -> None:
         api_key=settings.api_key,
         bus=bus,
         event_bus=event_bus,
+        notifier=notifier,
         sb_mcp_url=settings.sb_mcp_url,
         sb_mcp_token_path=settings.sb_mcp_token_path,
         hass_url=settings.hass_url,

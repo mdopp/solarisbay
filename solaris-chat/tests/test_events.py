@@ -20,7 +20,7 @@ import pytest
 
 from solaris_chat import favorites_store
 from solaris_chat.engine import ha_watch
-from solaris_chat.engine.notify import EventBus
+from solaris_chat.engine.notify import EventBus, emit_chat
 from solaris_chat.server import build_app
 
 _SCHEMA = """
@@ -370,3 +370,64 @@ async def test_noteworthy_suppressed_when_sse_client_open(tmp_path):
     await asyncio.sleep(0)
     assert notifier.pushes == []  # SSE already delivered it; no phone push
     task.cancel()
+
+
+# ---- chat propagation (Phase 1c, #715) -------------------------------------
+
+
+async def test_chat_pushes_when_no_sse_client():
+    """A completed background turn with no open subscriber pushes with the
+    session deep-link."""
+    bus = EventBus()  # nobody watching → app backgrounded
+    notifier = _FakeNotifier()
+    await emit_chat(bus, notifier, "mdopp", "s1", "Der Kuchen ist fertig.")
+    assert len(notifier.pushes) == 1
+    uid, title, body, data = notifier.pushes[0]
+    assert uid == "mdopp"
+    assert body == "Der Kuchen ist fertig."
+    assert data["kind"] == "chat"
+    assert data["url"] == "/#/c/s1"
+
+
+async def test_chat_does_not_push_when_sse_client_open():
+    """An open SSE subscriber gets the chat event live — no phone push."""
+    bus = EventBus()
+    gen = bus.subscribe("mdopp")
+    got = asyncio.ensure_future(gen.__anext__())
+    await asyncio.sleep(0)  # register the subscription
+    notifier = _FakeNotifier()
+    await emit_chat(bus, notifier, "mdopp", "s1", "Antwort")
+    assert notifier.pushes == []  # SSE, not push
+    event = await asyncio.wait_for(got, 1)
+    assert event == {
+        "kind": "chat",
+        "data": {"session_id": "s1", "preview": "Antwort", "url": "/#/c/s1"},
+    }
+
+
+async def test_chat_foreground_turn_never_self_notifies():
+    """The streaming client's own turn (push=False) fans out over SSE but never
+    pushes, even with no other subscriber."""
+    bus = EventBus()
+    notifier = _FakeNotifier()
+    await emit_chat(bus, notifier, "mdopp", "s1", "Antwort", push=False)
+    assert notifier.pushes == []
+
+
+async def test_chat_sse_forwards_to_open_events_client(aiohttp_client, tmp_path):
+    """POST-free: a published `chat` event reaches an open /api/events client."""
+    bus = EventBus()
+    client = await aiohttp_client(_app(tmp_path, bus))
+    resp = await client.get("/api/events", headers={"Remote-User": "mdopp"})
+    await asyncio.sleep(0.05)
+    await emit_chat(bus, None, "mdopp", "s1", "Hallo")
+    event = None
+    while True:
+        line = (await asyncio.wait_for(resp.content.readline(), 2)).decode().strip()
+        if line.startswith("event:"):
+            event = line.split(":", 1)[1].strip()
+        elif line.startswith("data:") and event == "chat":
+            data = json.loads(line.split(":", 1)[1].strip())
+            break
+    assert data["session_id"] == "s1" and data["url"] == "/#/c/s1"
+    resp.close()

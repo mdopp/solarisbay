@@ -43,6 +43,7 @@ from solaris_chat.engine import confirm, store
 from solaris_chat.engine.client import EngineClient, EngineError, current_uid
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
+from solaris_chat.engine.notify import emit_chat
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
@@ -871,6 +872,7 @@ def build_app(
     api_key: str = "",
     bus: Any = None,
     event_bus: Any = None,
+    notifier: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
     hass_url: str = "",
@@ -1354,8 +1356,9 @@ def build_app(
 
         async def _pump(stream) -> None:
             async for event in stream:
-                if event.get("kind") == "card_state":
-                    await _send_event(resp, "card_state", event.get("data") or {})
+                kind = event.get("kind")
+                if kind in ("card_state", "chat"):
+                    await _send_event(resp, kind, event.get("data") or {})
 
         own = asyncio.ensure_future(_pump(event_bus.subscribe(uid)))
         shared = asyncio.ensure_future(
@@ -3065,6 +3068,13 @@ def build_app(
         total_ms = clock() * 1000.0 - t_start
         trace = _trace_from_phases([], total_ms)
 
+        # A completed turn propagates to the owner (#715): live to an open SSE
+        # client, or a Web Push with the session deep-link when the app is
+        # backgrounded. The non-stream path is the background/voice/API caller —
+        # it may push (no live stream is showing the reply).
+        if event_bus is not None and not ephemeral:
+            await emit_chat(event_bus, notifier, owner_uid, session_id, reply)
+
         return web.json_response(
             {
                 "ok": True,
@@ -3241,6 +3251,18 @@ def build_app(
                     suggestions=suggestions,
                     anchors=anchors,
                 )
+                # Fan the completed turn to the owner's OTHER open tabs over SSE
+                # (#715). This is a foreground typed turn — the requesting client
+                # is watching the reply stream live — so it never self-pushes.
+                if event_bus is not None and not ephemeral:
+                    await emit_chat(
+                        event_bus,
+                        notifier,
+                        owner_uid,
+                        session_id,
+                        answer_buf,
+                        push=False,
+                    )
         except EngineError:
             await _send_event(resp, "error", {"reason": "engine_unavailable"})
         finally:
@@ -3594,6 +3616,7 @@ async def serve(
     api_key: str = "",
     bus: Any = None,
     event_bus: Any = None,
+    notifier: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
     hass_url: str = "",
@@ -3629,6 +3652,7 @@ async def serve(
         api_key=api_key,
         bus=bus,
         event_bus=event_bus,
+        notifier=notifier,
         sb_mcp_url=sb_mcp_url,
         sb_mcp_token_path=sb_mcp_token_path,
         hass_url=hass_url,

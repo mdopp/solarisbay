@@ -68,6 +68,38 @@ class EventBus:
                     self._subs.pop(uid, None)
 
 
+def _reply_preview(reply: str, limit: int = 140) -> str:
+    """One-line preview of an assistant reply for a notification body."""
+    line = " ".join(reply.split())
+    return line[: limit - 1] + "…" if len(line) > limit else line
+
+
+async def emit_chat(
+    bus: EventBus,
+    notifier: Notifier | None,
+    uid: str,
+    session_id: str,
+    reply: str,
+    *,
+    push: bool = True,
+) -> None:
+    """Fan a completed chat turn out (Phase 1c, #715).
+
+    Always publishes a `chat` event to the owner's SSE stream. When `push` is
+    set and no SSE client is watching that uid (the app is backgrounded), also
+    sends a Web Push with the session deep-link so the reply surfaces on the
+    phone. `push=False` is the foreground streaming client — it already sees the
+    reply live, so it must never self-notify; the SSE fan-out still runs so
+    other open tabs update.
+    """
+    preview = _reply_preview(reply)
+    url = f"/#/c/{session_id}"
+    data = {"kind": "chat", "session_id": session_id, "url": url}
+    bus.publish(uid, "chat", {"session_id": session_id, "preview": preview, "url": url})
+    if push and notifier is not None and not bus.has_subscriber(uid):
+        await notifier.push(uid, "Solaris", preview, data)
+
+
 class Notifier:
     def __init__(
         self,
