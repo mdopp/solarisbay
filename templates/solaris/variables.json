@@ -122,6 +122,16 @@
     "description": "Optional: Web Push VAPID subject (#713) — a `mailto:` URL or site URL identifying the push sender to the push service, e.g. `mailto:you@example.com`. Required by the Web Push spec once VAPID keys are set; leave blank to disable Web Push.",
     "default": ""
   },
+  "ANDROID_PACKAGE": {
+    "type": "text",
+    "description": "Optional: Android TWA package name (#716) served in /.well-known/assetlinks.json to bind the app to this domain. Defaults to the household app id; change only if you publish under a different package.",
+    "default": "cloud.dopp.solaris"
+  },
+  "ANDROID_CERT_FINGERPRINTS": {
+    "type": "text",
+    "description": "Optional: comma-separated SHA256 signing-cert fingerprints (#716) of the Android TWA, served in /.well-known/assetlinks.json so Google can verify the app↔domain binding (drops the URL bar). Get them from the android repo's signing key (`keytool -list` / Play App Signing). Leave blank until the app is scaffolded — the route then serves `[]`, which is valid.",
+    "default": ""
+  },
   "GATEKEEPER_IMAGE": {
     "type": "text",
     "description": "Image tag for Solaris's gatekeeper container. Leave default for the base bridge. For speaker-ID set this to ghcr.io/mdopp/solaris-gatekeeper-ml:latest (bakes in SpeechBrain/torch) and turn on SOLARIS_SPEAKER_ID_ENABLED.",

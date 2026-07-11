@@ -262,6 +262,17 @@ spec:
       value: "{{VAPID_PRIVATE_KEY}}"
     - name: VAPID_SUBJECT
       value: "{{VAPID_SUBJECT}}"
+    # Android TWA / Digital Asset Links (#716): the /.well-known/assetlinks.json
+    # route binds the app to this domain. ANDROID_CERT_FINGERPRINTS (comma-
+    # separated SHA256 signing-cert fingerprints) is empty until the android
+    # repo scaffolds the signing key — the route then serves `[]` (valid; Google
+    # just won't verify yet), so a deploy without it still boots. Only publicly
+    # reachable once SB adds a forwardAuth exception for /.well-known/* (tracked
+    # separately).
+    - name: ANDROID_PACKAGE
+      value: "{{ANDROID_PACKAGE}}"
+    - name: ANDROID_CERT_FINGERPRINTS
+      value: "{{ANDROID_CERT_FINGERPRINTS}}"
     # No `ports:` block — hostNetwork pod, the listener binds the host
     # directly (loopback:{{CHAT_PORT}}); a ports mapping alongside
     # hostNetwork makes `podman kube play` reject the spec (same constraint

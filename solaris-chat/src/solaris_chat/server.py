@@ -918,6 +918,8 @@ def build_app(
     hass_token: str = "",
     crons: Any = None,
     vapid_public_key: str = "",
+    android_package: str = "cloud.dopp.solaris",
+    android_cert_fingerprints: tuple[str, ...] = (),
     ha_watcher: Any = None,
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
@@ -1457,6 +1459,32 @@ def build_app(
                 "Cache-Control": "no-cache",
             },
         )
+
+    async def assetlinks(_request: web.Request) -> web.Response:
+        """Serve the Digital Asset Links statement at ROOT well-known (#716).
+
+        Binds the Android TWA to this domain so the app runs without a URL bar.
+        Google's verifier fetches this UNAUTHENTICATED, so — like /sw.js — it is
+        a dedicated public route, not behind the panel's identity header. It is
+        only publicly reachable once ServiceBay adds a forwardAuth exception for
+        `/.well-known/*` on the chat.dopp.cloud proxy (tracked separately); the
+        payload is correct regardless. Empty fingerprints ⇒ `[]` (valid — Google
+        just won't verify until the android repo's signing key exists)."""
+        statement = (
+            [
+                {
+                    "relation": ["delegate_permission/common.handle_all_urls"],
+                    "target": {
+                        "namespace": "android_app",
+                        "package_name": android_package,
+                        "sha256_cert_fingerprints": list(android_cert_fingerprints),
+                    },
+                }
+            ]
+            if android_cert_fingerprints
+            else []
+        )
+        return web.json_response(statement)
 
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
@@ -3438,6 +3466,7 @@ def build_app(
     app = web.Application(middlewares=[csp])
     app.router.add_get("/", index)
     app.router.add_get("/sw.js", service_worker)
+    app.router.add_get("/.well-known/assetlinks.json", assetlinks)
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", whoami)
     app.router.add_post("/api/ha/call", ha_call)
@@ -3783,6 +3812,8 @@ async def serve(
     hass_token: str = "",
     crons: Any = None,
     vapid_public_key: str = "",
+    android_package: str = "cloud.dopp.solaris",
+    android_cert_fingerprints: tuple[str, ...] = (),
     ha_watcher: Any = None,
 ) -> None:
     if isinstance(context_window, int):
@@ -3820,6 +3851,8 @@ async def serve(
         hass_token=hass_token,
         crons=crons,
         vapid_public_key=vapid_public_key,
+        android_package=android_package,
+        android_cert_fingerprints=android_cert_fingerprints,
         ha_watcher=ha_watcher,
     )
     runner = web.AppRunner(app)
