@@ -111,7 +111,7 @@ def test_light_card_header_toggle_body_slider():
     lcb = lc.group(1)
     # Brightness slider mounts on the given body host as an inline control.
     assert "makeSlider(brightHost || card, pct" in lcb
-    assert "true);" in lcb  # inline flag
+    assert ", true, " in lcb  # inline flag
     # #726: tapping the colour swatch must not bubble to the card's power toggle
     # (which would flip the light + re-render the picker away). The colour row
     # stops click + pointerdown propagation, mirroring the slider/button guard.
@@ -125,7 +125,7 @@ def test_light_card_header_toggle_body_slider():
 
     # makeSlider honours an inline flag (no own row, drag doesn't toggle).
     ms = re.search(
-        r"function makeSlider\(card, value, unit, onset, inline\) \{(.*?)\n      \}",
+        r"function makeSlider\(card, value, unit, onset, inline, neutral\) \{(.*?)\n      \}",
         _HTML,
         re.S,
     )
@@ -361,3 +361,38 @@ def test_media_player_card_has_power_toggle_and_source_picker():
     assert "media_player.volume_set" in mpb
     # the feature bits are defined.
     assert "MP_TURN_ON = 128, MP_TURN_OFF = 256, MP_SELECT_SOURCE = 2048" in _HTML
+
+
+def test_off_light_shows_last_known_brightness_not_a_fake_100():
+    # #733: HA reports brightness:null for an OFF light. The card must cache the
+    # last-known % per entity_id and show it when off — never a hard-coded 100%.
+    lc = re.search(
+        r"function renderLightControls\(card, c, brightHost\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
+    )
+    assert lc, "renderLightControls not found"
+    lcb = lc.group(1)
+    # No fake 100% fallback survives.
+    assert ": 100;" not in lcb
+    assert "hcLastBrightness[c.entity_id] = Math.round(c.brightness / 255 * 100)" in lcb
+    # Off light (brightness null) falls back to the cached %, else neutral 0.
+    assert "var cached = hcLastBrightness[c.entity_id];" in lcb
+    assert "var pct = known ? cached : (cached != null ? cached : 0);" in lcb
+    # A never-seen-on light renders the slider neutral (the 6th makeSlider arg).
+    assert "!known && cached == null);" in lcb
+
+
+def test_last_known_brightness_cache_updates_on_every_render():
+    # The cache lives alongside the other per-entity client state (hcPending) and
+    # is refreshed by renderLightControls, which every render path runs (initial
+    # render + SSE card_state + poll all re-render the favorite card).
+    assert "var hcLastBrightness = {};" in _HTML
+    # A neutral slider shows a dash, not a fabricated %.
+    ms = re.search(
+        r"function makeSlider\(card, value, unit, onset, inline, neutral\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
+    )
+    assert ms, "makeSlider not found (neutral arg)"
+    assert 'val.textContent = neutral ? "–" : value + unit;' in ms.group(1)
