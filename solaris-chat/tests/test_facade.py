@@ -1402,3 +1402,138 @@ async def test_chat_strips_room_prefix_and_sets_current_room(aiohttp_client, db,
     assert user_msgs
     assert all("[room:" not in c for c in user_msgs)
     assert any(c.rstrip().endswith("spiele Musik") for c in user_msgs)
+
+
+# -- #724: a completed voice turn propagates over SSE / Web Push -------------
+
+
+class _FakeNotifier:
+    def __init__(self):
+        self.pushes: list[tuple] = []
+
+    async def push(self, uid, title, body, data):
+        self.pushes.append((uid, title, body, data))
+
+
+async def test_voice_turn_pushes_when_no_sse_client(aiohttp_client, db, soul):
+    # A completed voice turn (HA Assist -> facade) with no portal open pushes
+    # the reply to the resident's phone, deep-linking the household session.
+    from solaris_chat.engine.notify import EventBus
+
+    household, _ = _engine(
+        db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
+    )
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    bus = EventBus()  # nobody subscribed → app backgrounded
+    notifier = _FakeNotifier()
+    app = build_app(
+        hermes=household,
+        hermes_deep=deep,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        event_bus=bus,
+        notifier=notifier,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Licht an"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    assert len(notifier.pushes) == 1
+    uid, _title, body, data = notifier.pushes[0]
+    assert uid == "michael"
+    assert body == "Klar."
+    assert data["kind"] == "chat"
+    assert data["url"] == f"/#/c/{store.household_session_id('michael')}"
+
+
+async def test_voice_turn_does_not_push_when_sse_client_open(aiohttp_client, db, soul):
+    # An open /api/events subscriber gets the chat event live — no phone push.
+    from solaris_chat.engine.notify import EventBus
+
+    household, _ = _engine(
+        db, soul, [ChatResult(content="Klar.", prompt_tokens=5, completion_tokens=1)]
+    )
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    bus = EventBus()
+    notifier = _FakeNotifier()
+    app = build_app(
+        hermes=household,
+        hermes_deep=deep,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        event_bus=bus,
+        notifier=notifier,
+    )
+    http = await aiohttp_client(app)
+    sse = await http.get("/api/events", headers={"Remote-User": "michael"})
+    await asyncio.sleep(0.05)  # let the subscription register
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Licht an"}],
+            "user": "michael",
+        },
+    )
+    assert resp.status == 200
+    assert notifier.pushes == []  # SSE delivered it; no phone push
+    sse.close()
+
+
+async def test_ephemeral_guest_turn_does_not_emit(aiohttp_client, db, soul):
+    # A guest (ephemeral) turn persists nothing and must fire no SSE/push — it
+    # is not a resident's durable session, so there is nothing to surface.
+    from solaris_chat.engine.notify import EventBus
+
+    household, _ = _engine(db, soul, [])
+    deep, _ = _engine(db, soul, [], name="solaris-deep")
+    guest_fake = FakeOllama(
+        [ChatResult(content="Hallo.", prompt_tokens=5, completion_tokens=1)]
+    )
+    guest = EngineClient(
+        EngineProfile(
+            name="solaris-guest",
+            model="gemma4:e2b",
+            soul_path=soul,
+            toolbox=Toolbox([]),
+            ephemeral=True,
+        ),
+        db_path=db,
+        ollama=guest_fake,
+        recorder=TraceRecorder(),
+        context_window=32768,
+    )
+    bus = EventBus()
+    notifier = _FakeNotifier()
+    app = build_app(
+        hermes=household,
+        hermes_deep=deep,
+        hermes_guest=guest,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        event_bus=bus,
+        notifier=notifier,
+    )
+    http = await aiohttp_client(app)
+    resp = await http.post(
+        "/ollama/api/chat",
+        json={
+            "model": "solaris-guest",
+            "stream": False,
+            "messages": [{"role": "user", "content": "Hallo"}],
+            "user": "guest",
+        },
+    )
+    assert resp.status == 200
+    assert notifier.pushes == []
