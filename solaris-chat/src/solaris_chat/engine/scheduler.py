@@ -91,12 +91,17 @@ class TimerScheduler:
         hass_token: str,
         alarm_sound_media_id: str = "",
         alarm_sound_path: str = "",
+        notifier: Any = None,
     ):
         self._db_path = db_path
         self._hass_url = hass_url.rstrip("/")
         self._hass_token = hass_token
         self._alarm_sound_media_id = alarm_sound_media_id
         self._alarm_sound_path = alarm_sound_path
+        # Best-effort Web Push (#713): a fired timer also fans a phone
+        # notification out to the owner's PWA. The speaker announce stays
+        # primary; a missing/disabled notifier just skips the push.
+        self._notifier = notifier
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -122,7 +127,9 @@ class TimerScheduler:
                 (now,),
             ).fetchall()
         for row in rows:
-            ok = await self._announce(dict(row))
+            timer = dict(row)
+            ok = await self._announce(timer)
+            await self._push(timer)
             with _conn(self._db_path) as conn:
                 conn.execute(
                     "UPDATE engine_timers SET status = ? WHERE id = ?",
@@ -185,6 +192,27 @@ class TimerScheduler:
         except (aiohttp.ClientError, TimeoutError, OSError) as e:
             log.error("engine.timer.announce_failed", error=str(e))
             return False
+
+    async def _push(self, timer: dict[str, Any]) -> None:
+        """Fan a fired timer out to the owner's phones (best-effort, #713).
+
+        No-op without a notifier or when Web Push is unconfigured; any error is
+        swallowed by the notifier so the timer loop is never affected."""
+        if self._notifier is None:
+            return
+        label = timer.get("label") or ""
+        kind = timer.get("kind") or "timer"
+        title = {
+            "timer": "Timer abgelaufen",
+            "alarm": "Wecker",
+            "reminder": "Erinnerung",
+        }.get(kind, kind.capitalize())
+        await self._notifier.push(
+            timer.get("owner_uid") or "",
+            title,
+            label or title,
+            {"kind": kind, "timer_id": timer.get("id")},
+        )
 
     def _alarm_sound_can_play(self) -> bool:
         return bool(

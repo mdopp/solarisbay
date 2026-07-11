@@ -30,6 +30,7 @@ from solaris_chat import (
     mentions_store,
     notes_search,
     personalities,
+    push_store,
     reasoning,
     settings_store,
     skills,
@@ -874,6 +875,7 @@ def build_app(
     hass_url: str = "",
     hass_token: str = "",
     crons: Any = None,
+    vapid_public_key: str = "",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -1357,6 +1359,22 @@ def build_app(
             STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
         )
 
+    async def service_worker(_request: web.Request) -> web.Response:
+        """Serve the push service worker at ROOT scope (#713).
+
+        A service worker's control scope is capped at its own URL path, so the
+        push SW must be served from `/` — not `/static/` — to control the whole
+        PWA. `Service-Worker-Allowed: /` widens the allowed scope and `no-cache`
+        makes an updated SW land on the next deploy."""
+        return web.FileResponse(
+            STATIC_DIR / "sw.js",
+            headers={
+                "Content-Type": "application/javascript",
+                "Service-Worker-Allowed": "/",
+                "Cache-Control": "no-cache",
+            },
+        )
+
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
 
@@ -1418,6 +1436,10 @@ def build_app(
                 # household) and typed turns are the same conversation, visible
                 # to every logged-in resident instead of split per-uid.
                 "household_session_id": shared_household_id,
+                # The Web Push VAPID public key (#713) the browser needs to
+                # subscribe. Empty ⇒ Web Push is unconfigured, so the UI hides
+                # the notification bell.
+                "vapid_public_key": vapid_public_key,
             }
         )
 
@@ -2655,6 +2677,44 @@ def build_app(
         status = 200 if result.get("ok") else 503
         return web.json_response(result, status=status)
 
+    async def push_subscribe(request: web.Request) -> web.Response:
+        """Register a browser PushSubscription for the caller (#713).
+
+        Body is the `PushSubscription.toJSON()` shape: `endpoint` + `keys.p256dh`
+        / `keys.auth`. Owner-scoped to the Authelia identity; the endpoint URL is
+        the unique key, so a re-subscribe upserts."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        endpoint = str(body.get("endpoint") or "")
+        keys = body.get("keys") if isinstance(body.get("keys"), dict) else {}
+        p256dh = str(keys.get("p256dh") or "")
+        auth = str(keys.get("auth") or "")
+        if not (endpoint and p256dh and auth):
+            return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+        user_agent = request.headers.get("User-Agent", "")[:256]
+        push_store.upsert(solaris_db_path, uid, endpoint, p256dh, auth, user_agent)
+        return web.json_response({"ok": True})
+
+    async def push_unsubscribe(request: web.Request) -> web.Response:
+        """Drop the caller's subscription for one endpoint (owner-scoped, #713)."""
+        uid = resolve_uid(request, remote_user_header, default_uid)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+        endpoint = str(body.get("endpoint") or "")
+        if not endpoint:
+            return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+        # Owner-scope: only remove an endpoint that belongs to the caller, so a
+        # resident can't drop another's device by guessing its endpoint.
+        owned = {s["endpoint"] for s in push_store.list_for_uid(solaris_db_path, uid)}
+        if endpoint in owned:
+            push_store.remove_by_endpoint(solaris_db_path, endpoint)
+        return web.json_response({"ok": True})
+
     async def favorites_create(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid)
         try:
@@ -3158,6 +3218,7 @@ def build_app(
 
     app = web.Application(middlewares=[csp])
     app.router.add_get("/", index)
+    app.router.add_get("/sw.js", service_worker)
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", whoami)
     app.router.add_post("/api/ha/call", ha_call)
@@ -3209,6 +3270,8 @@ def build_app(
     app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
     app.router.add_put("/api/favorites/{fav_id}", favorites_reorder)
     app.router.add_post("/api/favorites/{fav_id}/run", favorites_run)
+    app.router.add_post("/api/push/subscribe", push_subscribe)
+    app.router.add_post("/api/push/unsubscribe", push_unsubscribe)
     app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/anchors/aliases", anchors_aliases)
@@ -3494,6 +3557,7 @@ async def serve(
     hass_url: str = "",
     hass_token: str = "",
     crons: Any = None,
+    vapid_public_key: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -3527,6 +3591,7 @@ async def serve(
         hass_url=hass_url,
         hass_token=hass_token,
         crons=crons,
+        vapid_public_key=vapid_public_key,
     )
     runner = web.AppRunner(app)
     await runner.setup()

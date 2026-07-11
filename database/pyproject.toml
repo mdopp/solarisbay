@@ -14,6 +14,11 @@ dependencies = [
   "sqlalchemy>=2.0",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=7",
+]
+
 [tool.setuptools]
 # No installable Python package — this project is migrations only.
 packages = []

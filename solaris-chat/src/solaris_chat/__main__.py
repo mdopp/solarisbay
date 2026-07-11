@@ -9,6 +9,7 @@ from solaris_chat.config import settings
 from solaris_chat.context import build_context_window
 from solaris_chat.engine.crons import CronRunner
 from solaris_chat.engine.ingest import run_ingest
+from solaris_chat.engine.notify import Notifier
 from solaris_chat.engine.profiles import build_engine_clients
 from solaris_chat.engine.scheduler import TimerScheduler
 from solaris_chat.logging import log
@@ -43,12 +44,19 @@ async def _run() -> None:
         jellyfin_username=settings.jellyfin_username,
         jellyfin_password=settings.jellyfin_password,
     )
+    notifier = Notifier(
+        settings.solaris_db_path,
+        settings.vapid_public_key,
+        settings.vapid_private_key,
+        settings.vapid_subject,
+    )
     scheduler = TimerScheduler(
         settings.solaris_db_path,
         settings.hass_url,
         settings.hass_token,
         settings.alarm_sound_media_id,
         settings.alarm_sound_path,
+        notifier=notifier,
     )
     scheduler.start()
     crons = CronRunner(
@@ -107,6 +115,7 @@ async def _run() -> None:
         hass_url=settings.hass_url,
         hass_token=settings.hass_token,
         crons=crons,
+        vapid_public_key=settings.vapid_public_key,
     )
 
 
