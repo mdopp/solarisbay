@@ -11,6 +11,7 @@ NOT import alembic (CI runs solaris-chat in a clean env without it).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 
 from solaris_chat import favorites_store
@@ -698,6 +699,26 @@ def test_start_page_renders_ha_notice_and_unavailable_card():
     assert '"nicht verfügbar"' in _HTML  # the disabled-card label
     assert "f.card_unavailable" in _HTML
     assert "updateHaBanner(page, j.ha" in _HTML  # banner lifts on the live poll
+
+
+def test_generic_card_renders_unavailable_entity_as_inactive():
+    # #732: an offline entity (unavailable/unknown/empty state) must render as an
+    # explicit inactive .hc-unavailable tile with the offline label — NOT a normal
+    # .off switch — and must not wire a toggle (the branch adds no handler; the
+    # .hc-unavailable CSS also kills pointer-events).
+    fn = re.search(
+        r"function renderHaCard\(c, row, opts\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert fn, "renderHaCard not found"
+    body = fn.group(1)
+    assert 'st === "unavailable" || st === "unknown" || st === ""' in body
+    assert 'card.classList.add("hc-unavailable")' in body
+    assert 'ulbl.className = "hc-unavail-label"' in body
+    # the unavailable branch precedes the generic on/off branch, so an offline
+    # entity never reaches the haToggle wiring:
+    unavail_at = body.index('st === "unavailable"')
+    toggle_at = body.index("haToggle(card, badge, c)")
+    assert unavail_at < toggle_at
 
 
 def test_ha_watch_status_getter():

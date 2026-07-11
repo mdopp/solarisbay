@@ -296,6 +296,37 @@ def test_onoff_control_is_a_toggle_switch_not_a_label_button():
     assert ht, "haToggle not found"
     assert 'card.setAttribute("aria-checked"' in ht.group(1)
 
+
+def test_toggle_trusts_optimistic_and_reverts_only_on_hard_failure():
+    # #732: on a successful toggle haToggle must NOT apply a server read-back
+    # (the server no longer returns one) — it trusts the optimistic target + the
+    # SSE/poll card_state. It reverts (apply(was)) only on a hard failure.
+    ht = re.search(
+        r"function haToggle\(card, badge, c\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert ht, "haToggle not found"
+    body = ht.group(1)
+    assert "res.state" not in body  # no server read-back applied
+    assert "res.ok === false" in body  # hard-failure detection
+    assert "apply(was)" in body  # revert path
+
+
+def test_pending_guard_lives_for_the_full_window():
+    # #732: hcPendingContradicts must NOT delete the pending entry on the first
+    # matching update — a matching echo returns false but keeps the entry so a
+    # later stale echo within the window is still dropped. Only expiry clears it.
+    fn = re.search(
+        r"function hcPendingContradicts\(entityId, card\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
+    )
+    assert fn, "hcPendingContradicts not found"
+    body = fn.group(1)
+    # match path returns false WITHOUT deleting:
+    assert "if (card && card.state === p.state) return false;" in body
+    # exactly one delete (the expiry path), not one on match too:
+    assert body.count("delete hcPending[entityId]") == 1
+
     # The switch is a CSS pill+knob driven by the card's on/off class, with the
     # label text hidden (font-size: 0) so it reads purely as a switch.
     assert ".hc-badge.hc-switch {" in _HTML

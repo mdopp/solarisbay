@@ -567,7 +567,7 @@ async def call_service_scoped(
     service: str,
     data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run a single `domain.service` on one entity and return its new state.
+    """Run a single `domain.service` on one entity, returning only ok/error.
 
     The card-action path (#476): same domain/service allowlist as the
     `ha_call_service` tool — the names go into `/api/services/{domain}/{service}`
@@ -599,11 +599,12 @@ async def call_service_scoped(
             if resp.status >= 400:
                 detail = (await resp.text())[:200]
                 return {"ok": False, "error": f"HA {resp.status}: {detail}"}
-        async with client.get(f"{url}/api/states/{entity_id}", headers=headers) as resp:
-            if resp.status >= 400:
-                return {"ok": True, "state": None}
-            body = await resp.json()
-    return {"ok": True, "state": body.get("state")}
+    # No immediate state read-back: a GET right after the POST races HA's own
+    # state settle and often returns the STALE pre-action state (#732), which the
+    # card client would apply over its optimistic target and bounce the toggle.
+    # Success is enough — the authoritative new state arrives via the SSE
+    # card_state bus / poll. No caller reads the returned state.
+    return {"ok": True}
 
 
 def build_ha_tools(hass_url: str, hass_token: str) -> list[Tool]:

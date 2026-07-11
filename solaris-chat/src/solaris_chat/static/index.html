@@ -2391,6 +2391,17 @@
           // collapses to the single column when the viewport is narrow.
           card.classList.add("hc-span2");
           renderMediaPlayerCard(card, c, st, inert);
+        } else if (st === "unavailable" || st === "unknown" || st === "") {
+          // #732: an offline/unreachable entity (empty/unavailable/unknown) is
+          // NOT a switched-off device — render it greyed + inert (reusing #729's
+          // .hc-unavailable) with an offline label and no toggle, so a tap can't
+          // try to control a device HA can't reach. Mirrors the media_player
+          // branch's `unavailable` handling.
+          card.classList.add("hc-unavailable");
+          var ulbl = document.createElement("div");
+          ulbl.className = "hc-unavail-label";
+          ulbl.textContent = "nicht verfügbar";
+          card.appendChild(ulbl);
         } else {
           // binary_sensor / cover / light / switch -> on/off-style badge.
           var onish = st === "on" || st === "open";
@@ -2818,7 +2829,9 @@
       }
 
       // Toggle a light/switch card via the scoped /api/ha/call endpoint (#476):
-      // optimistic flip, then confirm/revert from the returned state.
+      // optimistic flip; trust the optimistic target + the authoritative SSE/poll
+      // card_state, and use the server response only to detect a hard failure
+      // (#732 — the server no longer returns a racy immediate read-back).
       function haToggle(card, badge, c) {
         if (card.classList.contains("busy")) return;
         var was = card.classList.contains("on");
@@ -2847,12 +2860,10 @@
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (res) {
-            if (res && res.ok && res.state != null) {
-              apply(res.state === "on");
-              // Re-anchor the guard to the server-confirmed state (a failed
-              // toggle can land on the old state).
-              hcExpect(c.entity_id, res.state);
-            } else {
+            // Hard failure only: revert to the pre-tap state and re-anchor the
+            // guard there. On success we keep the optimistic target and let the
+            // SSE/poll card_state settle it — no server read-back to bounce on.
+            if (!res || res.ok === false) {
               apply(was);
               hcExpect(c.entity_id, was ? "on" : "off");
             }
@@ -4312,11 +4323,15 @@
         if (entityId) hcPending[entityId] = { state: state, until: Date.now() + HC_PENDING_MS };
       }
       // True while `card` still contradicts the pending expected state for entity.
+      // The guard lives for the FULL window (#732): a matching update is applied
+      // (returns false) but does NOT clear the entry, so a later stale echo within
+      // the same window is still dropped. Only expiry, a new user toggle, or a
+      // confirmed failure (both via hcExpect) clears it.
       function hcPendingContradicts(entityId, card) {
         var p = hcPending[entityId];
         if (!p) return false;
         if (Date.now() > p.until) { delete hcPending[entityId]; return false; }
-        if (card && card.state === p.state) { delete hcPending[entityId]; return false; }
+        if (card && card.state === p.state) return false;
         return true;
       }
 
