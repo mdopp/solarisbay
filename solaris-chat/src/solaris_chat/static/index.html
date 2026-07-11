@@ -6173,13 +6173,15 @@
         section("Meine Favoriten", data.personal || []);
         section("Haushalt", data.household || []);
 
-        // Dedup by label (#672): the personal + household usage counters can
-        // carry the same action under two rows (e.g. "play_radio"), which would
-        // otherwise list it twice under "Häufig genutzt".
+        // Dedup (#672/#743): a device's on+off count as two rows but pin the one
+        // card, so collapse them by entity_id (keying off the ha_call_service
+        // payload); pure tool actions (e.g. "play_radio") stay label-deduped.
         var seen = {};
         var freq = (data.frequent || []).filter(function (f) {
           if (f.kind !== "action") return false;
-          var key = f.label || "";
+          var p = f.payload || {};
+          var isDevice = p.tool === "ha_call_service" && p.args && p.args.entity_id;
+          var key = isDevice ? "entity:" + p.args.entity_id : (f.label || "");
           if (seen[key]) return false;
           seen[key] = true;
           return true;
@@ -6459,7 +6461,13 @@
         var el = document.createElement("div");
         el.className = "hc-row start-frequent";
         var name = document.createElement("span");
-        name.textContent = f.label || "Aktion";
+        // A collapsed device row pins the whole card, so drop the "— An/Aus"
+        // action suffix and show just the device's friendly name (#743).
+        var p = f.payload || {};
+        var isDevice = p.tool === "ha_call_service" && p.args && p.args.entity_id;
+        name.textContent = isDevice
+          ? (f.label || "Aktion").replace(/\s+—\s+.*$/, "")
+          : (f.label || "Aktion");
         el.appendChild(name);
         var star = document.createElement("button");
         star.type = "button";
@@ -6467,10 +6475,18 @@
         star.addEventListener("click", function (ev) {
           ev.stopPropagation();
           star.disabled = true;
+          // A frequent DEVICE (ha_call_service with an entity_id) pins the full
+          // device CARD (#743), which resolves its own name + live controls;
+          // only a non-device tool action stays a one-shot action button.
+          var p = f.payload || {};
+          var entityId = p.tool === "ha_call_service" && p.args && p.args.entity_id;
+          var body = entityId
+            ? { kind: "entity", payload: { entity_id: entityId } }
+            : { kind: "action", label: f.label, payload: f.payload };
           fetch("/api/favorites", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ kind: "action", label: f.label, payload: f.payload }),
+            body: JSON.stringify(body),
           }).then(function () { loadStartPage(page); });
         });
         el.appendChild(star);

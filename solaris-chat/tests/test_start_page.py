@@ -806,3 +806,14 @@ def test_ha_watch_status_getter():
     assert configured.status == "disconnected"
     configured._connected = True
     assert configured.status == "connected"
+
+
+def test_frequent_star_pins_device_as_card_else_action():
+    # #743 source contract: a frequent DEVICE (ha_call_service + entity_id) pins
+    # the entity card; any other tool stays a one-shot action favorite.
+    assert (
+        'var entityId = p.tool === "ha_call_service" && p.args && p.args.entity_id;'
+        in _HTML
+    )
+    assert '? { kind: "entity", payload: { entity_id: entityId } }' in _HTML
+    assert ': { kind: "action", label: f.label, payload: f.payload };' in _HTML

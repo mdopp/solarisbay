@@ -129,6 +129,60 @@ def test_remove_by_entity(tmp_path):
     assert favorites_store.list_favorites(db, "mdopp") == []
 
 
+def test_add_favorite_entity_idempotent(tmp_path):
+    db = _db(tmp_path)
+    first = favorites_store.add_favorite(
+        db, "mdopp", "entity", "Büro", {"entity_id": "light.buro"}
+    )
+    again = favorites_store.add_favorite(
+        db, "mdopp", "entity", "Bürolicht", {"entity_id": "light.buro"}
+    )
+    assert again == first  # re-pin returns the existing id
+    favs = favorites_store.list_favorites(db, "mdopp")
+    assert len(favs) == 1
+
+
+def test_add_favorite_action_idempotent(tmp_path):
+    db = _db(tmp_path)
+    payload = {"tool": "play_radio", "args": {"station": "dlf"}}
+    first = favorites_store.add_favorite(db, "mdopp", "action", "Radio", payload)
+    # same tool+args, keys in a different order → still a duplicate
+    again = favorites_store.add_favorite(
+        db,
+        "mdopp",
+        "action",
+        "Radio",
+        {"args": {"station": "dlf"}, "tool": "play_radio"},
+    )
+    assert again == first
+    assert len(favorites_store.list_favorites(db, "mdopp")) == 1
+
+
+def test_add_favorite_distinct_still_added(tmp_path):
+    db = _db(tmp_path)
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "Büro", {"entity_id": "light.buro"}
+    )
+    favorites_store.add_favorite(
+        db, "mdopp", "entity", "Flur", {"entity_id": "light.flur"}
+    )
+    favorites_store.add_favorite(
+        db,
+        "mdopp",
+        "action",
+        "Radio",
+        {"tool": "play_radio", "args": {"station": "dlf"}},
+    )
+    favorites_store.add_favorite(
+        db,
+        "mdopp",
+        "action",
+        "Musik",
+        {"tool": "play_radio", "args": {"station": "byte"}},
+    )
+    assert len(favorites_store.list_favorites(db, "mdopp")) == 4
+
+
 # ---- pin_favorite handler -------------------------------------------------
 
 
