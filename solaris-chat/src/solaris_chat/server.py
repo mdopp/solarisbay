@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import os
 import re
@@ -64,6 +65,65 @@ from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Self-contained confirm page for /pair-device (#751). Inline HTML/CSS in the
+# server.py style of the other simple routes. The `{devices}` slot is the
+# server-rendered paired-devices list; the confirm form POSTs same-origin (the
+# mint happens only on that explicit click, never on GET).
+_PAIR_DEVICE_HTML = """<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gerät koppeln</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem;
+         background: #101014; color: #f0f0f4; }}
+  main {{ max-width: 28rem; margin: 0 auto; }}
+  h1 {{ font-size: 1.4rem; }}
+  p {{ color: #b8b8c4; line-height: 1.5; }}
+  input[type=text] {{ width: 100%; box-sizing: border-box; padding: .6rem;
+         border-radius: .5rem; border: 1px solid #33333c; background: #1a1a20;
+         color: #f0f0f4; font-size: 1rem; }}
+  button.primary {{ margin-top: 1rem; width: 100%; padding: .8rem;
+         border: none; border-radius: .5rem; background: #5b8cff; color: #fff;
+         font-size: 1rem; font-weight: 600; cursor: pointer; }}
+  section.paired {{ margin-top: 2rem; border-top: 1px solid #26262e;
+         padding-top: 1rem; }}
+  ul {{ list-style: none; padding: 0; }}
+  li {{ display: flex; justify-content: space-between; align-items: center;
+        padding: .5rem 0; border-bottom: 1px solid #1e1e26; }}
+  li.empty {{ color: #7a7a88; }}
+  button.revoke {{ background: none; border: 1px solid #55323a; color: #ff8b9c;
+        border-radius: .4rem; padding: .3rem .6rem; cursor: pointer; }}
+</style>
+</head>
+<body>
+<main>
+  <h1>Dieses Gerät koppeln</h1>
+  <p>Erzeugt einen Zugangs-Token für die Solaris-App auf diesem Gerät.
+     Der Token wird nur an die App übergeben und ist deinem Konto zugeordnet.</p>
+  <form method="post" action="/pair-device">
+    <label for="label">Gerätename (optional)</label>
+    <input type="text" id="label" name="label" placeholder="z. B. Mein Pixel"
+           autocomplete="off">
+    <button type="submit" class="primary">Dieses Gerät koppeln</button>
+  </form>
+  <section class="paired">
+    <h2>Gekoppelte Geräte</h2>
+    <ul>{devices}</ul>
+  </section>
+</main>
+<script>
+document.querySelectorAll("button.revoke").forEach(function (b) {{
+  b.addEventListener("click", async function () {{
+    await fetch("/api/device-tokens/" + b.dataset.id, {{ method: "DELETE" }});
+    location.reload();
+  }});
+}});
+</script>
+</body>
+</html>"""
 
 
 def _read_okf(notes_dir: str, okf_path: str) -> dict[str, str]:
@@ -2965,6 +3025,57 @@ def build_app(
         ok = device_token_store.revoke(solaris_db_path, owner, token_id)
         return web.json_response({"ok": ok}, status=200 if ok else 404)
 
+    async def pair_device_page(request: web.Request) -> web.Response:
+        """Authelia-gated confirm page for pairing a native Android client (#751).
+
+        Opened by the app in a Chrome Custom Tab (where the browser's Authelia
+        cookies exist). Renders a confirm form and lists the resident's paired
+        devices — it does NOT mint a token on load: minting only happens on the
+        explicit POST below, so a drive-by/prefetched GET can't create a token
+        (CSRF protection). Requires an interactive session; a device-token
+        bearer or the service key is NOT a resident and gets 401."""
+        owner = _interactive_uid(request)
+        if owner is None:
+            return web.Response(status=401, text="Nur für angemeldete Bewohner.")
+        tokens = device_token_store.list_for_uid(solaris_db_path, owner)
+        rows = "".join(
+            "<li>{label} <button class='revoke' data-id='{id}'>"
+            "Entfernen</button></li>".format(
+                label=html.escape(t.get("label") or "Unbenanntes Gerät"),
+                id=html.escape(t["id"]),
+            )
+            for t in tokens
+        )
+        if not rows:
+            rows = "<li class='empty'>Noch keine Geräte gekoppelt.</li>"
+        page = _PAIR_DEVICE_HTML.format(devices=rows)
+        return web.Response(
+            text=page,
+            content_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def pair_device_confirm(request: web.Request) -> web.Response:
+        """Mint a device token on explicit confirm and hand it to the app (#751).
+
+        Guarded by the SAME interactive-session check as POST /api/device-tokens
+        (fail-closed): a device-token/service-key caller can't mint. On success
+        it 302-redirects the browser to the app's deep link, carrying the token
+        in the URL FRAGMENT (`#token=…`) — the fragment is never sent to the
+        server/proxy, keeping the plaintext out of the redirect hop's logs. The
+        scheme MUST equal the app's packageId (twa-manifest / assetlinks)."""
+        owner = _interactive_uid(request)
+        if owner is None:
+            return web.Response(status=401, text="Nur für angemeldete Bewohner.")
+        form = await request.post()
+        label = str(form.get("label") or "").strip()[:128] or "Android-Gerät"
+        token_id, token = device_token_store.create(solaris_db_path, owner, label)
+        deep_link = f"{android_package}://pair#token={token}&id={token_id}"
+        # Set Location directly rather than via HTTPFound, which normalises the
+        # URL and would inject a slash before the fragment (`pair/#…`); the app's
+        # intent-filter matches the exact `…://pair` path.
+        return web.Response(status=302, headers={"Location": deep_link})
+
     async def push_subscribe(request: web.Request) -> web.Response:
         """Register a browser PushSubscription for the caller (#713).
 
@@ -3604,6 +3715,8 @@ def build_app(
     app.router.add_post("/api/device-tokens", device_token_create)
     app.router.add_get("/api/device-tokens", device_token_list)
     app.router.add_delete("/api/device-tokens/{id}", device_token_revoke)
+    app.router.add_get("/pair-device", pair_device_page)
+    app.router.add_post("/pair-device", pair_device_confirm)
     app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/anchors/aliases", anchors_aliases)
