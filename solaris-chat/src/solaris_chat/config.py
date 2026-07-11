@@ -60,6 +60,11 @@ def _parse_imap_accounts(environ: dict[str, str]) -> tuple[ImapAccount, ...]:
     return tuple(accounts)
 
 
+def _parse_cert_fingerprints(raw: str) -> tuple[str, ...]:
+    """Parse comma-separated SHA256 cert fingerprints, stripped; empty ⇒ ()."""
+    return tuple(fp.strip() for fp in raw.split(",") if fp.strip())
+
+
 def _parse_library_owners(raw: str) -> dict[str, str]:
     """Parse `Name=uid;Name2=uid2` into a {library_name: owner_uid} map.
 
@@ -123,6 +128,8 @@ class Settings:
     vapid_public_key: str
     vapid_private_key: str
     vapid_subject: str
+    android_package: str
+    android_cert_fingerprints: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -283,6 +290,19 @@ class Settings:
             vapid_public_key=os.environ.get("VAPID_PUBLIC_KEY", "").strip(),
             vapid_private_key=os.environ.get("VAPID_PRIVATE_KEY", "").strip(),
             vapid_subject=os.environ.get("VAPID_SUBJECT", "").strip(),
+            # Android TWA / Digital Asset Links (#716): the /.well-known/
+            # assetlinks.json route binds the app to this domain. The package
+            # name identifies the app; the SHA256 cert fingerprints of its
+            # signing key let Google verify the binding (so the TWA drops its
+            # URL bar). The signing key doesn't exist until the android repo
+            # scaffolds it, so fingerprints default empty — the route then
+            # serves `[]` (valid; Google just won't verify yet).
+            android_package=os.environ.get(
+                "ANDROID_PACKAGE", "cloud.dopp.solaris"
+            ).strip(),
+            android_cert_fingerprints=_parse_cert_fingerprints(
+                os.environ.get("ANDROID_CERT_FINGERPRINTS", "")
+            ),
         )
 
 

@@ -132,6 +132,8 @@ async def _run() -> None:
         hass_token=settings.hass_token,
         crons=crons,
         vapid_public_key=settings.vapid_public_key,
+        android_package=settings.android_package,
+        android_cert_fingerprints=settings.android_cert_fingerprints,
         ha_watcher=ha_watcher,
     )
 
