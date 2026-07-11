@@ -721,6 +721,32 @@ def test_generic_card_renders_unavailable_entity_as_inactive():
     assert unavail_at < toggle_at
 
 
+# --- #736: colour-picker overlay survives live card re-render (box-verify visual) ---
+
+
+def test_colour_picker_suspends_live_rerender():
+    # The colour <input type=color> sets hcColorPicking on focus and clears it on
+    # blur/change, and startRefreshBusy honours the flag — so an open native
+    # overlay isn't destroyed by an SSE/poll in-place card re-render.
+    assert "var hcColorPicking = false;" in _HTML
+    assert (
+        'picker.addEventListener("focus", function () { hcColorPicking = true; });'
+        in _HTML
+    )
+    assert (
+        'picker.addEventListener("blur", function () { hcColorPicking = false; });'
+        in _HTML
+    )
+    fn = re.search(r"function startRefreshBusy\(\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "startRefreshBusy not found"
+    assert "hcColorPicking ||" in fn.group(1)
+    # change must also clear the flag (belt-and-braces if blur didn't fire first)
+    change = re.search(
+        r'picker\.addEventListener\("change", function \(\) \{(.*?)\}\);', _HTML, re.S
+    )
+    assert change and "hcColorPicking = false;" in change.group(1)
+
+
 def test_ha_watch_status_getter():
     from solaris_chat.engine.ha_watch import HaStateWatcher
     from solaris_chat.engine.notify import EventBus

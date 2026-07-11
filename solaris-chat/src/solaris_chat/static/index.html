@@ -2523,7 +2523,15 @@
           picker.type = "color";
           picker.value = rgbToHex(c.rgb_color);
           picker.title = "Farbe";
+          // #736: focus brackets the native overlay being open (both desktop and
+          // mobile); blur/change close it. While open, hcColorPicking suspends
+          // the live card re-render (see startRefreshBusy) so the overlay isn't
+          // yanked away. blur always clears the flag even if the user dismissed
+          // the overlay without picking.
+          picker.addEventListener("focus", function () { hcColorPicking = true; });
+          picker.addEventListener("blur", function () { hcColorPicking = false; });
           picker.addEventListener("change", function () {
+            hcColorPicking = false;
             haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(picker.value) });
           });
           // #726: tapping the swatch must open the native colour overlay only —
@@ -4317,6 +4325,10 @@
       // #711: the start page is a live dashboard — a timer re-fetches the pinned
       // entities' state while #/p/start is active and updates each card in place.
       var startTimer = null, startPageCard = null, hcSliderDragging = false;
+      // #736: an open native colour-picker overlay is tied to its live
+      // <input type=color>; an in-place card re-render destroys that input and
+      // closes the overlay under the user. Suspend live updates while it's open.
+      var hcColorPicking = false;
       var START_REFRESH_MS = 12000;
       // #726: after a user toggles a light/switch we optimistically show the new
       // state, but HA settles async — an eager poll or a stale SSE echo can
@@ -4440,13 +4452,14 @@
       }
       function startRefreshBusy() {
         // Don't yank the DOM out from under an interaction: edit mode, the card
-        // picker overlay, an active slider drag, or a card mid-call all suspend
-        // the in-place update. (window.confirm blocks JS, so a dialog can't race
-        // a tick.)
+        // picker overlay, an active slider drag, an open colour picker (#736), or
+        // a card mid-call all suspend the in-place update. (window.confirm blocks
+        // JS, so a dialog can't race a tick.)
         return (
           !startPageCard ||
           startPageCard.classList.contains("editing") ||
           hcSliderDragging ||
+          hcColorPicking ||
           document.querySelector(".card-picker") != null ||
           startPageCard.querySelector(".hc-row.busy, .ha-card.busy") != null
         );
