@@ -432,18 +432,26 @@
        grey/left when off. It carries NO visible label (#686 dropped the clipped
        "an"/"aus" text); state is the knob position + colour, the word lives only
        in the card's aria-label/title. Driven by the card's .on/.off class. */
+    /* #726: the whole card is the tap target, but the switch itself is enlarged
+       to a comfortable touch size (44px track, 20px knob) so it reads and hits
+       as a real control on a phone. overflow stays visible so the padded hit
+       area (::before) around the pill isn't clipped. */
     .hc-badge.hc-switch {
-      position: relative; width: 34px; height: 18px; padding: 0; flex: 0 0 auto;
-      border-radius: 999px; overflow: hidden; font-size: 0;
+      position: relative; width: 44px; height: 24px; padding: 0; flex: 0 0 auto;
+      border-radius: 999px; overflow: visible; font-size: 0;
       transition: background 0.15s ease; vertical-align: middle;
+    }
+    /* Invisible ≥44px tap halo so a fingertip near the pill still hits it. */
+    .hc-badge.hc-switch::before {
+      content: ""; position: absolute; top: -12px; bottom: -12px; left: -12px; right: -12px;
     }
     .hc-badge.hc-switch::after {
       content: ""; position: absolute; top: 2px; left: 2px;
-      width: 14px; height: 14px; border-radius: 50%; background: #fff;
+      width: 20px; height: 20px; border-radius: 50%; background: #fff;
       transition: transform 0.15s ease;
     }
     .on .hc-badge.hc-switch { background: #22c55e; }
-    .on .hc-badge.hc-switch::after { transform: translateX(16px); }
+    .on .hc-badge.hc-switch::after { transform: translateX(20px); }
     .off .hc-badge.hc-switch { background: rgba(127,127,127,0.45); }
     .ha-card.busy { opacity: 0.6; pointer-events: none; }
     /* #702: a picker-inert tile is selection-only — no control inside it may
@@ -2482,6 +2490,13 @@
           picker.addEventListener("change", function () {
             haCall(card, c, "light.turn_on", { rgb_color: hexToRgb(picker.value) });
           });
+          // #726: tapping the swatch must open the native colour overlay only —
+          // without bubbling to the card's power toggle (which would flip the
+          // light and re-render the card out from under the open picker). Mirror
+          // the slider/button rows' stopPropagation guard, on both the click and
+          // the pointerdown that starts the interaction.
+          row.addEventListener("click", function (e) { e.stopPropagation(); });
+          row.addEventListener("pointerdown", function (e) { e.stopPropagation(); });
           row.appendChild(picker);
           card.appendChild(row);
         }
@@ -2721,6 +2736,10 @@
       // (sliders/setpoints have no single prior boolean to flip back to).
       function haCall(card, c, service, data, confirmed) {
         if (card.classList.contains("busy")) return;
+        // #726: a turn_on/turn_off (e.g. a colour pick) implies a settled
+        // on/off — hold it so a stale echo can't flip the card mid-interaction.
+        if (service === "light.turn_on" || service === "switch.turn_on") hcExpect(c.entity_id, "on");
+        else if (service === "light.turn_off" || service === "switch.turn_off") hcExpect(c.entity_id, "off");
         card.classList.add("busy");
         fetch("/api/ha/call", {
           method: "POST",
@@ -2740,10 +2759,13 @@
       }
 
       // After an optimistic card action, reconcile the start page from HA a beat
-      // later (state settles async) — a no-op off the start page (#711).
+      // later (state settles async) — a no-op off the start page (#711). #726:
+      // the SSE stream now pushes the settled state, so this eager refetch waits
+      // long enough (past the pending window) to not re-read a not-yet-settled
+      // state and bounce the card; it stays as a fallback when SSE is closed.
       function reconcileStartPage() {
         if (!startRefreshActive()) return;
-        setTimeout(refreshStartPage, 1000);
+        setTimeout(refreshStartPage, HC_PENDING_MS + 300);
       }
 
       // German status label for a read-only badge card, keyed off domain + state.
@@ -2792,6 +2814,9 @@
           badge.title = lbl;
         };
         apply(!was);
+        // #726: hold the optimistic target so a stale poll/SSE echo can't bounce
+        // the knob back before HA settles on the new state.
+        hcExpect(c.entity_id, was ? "off" : "on");
         card.classList.add("busy");
         fetch("/api/ha/call", {
           method: "POST",
@@ -2803,10 +2828,17 @@
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (res) {
-            if (res && res.ok && res.state != null) apply(res.state === "on");
-            else apply(was);
+            if (res && res.ok && res.state != null) {
+              apply(res.state === "on");
+              // Re-anchor the guard to the server-confirmed state (a failed
+              // toggle can land on the old state).
+              hcExpect(c.entity_id, res.state);
+            } else {
+              apply(was);
+              hcExpect(c.entity_id, was ? "on" : "off");
+            }
           })
-          .catch(function () { apply(was); })
+          .catch(function () { apply(was); hcExpect(c.entity_id, was ? "on" : "off"); })
           .finally(function () { card.classList.remove("busy"); reconcileStartPage(); });
       }
 
@@ -4249,6 +4281,25 @@
       // entities' state while #/p/start is active and updates each card in place.
       var startTimer = null, startPageCard = null, hcSliderDragging = false;
       var START_REFRESH_MS = 12000;
+      // #726: after a user toggles a light/switch we optimistically show the new
+      // state, but HA settles async — an eager poll or a stale SSE echo can
+      // report the OLD state for a beat, bouncing the knob new→old→new. Hold the
+      // expected state per entity for a short window: an in-place card swap that
+      // still shows the old state is ignored until an echo matches the target
+      // (or the window lapses). Keeps the SSE/poll fallback converging.
+      var HC_PENDING_MS = 2500;
+      var hcPending = {};
+      function hcExpect(entityId, state) {
+        if (entityId) hcPending[entityId] = { state: state, until: Date.now() + HC_PENDING_MS };
+      }
+      // True while `card` still contradicts the pending expected state for entity.
+      function hcPendingContradicts(entityId, card) {
+        var p = hcPending[entityId];
+        if (!p) return false;
+        if (Date.now() > p.until) { delete hcPending[entityId]; return false; }
+        if (card && card.state === p.state) { delete hcPending[entityId]; return false; }
+        return true;
+      }
 
       var lastSessions = [];
       // Re-derive + apply the header title from the last-known session list, so
@@ -4273,6 +4324,8 @@
       // 12s poll (#711) and the SSE event stream (#714).
       function applyCardState(page, entityId, card) {
         if (!card || page !== startPageCard || !page.isConnected || startRefreshBusy()) return;
+        // #726: drop a stale echo that still shows the pre-toggle state.
+        if (hcPendingContradicts(entityId, card)) return;
         (page.startFavs || []).forEach(function (rec) {
           if (rec.entityId !== entityId || !rec.el.isConnected) return;
           rec.f.card = card;

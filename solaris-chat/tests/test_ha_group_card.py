@@ -112,6 +112,16 @@ def test_light_card_header_toggle_body_slider():
     # Brightness slider mounts on the given body host as an inline control.
     assert "makeSlider(brightHost || card, pct" in lcb
     assert "true);" in lcb  # inline flag
+    # #726: tapping the colour swatch must not bubble to the card's power toggle
+    # (which would flip the light + re-render the picker away). The colour row
+    # stops click + pointerdown propagation, mirroring the slider/button guard.
+    assert (
+        'row.addEventListener("click", function (e) { e.stopPropagation(); });' in lcb
+    )
+    assert (
+        'row.addEventListener("pointerdown", function (e) { e.stopPropagation(); });'
+        in lcb
+    )
 
     # makeSlider honours an inline flag (no own row, drag doesn't toggle).
     ms = re.search(
@@ -290,7 +300,7 @@ def test_onoff_control_is_a_toggle_switch_not_a_label_button():
     # label text hidden (font-size: 0) so it reads purely as a switch.
     assert ".hc-badge.hc-switch {" in _HTML
     assert "font-size: 0;" in _HTML
-    assert ".on .hc-badge.hc-switch::after { transform: translateX(16px); }" in _HTML
+    assert ".on .hc-badge.hc-switch::after { transform: translateX(20px); }" in _HTML
     assert ".off .hc-badge.hc-switch {" in _HTML
 
 
