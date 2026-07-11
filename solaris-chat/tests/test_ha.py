@@ -653,8 +653,8 @@ def test_single_room_groups_under_threshold():
     assert [c["room"] for c in cards] == ["Wohnzimmer"] * 3
 
 
-def _stub_call(monkeypatch, *, new_state="on", post_status=200):
-    """Stub aiohttp for call_service_scoped: record POSTs, GET returns new state."""
+def _stub_call(monkeypatch, *, new_state="on", post_status=200, gets=None):
+    """Stub aiohttp for call_service_scoped: record POSTs (and any GETs)."""
     posts: list[tuple[str, dict]] = []
 
     class _Session:
@@ -672,18 +672,26 @@ def _stub_call(monkeypatch, *, new_state="on", post_status=200):
             return _Resp({}, status=post_status)
 
         def get(self, geturl, **k):
+            if gets is not None:
+                gets.append(geturl)
             return _Resp({"state": new_state})
 
     monkeypatch.setattr(ha_mod.aiohttp, "ClientSession", _Session)
     return posts
 
 
-async def test_call_service_scoped_toggles_and_returns_new_state(monkeypatch):
-    posts = _stub_call(monkeypatch, new_state="on")
+async def test_call_service_scoped_toggles_without_racy_readback(monkeypatch):
+    # #732: no immediate state read-back — a GET right after the POST races HA's
+    # settle and would return the stale pre-toggle state. Success is ok-only; the
+    # authoritative new state arrives via the SSE card_state bus / poll.
+    gets: list[str] = []
+    posts = _stub_call(monkeypatch, new_state="on", gets=gets)
     res = await ha_mod.call_service_scoped(
         "http://ha", "tok", "light.kitchen", "light.toggle"
     )
-    assert res == {"ok": True, "state": "on"}
+    assert res == {"ok": True}
+    assert "state" not in res
+    assert not gets  # never reads back the state
     assert posts[0][0] == "http://ha/api/services/light/toggle"
     assert posts[0][1] == {"entity_id": "light.kitchen"}
 
