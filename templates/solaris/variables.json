@@ -6,7 +6,7 @@
   },
   "CHAT_PORT": {
     "type": "text",
-    "description": "Host loopback port the chat server binds on. NPM proxies the public `chat.<publicDomain>` down to this port behind Authelia forward-auth; HA's conversation agent and the gatekeeper reach the engine's /ollama facade on it via host loopback. Default 8787. NB: the servicebay.healthcheck annotation uses the literal 8787 \u2014 change it there too if you change this.",
+    "description": "Host loopback port the chat server binds on. NPM proxies the public `chat.<publicDomain>` down to this port behind Authelia forward-auth; HA's conversation agent and the gatekeeper reach the engine's /ollama facade on it via host loopback. Default 8787. NB: the servicebay.healthcheck annotation uses the literal 8787 — change it there too if you change this.",
     "default": "8787"
   },
   "CHAT_SUBDOMAIN": {
@@ -20,7 +20,11 @@
       "allow_websocket_upgrade": true,
       "block_exploits": true,
       "ssl_forced": true,
-      "advanced_config": "__authelia_forward_auth__\n# SSE: long Solaris generations stream incrementally; keep the mobile/edge\n# connection alive and unbuffered (solarisbay#452 / servicebay#1862).\nproxy_buffering off;\nproxy_read_timeout 600s;\nproxy_send_timeout 600s;\nproxy_http_version 1.1;\nproxy_set_header Connection \"\";"
+      "advanced_config": "__authelia_forward_auth__\n# SSE: long Solaris generations stream incrementally; keep the mobile/edge\n# connection alive and unbuffered (solarisbay#452 / servicebay#1862).\nproxy_buffering off;\nproxy_read_timeout 600s;\nproxy_send_timeout 600s;\nproxy_http_version 1.1;\nproxy_set_header Connection \"\";",
+      "authSkipPaths": [
+        "/.well-known/",
+        "/static/"
+      ]
     }
   },
   "SOLARIS_API_KEY": {
@@ -34,22 +38,22 @@
   },
   "OLLAMA_URL": {
     "type": "text",
-    "description": "URL of Ollama's API (host loopback \u2014 this is a hostNetwork pod, so default `http://127.0.0.1:11434` matches the ollama template). The Solaris Engine's only LLM backend.",
+    "description": "URL of Ollama's API (host loopback — this is a hostNetwork pod, so default `http://127.0.0.1:11434` matches the ollama template). The Solaris Engine's only LLM backend.",
     "default": "http://127.0.0.1:11434"
   },
   "FAST_MODEL": {
     "type": "text",
-    "description": "The engine's fast model \u2014 the household/voice hot path (device control, quick answers) DEFAULT. `gemma4:e4b` (box-measured 3.3 GB resident @ ctx 32768): the effective-4B gemma4 \u2014 strong enough to drive the multi-step voice flows the smaller `gemma4:e2b` fabricated (it would claim an enrolment finished without ever calling the tool, #396), while still a fast single-digit-second hot-path model. The tag must be pulled in Ollama (the ollama template ships it). An admin can re-point the household chat at THOROUGH_MODEL from the panel's Model picker (#366); the selection persists and the household profile picks it up on the next turn \u2014 but a larger model on the latency-sensitive hot path is slower, so this stays the fast default.",
+    "description": "The engine's fast model — the household/voice hot path (device control, quick answers) DEFAULT. `gemma4:e4b` (box-measured 3.3 GB resident @ ctx 32768): the effective-4B gemma4 — strong enough to drive the multi-step voice flows the smaller `gemma4:e2b` fabricated (it would claim an enrolment finished without ever calling the tool, #396), while still a fast single-digit-second hot-path model. The tag must be pulled in Ollama (the ollama template ships it). An admin can re-point the household chat at THOROUGH_MODEL from the panel's Model picker (#366); the selection persists and the household profile picks it up on the next turn — but a larger model on the latency-sensitive hot path is slower, so this stays the fast default.",
     "default": "gemma4:e4b"
   },
   "THOROUGH_MODEL": {
     "type": "text",
-    "description": "The engine's thorough/\"thinking\" model \u2014 \"Solaris Gr\u00fcndlich\" chats, the admin persona and the night crons (thinks by default). Defaults to `gemma4:e4b` \u2014 the SAME tag as FAST_MODEL \u2014 so a single resident LLM serves both the fast and the thinking paths. On the box's 16 GB GPU a warm `gemma4:12b` (8 GB) alongside `gemma4:e4b` (3.3 GB) plus Whisper STT + TTS overflows VRAM and starves Whisper (cudaError out of memory \u2192 voice fails, #610); keeping one resident LLM leaves headroom. Point this at `gemma4:12b` only if you free GPU memory elsewhere (e.g. Whisper on CPU).",
+    "description": "The engine's thorough/\"thinking\" model — \"Solaris Gründlich\" chats, the admin persona and the night crons (thinks by default). Defaults to `gemma4:e4b` — the SAME tag as FAST_MODEL — so a single resident LLM serves both the fast and the thinking paths. On the box's 16 GB GPU a warm `gemma4:12b` (8 GB) alongside `gemma4:e4b` (3.3 GB) plus Whisper STT + TTS overflows VRAM and starves Whisper (cudaError out of memory → voice fails, #610); keeping one resident LLM leaves headroom. Point this at `gemma4:12b` only if you free GPU memory elsewhere (e.g. Whisper on CPU).",
     "default": "gemma4:e4b"
   },
   "TTS_VOICES": {
     "type": "text",
-    "description": "The Kokoro TTS voices the panel's voice picker offers (#368), comma-separated; the first is the default voice. The bundled `solaris-tts` image bakes only the German speaker `martin`, so the default is `martin` and a single-entry list pins it. List more voices here only if your TTS bridge/image actually serves them \u2014 the admin's pick persists beside solaris.db and the post-deploy converges it into the Assist pipeline's TTS voice on the next deploy.",
+    "description": "The Kokoro TTS voices the panel's voice picker offers (#368), comma-separated; the first is the default voice. The bundled `solaris-tts` image bakes only the German speaker `martin`, so the default is `martin` and a single-entry list pins it. List more voices here only if your TTS bridge/image actually serves them — the admin's pick persists beside solaris.db and the post-deploy converges it into the Assist pipeline's TTS voice on the next deploy.",
     "default": "martin"
   },
   "LOGOUT_URL": {
@@ -80,11 +84,11 @@
   "HASS_TOKEN": {
     "type": "secret",
     "noAutoGenerate": true,
-    "description": "Home Assistant long-lived access token. Auto-populated from home-assistant's onboarding flow (see post-deploy adoption logic) \u2014 leave blank in the wizard. Manually setting a value here pins it and disables the adoption."
+    "description": "Home Assistant long-lived access token. Auto-populated from home-assistant's onboarding flow (see post-deploy adoption logic) — leave blank in the wizard. Manually setting a value here pins it and disables the adoption."
   },
   "ALARM_SOUND_MEDIA_ID": {
     "type": "text",
-    "description": "The media_id Solaris passes to assist_satellite.announce when an alarm (kind=alarm) fires \u2014 HA resolves it and the Voice PE plays it INSTEAD of speaking (timers and reminders keep their spoken announcements). Default `media-source://media_source/local/solaris-alarm.ogg` is the royalty-free tone the skill pack ships, which the post-deploy copies into HA's media folder. To use your own sound (e.g. the Doctor Who theme, which can't be bundled in this MIT repo), drop the file into HA's media folder (DATA_DIR/home-assistant/homeassistant/media/) and set this to `media-source://media_source/local/<your-file>`. If the file is missing, Solaris falls back to speaking the alarm sentence.",
+    "description": "The media_id Solaris passes to assist_satellite.announce when an alarm (kind=alarm) fires — HA resolves it and the Voice PE plays it INSTEAD of speaking (timers and reminders keep their spoken announcements). Default `media-source://media_source/local/solaris-alarm.ogg` is the royalty-free tone the skill pack ships, which the post-deploy copies into HA's media folder. To use your own sound (e.g. the Doctor Who theme, which can't be bundled in this MIT repo), drop the file into HA's media folder (DATA_DIR/home-assistant/homeassistant/media/) and set this to `media-source://media_source/local/<your-file>`. If the file is missing, Solaris falls back to speaking the alarm sentence.",
     "default": "media-source://media_source/local/solaris-alarm.ogg"
   },
   "JELLYFIN_URL": {
@@ -193,7 +197,7 @@
   "IMMICH_API_KEY": {
     "type": "secret",
     "noAutoGenerate": true,
-    "description": "Optional: a READ-ONLY Immich API key (Account Settings \u2192 API Keys). Pair with IMMICH_BASE_URL to enable the photo-ingest adapter. Leave blank to skip photo ingestion."
+    "description": "Optional: a READ-ONLY Immich API key (Account Settings → API Keys). Pair with IMMICH_BASE_URL to enable the photo-ingest adapter. Leave blank to skip photo ingestion."
   },
   "CALDAV_URL": {
     "type": "text",
@@ -232,7 +236,7 @@
   },
   "SOLARIS_SPEAKER_ID_ENABLED": {
     "type": "select",
-    "description": "Speaker-ID (#84, #350): resolve which resident is speaking per voice turn from enrolled voice embeddings. BIOMETRIC \u2014 stores per-resident voice fingerprints in solaris.db. When on, the post-deploy registers the gatekeeper as the Assist pipeline's Wyoming STT engine so the live Voice PE path runs through speaker-ID; the resolved resident is attributed to the turn via a transcript-keyed side-channel. Requires the solaris-gatekeeper-ml image (see GATEKEEPER_IMAGE); with the base image this stays inert (falls back to DEFAULT_UID). Off by default.",
+    "description": "Speaker-ID (#84, #350): resolve which resident is speaking per voice turn from enrolled voice embeddings. BIOMETRIC — stores per-resident voice fingerprints in solaris.db. When on, the post-deploy registers the gatekeeper as the Assist pipeline's Wyoming STT engine so the live Voice PE path runs through speaker-ID; the resolved resident is attributed to the turn via a transcript-keyed side-channel. Requires the solaris-gatekeeper-ml image (see GATEKEEPER_IMAGE); with the base image this stays inert (falls back to DEFAULT_UID). Off by default.",
     "options": [
       "false",
       "true"
