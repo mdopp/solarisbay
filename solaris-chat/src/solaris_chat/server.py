@@ -644,25 +644,64 @@ def _notes_stats_scan(notes_dir: str, uid: str, top_n: int = 12) -> dict[str, An
     }
 
 
-def _favorite_label(payload: dict[str, Any]) -> str:
-    """A short label for a usage-counted action (#646) — the tool's most telling
-    argument, else the tool name. `payload` is `{tool, args}` from the counter."""
+# Readable German labels for the common HA services a favorite can carry (#741),
+# so "Häufig genutzt" reads "Bürolicht — Aus" instead of "dimmer 2 — turn_off".
+_SERVICE_LABELS = {
+    "turn_on": "An",
+    "turn_off": "Aus",
+    "toggle": "Umschalten",
+    "open_cover": "Öffnen",
+    "close_cover": "Schließen",
+    "stop_cover": "Stopp",
+    "set_temperature": "Temperatur",
+    "set_hvac_mode": "Modus",
+    "set_percentage": "Stufe",
+    "set_value": "Wert",
+    "set_brightness": "Helligkeit",
+}
+
+# Readable labels for the known non-HA tools a favorite can carry (#741).
+_TOOL_LABELS = {
+    "play_radio": "Radio abspielen",
+    "play_music": "Musik abspielen",
+    "play_playlist": "Playlist abspielen",
+    "stop_playback": "Wiedergabe stoppen",
+}
+
+
+def _humanize(token: str) -> str:
+    """Turn a raw slug/service/tool identifier into a readable label: strip a
+    leading `domain.` / `_`-word, replace `_` with spaces, title-case."""
+    tail = token.split(".", 1)[1] if "." in token else token
+    return tail.replace("_", " ").strip().title()
+
+
+def _service_label(service: str) -> str:
+    return _SERVICE_LABELS.get(service, _humanize(service)) if service else ""
+
+
+def _favorite_label(
+    payload: dict[str, Any], names: dict[str, str] | None = None
+) -> str:
+    """A short label for a usage-counted action (#646) — a readable name +
+    action, else the tool's most telling argument, else the tool name (#741).
+    `payload` is `{tool, args}` from the counter; `names` is an optional
+    entity_id → friendly_name map (from HA) used to resolve device names — when
+    absent the entity_id slug is humanized instead so this stays pure."""
     args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
     tool = str(payload.get("tool") or "")
     if tool == "ha_call_service":
         entity_id = str(args.get("entity_id") or "")
-        name = (
-            entity_id.split(".", 1)[1].replace("_", " ")
-            if "." in entity_id
-            else entity_id
-        )
-        service = str(args.get("service") or "")
-        return f"{name} — {service}".strip(" —") or tool
+        name = (names or {}).get(entity_id) or _humanize(entity_id)
+        action = _service_label(str(args.get("service") or ""))
+        return f"{name} — {action}".strip(" —") or tool
+    if tool in _TOOL_LABELS:
+        return _TOOL_LABELS[tool]
     for key in ("query", "station", "title", "name"):
         val = args.get(key)
         if val:
             return str(val)
-    return tool or "Aktion"
+    return _humanize(tool) if tool else "Aktion"
 
 
 # Default prompt for an image-only turn (attachment with no typed text), so the
@@ -2417,10 +2456,29 @@ def build_app(
                 if item.get("card") is not None:
                     any_card = True
 
+        top = favorites_store.top_usage(solaris_db_path, uid, 6)
+        # Resolve entity_id → friendly_name once for the whole frequent list so
+        # HA-service rows read "Bürolicht — Aus" not "dimmer 2 — turn_off" (#741).
+        # One bulk /api/states beats N per-item fetch_card round-trips; None on
+        # HA error / unconfigured falls back to the humanized slug.
+        names: dict[str, str] = {}
+        wants_names = configured and any(
+            isinstance(r["payload"], dict)
+            and r["payload"].get("tool") == "ha_call_service"
+            for r in top
+        )
+        if wants_names:
+            entity_names = await fetch_entity_names(hass_url, hass_token)
+            if entity_names:
+                names = {e["entity_id"]: e["name"] for e in entity_names}
         frequent: list[dict[str, Any]] = []
-        for row in favorites_store.top_usage(solaris_db_path, uid, 6):
+        for row in top:
             frequent.append(
-                {"kind": row["kind"], "label": _favorite_label(row["payload"]), **row}
+                {
+                    "kind": row["kind"],
+                    "label": _favorite_label(row["payload"], names),
+                    **row,
+                }
             )
         return web.json_response(
             {

@@ -274,3 +274,52 @@ async def test_scope_household_forces_shared_owner(tmp_path, monkeypatch):
 
 async def _noop_resolver(url, token, ref):
     return ""
+
+
+# --- _favorite_label: readable names + actions in "Häufig genutzt" (#741) ---
+
+from solaris_chat.server import _favorite_label, _service_label  # noqa: E402
+
+
+def test_favorite_label_resolves_friendly_name_and_action():
+    payload = {
+        "tool": "ha_call_service",
+        "args": {"entity_id": "light.dimmer_2", "service": "turn_off"},
+    }
+    names = {"light.dimmer_2": "Bürolicht"}
+    assert _favorite_label(payload, names) == "Bürolicht — Aus"
+
+
+def test_favorite_label_without_map_humanizes_slug_no_crash():
+    payload = {
+        "tool": "ha_call_service",
+        "args": {"entity_id": "light.dimmer_2", "service": "turn_on"},
+    }
+    assert _favorite_label(payload) == "Dimmer 2 — An"
+
+
+def test_service_label_maps_common_services():
+    assert _service_label("turn_off") == "Aus"
+    assert _service_label("turn_on") == "An"
+    assert _service_label("toggle") == "Umschalten"
+    assert _service_label("open_cover") == "Öffnen"
+    assert _service_label("close_cover") == "Schließen"
+    assert _service_label("stop_cover") == "Stopp"
+
+
+def test_service_label_humanizes_unmapped_service():
+    assert _service_label("set_fan_speed") == "Set Fan Speed"
+
+
+def test_favorite_label_known_non_ha_tool():
+    assert _favorite_label({"tool": "play_radio", "args": {}}) == "Radio abspielen"
+
+
+def test_favorite_label_unknown_tool_humanizes():
+    assert (
+        _favorite_label({"tool": "some_custom_tool", "args": {}}) == "Some Custom Tool"
+    )
+
+
+def test_favorite_label_falls_back_to_arg():
+    assert _favorite_label({"tool": "search", "args": {"query": "Pizza"}}) == "Pizza"
