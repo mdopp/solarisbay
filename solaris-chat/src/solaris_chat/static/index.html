@@ -132,7 +132,13 @@
     }
     .logo img { width: 22px; height: 22px; display: block; }
     .brand-name { font-weight: 700; font-size: 16px; letter-spacing: 0.2px; }
+    /* Version badge, now in the rail-foot links row (#777): matches the muted
+       11px footer meta; the `·` separates it from "Release news" like the links. */
     .brand-ver { font-size: 11px; color: var(--muted); }
+    .rail-links .brand-ver:empty { display: none; }
+    .rail-links .brand-ver:not(:empty) + a::before {
+      content: "·"; color: var(--muted); opacity: 0.6; margin: 0 8px;
+    }
 
     .rail-nav { padding: 10px 10px 4px; display: flex; flex-direction: column; gap: 2px; }
     .rail-nav button {
@@ -158,6 +164,13 @@
       font-size: 11px; letter-spacing: 0.6px; text-transform: uppercase;
     }
     .rs-head .grow { flex: 1 1 auto; }
+    /* Brand wordmark over the Chats overlay (#777): visible on desktop + mobile
+       (the base .brand-wordmark is display:none until the mobile header), and
+       reset to its normal size/casing since .rs-head is small uppercase muted. */
+    .rs-head .rs-brand {
+      display: inline-flex; align-items: baseline;
+      color: var(--ink); font-size: 15px; letter-spacing: 0.2px; text-transform: none;
+    }
     .icon-btn {
       width: 26px; height: 26px; border-radius: 7px; flex: 0 0 26px;
       display: flex; align-items: center; justify-content: center;
@@ -1360,7 +1373,6 @@
       <div class="logo"><img src="/static/solaris-figure.svg" alt="Solaris" /></div>
       <div>
         <div class="brand-name">Solaris</div>
-        <div class="brand-ver" id="brand-ver"></div>
       </div>
     </div>
 
@@ -1384,6 +1396,9 @@
 
     <div class="rail-sessions">
       <div class="rs-head">
+        <!-- Brand over the full-page Chats overlay (#777), consistent with the
+             chat-header wordmark; sits before the "Chats" section label. -->
+        <span class="brand-wordmark rs-brand" aria-label="Solaris">Solar<img class="brand-i" src="/static/solaris-mark.svg" alt="i" />s</span>
         <span>Chats</span><span class="grow"></span>
         <button class="icon-btn" id="new-incognito" type="button" title="Temporärer Chat (incognito) — wird beim Schließen gelöscht, nichts wird gespeichert" aria-label="Temporärer Chat"><svg class="ic"><use href="#i-ghost"></use></svg></button>
         <button class="icon-btn" id="new-session" type="button" title="New chat" aria-label="New chat"><svg class="ic"><use href="#i-plus"></use></svg></button>
@@ -1401,6 +1416,9 @@
         <span class="admin-badge" id="admin-badge" hidden>Admin</span>
       </div>
       <div class="rail-links">
+        <!-- Version badge moved down here (#777): it belongs with the
+             identity/meta footer, not up by the logo. JS still fills #brand-ver. -->
+        <span class="brand-ver" id="brand-ver"></span>
         <a id="release-link" href="https://github.com/mdopp/solarisbay/releases" target="_blank" rel="noopener">Release news</a>
         <a href="https://github.com/mdopp/solarisbay" target="_blank" rel="noopener">GitHub</a>
         <a id="logout-link" href="#" hidden>Log out</a>
