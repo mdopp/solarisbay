@@ -313,3 +313,98 @@ async def test_pair_device_confirm_rejects_device_token_bearer(
     )
     assert r.status == 401
     assert len(device_token_store.list_for_uid(db, "mdopp")) == 1
+
+
+# ---- per-entity history endpoint (#755) -----------------------------------
+
+
+def _ha_app(tmp_path, db):
+    return build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        hass_url="http://ha",
+        hass_token="t",
+    )
+
+
+async def test_entity_history_returns_ok_history(aiohttp_client, tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    seen: dict = {}
+
+    async def _fake(url, token, entity_id, rng):
+        seen["args"] = (entity_id, rng)
+        return [{"t": "t0", "state": "21.2"}]
+
+    monkeypatch.setattr("solaris_chat.server.fetch_entity_history", _fake)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/api/portal/entity-history?entity_id=sensor.temp&range=48h",
+        headers={"Remote-User": "mdopp"},
+    )
+    assert r.status == 200
+    j = await r.json()
+    assert j == {"ok": True, "history": [{"t": "t0", "state": "21.2"}]}
+    assert seen["args"] == ("sensor.temp", "48h")
+
+
+async def test_entity_history_resolves_owner_via_device_token(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    # #748/#755: a native client authenticates with its device-token bearer;
+    # resolve_uid maps it to the owner exactly like the other portal endpoints.
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    seen: dict = {}
+
+    async def _fake(url, tok, entity_id, rng):
+        return []
+
+    def _spy(request, header, default_uid, solaris_db_path=None):
+        uid = resolve_uid(request, header, default_uid, solaris_db_path)
+        seen["uid"] = uid
+        return uid
+
+    monkeypatch.setattr("solaris_chat.server.fetch_entity_history", _fake)
+    monkeypatch.setattr("solaris_chat.server.resolve_uid", _spy)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/api/portal/entity-history?entity_id=sensor.temp&range=24h",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    assert seen["uid"] == "lena"
+
+
+async def test_entity_history_rejects_bad_entity_id(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/api/portal/entity-history?entity_id=not-an-id&range=24h",
+        headers={"Remote-User": "mdopp"},
+    )
+    assert r.status == 400
+    assert (await r.json())["ok"] is False
+
+
+async def test_entity_history_rejects_bad_range(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/api/portal/entity-history?entity_id=sensor.temp&range=nope",
+        headers={"Remote-User": "mdopp"},
+    )
+    assert r.status == 400
+
+
+async def test_entity_history_503_when_ha_unconfigured(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.get(
+        "/api/portal/entity-history?entity_id=sensor.temp&range=24h",
+        headers={"Remote-User": "mdopp"},
+    )
+    assert r.status == 503
+    assert (await r.json())["error"] == "ha_unconfigured"

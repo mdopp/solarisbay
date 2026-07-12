@@ -49,12 +49,14 @@ _ROOM_ACTUATOR_DOMAINS = frozenset(
 _CONTROL_ATTRS = (
     "supported_features",
     "brightness",
+    "color_temp",
     "rgb_color",
     "color_mode",
     "supported_color_modes",
     "current_position",
     "temperature",
     "current_temperature",
+    "hvac_action",
     "target_temp_step",
     "min_temp",
     "max_temp",
@@ -487,6 +489,60 @@ async def fetch_energy_history(
             }
         )
     return {"hours": hours, "series": series}
+
+
+# Range presets for the per-entity history endpoint (#755): a native widget's
+# sparkline picks one of these; unknown values fall back to the default 24h.
+_ENTITY_HISTORY_RANGES = {"24h": 24, "48h": 48, "7d": 168}
+_ENTITY_HISTORY_DEFAULT = "24h"
+
+
+async def fetch_entity_history(
+    hass_url: str, hass_token: str, entity_id: str, range: str
+) -> list[dict[str, Any]] | None:
+    """Raw state history for one entity, for the native widget sparkline (#755).
+
+    Mirrors `fetch_energy_history`'s HA `/api/history/period` call and time
+    window, but for a single caller-supplied entity and returning the raw
+    `[{t, state}, …]` points (no bucketing/flow logic). `range` is a preset key
+    (24h/48h/7d); an unknown value falls back to 24h. Returns None on any HA
+    error; an empty list when the entity has no history in the window.
+    """
+    if not _ENTITY_RE.match(entity_id):
+        return None
+    hours = _ENTITY_HISTORY_RANGES.get(
+        range, _ENTITY_HISTORY_RANGES[_ENTITY_HISTORY_DEFAULT]
+    )
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    end = datetime.now(UTC)
+    start = end - timedelta(hours=hours)
+    params = {
+        "filter_entity_id": entity_id,
+        "end_time": end.isoformat(),
+        "minimal_response": "true",
+        "no_attributes": "true",
+    }
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(
+                f"{url}/api/history/period/{start.isoformat()}",
+                params=params,
+                headers=headers,
+            ) as resp:
+                if resp.status >= 400:
+                    return None
+                body = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    # HA returns [[ {state, last_changed}, … ]] — one list per entity.
+    series = body[0] if body and isinstance(body[0], list) else []
+    points: list[dict[str, Any]] = []
+    for p in series:
+        when = p.get("last_changed") or p.get("last_updated")
+        if when:
+            points.append({"t": when, "state": p.get("state")})
+    return points
 
 
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
