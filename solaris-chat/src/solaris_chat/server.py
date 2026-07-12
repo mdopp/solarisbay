@@ -2497,6 +2497,31 @@ def build_app(
             )
         return web.json_response({"ok": True, "history": history})
 
+    async def portal_state(request: web.Request) -> web.Response:
+        """Lean card-spec for one arbitrary entity — the universal device widget's
+        current-state read (#762). Reuses the read-only `fetch_card` path (the
+        #754-enriched shape), owner-scoped. Same guards as the other portal
+        endpoints: 503 when HA is unconfigured, 400 on bad `entity_id`.
+        """
+        if not hass_url or not hass_token:
+            return web.json_response(
+                {"ok": False, "error": "ha_unconfigured"}, status=503
+            )
+        # Owner-scoped read; resolving establishes the caller's identity even
+        # though the HA read itself is household-wide.
+        resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        entity_id = request.query.get("entity_id", "")
+        if not _ENTITY_RE.match(entity_id):
+            return web.json_response(
+                {"ok": False, "error": "invalid entity_id"}, status=400
+            )
+        card = await fetch_card(hass_url, hass_token, entity_id)
+        if card is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unavailable"}, status=502
+            )
+        return web.json_response({"ok": True, "card": card})
+
     async def portal_page(_request: web.Request) -> web.Response:
         # Bookmarkable deep-link to a household page: serve the SPA shell; the
         # client router reads the `/p/<type>` path and renders from the API.
@@ -3840,6 +3865,9 @@ def build_app(
     # here: it stays interactive-Authelia-only (#748/#751).
     app.router.add_get("/napi/whoami", native(whoami))
     app.router.add_get("/napi/portal/start", native(portal_start))
+    app.router.add_get("/napi/portal/start/addable", native(portal_start_addable))
+    app.router.add_get("/napi/portal/state", native(portal_state))
+    app.router.add_get("/napi/portal/energy", native(portal_energy))
     app.router.add_get("/napi/portal/entity-history", native(portal_entity_history))
     app.router.add_post("/napi/ha/call", native(ha_call))
     app.router.add_get("/napi/device-tokens", native(device_token_list))
