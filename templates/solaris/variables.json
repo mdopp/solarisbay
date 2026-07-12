@@ -133,8 +133,8 @@
   },
   "ANDROID_CERT_FINGERPRINTS": {
     "type": "text",
-    "description": "Optional: comma-separated SHA256 signing-cert fingerprints (#716) of the Android TWA, served in /.well-known/assetlinks.json so Google can verify the app↔domain binding (drops the URL bar). Get them from the android repo's signing key (`keytool -list` / Play App Signing). Leave blank until the app is scaffolded — the route then serves `[]`, which is valid.",
-    "default": ""
+    "description": "Comma-separated SHA256 signing-cert fingerprints (#716) of the Android TWA, served in /.well-known/assetlinks.json so Google can verify the app↔domain binding (drops the URL bar). Public value (it IS the assetlinks content). Default = the household app (cloud.dopp.solaris) signing key; a template default so it survives redeploys (#758). Get a new one from the android repo's signing key (`keytool -list` / Play App Signing).",
+    "default": "C3:6A:41:03:80:AB:C9:9D:D5:6E:DF:14:5F:34:FF:A6:DA:7F:4A:15:B0:98:A3:7F:FD:AB:D7:02:FD:68:A6:2D"
   },
   "GATEKEEPER_IMAGE": {
     "type": "text",
