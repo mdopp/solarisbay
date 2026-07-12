@@ -443,6 +443,61 @@ async def test_climate_card_is_emitted_with_setpoint_attrs(monkeypatch):
     assert sink[0]["hvac_modes"] == ["off", "heat"]
 
 
+def test_card_spec_light_includes_live_attributes():
+    # #754: a light card surfaces the live attributes a native widget needs —
+    # raw brightness (client derives %), color_temp/rgb_color when present.
+    spec = ha_mod.card_spec(
+        "light.sofa",
+        "on",
+        {
+            "friendly_name": "Sofalicht",
+            "brightness": 200,
+            "color_temp": 350,
+            "rgb_color": [255, 0, 0],
+        },
+    )
+    assert spec["domain"] == "light"
+    assert spec["state"] == "on"
+    assert spec["brightness"] == 200
+    assert spec["color_temp"] == 350
+    assert spec["rgb_color"] == [255, 0, 0]
+
+
+def test_card_spec_cover_includes_current_position():
+    # #754: a cover card carries its position % so a widget can show it.
+    spec = ha_mod.card_spec(
+        "cover.rollo", "open", {"friendly_name": "Rollo", "current_position": 60}
+    )
+    assert spec["current_position"] == 60
+
+
+def test_card_spec_climate_includes_temps_and_action():
+    # #754: a climate card carries current temp, setpoint and hvac_action.
+    spec = ha_mod.card_spec(
+        "climate.living",
+        "heat",
+        {
+            "friendly_name": "Wohnzimmer",
+            "current_temperature": 20.5,
+            "temperature": 22,
+            "hvac_action": "heating",
+        },
+    )
+    assert spec["current_temperature"] == 20.5
+    assert spec["temperature"] == 22
+    assert spec["hvac_action"] == "heating"
+
+
+def test_card_spec_omits_absent_live_attributes():
+    # #754: additive only — an off light with no brightness must not emit the
+    # keys (so existing web-card consumers never see null-poisoned fields).
+    spec = ha_mod.card_spec("light.sofa", "off", {"friendly_name": "Sofalicht"})
+    assert set(spec) == {"entity_id", "name", "domain", "device_class", "state", "unit"}
+    assert "brightness" not in spec
+    assert "color_temp" not in spec
+    assert "hvac_action" not in spec
+
+
 async def test_media_player_card_carries_state_and_controls(monkeypatch):
     # #541: media_player gets a card with its transport state + control attrs
     # (volume + what's playing) so the SPA can render the player variant.
@@ -876,3 +931,24 @@ async def test_fetch_energy_history_empty_when_no_flow(monkeypatch):
     _stub(monkeypatch, states=states, history=[])
     out = await ha_mod.fetch_energy_history("http://ha", "tok", 168)
     assert out == {"hours": 168, "series": []}
+
+
+async def test_fetch_entity_history_returns_raw_points(monkeypatch):
+    # #755: one entity's history as raw {t, state} points for a widget sparkline.
+    run = [
+        {"entity_id": "sensor.temp", "state": "21.2", "last_changed": "t0"},
+        {"entity_id": "sensor.temp", "state": "21.5", "last_updated": "t1"},
+    ]
+    gets = _stub(monkeypatch, history=[run])
+    out = await ha_mod.fetch_entity_history("http://ha", "tok", "sensor.temp", "48h")
+    hist_url, params = next((u, p) for u, p in gets if "/api/history/period/" in u)
+    assert params["filter_entity_id"] == "sensor.temp"
+    assert out == [{"t": "t0", "state": "21.2"}, {"t": "t1", "state": "21.5"}]
+
+
+async def test_fetch_entity_history_rejects_bad_entity_id(monkeypatch):
+    _stub(monkeypatch, history=[])
+    assert (
+        await ha_mod.fetch_entity_history("http://ha", "tok", "not-an-id", "24h")
+        is None
+    )

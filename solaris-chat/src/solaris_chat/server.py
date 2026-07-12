@@ -51,6 +51,8 @@ from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
 from solaris_chat.engine.areas import AreaRegistry
 from solaris_chat.engine.tools.ha import (
+    _ENTITY_HISTORY_RANGES,
+    _ENTITY_RE,
     _SERVICE_ALIASES,
     call_service_scoped,
     fetch_addable_cards,
@@ -58,6 +60,7 @@ from solaris_chat.engine.tools.ha import (
     fetch_card,
     fetch_energy,
     fetch_energy_history,
+    fetch_entity_history,
     fetch_entity_names,
 )
 from solaris_chat.engine.tools.mcp_tools import McpToolbox
@@ -2418,6 +2421,39 @@ def build_app(
             )
         return web.json_response({"ok": True, "history": history})
 
+    async def portal_entity_history(request: web.Request) -> web.Response:
+        """State history for one entity — the native widget's sparkline (#755).
+
+        Owner-scoped via `resolve_uid` (accepts the `sol_device_` device-token
+        bearer from #748), read-only. `entity_id` is validated with the same
+        `_ENTITY_RE` the tools use; `range` is a preset (24h/48h/7d, default 24h).
+        Mirrors `portal_energy_history`: 503 when HA is unconfigured, 400 on bad
+        input, 502 when HA is unavailable.
+        """
+        if not hass_url or not hass_token:
+            return web.json_response(
+                {"ok": False, "error": "ha_unconfigured"}, status=503
+            )
+        # Owner-scoped read; resolving establishes the caller's identity even
+        # though the HA read itself is household-wide.
+        resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        entity_id = request.query.get("entity_id", "")
+        if not _ENTITY_RE.match(entity_id):
+            return web.json_response(
+                {"ok": False, "error": "invalid entity_id"}, status=400
+            )
+        rng = request.query.get("range", "24h")
+        if rng not in _ENTITY_HISTORY_RANGES:
+            return web.json_response(
+                {"ok": False, "error": "invalid range"}, status=400
+            )
+        history = await fetch_entity_history(hass_url, hass_token, entity_id, rng)
+        if history is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unavailable"}, status=502
+            )
+        return web.json_response({"ok": True, "history": history})
+
     async def portal_page(_request: web.Request) -> web.Response:
         # Bookmarkable deep-link to a household page: serve the SPA shell; the
         # client router reads the `/p/<type>` path and renders from the API.
@@ -3692,6 +3728,7 @@ def build_app(
     app.router.add_get("/c/{id}", concept_page)
     app.router.add_get("/api/portal/energy", portal_energy)
     app.router.add_get("/api/portal/energy/history", portal_energy_history)
+    app.router.add_get("/api/portal/entity-history", portal_entity_history)
     app.router.add_get("/api/portal/start", portal_start)
     app.router.add_get("/api/portal/start/addable", portal_start_addable)
     app.router.add_get("/api/events", portal_events)
