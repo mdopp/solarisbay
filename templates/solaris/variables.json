@@ -23,7 +23,8 @@
       "advanced_config": "__authelia_forward_auth__\n# SSE: long Solaris generations stream incrementally; keep the mobile/edge\n# connection alive and unbuffered (solarisbay#452 / servicebay#1862).\nproxy_buffering off;\nproxy_read_timeout 600s;\nproxy_send_timeout 600s;\nproxy_set_header Connection \"\";",
       "authSkipPaths": [
         "/.well-known/",
-        "/static/"
+        "/static/",
+        "/napi/"
       ]
     }
   },
