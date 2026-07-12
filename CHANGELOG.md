@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.20.0](https://github.com/mdopp/solarisbay/compare/v0.19.0...v0.20.0) (2026-07-12)
+
+
+### Features
+
+* **chat:** /napi camera snapshot endpoint for the Android camera widget — closes [#770](https://github.com/mdopp/solarisbay/issues/770) ([#771](https://github.com/mdopp/solarisbay/issues/771)) ([d405f74](https://github.com/mdopp/solarisbay/commit/d405f74989268992f1347288c522be3889936420))
+* **chat:** /napi/portal/active — active-devices collection for the Android widget, no N+1 — closes [#773](https://github.com/mdopp/solarisbay/issues/773) ([#776](https://github.com/mdopp/solarisbay/issues/776)) ([6e536dd](https://github.com/mdopp/solarisbay/commit/6e536dd00672198a76dc0e056ff024d588ee1067))
+* **chat:** add addable/state/energy endpoints to /napi for the Android widgets — closes [#762](https://github.com/mdopp/solarisbay/issues/762) ([#763](https://github.com/mdopp/solarisbay/issues/763)) ([252ea72](https://github.com/mdopp/solarisbay/commit/252ea72e8edfa641503e4cf1a57186e063efa532))
+* **chat:** adopt the Solaris app icon as the shared PWA brand mark — closes [#768](https://github.com/mdopp/solarisbay/issues/768) ([#772](https://github.com/mdopp/solarisbay/issues/772)) ([4e47b4a](https://github.com/mdopp/solarisbay/commit/4e47b4a59965c34681804432d4ac00d4129282e4))
+* **chat:** mobile Energie tab + ?ask household deep-link + single-device route ([#774](https://github.com/mdopp/solarisbay/issues/774)) ([e640085](https://github.com/mdopp/solarisbay/commit/e64008579d5656619a36c807941fc8e05b89d307))
+* **chat:** Solaris brand over the Chats overlay + version badge moved to the footer ([#778](https://github.com/mdopp/solarisbay/issues/778)) ([195d864](https://github.com/mdopp/solarisbay/commit/195d86436cafc61f536265898841c8e5d1d004b3))
+
+
+### Bug Fixes
+
+* **chat:** use the actual Solaris figure for the PWA brand mark ([#775](https://github.com/mdopp/solarisbay/issues/775)) ([22fbceb](https://github.com/mdopp/solarisbay/commit/22fbceb2d3205e4e8cbdd84dd1e6e39a180e9dfe))
+
 ## [0.19.0](https://github.com/mdopp/solarisbay/compare/v0.18.0...v0.19.0) (2026-07-12)
 
 
