@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.19.0](https://github.com/mdopp/solarisbay/compare/v0.18.0...v0.19.0) (2026-07-12)
+
+
+### Features
+
+* **chat:** /napi native-API prefix — strict device-token auth for Android widgets, fail-closed — closes [#757](https://github.com/mdopp/solarisbay/issues/757) ([#760](https://github.com/mdopp/solarisbay/issues/760)) ([4e88545](https://github.com/mdopp/solarisbay/commit/4e885454d11bfcebc6621ddc5e054f05eb73ae5a))
+* **chat:** /pair-device page — mint a device-token + deep-link handoff to the Android app — closes [#751](https://github.com/mdopp/solarisbay/issues/751) ([#752](https://github.com/mdopp/solarisbay/issues/752)) ([784971b](https://github.com/mdopp/solarisbay/commit/784971ba26da96c790598d6bfa531764be69e8ba))
+* **chat:** authSkipPaths for /.well-known/ + /static/ (servicebay[#2210](https://github.com/mdopp/solarisbay/issues/2210)) ([d236c55](https://github.com/mdopp/solarisbay/commit/d236c555357ed3b4239fb711319eb14c9e14097f))
+* **chat:** authSkipPaths for /.well-known/ + /static/ (servicebay[#2210](https://github.com/mdopp/solarisbay/issues/2210)) ([9745423](https://github.com/mdopp/solarisbay/commit/97454237fd246a089d4818aa3fe76a0f6b9d55cf))
+* **chat:** clean Haushalt vs Meine Favoriten — display-dedup preferring personal, scope choice + move, collapse when uid==household — closes [#745](https://github.com/mdopp/solarisbay/issues/745) ([#746](https://github.com/mdopp/solarisbay/issues/746)) ([0cc15ce](https://github.com/mdopp/solarisbay/commit/0cc15ce9d148949e0dde0d6fff3f57648d806300))
+* **chat:** colour picker previews live, reverts on cancel, keeps on confirm — closes [#738](https://github.com/mdopp/solarisbay/issues/738) ([#739](https://github.com/mdopp/solarisbay/issues/739)) ([4c2a85c](https://github.com/mdopp/solarisbay/commit/4c2a85c85709611d96b60599529e45089e589bd1))
+* **chat:** device-token auth for native Android clients [#717](https://github.com/mdopp/solarisbay/issues/717) ([#748](https://github.com/mdopp/solarisbay/issues/748)) ([67db18c](https://github.com/mdopp/solarisbay/commit/67db18c0e51d688fe9059128d86169de9f359272))
+* **chat:** richer card-spec + per-entity history endpoint for native widgets — closes [#754](https://github.com/mdopp/solarisbay/issues/754) [#755](https://github.com/mdopp/solarisbay/issues/755) ([#756](https://github.com/mdopp/solarisbay/issues/756)) ([cce43d2](https://github.com/mdopp/solarisbay/commit/cce43d2b92297b38d66a6a3fdc12b8cccbce73d0))
+* **chat:** serve /.well-known/assetlinks.json + real 192/512/maskable PWA icons for the Android TWA — part of [#716](https://github.com/mdopp/solarisbay/issues/716) ([#747](https://github.com/mdopp/solarisbay/issues/747)) ([ab512d0](https://github.com/mdopp/solarisbay/commit/ab512d08bd78139b5e4abc6ccfdde66f8a1eeb7f))
+* **chat:** show a Home-Assistant-unreachable notice + unavailable cards on the start page ([#731](https://github.com/mdopp/solarisbay/issues/731)) ([b80f7b0](https://github.com/mdopp/solarisbay/commit/b80f7b04fa6e4904a043c84a48a5dad8af162495)), closes [#729](https://github.com/mdopp/solarisbay/issues/729)
+
+
+### Bug Fixes
+
+* **chat:** calmer card toggle, bigger touch switch, colour-picker no longer toggles the light ([#727](https://github.com/mdopp/solarisbay/issues/727)) ([1e49c74](https://github.com/mdopp/solarisbay/commit/1e49c7451ae8cbb96478ff35b00f5b28e13eafb4)), closes [#726](https://github.com/mdopp/solarisbay/issues/726)
+* **chat:** confirm-gate keys on entity real domain not model routing ([#664](https://github.com/mdopp/solarisbay/issues/664)) ([11543ae](https://github.com/mdopp/solarisbay/commit/11543ae8bf9cfb33f83997f97137824713399556)), closes [#632](https://github.com/mdopp/solarisbay/issues/632)
+* **chat:** drop redundant proxy_http_version from SSE tuning ([f0c9f67](https://github.com/mdopp/solarisbay/commit/f0c9f6736c51ea8dfd8460bf3a80a92c4a329279))
+* **chat:** drop redundant proxy_http_version from SSE tuning ([fa525b2](https://github.com/mdopp/solarisbay/commit/fa525b2a3eada0045e485cfe7bcfac9534398b9d))
+* **chat:** keep the colour-picker overlay open — suspend live card re-render while picking — closes [#736](https://github.com/mdopp/solarisbay/issues/736) ([#737](https://github.com/mdopp/solarisbay/issues/737)) ([d8a7884](https://github.com/mdopp/solarisbay/commit/d8a7884cb3a3c26d3d80c0f4046e7d68d4215055))
+* **chat:** light-off toggle settles once + show unavailable devices as inactive ([#734](https://github.com/mdopp/solarisbay/issues/734)) ([24b40c5](https://github.com/mdopp/solarisbay/commit/24b40c5d1e3365f6f96354c8e47e9a72b9a8e4f1)), closes [#732](https://github.com/mdopp/solarisbay/issues/732)
+* **chat:** off light shows last-known brightness, not a fake 100% — closes [#733](https://github.com/mdopp/solarisbay/issues/733) ([#735](https://github.com/mdopp/solarisbay/issues/735)) ([9962d64](https://github.com/mdopp/solarisbay/commit/9962d644daa00bc76f3cbf0fbc84c6f4686f6d77))
+* **chat:** pin a frequent device as its card, dedup favorites — closes [#743](https://github.com/mdopp/solarisbay/issues/743) ([#744](https://github.com/mdopp/solarisbay/issues/744)) ([79c6213](https://github.com/mdopp/solarisbay/commit/79c6213ea95539cda9738b502362a85fc681a94e))
+* **chat:** readable names + actions in 'Häufig genutzt' instead of entity-id slugs ([#742](https://github.com/mdopp/solarisbay/issues/742)) ([55d28a7](https://github.com/mdopp/solarisbay/commit/55d28a7c4230860d349038de18b42ae19b2ebaf2)), closes [#741](https://github.com/mdopp/solarisbay/issues/741)
+* **chat:** real apple-touch-icon rendered from the Solaris mark ([#730](https://github.com/mdopp/solarisbay/issues/730)) ([5ffb34c](https://github.com/mdopp/solarisbay/commit/5ffb34cccfecbae3a933f7fe4f539f03ba60b67a))
+* **template:** persist ANDROID_CERT_FINGERPRINTS as a template default ([#759](https://github.com/mdopp/solarisbay/issues/759)) ([bcd6779](https://github.com/mdopp/solarisbay/commit/bcd67792bb16795af6cc17fcce5a5788e1db9d6e))
+* **template:** re-assert HA ollama integration api_key on deploy so voice self-heals — closes [#557](https://github.com/mdopp/solarisbay/issues/557) ([#753](https://github.com/mdopp/solarisbay/issues/753)) ([e738ae6](https://github.com/mdopp/solarisbay/commit/e738ae6ec49af1fef177067e2c3c2c0b4f0f6aa4))
+
 ## [0.18.0](https://github.com/mdopp/solarisbay/compare/v0.17.0...v0.18.0) (2026-07-11)
 
 
