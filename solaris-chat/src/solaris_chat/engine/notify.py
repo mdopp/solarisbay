@@ -18,6 +18,7 @@ import json
 from typing import Any
 
 from solaris_chat import push_store
+from solaris_chat.engine import store
 from solaris_chat.logging import log
 
 # The typed event kinds the bus carries (#714). `card_state` is a live HA card
@@ -82,6 +83,7 @@ async def emit_chat(
     reply: str,
     *,
     push: bool = True,
+    card: dict[str, Any] | None = None,
 ) -> None:
     """Fan a completed chat turn out (Phase 1c, #715).
 
@@ -90,14 +92,42 @@ async def emit_chat(
     sends a Web Push with the session deep-link so the reply surfaces on the
     phone. `push=False` is the foreground streaming client — it already sees the
     reply live, so it must never self-notify; the SSE fan-out still runs so
-    other open tabs update.
+    other open tabs update. `card` is a server-injected card (#785) carried on
+    the SSE event for an open client to render.
     """
     preview = _reply_preview(reply)
     url = f"/#/c/{session_id}"
     data = {"kind": "chat", "session_id": session_id, "url": url}
-    bus.publish(uid, "chat", {"session_id": session_id, "preview": preview, "url": url})
+    event = {"session_id": session_id, "preview": preview, "url": url}
+    if card is not None:
+        event["card"] = card
+    bus.publish(uid, "chat", event)
     if push and notifier is not None and not bus.has_subscriber(uid):
         await notifier.push(uid, "Solaris", preview, data)
+
+
+async def inject(
+    db_path: str,
+    bus: EventBus,
+    notifier: Notifier | None,
+    session_id: str,
+    uid: str,
+    text: str,
+    *,
+    card: dict[str, Any] | None = None,
+) -> None:
+    """Server-initiated turn into a resident's chat (Wartung P1a, #785).
+
+    Nothing else can post into a chat except a live user turn; the Wartung chat
+    (update/approval cards, #784) needs the server to speak first. Persists an
+    assistant turn so it's present when the chat opens, then reuses the #715
+    chat-propagation path: an open SSE client sees it live, a backgrounded phone
+    gets a Web Push with the session deep-link. An optional `card` rides on the
+    emitted event so an open client can render it; it is not fed back to the
+    model, so it stays off the persisted history.
+    """
+    store.append_message(db_path, session_id, "assistant", text)
+    await emit_chat(bus, notifier, uid, session_id, text, card=card)
 
 
 class Notifier:

@@ -47,7 +47,7 @@ from solaris_chat.engine import confirm, store
 from solaris_chat.engine.client import EngineClient, EngineError, current_uid
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
-from solaris_chat.engine.notify import emit_chat
+from solaris_chat.engine.notify import emit_chat, inject
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
@@ -1548,6 +1548,44 @@ def build_app(
             own.cancel()
             shared.cancel()
         return resp
+
+    async def inject_message(request: web.Request) -> web.Response:
+        # Server-initiated turn into a resident's chat (Wartung P1a, #785): the
+        # Wartung chat (#784) needs the server to speak first. Admin-gated — it
+        # writes into a resident's durable history and pushes their phone. The
+        # target session is the resident's household chat unless one is given.
+        if not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        target_uid = body.get("uid")
+        text = body.get("text")
+        card = body.get("card")
+        if not isinstance(target_uid, str) or not target_uid.strip():
+            return web.json_response({"ok": False, "reason": "no_uid"}, status=400)
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response({"ok": False, "reason": "no_text"}, status=400)
+        if card is not None and not isinstance(card, dict):
+            return web.json_response({"ok": False, "reason": "bad_card"}, status=400)
+        if event_bus is None:
+            return web.json_response({"ok": False, "reason": "no_bus"}, status=503)
+        session_id = body.get("session_id") or store.ensure_household_session(
+            solaris_db_path, target_uid
+        )
+        await inject(
+            solaris_db_path,
+            event_bus,
+            notifier,
+            session_id,
+            target_uid,
+            text,
+            card=card,
+        )
+        return web.json_response({"ok": True, "session_id": session_id})
 
     async def trace_detail(request: web.Request) -> web.Response:
         # Exact per-call content for one trace step (#307 panel → #305 detail).
@@ -3928,6 +3966,7 @@ def build_app(
     # the device-token widget path).
     app.router.add_get("/api/portal/state", portal_state)
     app.router.add_get("/api/events", portal_events)
+    app.router.add_post("/api/inject", inject_message)
     app.router.add_get("/api/portal/notes", portal_notes)
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
     app.router.add_get("/api/portal/notes/note", portal_notes_note)
