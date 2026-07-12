@@ -52,10 +52,11 @@ class _FakeEngine:
 
 
 class _FakeRequest:
-    """Minimal request stub exposing only `.headers` for resolve_uid."""
+    """Minimal request stub exposing `.headers` + `.path` for resolve_uid."""
 
-    def __init__(self, headers):
+    def __init__(self, headers, path="/api/whoami"):
         self.headers = headers
+        self.path = path
 
 
 # ---- store ----------------------------------------------------------------
