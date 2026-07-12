@@ -189,6 +189,69 @@ async def test_napi_entity_history_valid_token_is_200(
     assert (await r.json())["history"] == [{"t": "t0", "state": "21.2"}]
 
 
+# ---- /napi/portal/camera/{entity_id}/snapshot (privacy-sensitive, #770) ----
+
+
+async def test_napi_camera_snapshot_without_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    # Fail-closed: a live camera must NEVER be served to a token-less caller.
+    r = await client.get("/napi/portal/camera/camera.front/snapshot")
+    assert r.status == 401
+
+
+async def test_napi_camera_snapshot_service_key_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/camera/camera.front/snapshot",
+        headers={"Authorization": "Bearer SOLARIS_API_KEY"},
+    )
+    assert r.status == 401
+
+
+async def test_napi_camera_snapshot_valid_token_returns_image(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+
+    async def _fake(url, tok, entity_id):
+        return b"\xff\xd8\xff-jpeg-bytes", "image/jpeg"
+
+    monkeypatch.setattr("solaris_chat.server.fetch_camera_snapshot", _fake)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/camera/camera.front/snapshot",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    assert r.headers["Content-Type"] == "image/jpeg"
+    assert await r.read() == b"\xff\xd8\xff-jpeg-bytes"
+
+
+async def test_napi_camera_snapshot_non_camera_entity_is_400(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/camera/light.x/snapshot",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 400
+
+
+async def test_napi_camera_snapshot_ha_unconfigured_is_503(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/camera/camera.front/snapshot",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 503
+
+
 # ---- /napi/device-tokens: scoped by the device-token owner, not Remote-User
 
 

@@ -545,6 +545,35 @@ async def fetch_entity_history(
     return points
 
 
+async def fetch_camera_snapshot(
+    hass_url: str, hass_token: str, entity_id: str
+) -> tuple[bytes, str] | None:
+    """Current still image for a `camera.*` entity, for the Android camera widget
+    (#770). Reads HA's `/api/camera_proxy/{entity_id}` (read-only) with the
+    `HASS_TOKEN` bearer and returns `(image_bytes, content_type)`.
+
+    Enforces the `camera` domain (privacy-sensitive live image): a non-camera or
+    malformed `entity_id` returns None so the caller answers 400. Returns None on
+    any HA error too.
+    """
+    if not _ENTITY_RE.match(entity_id) or not entity_id.startswith("camera."):
+        return None
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(
+                f"{url}/api/camera_proxy/{entity_id}", headers=headers
+            ) as resp:
+                if resp.status >= 400:
+                    return None
+                content_type = resp.headers.get("Content-Type", "image/jpeg")
+                image = await resp.read()
+    except aiohttp.ClientError:
+        return None
+    return image, content_type
+
+
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 _BLOCKED_DOMAINS = frozenset(
