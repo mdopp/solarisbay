@@ -375,6 +375,112 @@ async def test_napi_addable_valid_token_is_200(aiohttp_client, tmp_path, monkeyp
     assert j["rooms"][0]["room"] == "Küche"
 
 
+# ---- /napi/portal/active: active-devices collection, no N+1 (#773) ---------
+
+
+def _patch_active(monkeypatch):
+    """Stub the single bulk actuator+state fetch `portal_active` filters over.
+
+    An on light and an open cover are active; an off switch and an unavailable
+    device must be excluded."""
+
+    async def _cards(url, tok, entity_area):
+        return [
+            {
+                "entity_id": "light.k",
+                "name": "Küche",
+                "room": "Küche",
+                "domain": "light",
+                "state": "on",
+            },
+            {
+                "entity_id": "cover.g",
+                "name": "Garage",
+                "room": "Garage",
+                "domain": "cover",
+                "state": "open",
+            },
+            {
+                "entity_id": "switch.b",
+                "name": "Boiler",
+                "room": "Bad",
+                "domain": "switch",
+                "state": "off",
+            },
+            {
+                "entity_id": "light.f",
+                "name": "Flur",
+                "room": "Flur",
+                "domain": "light",
+                "state": "unavailable",
+            },
+        ]
+
+    class _Snap:
+        entity_area = {}
+
+    async def _snapshot(self):
+        return _Snap()
+
+    monkeypatch.setattr("solaris_chat.server.fetch_addable_cards", _cards)
+    monkeypatch.setattr("solaris_chat.server.AreaRegistry.snapshot", _snapshot)
+
+
+async def test_napi_active_without_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get("/napi/portal/active")
+    assert r.status == 401
+    # Fail-closed: NOT the household default_uid.
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+
+
+async def test_napi_active_service_key_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/active",
+        headers={"Authorization": "Bearer SOLARIS_API_KEY"},
+    )
+    assert r.status == 401
+
+
+async def test_napi_active_valid_token_returns_only_active(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    _patch_active(monkeypatch)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/active",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    j = await r.json()
+    assert j["ok"] is True
+    ids = {e["entity_id"] for e in j["active"]}
+    # on light + open cover in; off switch + unavailable device out.
+    assert ids == {"light.k", "cover.g"}
+    item = next(e for e in j["active"] if e["entity_id"] == "light.k")
+    assert set(item) == {"entity_id", "name", "room", "domain", "state"}
+    assert item["name"] == "Küche" and item["room"] == "Küche"
+    assert item["domain"] == "light" and item["state"] == "on"
+
+
+async def test_napi_active_ha_unconfigured_is_503(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    # _app has no hass_url/hass_token → HA unconfigured.
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/active",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 503
+    assert (await r.json()) == {"ok": False, "error": "ha_unconfigured"}
+
+
 # ---- /napi/portal/state: lean per-entity card-spec (#762) ------------------
 
 
