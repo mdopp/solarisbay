@@ -9,6 +9,7 @@ engine's store; the server itself stays a thin routing layer.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import html
 import json
@@ -24,6 +25,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiohttp import web
+from aiohttp.typedefs import Handler
 
 from solaris_chat import (
     compaction,
@@ -68,6 +70,13 @@ from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Native-API prefix (#757). Authelia BYPASSES this prefix for the Android widgets,
+# which authenticate with a `sol_device_` device-token bearer alone. Because it is
+# proxy-bypassed, the `/napi/*` routes are device-token-ONLY and fail-closed: no
+# valid token ⇒ 401, never the household `default_uid` and never a Remote-User
+# header (untrusted here). Minting stays on the interactive-Authelia `/api/` path.
+NATIVE_PREFIX = "/napi/"
 
 # Self-contained confirm page for /pair-device (#751). Inline HTML/CSS in the
 # server.py style of the other simple routes. The `{devices}` slot is the
@@ -947,8 +956,16 @@ def resolve_uid(
        the Hermes uid so there is no second login.
     3. Absent header (e.g. direct loopback access for offline testing) falls
        back to `default_uid`.
+
+    The `/napi/` native prefix (#757) is proxy-BYPASSED by Authelia, so neither
+    the `Remote-User` header nor the loopback `default_uid` fallback can be
+    trusted there — an unauthenticated internet caller must never inherit the
+    household identity. On that prefix resolution is device-token-ONLY and
+    fail-closed: no valid `sol_device_` bearer ⇒ empty uid (the native wrapper
+    turns that into a 401). See `native_uid`.
     """
     if solaris_db_path is not None:
+        native = request.path.startswith(NATIVE_PREFIX)
         auth = request.headers.get("Authorization", "").strip()
         if auth.startswith("Bearer "):
             token = auth[len("Bearer ") :].strip()
@@ -956,8 +973,34 @@ def resolve_uid(
                 # Fail closed: an invalid/revoked device token resolves to no
                 # uid, never the default — it must not inherit loopback privilege.
                 return device_token_store.resolve(solaris_db_path, token) or ""
+        if native:
+            # Fail-closed because proxy-bypassed: no device token ⇒ no uid, never
+            # Remote-User (untrusted here) and never default_uid.
+            return ""
     value = request.headers.get(header, "").strip()
     return value or default_uid
+
+
+def native_uid(request: web.Request, solaris_db_path: str | None) -> str | None:
+    """The resident behind a valid `sol_device_` bearer on the `/napi/` prefix,
+    or None (#757).
+
+    Native (Android-widget) requests reach solaris-chat through an Authelia
+    BYPASS, so this path is authenticated by the device token ALONE — no
+    `Remote-User` header trust, no `default_uid` fallback. A missing / malformed /
+    unknown / revoked token ⇒ None, and the native routes turn that into a 401.
+    This is the whole security point: because the prefix is proxy-bypassed, an
+    unauthenticated internet caller must NOT get the household identity.
+    """
+    if solaris_db_path is None:
+        return None
+    auth = request.headers.get("Authorization", "").strip()
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[len("Bearer ") :].strip()
+    if not token.startswith(device_token_store.TOKEN_PREFIX):
+        return None
+    return device_token_store.resolve(solaris_db_path, token) or None
 
 
 def is_admin(request: web.Request, header: str, admin_group: str) -> bool:
@@ -3019,9 +3062,43 @@ def build_app(
         NOT satisfy this: a device token must not be usable to mint another
         device token, and the service key is not a resident. So this reads the
         header directly and does NOT go through `resolve_uid` (which would honour
-        the bearer path and the loopback `default_uid` fallback)."""
+        the bearer path and the loopback `default_uid` fallback).
+
+        On the proxy-bypassed `/napi/` prefix there is no `Remote-User`; the
+        `native(...)` wrapper has already validated the device-token bearer and
+        stashed its owner, so use that (a device token CAN manage its own owner's
+        paired devices, but still cannot mint — minting isn't on `/napi/`)."""
+        native = request.get("native_uid")
+        if native is not None:
+            return native
         value = request.headers.get(remote_user_header, "").strip()
         return value or None
+
+    def native(handler: Handler) -> Handler:
+        """Gate a shared `/api/` handler for the proxy-bypassed `/napi/` prefix.
+
+        Fail-closed because proxy-bypassed (#757): a `/napi/*` request must carry
+        a valid `sol_device_` device-token bearer or it is 401 — it must NEVER
+        fall through to the household `default_uid` (an internet caller could then
+        control the house) nor trust a `Remote-User` header. On success the
+        wrapped handler runs unchanged; since `resolve_uid` is native-prefix aware
+        it resolves the SAME device-token owner_uid, so the endpoint's behaviour
+        is identical to `/api/` for the authenticated resident."""
+
+        @functools.wraps(handler)
+        async def wrapper(request: web.Request) -> web.StreamResponse:
+            uid = native_uid(request, solaris_db_path)
+            if uid is None:
+                return web.json_response(
+                    {"ok": False, "error": "unauthorized"}, status=401
+                )
+            # Owner for the device-token-management routes (`_interactive_uid`),
+            # which key off Remote-User on `/api/` but must key off the validated
+            # device-token owner here since the proxy is bypassed.
+            request["native_uid"] = uid
+            return await handler(request)
+
+        return wrapper
 
     async def device_token_create(request: web.Request) -> web.Response:
         """Mint a long-lived device token for a native client (#717).
@@ -3754,6 +3831,19 @@ def build_app(
     app.router.add_delete("/api/device-tokens/{id}", device_token_revoke)
     app.router.add_get("/pair-device", pair_device_page)
     app.router.add_post("/pair-device", pair_device_confirm)
+    # Native-API prefix for the Android widgets (#757). SAME handler callables as
+    # the `/api/` routes above, but wrapped in `native(...)` so they are
+    # device-token-ONLY and fail-closed (401 without a valid `sol_device_`
+    # bearer) — because Authelia BYPASSES this prefix, they must never inherit the
+    # household `default_uid` or trust a `Remote-User` header. Token MINTING
+    # (`POST /api/device-tokens`, `/pair-device`) is deliberately NOT mirrored
+    # here: it stays interactive-Authelia-only (#748/#751).
+    app.router.add_get("/napi/whoami", native(whoami))
+    app.router.add_get("/napi/portal/start", native(portal_start))
+    app.router.add_get("/napi/portal/entity-history", native(portal_entity_history))
+    app.router.add_post("/napi/ha/call", native(ha_call))
+    app.router.add_get("/napi/device-tokens", native(device_token_list))
+    app.router.add_delete("/napi/device-tokens/{id}", native(device_token_revoke))
     app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/anchors/aliases", anchors_aliases)
