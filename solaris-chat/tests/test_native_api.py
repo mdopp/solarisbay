@@ -253,6 +253,166 @@ async def test_napi_does_not_expose_token_minting(aiohttp_client, tmp_path):
     assert len(device_token_store.list_for_uid(db, "lena")) == 1
 
 
+# ---- /napi/portal/start/addable: the device picker (#762) ------------------
+
+
+def _patch_addable(monkeypatch):
+    """Stub the HA reads `portal_start_addable` fans out to (device picker)."""
+
+    async def _cards(url, tok, entity_area):
+        return [
+            {"entity_id": "light.k", "name": "Küche", "room": "Küche", "state": "on"}
+        ]
+
+    async def _runnables(url, tok):
+        return []
+
+    class _Snap:
+        entity_area = {"light.k": "Küche"}
+
+    async def _snapshot(self):
+        return _Snap()
+
+    monkeypatch.setattr("solaris_chat.server.fetch_addable_cards", _cards)
+    monkeypatch.setattr("solaris_chat.server.fetch_addable_runnables", _runnables)
+    monkeypatch.setattr("solaris_chat.server.AreaRegistry.snapshot", _snapshot)
+
+
+async def test_napi_addable_without_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get("/napi/portal/start/addable")
+    assert r.status == 401
+    # Fail-closed: NOT the household default_uid.
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+
+
+async def test_napi_addable_service_key_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/start/addable",
+        headers={"Authorization": "Bearer SOLARIS_API_KEY"},
+    )
+    assert r.status == 401
+
+
+async def test_napi_addable_valid_token_is_200(aiohttp_client, tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    _patch_addable(monkeypatch)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/start/addable",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    j = await r.json()
+    assert j["ok"] is True
+    assert j["rooms"][0]["room"] == "Küche"
+
+
+# ---- /napi/portal/state: lean per-entity card-spec (#762) ------------------
+
+
+async def test_napi_state_without_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get("/napi/portal/state?entity_id=light.k")
+    assert r.status == 401
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+
+
+async def test_napi_state_service_key_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/state?entity_id=light.k",
+        headers={"Authorization": "Bearer SOLARIS_API_KEY"},
+    )
+    assert r.status == 401
+
+
+async def test_napi_state_valid_token_is_200(aiohttp_client, tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+
+    async def _card(url, tok, entity_id):
+        return {"entity_id": entity_id, "name": "Küche", "state": "on"}
+
+    monkeypatch.setattr("solaris_chat.server.fetch_card", _card)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/state?entity_id=light.k",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    j = await r.json()
+    assert j["ok"] is True and j["card"]["entity_id"] == "light.k"
+
+
+async def test_napi_state_bad_entity_id_is_400(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/state?entity_id=not-an-entity",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 400
+    assert (await r.json())["error"] == "invalid entity_id"
+
+
+async def test_napi_state_ha_unconfigured_is_503(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    # `_app` builds without HA url/token.
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/state?entity_id=light.k",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 503
+    assert (await r.json())["error"] == "ha_unconfigured"
+
+
+# ---- /napi/portal/energy: the energy widget (#762) -------------------------
+
+
+async def test_napi_energy_without_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get("/napi/portal/energy")
+    assert r.status == 401
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+
+
+async def test_napi_energy_service_key_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/energy", headers={"Authorization": "Bearer SOLARIS_API_KEY"}
+    )
+    assert r.status == 401
+
+
+async def test_napi_energy_valid_token_is_200(aiohttp_client, tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+
+    async def _energy(url, tok):
+        return {"grid": 42}
+
+    monkeypatch.setattr("solaris_chat.server.fetch_energy", _energy)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/energy", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 200
+    j = await r.json()
+    assert j["ok"] is True and j["energy"] == {"grid": 42}
+
+
 # ---- /api/* stays unchanged: falls back to default_uid ---------------------
 
 
@@ -263,3 +423,31 @@ async def test_api_whoami_still_falls_back_to_default_uid(aiohttp_client, tmp_pa
     r = await client.get("/api/whoami")
     assert r.status == 200
     assert (await r.json())["uid"] == "household"
+
+
+async def test_api_addable_still_falls_back_to_default_uid(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    db = _db(tmp_path)
+    _patch_addable(monkeypatch)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    # No bearer ⇒ the `/api/` path resolves the household default_uid (200), unlike
+    # the fail-closed `/napi/` mirror.
+    r = await client.get("/api/portal/start/addable")
+    assert r.status == 200
+    assert (await r.json())["ok"] is True
+
+
+async def test_api_energy_still_falls_back_to_default_uid(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    db = _db(tmp_path)
+
+    async def _energy(url, tok):
+        return {"grid": 42}
+
+    monkeypatch.setattr("solaris_chat.server.fetch_energy", _energy)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get("/api/portal/energy")
+    assert r.status == 200
+    assert (await r.json())["ok"] is True
