@@ -299,6 +299,36 @@ async def fetch_addable_runnables(
     return out
 
 
+async def fetch_cameras(
+    hass_url: str, hass_token: str, entity_area: dict[str, str]
+) -> list[dict[str, Any]] | None:
+    """Camera entities for the Android camera-widget picker (#779). The addable
+    actuator list omits cameras, so this does the ONE read-only `/api/states`,
+    keeps only `camera.*`, and returns `{entity_id, name, room}` for each — `room`
+    is the area friendly name from the same snapshot the actuator picker uses.
+    Returns None on any HA error; entities without an area carry room "".
+    """
+    headers = {"Authorization": f"Bearer {hass_token}"}
+    url = hass_url.rstrip("/")
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+            async with client.get(f"{url}/api/states", headers=headers) as resp:
+                if resp.status >= 400:
+                    return None
+                states = await resp.json()
+    except aiohttp.ClientError:
+        return None
+    out: list[dict[str, Any]] = []
+    for s in states:
+        eid = str(s.get("entity_id") or "")
+        if eid.split(".", 1)[0] != "camera":
+            continue
+        name = str((s.get("attributes") or {}).get("friendly_name") or eid)
+        out.append({"entity_id": eid, "name": name, "room": entity_area.get(eid, "")})
+    out.sort(key=lambda c: (c["room"].lower(), c["name"].lower()))
+    return out
+
+
 # Current-power (W) flow sensors for the "Jetzt" picture + the trend chart
 # (#691). Matched by EXACT friendly_name and require device_class=power / unit W
 # so the kWh lifetime counters (PV Erzeugung, Netzbezug, …) never leak into the

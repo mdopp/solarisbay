@@ -481,6 +481,133 @@ async def test_napi_active_ha_unconfigured_is_503(aiohttp_client, tmp_path):
     assert (await r.json()) == {"ok": False, "error": "ha_unconfigured"}
 
 
+# ---- /napi/portal/cameras: camera list for the Android widget picker (#779) -
+
+
+class _FakeStatesResponse:
+    """Minimal async-context-manager stand-in for an aiohttp `/api/states` GET,
+    so `fetch_cameras`' real camera-domain filter runs over faked states."""
+
+    status = 200
+
+    def __init__(self, states):
+        self._states = states
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def json(self):
+        return self._states
+
+
+class _FakeClientSession:
+    def __init__(self, states):
+        self._states = states
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def get(self, url, headers=None):
+        return _FakeStatesResponse(self._states)
+
+
+def _patch_camera_states(monkeypatch):
+    """Fake the single bulk `/api/states` read: 2 cameras + a light, so the
+    real `camera.*` filter must yield exactly the two cameras."""
+    states = [
+        {
+            "entity_id": "camera.front",
+            "state": "idle",
+            "attributes": {"friendly_name": "Haustür"},
+        },
+        {
+            "entity_id": "camera.garden",
+            "state": "idle",
+            "attributes": {"friendly_name": "Garten"},
+        },
+        {
+            "entity_id": "light.k",
+            "state": "on",
+            "attributes": {"friendly_name": "Küche"},
+        },
+    ]
+
+    def _session(*args, **kwargs):
+        return _FakeClientSession(states)
+
+    class _Snap:
+        entity_area = {"camera.front": "Eingang"}
+
+    async def _snapshot(self):
+        return _Snap()
+
+    monkeypatch.setattr("solaris_chat.engine.tools.ha.aiohttp.ClientSession", _session)
+    monkeypatch.setattr("solaris_chat.server.AreaRegistry.snapshot", _snapshot)
+
+
+async def test_napi_cameras_without_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get("/napi/portal/cameras")
+    assert r.status == 401
+    # Fail-closed: NOT the household default_uid.
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+
+
+async def test_napi_cameras_service_key_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/cameras",
+        headers={"Authorization": "Bearer SOLARIS_API_KEY"},
+    )
+    assert r.status == 401
+
+
+async def test_napi_cameras_valid_token_returns_only_cameras(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    _patch_camera_states(monkeypatch)
+    client = await aiohttp_client(_ha_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/cameras",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    j = await r.json()
+    assert j["ok"] is True
+    ids = {c["entity_id"] for c in j["cameras"]}
+    # only the two camera.* entities; the light is excluded.
+    assert ids == {"camera.front", "camera.garden"}
+    front = next(c for c in j["cameras"] if c["entity_id"] == "camera.front")
+    assert set(front) == {"entity_id", "name", "room"}
+    assert front["name"] == "Haustür" and front["room"] == "Eingang"
+    garden = next(c for c in j["cameras"] if c["entity_id"] == "camera.garden")
+    # no area → room "".
+    assert garden["name"] == "Garten" and garden["room"] == ""
+
+
+async def test_napi_cameras_ha_unconfigured_is_503(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    # _app has no hass_url/hass_token → HA unconfigured.
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.get(
+        "/napi/portal/cameras",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 503
+    assert (await r.json()) == {"ok": False, "error": "ha_unconfigured"}
+
+
 # ---- /napi/portal/state: lean per-entity card-spec (#762) ------------------
 
 

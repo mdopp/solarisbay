@@ -60,6 +60,7 @@ from solaris_chat.engine.tools.ha import (
     fetch_addable_cards,
     fetch_addable_runnables,
     fetch_camera_snapshot,
+    fetch_cameras,
     fetch_card,
     fetch_energy,
     fetch_energy_history,
@@ -2885,6 +2886,28 @@ def build_app(
         ]
         return web.json_response({"ok": True, "active": active})
 
+    async def portal_cameras(request: web.Request) -> web.Response:
+        """Camera entities for the Android camera-widget picker (#779). The
+        addable actuator list only carries controllable actuators, so the picker
+        would show "no cameras". This does the ONE bulk `/api/states` read,
+        filters to `camera.*`, and returns each camera's `entity_id`, friendly
+        `name`, and `room` (area friendly name from the same area snapshot the
+        actuator picker uses).
+
+        Only reached via `native(...)` on `/napi/`: device-token-only, fail-closed,
+        owner-scoped, read-only."""
+        if not hass_url or not hass_token or area_registry is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unconfigured"}, status=503
+            )
+        snap = await area_registry.snapshot()
+        cameras = await fetch_cameras(hass_url, hass_token, snap.entity_area)
+        if cameras is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unavailable"}, status=502
+            )
+        return web.json_response({"ok": True, "cameras": cameras})
+
     async def portal_notes(request: web.Request) -> web.Response:
         """Notes-portal overview for `#/p/notes` (#696): counts, the last
         Bibliothekar run, and the recently modified notes — read-only, owner-scoped
@@ -3938,6 +3961,7 @@ def build_app(
     app.router.add_get("/napi/portal/start", native(portal_start))
     app.router.add_get("/napi/portal/start/addable", native(portal_start_addable))
     app.router.add_get("/napi/portal/active", native(portal_active))
+    app.router.add_get("/napi/portal/cameras", native(portal_cameras))
     app.router.add_get("/napi/portal/state", native(portal_state))
     app.router.add_get("/napi/portal/energy", native(portal_energy))
     app.router.add_get("/napi/portal/entity-history", native(portal_entity_history))
