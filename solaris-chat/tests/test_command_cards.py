@@ -123,6 +123,35 @@ def test_wordmark_i_is_the_brand_glyph():
     assert "em" in rule.group(1)  # sized in em so it sits inline like a glyph
 
 
+def test_brand_over_chats_overlay():
+    # #777: the full-page Chats overlay (the .rs-head "Chats" row) carries the
+    # Solaris brand wordmark, consistent with the chat-header.
+    rs = re.search(r"<div class=\"rs-head\">(.*?)</div>", _HTML, re.S)
+    assert rs, "rs-head not found"
+    body = rs.group(1)
+    assert 'class="brand-wordmark rs-brand"' in body
+    assert (
+        'Solar<img class="brand-i" src="/static/solaris-mark.svg" alt="i" />s' in body
+    )
+    assert "<span>Chats</span>" in body
+
+
+def test_version_badge_lives_in_the_footer_not_the_head():
+    # #777: #brand-ver moved out of the .rail-head (by the logo) into the
+    # .rail-foot links row (by Release news / Log out).
+    head = re.search(
+        r"<div class=\"rail-head[^\"]*\"[^>]*id=\"brand-home\".*?<nav", _HTML, re.S
+    )
+    assert head, "rail-head not found"
+    assert 'id="brand-ver"' not in head.group(0)
+    foot = re.search(r"<div class=\"rail-foot\">(.*?)</aside>", _HTML, re.S)
+    assert foot, "rail-foot not found"
+    links = re.search(r"<div class=\"rail-links\">(.*?)</div>", foot.group(1), re.S)
+    assert links, "rail-links not found"
+    assert 'id="brand-ver"' in links.group(1)
+    assert 'id="release-link"' in links.group(1)
+
+
 def test_help_and_autocomplete_pool_commands_only_not_skills():
     # #482: the `/` autocomplete + /help pool is COMMANDS only — built-in
     # commands PLUS the typeable command-kind templates / inline dual aliases
