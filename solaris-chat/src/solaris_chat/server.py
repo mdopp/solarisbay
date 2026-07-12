@@ -59,6 +59,7 @@ from solaris_chat.engine.tools.ha import (
     call_service_scoped,
     fetch_addable_cards,
     fetch_addable_runnables,
+    fetch_camera_snapshot,
     fetch_card,
     fetch_energy,
     fetch_energy_history,
@@ -2497,6 +2498,39 @@ def build_app(
             )
         return web.json_response({"ok": True, "history": history})
 
+    async def portal_camera_snapshot(request: web.Request) -> web.Response:
+        """Current still image for a `camera.*` entity — the Android camera widget
+        (#770). Owner-scoped via `resolve_uid`; on the proxy-bypassed `/napi/`
+        prefix the `native(...)` wrapper has already enforced a `sol_device_`
+        device-token bearer, so this live-camera read is never served to an
+        unauthenticated caller (fail-closed, privacy-sensitive). `fetch_camera_snapshot`
+        enforces the `camera` domain, so a non-camera `entity_id` returns 400.
+        503 when HA is unconfigured, 502 when HA is unavailable.
+        """
+        if not hass_url or not hass_token:
+            return web.json_response(
+                {"ok": False, "error": "ha_unconfigured"}, status=503
+            )
+        resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        entity_id = request.match_info["entity_id"]
+        if not _ENTITY_RE.match(entity_id) or not entity_id.startswith("camera."):
+            return web.json_response(
+                {"ok": False, "error": "invalid entity_id"}, status=400
+            )
+        snapshot = await fetch_camera_snapshot(hass_url, hass_token, entity_id)
+        if snapshot is None:
+            return web.json_response(
+                {"ok": False, "error": "ha_unavailable"}, status=502
+            )
+        image, content_type = snapshot
+        # The widget polls periodically; a short cache lets a burst of refreshes
+        # share one HA read without letting the image go stale.
+        return web.Response(
+            body=image,
+            content_type=content_type,
+            headers={"Cache-Control": "max-age=5"},
+        )
+
     async def portal_state(request: web.Request) -> web.Response:
         """Lean card-spec for one arbitrary entity — the universal device widget's
         current-state read (#762). Reuses the read-only `fetch_card` path (the
@@ -3833,6 +3867,10 @@ def build_app(
     app.router.add_get("/api/portal/entity-history", portal_entity_history)
     app.router.add_get("/api/portal/start", portal_start)
     app.router.add_get("/api/portal/start/addable", portal_start_addable)
+    # Single-device deep link (#769): the browser/Authelia session reads one
+    # entity's card for the #/p/device/<entity_id> route (the /napi/ twin serves
+    # the device-token widget path).
+    app.router.add_get("/api/portal/state", portal_state)
     app.router.add_get("/api/events", portal_events)
     app.router.add_get("/api/portal/notes", portal_notes)
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
@@ -3869,6 +3907,9 @@ def build_app(
     app.router.add_get("/napi/portal/state", native(portal_state))
     app.router.add_get("/napi/portal/energy", native(portal_energy))
     app.router.add_get("/napi/portal/entity-history", native(portal_entity_history))
+    app.router.add_get(
+        "/napi/portal/camera/{entity_id}/snapshot", native(portal_camera_snapshot)
+    )
     app.router.add_post("/napi/ha/call", native(ha_call))
     app.router.add_get("/napi/device-tokens", native(device_token_list))
     app.router.add_delete("/napi/device-tokens/{id}", native(device_token_revoke))

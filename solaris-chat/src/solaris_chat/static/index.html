@@ -1195,6 +1195,11 @@
       }
       /* Leave room for the tab bar so the composer/log are never covered. */
       .composer-bar { padding-bottom: var(--tabbar-h); }
+      /* De-dupe the Chats page nav (#765): the primary Zuhause/Favoriten/
+         Energie/Notizen group at the top of the Chats full-page view duplicates
+         the bottom tab bar on mobile — hide it so navigation isn't shown twice.
+         Desktop keeps the rail-nav (the media query scopes this to mobile). */
+      .rail-nav { display: none; }
     }
     /* ---------- ServiceBay finish: depth, fonts, scrollbar, motion ---------- */
     /* Messages read as lifted cards (rounded + soft depth). */
@@ -1757,6 +1762,7 @@
     <button id="tab-home" type="button" aria-label="Zuhause"><svg class="ic"><use href="#i-home"></use></svg>Zuhause</button>
     <button id="tab-chats" type="button" aria-label="Chats"><svg class="ic"><use href="#i-chat"></use></svg>Chats</button>
     <button id="tab-favorites" type="button" aria-label="Favoriten"><svg class="ic"><use href="#i-star"></use></svg>Favoriten</button>
+    <button id="tab-energy" type="button" aria-label="Energie"><svg class="ic"><use href="#i-bolt"></use></svg>Energie</button>
     <button id="tab-notes" type="button" aria-label="Notizen"><svg class="ic"><use href="#i-note"></use></svg>Notizen</button>
   </nav>
 
@@ -4765,11 +4771,20 @@
       var tabHome = document.getElementById("tab-home");
       var tabChats = document.getElementById("tab-chats");
       var tabFavorites = document.getElementById("tab-favorites");
+      var tabEnergy = document.getElementById("tab-energy");
       var tabNotes = document.getElementById("tab-notes");
       tabNotes.addEventListener("click", function () {
         closeRail();
         if ((location.hash || "").indexOf("#/p/notes") === 0) routeFromLocation();
         else location.hash = "#/p/notes";
+        syncTabbar();
+      });
+      // Energie bottom tab (#765): opens the existing #/p/energy portal, same
+      // hash-router target as the desktop rail Energie entry — no new routing.
+      tabEnergy.addEventListener("click", function () {
+        closeRail();
+        if ((location.hash || "").indexOf("#/p/energy") === 0) routeFromLocation();
+        else location.hash = "#/p/energy";
         syncTabbar();
       });
       tabHome.addEventListener("click", function () {
@@ -4806,6 +4821,7 @@
         var onChats = railOpen || (!onStart && !onEnergy && !onNotes && !onHome);
         tabFavorites.classList.toggle("active", onStart && !railOpen);
         tabHome.classList.toggle("active", onHome && !railOpen);
+        tabEnergy.classList.toggle("active", onEnergy && !railOpen);
         tabNotes.classList.toggle("active", onNotes && !railOpen);
         tabChats.classList.toggle("active", onChats);
         // Desktop rail entries (#681/#700) highlight strictly from the current
@@ -5185,6 +5201,14 @@
       // the home-energy picture (the data the "Energieverbrauch" answer used to
       // dump into chat belongs here).
       function openPortal(type) {
+        // Single-device deep link (#769): #/p/device/<entity_id> opens a page
+        // focused on ONE device's live card (a device-widget tap target). The
+        // entity_id keeps its dots, so match the sub-path prefix, not a slug.
+        if (type.indexOf("device/") === 0) { openDevicePage(type.slice(7)); return; }
+        // Camera deep link (#769): the route name is reserved so the Android
+        // camera widget can wire it now, but the camera VIEW needs the snapshot
+        // fetch from #770 — until then show a placeholder, don't fake a feed.
+        if (type.indexOf("camera/") === 0 || type === "camera") { openCameraPlaceholder(); return; }
         if (type !== "energy" && type !== "start" && type !== "notes") { showView("chat"); return; }
         // Leaving the start page for another portal stops its refresh timer (#711).
         if (type !== "start") stopStartRefresh();
@@ -7778,8 +7802,38 @@
       // re-enforces the gate, so a non-admin can never reach it).
       // whoami first: it sets householdSessionId, which loadSessions needs to
       // filter the household chat out of the list + drive the Zuhause highlight (#700).
+      // Voice-widget deep link (#766): the Android homescreen mic captures speech
+      // on-device and hands the recognised text to the web chat via the hash
+      // param `#/?ask=<urlencoded>`. On load we open a NEW household chat, insert
+      // the decoded text as the user turn, and AUTO-SEND it (not just prefill) —
+      // riding the browser/Authelia session, no device token. The scheme is
+      // hash-based so it fits the SPA hash router and shares the SPA shell.
+      // Scheme: https://chat.dopp.cloud/#/?ask=<urlencodierter-text>
+      function consumeAskParam() {
+        var hash = window.location.hash || "";
+        var m = hash.match(/^#\/\?(.*)$/);
+        if (!m) return false;
+        var ask = new URLSearchParams(m[1]).get("ask");
+        // Consume the param ONCE: strip it from the URL before sending so a
+        // re-render / back-forward / reload can't re-fire the same message.
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+        var text = (ask || "").trim();
+        if (!text) return false;
+        // Same path as a manually typed household turn: a fresh session pre-bound
+        // to HOUSEHOLD_TOPIC (#242/#700), the user bubble, then the streamed turn.
+        newSession();
+        pendingTopic = HOUSEHOLD_TOPIC;
+        addUserTurn(text, []);
+        runTurn(text, []);
+        syncTabbar();
+        return true;
+      }
+
       Promise.all([loadPersonalities(), loadWhoami(), loadTopics()])
-        .then(loadSessions).then(routeFromLocation).then(syncTabbar);
+        .then(loadSessions).then(function () {
+          // ?ask deep link wins over normal hash routing when present (#766).
+          if (!consumeAskParam()) routeFromLocation();
+        }).then(syncTabbar);
     })();
   </script>
 </body>
