@@ -5239,6 +5239,50 @@
           .catch(function () { card.textContent = "Konnte die Energiedaten nicht laden."; });
       }
 
+      // #769: a page focused on ONE device — reuses renderHaCard on the same
+      // read-only card spec the chat/start-page render, fetched via the
+      // browser/Authelia session (/api/portal/state, the /napi/ twin serves the
+      // device-token widget). The standalone-page shell mirrors openPortal.
+      function openDevicePage(entityId) {
+        stopStartRefresh();
+        closeRail();
+        clearLog();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card";
+        card.textContent = "Lade…";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+        fetch("/api/portal/state?entity_id=" + encodeURIComponent(entityId))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j || !j.ok || !j.card) { card.textContent = "Gerät nicht verfügbar."; return; }
+            card.textContent = "";
+            card.classList.add("start-page");
+            var head = document.createElement("div");
+            head.className = "concept-head";
+            var title = document.createElement("span");
+            title.className = "concept-title";
+            title.textContent = j.card.name || j.card.entity_id || "Gerät";
+            head.appendChild(title);
+            card.appendChild(head);
+            card.appendChild(renderHaCard(j.card, false, { pin: true }));
+          })
+          .catch(function () { card.textContent = "Konnte das Gerät nicht laden."; });
+      }
+
+      // #769/#770: the camera route name is reserved so the Android camera widget
+      // can wire it, but the camera feed needs the snapshot fetch from #770.
+      function openCameraPlaceholder() {
+        stopStartRefresh();
+        closeRail();
+        clearLog();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card";
+        card.textContent = "Kamera-Ansicht kommt bald (#770).";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+      }
+
       function loadStartPage(card) {
         fetch("/api/portal/start")
           .then(function (r) { return r.ok ? r.json() : null; })
