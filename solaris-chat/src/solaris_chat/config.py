@@ -78,6 +78,26 @@ def _parse_library_owners(raw: str) -> dict[str, str]:
     return owners
 
 
+def _load_vapid_private_key(private_key: str):
+    """Load a VAPID private key in any accepted format to a cryptography object.
+
+    Accepts three formats: PEM (-----BEGIN EC PRIVATE KEY-----), raw 32-byte
+    base64url scalar, and DER base64url — the last two via py_vapid. The single
+    place that turns the operator's `VAPID_PRIVATE_KEY` into an EC private-key
+    object, shared by the public-key derive (below) and the notifier's raw-scalar
+    conversion (engine/notify.py). Raises on a malformed key; each caller decides
+    how to degrade."""
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import serialization
+    from py_vapid import Vapid01
+
+    if private_key.strip().startswith("-----"):
+        return serialization.load_pem_private_key(
+            private_key.encode(), password=None, backend=default_backend()
+        )
+    return Vapid01.from_string(private_key).private_key
+
+
 def _derive_vapid_public_key(private_key: str) -> str:
     """Derive the base64url VAPID public key from the private key (#801).
 
@@ -85,23 +105,15 @@ def _derive_vapid_public_key(private_key: str) -> str:
     preserve across a redeploy unless passed explicitly, so it silently empties
     and Web Push breaks. It's fully derivable from VAPID_PRIVATE_KEY (the EC
     P-256 private key): the uncompressed public point, base64url, no padding —
-    the same encoding `web-push generate-vapid-keys` emits. Accepts three
-    formats: PEM (-----BEGIN EC PRIVATE KEY-----), raw 32-byte base64url scalar,
-    and DER base64url — the last two via py_vapid. Returns "" if the key can't
-    load, so a malformed private key just disables push rather than crashing boot."""
+    the same encoding `web-push generate-vapid-keys` emits. Returns "" if the key
+    can't load, so a malformed private key just disables push rather than crashing
+    boot."""
     import base64
 
-    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import serialization
-    from py_vapid import Vapid01
 
     try:
-        if private_key.strip().startswith("-----"):
-            public_key = serialization.load_pem_private_key(
-                private_key.encode(), password=None, backend=default_backend()
-            ).public_key()
-        else:
-            public_key = Vapid01.from_string(private_key).public_key
+        public_key = _load_vapid_private_key(private_key).public_key()
     except Exception:  # noqa: BLE001 — a bad key disables push, never breaks boot
         return ""
     point = public_key.public_bytes(

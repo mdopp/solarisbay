@@ -69,6 +69,29 @@ class EventBus:
                     self._subs.pop(uid, None)
 
 
+def _vapid_private_scalar(private_key: str) -> str:
+    """Normalise a VAPID private key to the raw base64url scalar pywebpush wants.
+
+    `pywebpush.webpush(vapid_private_key=…)` accepts a file path or a raw 32-byte
+    base64url scalar, NOT inline PEM (#804) — an operator-configured PEM was
+    passed through raw and every send died with an ASN.1 parse error. When the key
+    is PEM (starts with `-----`), load it via the shared config loader and emit the
+    private scalar as base64url (no padding); a raw scalar is already accepted, so
+    pass it through. A key that won't load is left as-is (push is already disabled
+    upstream when the derived public key is empty)."""
+    import base64
+
+    from solaris_chat.config import _load_vapid_private_key
+
+    if not private_key.strip().startswith("-----"):
+        return private_key
+    try:
+        scalar = _load_vapid_private_key(private_key).private_numbers().private_value
+    except Exception:  # noqa: BLE001 — a bad key already disables push, never crash
+        return private_key
+    return base64.urlsafe_b64encode(scalar.to_bytes(32, "big")).rstrip(b"=").decode()
+
+
 def _reply_preview(reply: str, limit: int = 140) -> str:
     """One-line preview of an assistant reply for a notification body."""
     line = " ".join(reply.split())
@@ -140,7 +163,7 @@ class Notifier:
     ):
         self._db_path = db_path
         self._public_key = vapid_public_key
-        self._private_key = vapid_private_key
+        self._private_key = _vapid_private_scalar(vapid_private_key)
         self._subject = vapid_subject or "mailto:admin@solaris.local"
 
     @property
