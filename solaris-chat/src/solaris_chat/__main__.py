@@ -14,6 +14,7 @@ from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.profiles import build_engine_clients
 from solaris_chat.engine.approvals import ApprovalPoller
+from solaris_chat.engine.sb_events import SbApprovalEventBridge
 from solaris_chat.engine.scheduler import TimerScheduler
 from solaris_chat.engine.updates import UpdatePoller
 from solaris_chat.logging import log
@@ -108,6 +109,18 @@ async def _run() -> None:
         notifier=notifier,
     )
     approval_poller.start()
+    # ServiceBay approval-event bridge → Solaris event bus → app (BFF, #811): hold
+    # SB's server-server SSE (/napi/approvals/events) open and republish each new
+    # approval onto the event bus so it reaches the paired admin device over the
+    # existing /napi/portal/events SSE — the app never subscribes to SB directly
+    # (ADR 0010). Read-scoped SB-MCP token; dormant when SB_API_URL is unset.
+    sb_event_bridge = SbApprovalEventBridge(
+        settings.sb_api_url,
+        settings.sb_mcp_token_path,
+        event_bus,
+        settings.default_uid,
+    )
+    sb_event_bridge.start()
     crons = CronRunner(
         db_path=settings.solaris_db_path,
         deep=deep,

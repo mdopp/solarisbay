@@ -51,6 +51,7 @@ from solaris_chat.engine import (
     store,
     updates,
 )
+from solaris_chat.engine import sb_companion as sb_companion_module
 from solaris_chat.engine.client import (
     EngineClient,
     EngineError,
@@ -1069,6 +1070,7 @@ def build_app(
     android_cert_fingerprints: tuple[str, ...] = (),
     ha_watcher: Any = None,
     native_watch: Any = None,
+    sb_companion: Any = None,
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -1589,7 +1591,7 @@ def build_app(
         async def _pump(stream) -> None:
             async for event in stream:
                 kind = event.get("kind")
-                if kind in ("card_state", "chat"):
+                if kind in ("card_state", "chat", "servicebay"):
                     await _send_event(resp, kind, event.get("data") or {})
 
         own = asyncio.ensure_future(_pump(event_bus.subscribe(uid)))
@@ -1638,6 +1640,32 @@ def build_app(
         }
         native_watch.set(device_id, uid, entity_ids)
         return web.json_response({"ok": True})
+
+    async def servicebay_read(request: web.Request) -> web.Response:
+        """Aggregate one ServiceBay companion read for the app (BFF, #811).
+
+        Solaris is the BFF/hub (ADR 0010): the app talks only to Solaris, never to
+        ServiceBay. This re-serves ServiceBay's `/napi/{home,approvals,services,
+        upgrades}` (servicebay#2252) — consumed server-to-server via the read-scoped
+        SB-MCP token — under Solaris's OWN `/napi/servicebay/*`, so the app gets
+        ServiceBay data over its one Solaris `/napi` without knowing ServiceBay.
+
+        Only reached via `native(...)` on `/napi/`: device-token-only, fail-closed,
+        read-only. Returns ServiceBay's body verbatim; a 502 when SB is unreachable,
+        a 503 when no SB companion is configured."""
+        key = request.match_info["key"]
+        if key not in sb_companion_module.READ_PATHS:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        if sb_companion is None or not sb_companion.enabled:
+            return web.json_response(
+                {"ok": False, "error": "servicebay_unconfigured"}, status=503
+            )
+        body = await sb_companion.read(key)
+        if body is None:
+            return web.json_response(
+                {"ok": False, "error": "servicebay_unavailable"}, status=502
+            )
+        return web.json_response(body)
 
     async def inject_message(request: web.Request) -> web.Response:
         # Server-initiated turn into a resident's chat (Wartung P1a, #785): the
@@ -4328,6 +4356,9 @@ def build_app(
         "/napi/portal/camera/{entity_id}/snapshot", native(portal_camera_snapshot)
     )
     app.router.add_post("/napi/ha/call", native(ha_call))
+    # ServiceBay BFF reads (#811): re-serve SB's companion reads under Solaris's
+    # own /napi so the app never talks to ServiceBay directly (ADR 0010).
+    app.router.add_get("/napi/servicebay/{key}", native(servicebay_read))
     app.router.add_get("/napi/device-tokens", native(device_token_list))
     app.router.add_delete("/napi/device-tokens/{id}", native(device_token_revoke))
     app.router.add_get("/p/{type}", portal_page)
@@ -4628,6 +4659,10 @@ async def serve(
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
+    # ServiceBay BFF read client (#811): the app reaches SB's companion reads only
+    # through Solaris. Built from the same SB base + read-scoped SB-MCP token the
+    # pollers use; dormant (503) when SB_API_URL is unset.
+    sb_companion = sb_companion_module.SbCompanionClient(sb_api_url, sb_mcp_token_path)
     app = build_app(
         hermes=hermes,
         hermes_admin=hermes_admin,
@@ -4666,6 +4701,7 @@ async def serve(
         android_cert_fingerprints=android_cert_fingerprints,
         ha_watcher=ha_watcher,
         native_watch=native_watch,
+        sb_companion=sb_companion,
     )
     runner = web.AppRunner(app)
     await runner.setup()
