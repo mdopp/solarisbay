@@ -2572,10 +2572,12 @@
 
       function runAction(btn, spec, confirmed) {
         btn.disabled = true;
+        // A button may carry `params` (e.g. #788 [Deploy] → {service}); forward
+        // them so the server-side handler knows what to act on.
         fetch("/api/action-callback", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action_id: spec.action_id, confirmed: confirmed })
+          body: JSON.stringify({ action_id: spec.action_id, confirmed: confirmed, params: spec.params || {} })
         })
           .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
           .then(function (res) {

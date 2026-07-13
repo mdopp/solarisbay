@@ -43,7 +43,7 @@ from solaris_chat import (
 )
 from solaris_chat.attachments import AttachmentStore, attach_to_messages
 from solaris_chat.context import STATIC_DEFAULT, ContextWindow
-from solaris_chat.engine import action_cards, approvals, confirm, store
+from solaris_chat.engine import action_cards, approvals, confirm, store, updates
 from solaris_chat.engine.client import (
     EngineClient,
     EngineError,
@@ -1677,6 +1677,11 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "confirm_required"}, status=403
             )
+        # Pin the acting admin's verified Authelia identity so an admin handler's
+        # SB-MCP call mints its token from THIS admin's session (#794), not a
+        # standing credential (#788 [Deploy]).
+        if handler.admin:
+            pin_admin_identity(request)
         result = await handler.run(body)
         return web.json_response(result)
 
@@ -1851,6 +1856,43 @@ def build_app(
             if isinstance(box, McpToolbox):
                 return box
         return None
+
+    async def _deploy_update(body: dict[str, Any]) -> dict[str, Any]:
+        """[Deploy] on a Wartung update-card (#788): install the service's newest
+        template via SB-MCP, then report the outcome back into the Wartung chat.
+
+        Registered admin=True AND destructive=True, so the endpoint refuses a
+        non-admin caller and requires `confirmed=true` before this runs; the
+        acting admin's identity is already pinned (action_callback), so the
+        toolbox mints its token from that session (#794). Fail-open: no toolbox
+        or an SB-MCP error is reported into the chat, never raised at the button.
+        """
+        params = body.get("params")
+        service = params.get("service") if isinstance(params, dict) else None
+        if not isinstance(service, str) or not service.strip():
+            return {"ok": False, "reason": "no_service"}
+        mcp = _admin_mcp()
+        if mcp is None:
+            return {"ok": False, "reason": "no_mcp"}
+        await mcp.prepare()
+        result = await mcp.dispatch(
+            "install_template", {"names": [service], "wipeMode": "install"}
+        )
+        if event_bus is not None:
+            uid = default_uid
+            await inject(
+                solaris_db_path,
+                event_bus,
+                notifier,
+                store.wartung_session_id(uid),
+                uid,
+                f"Deploy von „{service}“ gestartet: {result[:400]}",
+            )
+        return {"ok": True, "service": service, "result": result[:2000]}
+
+    action_cards.register(
+        updates.DEPLOY_ACTION, _deploy_update, admin=True, destructive=True
+    )
 
     async def _approval_verdict(body: dict[str, Any], approve: bool) -> dict[str, Any]:
         """Deliver an [Approve]/[Deny] verdict on a Wartung approval-card (#790):

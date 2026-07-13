@@ -27,8 +27,10 @@ def _cfg(db_path: str) -> Config:
 
 
 def test_single_linear_head(tmp_path):
+    # The chain head advances as later migrations land (0022 adds
+    # wartung_seen_updates, #788); assert a SINGLE linear head, not its name.
     heads = ScriptDirectory.from_config(_cfg(str(tmp_path / "x.db"))).get_heads()
-    assert heads == ("0021_device_tokens",)
+    assert len(heads) == 1
 
 
 def test_upgrade_creates_device_tokens(tmp_path):
