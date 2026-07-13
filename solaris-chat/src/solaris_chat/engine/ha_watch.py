@@ -61,12 +61,14 @@ class HaStateWatcher:
         bus: EventBus,
         db_path: str,
         notifier: Any = None,
+        native_watch: Any = None,
     ) -> None:
         self._hass_url = hass_url.rstrip("/")
         self._hass_token = hass_token
         self._bus = bus
         self._db_path = db_path
         self._notifier = notifier
+        self._native_watch = native_watch
         self._task: asyncio.Task | None = None
         # entity_id -> owner uids that pinned it (HOUSEHOLD for the shared pin).
         self._owners: dict[str, set[str]] = {}
@@ -95,7 +97,13 @@ class HaStateWatcher:
             self._task.cancel()
 
     def _refresh_pins(self) -> None:
-        self._owners = favorites_store.pinned_entity_owners(self._db_path)
+        # Watched entities = web-pinned favorites ∪ per-device native watch-sets
+        # (#810), so a native widget can watch an entity nobody favorited.
+        owners = favorites_store.pinned_entity_owners(self._db_path)
+        if self._native_watch is not None:
+            for entity_id, uids in self._native_watch.native_watch_owners().items():
+                owners.setdefault(entity_id, set()).update(uids)
+        self._owners = owners
 
     async def _run(self) -> None:
         backoff = _BACKOFF_START_S

@@ -1068,6 +1068,7 @@ def build_app(
     android_package: str = "cloud.dopp.solaris",
     android_cert_fingerprints: tuple[str, ...] = (),
     ha_watcher: Any = None,
+    native_watch: Any = None,
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -1603,6 +1604,40 @@ def build_app(
             own.cancel()
             shared.cancel()
         return resp
+
+    async def portal_watch(request: web.Request) -> web.Response:
+        """Store/REPLACE this device's native watch-set (#810).
+
+        Body `{entity_ids:[...]}`. A native widget can watch HA entities the
+        resident has NOT web-favorited; those aren't in `pinned_entity_owners`, so
+        `ha_watch` would publish nothing for them. This records the entities the
+        device's widgets want, keyed by the device (not just its uid — one resident
+        may pair several devices) with a TTL, and `ha_watch` unions it into its
+        owner map so a state change publishes `card_state` to the device's uid over
+        the existing `/napi/portal/events` SSE. No favorites row, nothing in the web
+        portal; the app re-POSTs to refresh while widgets exist.
+
+        Only reached via `native(...)` on `/napi/`: device-token-only, fail-closed,
+        owner-scoped."""
+        if native_watch is None:
+            return web.json_response(
+                {"ok": False, "error": "watch_unavailable"}, status=503
+            )
+        auth = request.headers.get("Authorization", "").strip()
+        token = auth[len("Bearer ") :].strip() if auth.startswith("Bearer ") else ""
+        resolved = device_token_store.resolve_device(solaris_db_path, token)
+        if resolved is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        device_id, uid = resolved
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        entity_ids = {
+            str(e) for e in (body.get("entity_ids") or []) if isinstance(e, str) and e
+        }
+        native_watch.set(device_id, uid, entity_ids)
+        return web.json_response({"ok": True})
 
     async def inject_message(request: web.Request) -> web.Response:
         # Server-initiated turn into a resident's chat (Wartung P1a, #785): the
@@ -4286,6 +4321,7 @@ def build_app(
     app.router.add_get("/napi/portal/cameras", native(portal_cameras))
     app.router.add_get("/napi/portal/state", native(portal_state))
     app.router.add_get("/napi/portal/events", native(portal_events))
+    app.router.add_post("/napi/portal/watch", native(portal_watch))
     app.router.add_get("/napi/portal/energy", native(portal_energy))
     app.router.add_get("/napi/portal/entity-history", native(portal_entity_history))
     app.router.add_get(
@@ -4588,6 +4624,7 @@ async def serve(
     android_package: str = "cloud.dopp.solaris",
     android_cert_fingerprints: tuple[str, ...] = (),
     ha_watcher: Any = None,
+    native_watch: Any = None,
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -4628,6 +4665,7 @@ async def serve(
         android_package=android_package,
         android_cert_fingerprints=android_cert_fingerprints,
         ha_watcher=ha_watcher,
+        native_watch=native_watch,
     )
     runner = web.AppRunner(app)
     await runner.setup()
