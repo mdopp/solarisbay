@@ -1667,6 +1667,11 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "unknown_action"}, status=404
             )
+        # An admin-only action must not fire for a non-admin caller — checked
+        # before the confirm-gate so a resident can't self-supply confirmed=true
+        # to reach a privileged handler (#788/#789 SB-MCP deploy/exec).
+        if handler.admin and not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
         if handler.destructive and not body.get("confirmed"):
             return web.json_response(
                 {"ok": False, "reason": "confirm_required"}, status=403

@@ -74,6 +74,60 @@ async def test_destructive_action_is_confirm_gated(aiohttp_client, tmp_path):
     assert len(ran) == 1
 
 
+async def test_admin_action_forbidden_for_non_admin(aiohttp_client, tmp_path):
+    ran: list[dict] = []
+
+    async def handler(body):
+        ran.append(body)
+        return {"ok": True}
+
+    action_cards.register("u796-admin", handler, admin=True)
+    client = await aiohttp_client(_app(tmp_path))
+
+    # A non-admin caller (no admins group) is refused before the handler runs.
+    r = await client.post("/api/action-callback", json={"action_id": "u796-admin"})
+    assert r.status == 403
+    assert (await r.json())["reason"] == "forbidden"
+    assert ran == []
+
+    # confirmed=true cannot buy past the admin gate.
+    r = await client.post(
+        "/api/action-callback",
+        json={"action_id": "u796-admin", "confirmed": True},
+    )
+    assert r.status == 403
+    assert (await r.json())["reason"] == "forbidden"
+    assert ran == []
+
+
+async def test_admin_action_runs_for_admin(aiohttp_client, tmp_path):
+    ran: list[dict] = []
+
+    async def handler(body):
+        ran.append(body)
+        return {"ok": True, "detail": "done"}
+
+    action_cards.register("u796-admin-ok", handler, admin=True)
+    client = await aiohttp_client(_app(tmp_path))
+
+    r = await client.post(
+        "/api/action-callback",
+        json={"action_id": "u796-admin-ok"},
+        headers={"Remote-Groups": "admins"},
+    )
+    assert r.status == 200
+    assert (await r.json())["detail"] == "done"
+    assert len(ran) == 1
+
+
+async def test_non_admin_action_runs_for_resident(aiohttp_client, tmp_path):
+    # A non-admin action (the default, e.g. ping) still fires for any resident.
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post("/api/action-callback", json={"action_id": "ping"})
+    assert r.status == 200
+    assert (await r.json())["detail"] == "pong"
+
+
 async def test_callback_requires_action_id(aiohttp_client, tmp_path):
     client = await aiohttp_client(_app(tmp_path))
     r = await client.post("/api/action-callback", json={})
