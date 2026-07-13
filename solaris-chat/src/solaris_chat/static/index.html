@@ -361,6 +361,18 @@
     .ab-row.running .ab-num { opacity: 0.5; }
 
     /* Read-only HA state cards under an answer (#475). */
+    /* Action card (#787): title/body + a row of action buttons. */
+    .action-card .ac-title { font-weight: 600; margin-bottom: 4px; }
+    .action-card .ac-body { color: var(--muted); font-size: 14px; margin-bottom: 10px; }
+    .action-card .ac-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+    .action-card .ac-btn {
+      padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg-elev); color: var(--fg); font: inherit; cursor: pointer;
+    }
+    .action-card .ac-btn:hover { border-color: var(--accent); }
+    .action-card .ac-btn:disabled { opacity: 0.5; cursor: default; }
+    .action-card .ac-btn.ac-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .action-card .ac-btn.ac-danger { border-color: #dc2626; color: #dc2626; }
     /* Concept/entity page (#502): a card in the log, like the settings cards. */
     .concept-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
     .concept-title { font-size: 18px; font-weight: 600; }
@@ -2519,6 +2531,62 @@
         return card;
       }
 
+      // Action card (Wartung P2a, #787): a {title, body, buttons:[{label,
+      // action_id, style}]} card injected into a chat (#785). Each button posts
+      // its action_id to /api/action-callback, which maps it to a server-side
+      // handler. A destructive action is confirm-gated server-side (403
+      // confirm_required on a bare tap): the button then asks the resident and
+      // re-sends confirmed=true — the same posture as the sensitive HA card tap.
+      function renderActionCard(c) {
+        var card = document.createElement("div");
+        card.className = "ha-card action-card";
+        if (c.title) {
+          var title = document.createElement("div");
+          title.className = "ac-title";
+          title.textContent = c.title;
+          card.appendChild(title);
+        }
+        if (c.body) {
+          var body = document.createElement("div");
+          body.className = "ac-body";
+          body.textContent = c.body;
+          card.appendChild(body);
+        }
+        var row = document.createElement("div");
+        row.className = "ac-buttons";
+        (c.buttons || []).forEach(function (btn) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "ac-btn" + (btn.style ? " ac-" + btn.style : "");
+          b.textContent = btn.label || btn.action_id || "";
+          b.addEventListener("click", function () {
+            runAction(b, btn, false);
+          });
+          row.appendChild(b);
+        });
+        card.appendChild(row);
+        return card;
+      }
+
+      function runAction(btn, spec, confirmed) {
+        btn.disabled = true;
+        fetch("/api/action-callback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action_id: spec.action_id, confirmed: confirmed })
+        })
+          .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+          .then(function (res) {
+            btn.disabled = false;
+            // Server confirm-gate: a destructive action rejects a bare tap; ask
+            // the resident, then re-send confirmed=true.
+            if (res.status === 403 && res.body && res.body.reason === "confirm_required") {
+              if (window.confirm("Diese Aktion wirklich ausführen?")) runAction(btn, spec, true);
+            }
+          })
+          .catch(function () { btn.disabled = false; });
+      }
+
       // HA supported_features bits (only the ones the cards act on).
       var COVER_SET_POSITION = 4, CLIMATE_TARGET_TEMP = 1;
       // media_player feature bits: turn_on / turn_off / select_source.
@@ -3416,6 +3484,12 @@
             if (cardsEl) el.insertBefore(cardsEl, body.nextSibling);
             scrollDown(atBottom());
           },
+          // A server-injected action card (#787), rendered under the answer body.
+          addActionCard: function (card) {
+            var el2 = renderActionCard(card);
+            if (el2) el.appendChild(el2);
+            scrollDown(atBottom());
+          },
           // Follow-up question chips for the turn (#498), rendered under the
           // answer body as the suggestions event arrives near turn-end.
           addChips: function (suggestions) {
@@ -3648,6 +3722,15 @@
           if (id !== sessionId || activeTurn || !mirrorMsg) return;
           var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
           if (d.cards && d.cards.length) mirrorMsg.addCards(d.cards);
+        });
+        // A server-injected action card (#787) mirrored into the open chat.
+        es.addEventListener("card", function (e) {
+          if (id !== sessionId || activeTurn) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.card && d.card.kind === "action") {
+            if (!mirrorMsg) mirrorMsg = addAssistant();
+            mirrorMsg.addActionCard(d.card);
+          }
         });
         es.addEventListener("quick_replies", function (e) {
           if (id !== sessionId || activeTurn) return;

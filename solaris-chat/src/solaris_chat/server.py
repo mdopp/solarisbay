@@ -43,7 +43,7 @@ from solaris_chat import (
 )
 from solaris_chat.attachments import AttachmentStore, attach_to_messages
 from solaris_chat.context import STATIC_DEFAULT, ContextWindow
-from solaris_chat.engine import confirm, store
+from solaris_chat.engine import action_cards, confirm, store
 from solaris_chat.engine.client import EngineClient, EngineError, current_uid
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
@@ -1518,6 +1518,10 @@ def build_app(
                     text = strip_internal_hints(str(item["event"].get("text") or ""))
                     await _send_event(resp, "mirror_user", {"text": text})
                     streamed = False
+                elif kind == "card":
+                    # A server-injected action card (#787) mirrored into the open
+                    # chat so the button row renders live.
+                    await _send_event(resp, "card", item.get("event") or {})
                 elif kind == "mirror_event":
                     name, data = _normalize(item["event"])
                     if name == "delta" and data.get("text"):
@@ -1610,7 +1614,41 @@ def build_app(
             text,
             card=card,
         )
+        # An action card (#787) also mirrors onto the SessionBus so an open chat
+        # renders its button row live (the EventBus path drives push/start-page).
+        if bus is not None and isinstance(card, dict) and card.get("kind") == "action":
+            bus.publish(
+                session_id, target_uid, {"kind": "card", "event": {"card": card}}
+            )
         return web.json_response({"ok": True, "session_id": session_id})
+
+    async def action_callback(request: web.Request) -> web.Response:
+        # Action-card button press (Wartung P2a, #787): map `action_id` to its
+        # server-side handler and run it. A destructive action is confirm-gated
+        # (#702 pattern): it must not fire on a bare tap, so an unconfirmed one
+        # is 403 and the client re-sends with `confirmed=true`.
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        action_id = body.get("action_id")
+        if not isinstance(action_id, str) or not action_id:
+            return web.json_response(
+                {"ok": False, "reason": "no_action_id"}, status=400
+            )
+        handler = action_cards.get(action_id)
+        if handler is None:
+            return web.json_response(
+                {"ok": False, "reason": "unknown_action"}, status=404
+            )
+        if handler.destructive and not body.get("confirmed"):
+            return web.json_response(
+                {"ok": False, "reason": "confirm_required"}, status=403
+            )
+        result = await handler.run(body)
+        return web.json_response(result)
 
     async def trace_detail(request: web.Request) -> web.Response:
         # Exact per-call content for one trace step (#307 panel → #305 detail).
@@ -4004,6 +4042,7 @@ def build_app(
     app.router.add_get("/api/portal/state", portal_state)
     app.router.add_get("/api/events", portal_events)
     app.router.add_post("/api/inject", inject_message)
+    app.router.add_post("/api/action-callback", action_callback)
     app.router.add_get("/api/portal/notes", portal_notes)
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
     app.router.add_get("/api/portal/notes/note", portal_notes_note)
