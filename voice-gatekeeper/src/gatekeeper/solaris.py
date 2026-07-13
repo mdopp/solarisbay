@@ -8,9 +8,9 @@ server-side session bookkeeping.
 
 Model routing follows the #222 reasoning effort: a FAST turn (the household-
 control default) runs on `solaris` (the engine's fast household profile); an
-explicit "think harder" cue (Gründlich) runs on `solaris-deep` (12b, thinks).
-The engine does its own tool dispatch server-side — the reply is plain text,
-ready for TTS.
+explicit "think harder" cue (Gründlich) runs on `solaris-deep` (the same e4b,
+thinks by default — 12b retired 2026-07-13). The engine does its own tool
+dispatch server-side — the reply is plain text, ready for TTS.
 """
 
 from __future__ import annotations

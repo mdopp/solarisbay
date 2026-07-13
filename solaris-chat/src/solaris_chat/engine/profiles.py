@@ -2,8 +2,9 @@
 
 household — fast model, never thinks, full household toolbox + the injected
             entity registry (the voice/chat hot path, ≤3k-token prompt).
-deep      — thorough model, thinks by default, same household toolbox + the
-            registry (the "Solaris Gründlich" mode and the night crons).
+deep      — same model, thinks by default, same household toolbox + the
+            registry (the voice "Solaris Gründlich" mode and the night crons;
+            12b retired 2026-07-13 — thorough is now e4b-with-thought).
 admin     — thorough model + the admin soul + the operator skill pack as
             prompt, with the `servicebay_admin` MCP toolbox (read+lifecycle+
             mutate scopes — Phase 3).
@@ -250,7 +251,7 @@ def build_engine_clients(
     household = make(
         EngineProfile(
             name="household",
-            model=fast_model or "gemma4:e2b",
+            model=fast_model or "gemma4:e4b",
             # Admin-selectable from the panel (#366): the persisted override wins
             # per turn, falling back to the FAST_MODEL default when unset — so the
             # fast-only default holds for installs that never touch the picker.
@@ -266,7 +267,7 @@ def build_engine_clients(
     deep = make(
         EngineProfile(
             name="solaris-deep",
-            model=thorough_model or "gemma4:12b",
+            model=thorough_model or "gemma4:e4b",
             soul_path=soul_path,
             registry=registry,
             think_default=True,
@@ -303,7 +304,7 @@ def build_engine_clients(
     admin = make(
         EngineProfile(
             name="admin",
-            model=thorough_model or "gemma4:12b",
+            model=thorough_model or "gemma4:e4b",
             soul_path=admin_soul_path or soul_path,
             extra_prompt=_skills_prompt(admin_skills_dir),
             think_default=True,
@@ -314,7 +315,7 @@ def build_engine_clients(
     guest = make(
         EngineProfile(
             name="solaris-guest",
-            model=fast_model or "gemma4:e2b",
+            model=fast_model or "gemma4:e4b",
             soul_path=soul_path,
             registry=registry,
             think_default=False,
@@ -338,7 +339,7 @@ def build_engine_clients(
     librarian = make(
         EngineProfile(
             name="librarian",
-            model=thorough_model or "gemma4:12b",
+            model=thorough_model or "gemma4:e4b",
             soul_path=soul_path,
             think_default=True,
             toolbox=Toolbox(librarian_tools),

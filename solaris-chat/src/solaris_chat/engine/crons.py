@@ -4,7 +4,7 @@ The three background jobs (daily-chronicle, problem-summarizer,
 chat-compactor) used to be registered into Hermes' jobs.json by the
 post-deploy, which de-duped badly across upgrades (#332 follow-up). Here
 they are defined in code — idempotent by construction — and run on the deep
-profile (12b, thinks), matching the solaris-deep gateway they rode before.
+profile (e4b, thinks by default — 12b retired 2026-07-13).
 
 Schedules are evaluated in local time (the household clock the prompts talk
 about). A durable last-run stamp in solaris.db (`engine_cron_runs`) keys on

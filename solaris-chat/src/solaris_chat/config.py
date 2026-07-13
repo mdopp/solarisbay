@@ -237,11 +237,12 @@ class Settings:
             # (#228). Default `'self'`; the ServiceBay maintenance embed sets
             # `'self' https://admin.dopp.cloud` so admin.dopp.cloud can frame it.
             frame_ancestors=os.environ.get("FRAME_ANCESTORS", "'self'"),
-            # The engine model map: the household/voice hot path runs the fast
-            # model; "Gründlich" chats, the admin persona and the night crons
-            # run the thorough one. Box-benched 2026-06-12 (e2b vs e4b vs 12b).
-            fast_model=os.environ.get("FAST_MODEL", "gemma4:e2b").strip(),
-            thorough_model=os.environ.get("THOROUGH_MODEL", "gemma4:12b").strip(),
+            # The engine model map: one model (e4b) for everything on this 16GB
+            # GPU (12b retired 2026-07-13 — does not fit shared with e4b/Whisper/
+            # Kokoro/embed). "Gründlich" is e4b WITH reasoning; the admin persona
+            # and night crons keep think_default on the same e4b.
+            fast_model=os.environ.get("FAST_MODEL", "gemma4:e4b").strip(),
+            thorough_model=os.environ.get("THOROUGH_MODEL", "gemma4:e4b").strip(),
             # The Kokoro voices the global voice picker offers (#368),
             # comma-separated. The first is the default; the box's solaris-tts
             # image bakes "martin", so that stays the single default voice.

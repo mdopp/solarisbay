@@ -166,11 +166,12 @@ spec:
     # `'self' https://admin.dopp.cloud` so admin.dopp.cloud can frame it.
     - name: FRAME_ANCESTORS
       value: "{{FRAME_ANCESTORS}}"
-    # The engine model map (box-benched 2026-06-12): the household/voice hot
-    # path runs FAST_MODEL by default; "Gründlich" chats, the admin persona and
-    # the night crons run THOROUGH_MODEL. An admin may re-point the household
-    # chat at another tag from the panel's Model picker (#366) — that selection
-    # persists beside solaris.db, so FAST_MODEL stays the default, not a lock.
+    # The engine model map: both FAST_MODEL and THOROUGH_MODEL default to e4b —
+    # one resident LLM for everything on the 16 GB GPU (12b retired 2026-07-13).
+    # "Gründlich" is e4b WITH reasoning/thought, not a bigger model; the admin
+    # persona and night crons keep think_default on the same e4b. An admin may
+    # re-point the household chat at another tag from the panel's Model picker
+    # (#366) — that selection persists beside solaris.db, not a lock.
     - name: FAST_MODEL
       value: "{{FAST_MODEL}}"
     - name: THOROUGH_MODEL

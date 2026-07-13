@@ -37,11 +37,29 @@ def test_admin_escalates_without_cue():
     assert reasoning.choose_effort("status?", admin=True) == reasoning.HIGH
 
 
+def test_thorough_pref_reasons_without_cue():
+    # "Gründlich" is e4b WITH reasoning (#809): a thorough pref escalates a plain
+    # turn to HIGH — no bigger model, no gateway switch.
+    assert reasoning.choose_effort("wie spät ist es", pref="thorough") == reasoning.HIGH
+
+
+def test_fast_pref_is_fast_but_still_escalates_on_cue():
+    # The fast pref keeps the adaptive default: FAST for a plain turn, but an
+    # explicit cue (or admin) still escalates.
+    assert reasoning.choose_effort("wie spät ist es", pref="fast") == reasoning.FAST
+    assert (
+        reasoning.choose_effort("denk mal scharf nach", pref="fast") == reasoning.HIGH
+    )
+    assert reasoning.choose_effort("status?", pref="fast", admin=True) == reasoning.HIGH
+
+
 @pytest.mark.parametrize("value", ["none", "low", "high"])
 def test_selector_overrides_everything(value):
     # The selector wins over both the adaptive default and an admin context.
     assert reasoning.choose_effort("hi", selector=value) == value
     assert reasoning.choose_effort("hi", selector=value, admin=True) == value
+    # It also wins over a thorough pref — the operator's explicit choice.
+    assert reasoning.choose_effort("hi", selector=value, pref="thorough") == value
     # Even an explicit cue is overridden by an explicit selector choice.
     assert reasoning.choose_effort("denk nach", selector="none") == reasoning.FAST
 

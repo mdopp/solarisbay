@@ -67,16 +67,25 @@ def normalize_selector(value: object) -> str | None:
     return value if value in _SELECTOR_VALUES else None
 
 
-def choose_effort(text: str, *, selector: object = None, admin: bool = False) -> str:
+def choose_effort(
+    text: str,
+    *,
+    selector: object = None,
+    admin: bool = False,
+    pref: str = "fast",
+) -> str:
     """Pick the reasoning_effort for a chat turn.
 
     The per-conversation `selector` (UI, #224) overrides everything. Otherwise
-    the adaptive default (#222): FAST, escalated to HIGH only for an admin
-    context (diagnose/soul work) or an explicit reasoning cue in the message.
+    the everyday-chat `pref` (#332-followup / #809) sets the baseline: "thorough"
+    means reasoning on (HIGH), so "Gründlich" is e4b-with-thought rather than a
+    bigger model. On the default "fast" pref the adaptive default (#222) applies:
+    FAST, escalated to HIGH only for an admin context (diagnose/soul work) or an
+    explicit reasoning cue in the message.
     """
     chosen = normalize_selector(selector)
     if chosen is not None:
         return chosen
-    if admin or wants_reasoning(text):
+    if pref == "thorough" or admin or wants_reasoning(text):
         return HIGH
     return FAST
