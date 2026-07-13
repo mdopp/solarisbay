@@ -46,7 +46,7 @@ def test_ask_param_household_deep_link():
 
 def test_single_device_route():
     # #769: #/p/device/<entity_id> opens a one-device page reusing renderHaCard
-    # over the /api/portal/state card; the camera route name is reserved (#770).
+    # over the /api/portal/state card.
     assert (
         'if (type.indexOf("device/") === 0) { openDevicePage(type.slice(7)); return; }'
         in _HTML
@@ -54,7 +54,27 @@ def test_single_device_route():
     assert "function openDevicePage(entityId)" in _HTML
     assert "/api/portal/state?entity_id=" in _HTML
     assert "renderHaCard(j.card, false, { pin: true })" in _HTML
-    assert "function openCameraPlaceholder()" in _HTML
+
+
+def test_single_camera_route():
+    # #782: #/p/camera/<entity_id> opens a page showing one camera's live HA
+    # snapshot (replaces the #770 placeholder), served to the browser/Authelia
+    # session via the /api/portal/camera/<id>/snapshot twin.
+    assert (
+        'if (type.indexOf("camera/") === 0) { openCameraPage(type.slice(7)); return; }'
+        in _HTML
+    )
+    assert "function openCameraPage(entityId)" in _HTML
+    assert '"/api/portal/camera/" + encodeURIComponent(entityId) + "/snapshot"' in _HTML
+    # The still is refreshed on a timer that is torn down when the route leaves.
+    assert "cameraTimer = setInterval(refresh, 5000)" in _HTML
+    assert "function stopCameraRefresh()" in _HTML
+    server_src = (STATIC_DIR.parent / "server.py").read_text(encoding="utf-8")
+    # The browser/Authelia session reaches the snapshot on /api/ (the /napi/
+    # twin is device-token only), so the /api/ GET route must be registered.
+    assert '"/api/portal/camera/{entity_id}/snapshot", portal_camera_snapshot' in (
+        server_src
+    )
 
 
 def test_state_route_registered_for_browser_session():

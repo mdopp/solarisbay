@@ -115,8 +115,11 @@ def test_merged_mobile_header_one_bar():
 
 def test_wordmark_i_is_the_brand_glyph():
     # The "i" of "Solaris" is replaced by the brand glyph, sized like a letter.
+    # #783: the glyph is the transparent solaris-figure, matching the Android
+    # companion wordmark; the square solaris-mark stays the favicon/PWA icon.
     assert (
-        'Solar<img class="brand-i" src="/static/solaris-mark.svg" alt="i" />s' in _HTML
+        'Solar<img class="brand-i" src="/static/solaris-figure.svg" alt="i" />s'
+        in _HTML
     )
     rule = re.search(r"\.brand-i \{([^}]*)\}", _HTML)
     assert rule, ".brand-i rule missing"
@@ -131,7 +134,7 @@ def test_brand_over_chats_overlay():
     body = rs.group(1)
     assert 'class="brand-wordmark rs-brand"' in body
     assert (
-        'Solar<img class="brand-i" src="/static/solaris-mark.svg" alt="i" />s' in body
+        'Solar<img class="brand-i" src="/static/solaris-figure.svg" alt="i" />s' in body
     )
     assert "<span>Chats</span>" in body
 
