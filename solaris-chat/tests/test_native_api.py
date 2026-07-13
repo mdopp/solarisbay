@@ -810,3 +810,122 @@ async def test_napi_portal_events_valid_token_streams_owner_scoped(
     data = await _read_card_state(resp)
     assert data["entity_id"] == "cover.garage"
     resp.close()
+
+
+# ---- /napi/portal/watch — per-device native watch-set (#810) ---------------
+
+
+def _watch_app(tmp_path, db, store):
+    return build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        native_watch=store,
+    )
+
+
+async def test_napi_watch_without_bearer_is_401(aiohttp_client, tmp_path):
+    from solaris_chat.engine.native_watch import NativeWatchStore
+
+    db = _db(tmp_path)
+    store = NativeWatchStore()
+    client = await aiohttp_client(_watch_app(tmp_path, db, store))
+    r = await client.post("/napi/portal/watch", json={"entity_ids": ["light.buero"]})
+    assert r.status == 401
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+    # Fail-closed: nothing stored for an unauthenticated caller.
+    assert store.native_watch_owners() == {}
+
+
+async def test_napi_watch_service_key_bearer_is_401(aiohttp_client, tmp_path):
+    from solaris_chat.engine.native_watch import NativeWatchStore
+
+    db = _db(tmp_path)
+    store = NativeWatchStore()
+    client = await aiohttp_client(_watch_app(tmp_path, db, store))
+    r = await client.post(
+        "/napi/portal/watch",
+        json={"entity_ids": ["light.buero"]},
+        headers={"Authorization": "Bearer SOLARIS_API_KEY"},
+    )
+    assert r.status == 401
+    assert store.native_watch_owners() == {}
+
+
+async def test_napi_watch_valid_token_stores_and_returns_ok(aiohttp_client, tmp_path):
+    from solaris_chat.engine.native_watch import NativeWatchStore
+
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    store = NativeWatchStore()
+    client = await aiohttp_client(_watch_app(tmp_path, db, store))
+    r = await client.post(
+        "/napi/portal/watch",
+        json={"entity_ids": ["light.buero", "cover.garage"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    assert (await r.json()) == {"ok": True}
+    owners = store.native_watch_owners()
+    assert owners == {"light.buero": {"lena"}, "cover.garage": {"lena"}}
+
+
+async def test_napi_watch_replaces_the_devices_set(aiohttp_client, tmp_path):
+    from solaris_chat.engine.native_watch import NativeWatchStore
+
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    store = NativeWatchStore()
+    client = await aiohttp_client(_watch_app(tmp_path, db, store))
+    hdr = {"Authorization": f"Bearer {token}"}
+    await client.post(
+        "/napi/portal/watch", json={"entity_ids": ["light.a"]}, headers=hdr
+    )
+    await client.post(
+        "/napi/portal/watch", json={"entity_ids": ["cover.b"]}, headers=hdr
+    )
+    # The second POST REPLACES the set, not appends.
+    assert store.native_watch_owners() == {"cover.b": {"lena"}}
+
+
+def test_native_watch_store_ttl_expiry_drops_the_set():
+    from solaris_chat.engine.native_watch import NativeWatchStore
+
+    store = NativeWatchStore(ttl_s=0.0)
+    store.set("dev-1", "lena", {"light.buero"})
+    # A zero TTL means the set is already expired on the next read.
+    assert store.native_watch_owners() == {}
+
+
+def test_native_watch_store_per_device_union():
+    from solaris_chat.engine.native_watch import NativeWatchStore
+
+    store = NativeWatchStore()
+    store.set("dev-1", "lena", {"light.buero"})
+    store.set("dev-2", "mdopp", {"light.buero", "cover.garage"})
+    owners = store.native_watch_owners()
+    assert owners == {
+        "light.buero": {"lena", "mdopp"},
+        "cover.garage": {"mdopp"},
+    }
+
+
+def test_ha_watch_unions_native_watch_into_pinned_owners(tmp_path):
+    from solaris_chat.engine.ha_watch import HaStateWatcher
+    from solaris_chat.engine.native_watch import NativeWatchStore
+
+    # No favorites DB → pinned_entity_owners is empty; the native set is the only
+    # source of watched entities.
+    store = NativeWatchStore()
+    store.set("dev-1", "lena", {"light.buero"})
+    watcher = HaStateWatcher(
+        "http://ha",
+        "t",
+        EventBus(),
+        str(tmp_path / "missing.db"),
+        native_watch=store,
+    )
+    watcher._refresh_pins()
+    assert watcher._owners == {"light.buero": {"lena"}}

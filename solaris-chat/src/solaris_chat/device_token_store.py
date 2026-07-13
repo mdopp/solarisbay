@@ -95,6 +95,36 @@ def resolve(db_path: str, token: str) -> str | None:
         return None
 
 
+def resolve_device(db_path: str, token: str) -> tuple[str, str] | None:
+    """Map a plaintext token to its (device_id, owner_uid), or None (fail-closed).
+
+    Like `resolve` but also returns the token row's id so a per-device store (the
+    native watch-set, #810) can key on the individual device rather than only its
+    owner — one resident may pair several devices, each with its own widgets."""
+    if not token or not token.startswith(TOKEN_PREFIX):
+        return None
+    if not Path(db_path).exists():
+        return None
+    token_hash = _hash(token)
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT id, owner_uid, token_hash FROM device_tokens "
+                "WHERE token_hash = ? AND revoked = 0",
+                (token_hash,),
+            ).fetchone()
+            if row is None or not hmac.compare_digest(row["token_hash"], token_hash):
+                return None
+            conn.execute(
+                "UPDATE device_tokens SET last_used = datetime('now') WHERE id = ?",
+                (row["id"],),
+            )
+            conn.commit()
+            return row["id"], row["owner_uid"]
+    except sqlite3.OperationalError:
+        return None
+
+
 def list_for_uid(db_path: str, owner_uid: str) -> list[dict[str, Any]]:
     """The resident's tokens — metadata only, NEVER the hash or plaintext.
 

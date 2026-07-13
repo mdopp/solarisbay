@@ -9,6 +9,7 @@ from solaris_chat.config import settings
 from solaris_chat.context import build_context_window
 from solaris_chat.engine.crons import CronRunner
 from solaris_chat.engine.ha_watch import HaStateWatcher
+from solaris_chat.engine.native_watch import NativeWatchStore
 from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.profiles import build_engine_clients
@@ -68,12 +69,16 @@ async def _run() -> None:
     # the residents' pinned entities, and pushes only noteworthy transitions when
     # no client is watching that uid.
     event_bus = EventBus()
+    # Per-device native watch-sets (#810): a native widget can watch an entity the
+    # resident hasn't web-favorited; ha_watch unions these into its pinned owners.
+    native_watch = NativeWatchStore()
     ha_watcher = HaStateWatcher(
         settings.hass_url,
         settings.hass_token,
         event_bus,
         settings.solaris_db_path,
         notifier=notifier,
+        native_watch=native_watch,
     )
     ha_watcher.start()
     # ServiceBay update signal → Wartung update-cards (#788): poll the pending
@@ -166,6 +171,7 @@ async def _run() -> None:
         android_package=settings.android_package,
         android_cert_fingerprints=settings.android_cert_fingerprints,
         ha_watcher=ha_watcher,
+        native_watch=native_watch,
     )
 
 
