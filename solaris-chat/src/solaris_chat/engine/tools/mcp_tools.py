@@ -24,7 +24,9 @@ unreachable MCP server leaves the admin chat tool-less, never broken.
 from __future__ import annotations
 
 import json
+import re
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,22 @@ from solaris_chat.engine.tools import Toolbox
 from solaris_chat.logging import log
 
 _TTL_S = 300.0
+# SB-MCP's scope-refusal text for a call the ambient token can't do (server.ts):
+# "Token scope 'destroy' required for delete_service; this token has [read,...]".
+# The Wartung ambient token is read+lifecycle+mutate, so ONLY destroy/exec refuse
+# — that refusal is what P2c (#789) routes into a one-shot approval instead of
+# surfacing raw to the model.
+_SCOPE_REFUSAL_RE = re.compile(r"Token scope '(destroy|exec)' required for (\w+)")
+
+# A one-shot op's target service must be a single safe path segment — SB derives
+# the same anchor from `args.name ?? args.service` (coerceApprovalService) and
+# rejects a bound token whose call targets a different service, so we bind to the
+# same value or leave it unbound.
+_SERVICE_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
+
+# (op, request_id, approval_id) → inject the Wartung approval card (#789). Kept
+# out of this toolbox so it holds no notify/store deps; server.py wires it.
+EscalationSink = Callable[[dict[str, Any], str, str | None], Awaitable[None]]
 _EXCHANGE_TIMEOUT = aiohttp.ClientTimeout(total=15)
 # The Authelia-session → SB-MCP token exchange (servicebay#2246). Mints a
 # short-lived read+lifecycle+mutate token from the caller's forward-auth
@@ -47,6 +65,34 @@ def read_token(path: str) -> str:
         return Path(path).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def _scope_refusal(text: str) -> tuple[str, str] | None:
+    """`(required_scope, tool_name)` when `text` is SB-MCP's destroy/exec scope
+    refusal, else None. The Wartung ambient token holds read+lifecycle+mutate,
+    so only a destroy/exec op refuses — that is what P2c escalates (#789)."""
+    m = _SCOPE_REFUSAL_RE.search(text)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _op_service(arguments: dict[str, Any]) -> str | None:
+    """The op's target service, matching SB's `args.name ?? args.service` anchor
+    (coerceApprovalService). Only a single safe path segment binds the one-shot
+    token to a service; anything else leaves it unbound (tool-only)."""
+    for key in ("name", "service"):
+        val = arguments.get(key)
+        if isinstance(val, str) and _SERVICE_RE.match(val) and val not in (".", ".."):
+            return val
+    return None
+
+
+def _parse_tool_json(text: str) -> dict[str, Any] | None:
+    """SB-MCP tool results are text-JSON; parse to a dict when possible."""
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 async def exchange_sb_token(sb_api_url: str) -> str:
@@ -94,10 +140,20 @@ def _is_401(exc: BaseException) -> bool:
 
 
 class McpToolbox(Toolbox):
-    def __init__(self, url: str, token_path: str, sb_api_url: str = ""):
+    def __init__(
+        self,
+        url: str,
+        token_path: str,
+        sb_api_url: str = "",
+        on_escalation: EscalationSink | None = None,
+    ):
         super().__init__([])
         self._url = url
         self._token_path = token_path
+        # Wartung P2c (#789): when a destroy/exec call is refused for lack of
+        # scope, route it into a one-shot approval instead of returning the raw
+        # refusal to the model. None ⇒ no escalation (the refusal surfaces).
+        self._on_escalation = on_escalation
         # SB control-plane base for the Authelia-session token exchange (#794).
         # Empty ⇒ no session exchange (the deploy-time token file is all we
         # have); a rotation then needs a redeploy.
@@ -157,14 +213,91 @@ class McpToolbox(Toolbox):
         if name not in self._names:
             return f'{{"error": "unknown tool: {name}"}}'
         try:
-            return await self._call_tool(name, arguments)
+            out = await self._call_tool(name, arguments)
         except Exception as e:  # noqa: BLE001 — a tool error is model feedback
             if _is_401(e) and await self._exchange_token():
                 try:
-                    return await self._call_tool(name, arguments)
+                    out = await self._call_tool(name, arguments)
                 except Exception as e2:  # noqa: BLE001
-                    e = e2
-            return f'{{"error": "{type(e).__name__}: {str(e)[:200]}"}}'
+                    return f'{{"error": "{type(e2).__name__}: {str(e2)[:200]}"}}'
+            else:
+                return f'{{"error": "{type(e).__name__}: {str(e)[:200]}"}}'
+        refusal = _scope_refusal(out)
+        if refusal is not None and self._on_escalation is not None:
+            return await self._escalate(refusal[0], refusal[1], arguments)
+        return out
+
+    async def _escalate(
+        self, scope: str, tool_name: str, arguments: dict[str, Any]
+    ) -> str:
+        """Route a refused destroy/exec call into a ONE-SHOT owner approval
+        (#789): ask SB-MCP for a one-shot token BOUND to exactly this op (parks
+        an approval card, mints nothing yet), then inject the [Approve]/[Deny]
+        card into the Wartung chat. The ambient token gains no scope — it only
+        holds `read`, which `request_token` itself requires. Fail-open: if the
+        request can't be filed, surface a short note (never the raw refusal, and
+        never a silent run)."""
+        service = _op_service(arguments)
+        op: dict[str, Any] = {"tool_name": tool_name}
+        if service:
+            op["service"] = service
+        req = {
+            "scopes": [scope],
+            "reason": f"Wartung chat needs to run {tool_name}"
+            + (f" on {service}" if service else ""),
+            "ttl_seconds": 600,
+            "one_shot_op": op,
+        }
+        try:
+            raw = await self._call_tool("request_token", req)
+        except Exception as e:  # noqa: BLE001 — never break the turn on this path
+            log.warn("engine.mcp.escalate_failed", tool=tool_name, error=str(e))
+            return f'{{"error": "escalation failed: {str(e)[:160]}"}}'
+        body = _parse_tool_json(raw)
+        request_id = str(body.get("id")) if body and body.get("id") else ""
+        if not request_id:
+            log.warn("engine.mcp.escalate_norequest", tool=tool_name, raw=raw[:200])
+            return f'{{"error": "escalation failed: {raw[:160]}"}}'
+        approval_id = body.get("approvalId") if isinstance(body, dict) else None
+        await self._on_escalation(
+            {"tool_name": tool_name, "service": service, "arguments": arguments},
+            request_id,
+            str(approval_id) if approval_id else None,
+        )
+        log.info("engine.mcp.escalated", tool=tool_name, request_id=request_id)
+        return json.dumps(
+            {
+                "status": "pending_approval",
+                "request_id": request_id,
+                "detail": f"{tool_name} needs owner approval; an approval card was "
+                "posted to the Wartung chat. It runs only on Approve.",
+            }
+        )
+
+    async def run_one_shot(
+        self, tool_name: str, arguments: dict[str, Any], request_id: str
+    ) -> tuple[bool, str]:
+        """Collect the owner-approved one-shot token and run the bound op ONCE
+        (#789 [Approve] handler). Polls `poll_token_request` for the single-use
+        token, then calls `tool_name` over a FRESH connection carrying ONLY that
+        token — never the ambient `_session_token`, so the toolbox gains no
+        standing destroy/exec. Returns `(ok, detail)`: `ok` False when the token
+        isn't ready (still pending / denied / already collected)."""
+        try:
+            polled = await self._call_tool("poll_token_request", {"id": request_id})
+        except Exception as e:  # noqa: BLE001
+            return False, f"poll failed: {str(e)[:200]}"
+        body = _parse_tool_json(polled)
+        token = body.get("token") if isinstance(body, dict) else None
+        if not isinstance(token, str) or not token:
+            status = body.get("status") if isinstance(body, dict) else "unknown"
+            return False, f"no one-shot token (status={status})"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            result = await self._call_tool_with(tool_name, arguments, headers)
+        except Exception as e:  # noqa: BLE001
+            return False, f"{type(e).__name__}: {str(e)[:200]}"
+        return True, result
 
     # -- MCP wire ------------------------------------------------------------
 
@@ -231,10 +364,19 @@ class McpToolbox(Toolbox):
         ]
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        return await self._call_tool_with(name, arguments, self._headers())
+
+    async def _call_tool_with(
+        self, name: str, arguments: dict[str, Any], headers: dict[str, str]
+    ) -> str:
+        """One connect→initialize→act→close call with explicit headers. The
+        one-shot flow (#789) passes the owner-approved token here so it never
+        touches the ambient `_session_token`; the normal path passes the
+        ambient headers."""
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
-        async with streamablehttp_client(self._url, headers=self._headers()) as (
+        async with streamablehttp_client(self._url, headers=headers) as (
             read,
             write,
             _,
