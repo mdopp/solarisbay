@@ -4207,6 +4207,7 @@ def build_app(
     app.router.add_get("/napi/portal/active", native(portal_active))
     app.router.add_get("/napi/portal/cameras", native(portal_cameras))
     app.router.add_get("/napi/portal/state", native(portal_state))
+    app.router.add_get("/napi/portal/events", native(portal_events))
     app.router.add_get("/napi/portal/energy", native(portal_energy))
     app.router.add_get("/napi/portal/entity-history", native(portal_entity_history))
     app.router.add_get(
