@@ -2001,6 +2001,70 @@ def ensure_admin_token_file(data_dir: str, sb_api: str, mcp_url: str) -> bool:
     return True
 
 
+def _patched_sb_api_env_yaml(src: str, sb_api: str, sb_token: str) -> tuple[str, int]:
+    """Stamp SB_API_URL + SB_API_TOKEN env values in the pod manifest text (pure).
+
+    Returns (new_text, total_replacements). Same `- name: …\\n value: …` patch
+    shape adopt_ha_long_lived_token uses for HASS_TOKEN — so the engine can
+    re-mint the admin SB-MCP token at runtime on a 401 (#794)."""
+    new, n_url = re.subn(
+        r'(- name: SB_API_URL\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
+        lambda m: m.group(1) + '"' + sb_api + '"',
+        src,
+    )
+    new, n_tok = re.subn(
+        r'(- name: SB_API_TOKEN\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
+        lambda m: m.group(1) + '"' + sb_token + '"',
+        new,
+    )
+    return new, n_url + n_tok
+
+
+def stamp_sb_api_credentials(sb_api: str, sb_token: str) -> bool:
+    """Patch SB_API_URL + SB_API_TOKEN into the deployed solaris.yml so the
+    engine can re-mint the admin SB-MCP token at runtime when it rotates stale
+    (#794). The internal token lives only in the post-deploy's SB-injected env,
+    not in git or a template variable, so it is stamped into the deployed
+    manifest here (same mechanism as HASS_TOKEN); the restart at the end of
+    main() picks it up. Best-effort — a missing token/manifest just leaves the
+    deploy-only behaviour. Returns True when the manifest now carries the values.
+    The token value is never logged."""
+    if not sb_api or not sb_token:
+        return False
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog(
+            "warn", "admin-mcp", "solaris.yml not found at expected path", path=pod_yml
+        )
+        return False
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "admin-mcp", "could not read solaris.yml", error=str(e))
+        return False
+    new, n = _patched_sb_api_env_yaml(src, sb_api, sb_token)
+    if n == 0:
+        jlog(
+            "warn",
+            "admin-mcp",
+            "SB_API_URL/SB_API_TOKEN env entries not found in solaris.yml — not "
+            "stamped; runtime admin token re-mint (#794) is disabled",
+            path=pod_yml,
+        )
+        return False
+    if new == src:
+        return True
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "admin-mcp", "could not write patched solaris.yml", error=str(e))
+        return False
+    jlog("info", "admin-mcp", "stamped SB API credentials into solaris.yml (#794)")
+    return True
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # 4. RESTART — last step.
 # ════════════════════════════════════════════════════════════════════════════
@@ -2073,6 +2137,10 @@ def main() -> int:
 
     # ── 3. admin MCP token ───────────────────────────────────────────────────
     ensure_admin_token_file(data_dir, sb_api, mcp_url)
+    # Stamp the SB control-plane API + internal token into the pod env so the
+    # engine can re-mint the admin SB-MCP token at runtime on a 401 (#794) —
+    # SB's token pool rotates, so the deploy-only token eventually goes stale.
+    stamp_sb_api_credentials(sb_api, env("SB_API_TOKEN"))
 
     # ── 4. restart ───────────────────────────────────────────────────────────
     time.sleep(3)

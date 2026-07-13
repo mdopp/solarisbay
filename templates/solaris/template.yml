@@ -138,6 +138,19 @@ spec:
       value: "{{SERVICEBAY_MCP_URL}}"
     - name: SB_MCP_TOKEN_PATH
       value: "/var/lib/solaris/sb-admin-token"
+    # ServiceBay control-plane API + internal token so the engine can RE-MINT
+    # the admin SB-MCP token when it rotates stale (#794): the token file is
+    # written only at deploy time, but SB's token pool rotates, so a long-lived
+    # engine eventually 401s → admin Wartung SB-MCP tools return nothing. On a
+    # 401 McpToolbox re-mints via /api/system/api-tokens (the post-deploy's
+    # mint path) and retries — no redeploy needed. These are stamped by the
+    # post-deploy from its ServiceBay-injected SB_API_URL/SB_API_TOKEN (not a
+    # public template variable — the internal token stays out of git); left
+    # empty here, an un-stamped install just keeps the deploy-only behaviour.
+    - name: SB_API_URL
+      value: ""
+    - name: SB_API_TOKEN
+      value: ""
     # Context window (tokens) = the chat-compaction cap (#210) + /context.
     # Empty/auto => AUTO-DERIVE from the live Ollama active model at runtime
     # (#235). A positive integer OVERRIDES the derivation (ops control).

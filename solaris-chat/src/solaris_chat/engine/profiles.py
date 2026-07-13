@@ -90,6 +90,8 @@ def build_engine_clients(
     skills_dir: str = "",
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
+    sb_api_url: str = "",
+    sb_api_token: str = "",
     hass_url: str = "",
     hass_token: str = "",
     tavily_api_key: str = "",
@@ -294,7 +296,7 @@ def build_engine_clients(
                 skills_dir, sb_mcp_url, sb_mcp_token_path
             )
         admin_toolbox = CombinedToolbox(
-            McpToolbox(sb_mcp_url, sb_mcp_token_path),
+            McpToolbox(sb_mcp_url, sb_mcp_token_path, sb_api_url, sb_api_token),
             Toolbox(local_admin_tools),
         )
     else:

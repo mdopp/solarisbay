@@ -109,6 +109,8 @@ class Settings:
     admin_skills_dir: str
     sb_mcp_url: str
     sb_mcp_token_path: str
+    sb_api_url: str
+    sb_api_token: str
     gatekeeper_url: str
     gatekeeper_token: str
     immich_base_url: str
@@ -234,6 +236,14 @@ class Settings:
             sb_mcp_token_path=os.environ.get(
                 "SB_MCP_TOKEN_PATH", "/var/lib/solaris/sb-admin-token"
             ),
+            # ServiceBay control-plane API + internal token used to RE-MINT the
+            # admin SB-MCP token when it rotates stale (#794): the token file is
+            # written only at deploy time, so a long-lived engine 401s once SB's
+            # token pool rotates. Empty ⇒ no runtime re-mint (a rotation then
+            # needs a redeploy). The internal token is a broad-scope credential;
+            # it is used only for the admin re-mint and never logged.
+            sb_api_url=os.environ.get("SB_API_URL", "").strip(),
+            sb_api_token=os.environ.get("SB_API_TOKEN", "").strip(),
             # The gatekeeper's in-pod HTTP listener (push + /enrol), reached
             # over loopback like the other pod-internal callers. The
             # onboarding dialog (#354) uses /enrol to register a resident's
