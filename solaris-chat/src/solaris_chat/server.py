@@ -47,7 +47,7 @@ from solaris_chat.engine import confirm, store
 from solaris_chat.engine.client import EngineClient, EngineError, current_uid
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
-from solaris_chat.engine.notify import emit_chat
+from solaris_chat.engine.notify import emit_chat, inject
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
@@ -1098,14 +1098,23 @@ def build_app(
     # conversation in a single deterministic row (owner_uid = default_uid).
     shared_household_id = store.household_session_id(default_uid)
 
+    # The one shared "Wartung" admin ops chat (#786): a deterministic session
+    # (like Zuhause) owned by default_uid so every admin opens the same ops
+    # conversation. Routed to the admin gateway (ops soul + SB-MCP toolset) and
+    # exposed admin-only in /api/whoami; a household user never learns the id.
+    shared_wartung_id = store.wartung_session_id(default_uid)
+
     def effective_uid(uid: str, session_id: str) -> str:
         """Admit any authenticated resident to the shared household row (#649).
 
         Owner-scoped reads/writes filter on `owner_uid`; the shared Zuhause is
         owned by `default_uid`, so a resident's real uid would 403/404 against
         it. Map their uid to the owner for that one session, leave every other
-        session per-resident (privacy posture unchanged)."""
-        return default_uid if session_id == shared_household_id else uid
+        session per-resident (privacy posture unchanged). The shared Wartung row
+        (#786) is likewise owned by default_uid — every admin acts in one row."""
+        if session_id in (shared_household_id, shared_wartung_id):
+            return default_uid
+        return uid
 
     def is_household_chat(uid: str, session_id: str, topic_slug: str) -> bool:
         """True when this turn belongs to the pinned household chat — by the
@@ -1154,6 +1163,10 @@ def build_app(
             return household_gw
         sel = request.rel_url.query.get("persona") or persona
         if is_admin(request, remote_groups_header, admin_group):
+            # The pinned "Wartung" ops chat (#786) is always the admin gateway
+            # for an admin — its ops soul + SB-MCP (read+lifecycle+mutate) toolset.
+            if session_id == shared_wartung_id:
+                return admin_gw
             if session_id and session_id in admin_sessions:
                 return admin_gw
             if sel == personalities.MAINTENANCE_ID:
@@ -1161,6 +1174,18 @@ def build_app(
         if (session_id and session_id in deep_sessions) or sel == personalities.DEEP_ID:
             return deep_gw
         return deep_gw if other_model_pref == "thorough" else household_gw
+
+    def ensure_wartung_row(request: web.Request, session_id: str) -> None:
+        """Create the durable Wartung row on an admin's first turn into it (#786).
+
+        The pinned admin ops chat is opened by id (the frontend gets it from
+        whoami), so unlike a fresh chat there is no create step — the row is
+        materialized lazily here, admin-gated, before the first turn runs."""
+        if session_id != shared_wartung_id:
+            return
+        if not is_admin(request, remote_groups_header, admin_group):
+            return
+        store.ensure_wartung_session(solaris_db_path, default_uid)
 
     async def maybe_compact(
         uid: str, session_id: str, client: EngineClient
@@ -1549,6 +1574,44 @@ def build_app(
             shared.cancel()
         return resp
 
+    async def inject_message(request: web.Request) -> web.Response:
+        # Server-initiated turn into a resident's chat (Wartung P1a, #785): the
+        # Wartung chat (#784) needs the server to speak first. Admin-gated — it
+        # writes into a resident's durable history and pushes their phone. The
+        # target session is the resident's household chat unless one is given.
+        if not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — any malformed JSON
+            return web.json_response(
+                {"ok": False, "reason": "invalid_json"}, status=400
+            )
+        target_uid = body.get("uid")
+        text = body.get("text")
+        card = body.get("card")
+        if not isinstance(target_uid, str) or not target_uid.strip():
+            return web.json_response({"ok": False, "reason": "no_uid"}, status=400)
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response({"ok": False, "reason": "no_text"}, status=400)
+        if card is not None and not isinstance(card, dict):
+            return web.json_response({"ok": False, "reason": "bad_card"}, status=400)
+        if event_bus is None:
+            return web.json_response({"ok": False, "reason": "no_bus"}, status=503)
+        session_id = body.get("session_id") or store.ensure_household_session(
+            solaris_db_path, target_uid
+        )
+        await inject(
+            solaris_db_path,
+            event_bus,
+            notifier,
+            session_id,
+            target_uid,
+            text,
+            card=card,
+        )
+        return web.json_response({"ok": True, "session_id": session_id})
+
     async def trace_detail(request: web.Request) -> web.Response:
         # Exact per-call content for one trace step (#307 panel → #305 detail).
         # A persisted turn carries a stable `<trace_id>:<order>` detail_id whose
@@ -1668,11 +1731,18 @@ def build_app(
 
     async def whoami(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        admin = is_admin(request, remote_groups_header, admin_group)
+        # The pinned "Wartung" ops chat (#786) is admin-only: its deterministic
+        # session id is handed to the browser ONLY for an admin, so a household
+        # user's UI never learns it and thus can never render or open the row.
+        # The durable row is created lazily on the first admin turn (like the
+        # #345 household session), so whoami stays a pure read.
+        wartung_session_id = shared_wartung_id if admin else ""
         return web.json_response(
             {
                 "ok": True,
                 "uid": uid,
-                "is_admin": is_admin(request, remote_groups_header, admin_group),
+                "is_admin": admin,
                 "version": VERSION,
                 "logout_url": logout_url,
                 "context_window": context_window.value,
@@ -1681,6 +1751,9 @@ def build_app(
                 # household) and typed turns are the same conversation, visible
                 # to every logged-in resident instead of split per-uid.
                 "household_session_id": shared_household_id,
+                # The shared admin ops chat id (#786), admin-only (empty for a
+                # household user) — the browser pins a "Wartung" row from it.
+                "wartung_session_id": wartung_session_id,
                 # The Web Push VAPID public key (#713) the browser needs to
                 # subscribe. Empty ⇒ Web Push is unconfigured, so the UI hides
                 # the notification bell.
@@ -3629,6 +3702,7 @@ def build_app(
             uid=owner_uid,
             topic_slug=topic_slug,
         )
+        ensure_wartung_row(request, session_id)
 
         clock = asyncio.get_event_loop().time
         t_start = clock() * 1000.0
@@ -3729,6 +3803,7 @@ def build_app(
             uid=owner_uid,
             topic_slug=topic_slug,
         )
+        ensure_wartung_row(request, session_id)
 
         resp = web.StreamResponse(
             headers={
@@ -3928,6 +4003,7 @@ def build_app(
     # the device-token widget path).
     app.router.add_get("/api/portal/state", portal_state)
     app.router.add_get("/api/events", portal_events)
+    app.router.add_post("/api/inject", inject_message)
     app.router.add_get("/api/portal/notes", portal_notes)
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
     app.router.add_get("/api/portal/notes/note", portal_notes_note)

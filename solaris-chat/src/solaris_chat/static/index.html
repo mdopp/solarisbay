@@ -1392,6 +1392,11 @@
       <button id="rail-notes" type="button" title="Notizen — Wissen des Haushalts">
         <svg class="ic"><use href="#i-note"></use></svg><span>Notizen</span>
       </button>
+      <!-- Admin-only "Wartung" ops chat (#786): SB-MCP at default scope
+           (read+lifecycle+mutate). Hidden until /api/whoami reports admin. -->
+      <button id="rail-wartung" type="button" hidden title="Wartung — Admin-Ops-Chat (ServiceBay)">
+        <svg class="ic"><use href="#i-settings"></use></svg><span>Wartung</span>
+      </button>
     </nav>
 
     <div class="rail-sessions">
@@ -1840,6 +1845,10 @@
       // /api/whoami: the pinned "Zuhause" row opens THIS session instead of
       // minting a fresh chat per click, so household stays one conversation.
       var householdSessionId = "";
+      // The shared admin "Wartung" ops session id (#786), from /api/whoami —
+      // present ONLY for an admin. The pinned Wartung rail row opens it; empty
+      // for a household user (the row stays hidden), so it never leaks.
+      var wartungSessionId = "";
       // Incognito/temporary chat (#246): ephemeral by default — the proxy
       // persists nothing (no compaction, no auto-ingestion) and deletes the
       // session on close.
@@ -4761,6 +4770,17 @@
         startHouseholdChat();
         syncTabbar();
       });
+      // Pinned admin "Wartung" ops chat (#786): opens the one shared admin
+      // session — the same row every admin acts in — so its turns route to the
+      // admin gateway (ops soul + SB-MCP). No-op when we hold no id (non-admin).
+      var railWartung = document.getElementById("rail-wartung");
+      railWartung.addEventListener("click", function () {
+        closeRail();
+        if (!wartungSessionId) return;
+        leavePortal();
+        openSession(wartungSessionId);
+        syncTabbar();
+      });
       var railFavorites = document.getElementById("rail-favorites");
       var railEnergy = document.getElementById("rail-energy");
       var railNotes = document.getElementById("rail-notes");
@@ -4963,8 +4983,12 @@
             }
             isAdmin = !!(j && j.is_admin);
             if (j && j.household_session_id) householdSessionId = j.household_session_id;
+            wartungSessionId = (j && j.wartung_session_id) || "";
             document.getElementById("whoami-sub").textContent = isAdmin ? "Admin" : "Resident";
             if (isAdmin) { adminBadge.hidden = false; }
+            // Reveal the pinned Wartung ops row only when the server handed us an
+            // id (admin-only) — a household user's whoami carries none (#786).
+            document.getElementById("rail-wartung").hidden = !wartungSessionId;
             initPush(j && j.vapid_public_key);
           })
           .catch(function () {});

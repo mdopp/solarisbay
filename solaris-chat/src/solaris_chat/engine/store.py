@@ -20,6 +20,9 @@ from typing import Any
 # Namespace for the deterministic per-resident household session id (#345).
 _HOUSEHOLD_NS = uuid.UUID("a3f0c0de-0501-0345-0000-000000000345")
 
+# Namespace for the deterministic shared "Wartung" (admin ops) session id (#786).
+_WARTUNG_NS = uuid.UUID("a3f0c0de-0501-0786-0000-000000000786")
+
 
 def _conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=10)
@@ -84,6 +87,33 @@ def ensure_household_session(
             "INSERT OR IGNORE INTO engine_sessions"
             " (id, owner_uid, title, profile) VALUES (?, ?, ?, ?)",
             (session_id, uid, "Zuhause", profile),
+        )
+    return session_id
+
+
+def wartung_session_id(uid: str) -> str:
+    """The stable session id for the shared "Wartung" admin ops chat (#786).
+
+    Deterministic from `uid` — the same namespaced-uuid5 trick as
+    `household_session_id`, so the pinned "Wartung" row always opens the SAME
+    admin session and it survives restarts. Passed `default_uid` it yields the
+    one shared session every admin opens (mirrors the shared Zuhause row)."""
+    return uuid.uuid5(_WARTUNG_NS, uid).hex
+
+
+def ensure_wartung_session(db_path: str, uid: str) -> str:
+    """Return the shared "Wartung" admin session, creating it once (#786).
+
+    The pinned admin ops chat (epic #784). Created on the `admin` profile so its
+    turns route to the admin gateway (ops soul + SB-MCP toolset) and flagged
+    `maintenance` so it renders in the admin view; idempotent (INSERT OR IGNORE)
+    so concurrent first opens can't dup it."""
+    session_id = wartung_session_id(uid)
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO engine_sessions"
+            " (id, owner_uid, title, profile, maintenance) VALUES (?, ?, ?, ?, 1)",
+            (session_id, uid, "Wartung", "admin"),
         )
     return session_id
 

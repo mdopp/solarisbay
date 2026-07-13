@@ -19,8 +19,8 @@ import sqlite3
 import pytest
 
 from solaris_chat import favorites_store
-from solaris_chat.engine import ha_watch
-from solaris_chat.engine.notify import EventBus, emit_chat
+from solaris_chat.engine import ha_watch, store
+from solaris_chat.engine.notify import EventBus, emit_chat, inject
 from solaris_chat.server import build_app
 
 _SCHEMA = """
@@ -34,6 +34,43 @@ CREATE TABLE favorites (
   created   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
+
+_ENGINE_SCHEMA = """
+CREATE TABLE engine_sessions (
+  id            TEXT PRIMARY KEY,
+  owner_uid     TEXT NOT NULL,
+  title         TEXT NOT NULL DEFAULT '',
+  profile       TEXT NOT NULL DEFAULT 'household',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  ephemeral     INTEGER NOT NULL DEFAULT 0,
+  maintenance   INTEGER NOT NULL DEFAULT 0,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_activity TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE engine_messages (
+  session_id  TEXT NOT NULL,
+  seq         INTEGER NOT NULL,
+  role        TEXT NOT NULL,
+  content     TEXT NOT NULL DEFAULT '',
+  reasoning   TEXT,
+  tool_calls  TEXT,
+  images      TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (session_id, seq)
+);
+"""
+
+
+def _db_full(tmp_path) -> str:
+    """A db carrying the favorites + engine chat tables (injection needs both)."""
+    path = str(tmp_path / "solaris.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA + _ENGINE_SCHEMA)
+    conn.commit()
+    conn.close()
+    return path
 
 
 def _db(tmp_path) -> str:
@@ -431,3 +468,73 @@ async def test_chat_sse_forwards_to_open_events_client(aiohttp_client, tmp_path)
             break
     assert data["session_id"] == "s1" and data["url"] == "/#/c/s1"
     resp.close()
+
+
+# ---- server-initiated injection (Wartung P1a, #785) ------------------------
+
+
+async def test_inject_persists_turn_and_pushes_when_backgrounded(tmp_path):
+    """inject() appends an assistant turn to the store (there when the chat
+    opens) and Web Pushes with the deep-link when no SSE client is watching."""
+    db = _db_full(tmp_path)
+    store.ensure_household_session(db, "mdopp")
+    sid = store.household_session_id("mdopp")
+    bus = EventBus()  # nobody watching → backgrounded
+    notifier = _FakeNotifier()
+    await inject(db, bus, notifier, sid, "mdopp", "Update steht bereit.")
+
+    hist = store.history(db, sid)
+    assert hist[-1] == {"role": "assistant", "content": "Update steht bereit."}
+    assert len(notifier.pushes) == 1
+    uid, _title, body, data = notifier.pushes[0]
+    assert uid == "mdopp" and body == "Update steht bereit."
+    assert data["url"] == f"/#/c/{sid}"
+
+
+async def test_inject_delivers_card_to_open_sse_client(tmp_path):
+    """A card injected while an SSE client is open arrives live (no push)."""
+    db = _db_full(tmp_path)
+    sid = store.ensure_household_session(db, "mdopp")
+    bus = EventBus()
+    gen = bus.subscribe("mdopp")
+    got = asyncio.ensure_future(gen.__anext__())
+    await asyncio.sleep(0)
+    notifier = _FakeNotifier()
+    card = {"kind": "update", "action": "approve"}
+    await inject(db, bus, notifier, sid, "mdopp", "Freigeben?", card=card)
+
+    event = await asyncio.wait_for(got, 1)
+    assert event["kind"] == "chat"
+    assert event["data"]["card"] == card
+    assert event["data"]["session_id"] == sid
+    assert notifier.pushes == []  # SSE delivered it, no phone push
+
+
+async def test_inject_endpoint_admin_gated(aiohttp_client, tmp_path):
+    """POST /api/inject rejects a non-admin caller."""
+    bus = EventBus()
+    client = await aiohttp_client(_app(tmp_path, bus, db=_db_full(tmp_path)))
+    resp = await client.post(
+        "/api/inject",
+        headers={"Remote-User": "mdopp"},
+        json={"uid": "mdopp", "text": "hi"},
+    )
+    assert resp.status == 403
+
+
+async def test_inject_endpoint_posts_into_session(aiohttp_client, tmp_path):
+    """An admin POST injects a turn; it lands in the target's household chat."""
+    db = _db_full(tmp_path)
+    bus = EventBus()
+    client = await aiohttp_client(_app(tmp_path, bus, db=db))
+    resp = await client.post(
+        "/api/inject",
+        headers={"Remote-User": "admin", "Remote-Groups": "admins"},
+        json={"uid": "mdopp", "text": "Wartung heute Nacht."},
+    )
+    assert resp.status == 200
+    payload = await resp.json()
+    assert payload["ok"] is True
+    sid = store.household_session_id("mdopp")
+    assert payload["session_id"] == sid
+    assert store.history(db, sid)[-1]["content"] == "Wartung heute Nacht."

@@ -248,6 +248,106 @@ async def test_stream_maintenance_session_routes_to_admin(aiohttp_client):
     assert household.turns == []
 
 
+# ---- pinned "Wartung" admin ops chat (#786) ----
+
+
+async def test_whoami_exposes_wartung_id_only_for_admin(aiohttp_client, tmp_path):
+    # The pinned Wartung row is admin-only: whoami hands its deterministic
+    # session id to an admin (and ensures the row exists), but NOT to a
+    # household user — so a resident's UI never learns the id and can't render
+    # or open the row.
+    household = _FakeHermes()
+    db = _db(tmp_path)
+    app = build_app(
+        hermes=household,
+        hermes_admin=_FakeHermes(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        attachments_dir=str(tmp_path / "att"),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/whoami", headers=ADMIN_HDRS)
+    body = await resp.json()
+    assert body["is_admin"] is True
+    assert body["wartung_session_id"] == store.wartung_session_id("household")
+
+    resp = await client.get("/api/whoami", headers=RESIDENT_HDRS)
+    body = await resp.json()
+    assert body["is_admin"] is False
+    assert body["wartung_session_id"] == ""
+
+
+async def test_wartung_session_turn_routes_to_admin_gateway(aiohttp_client, tmp_path):
+    # A turn into the deterministic Wartung session lands on the admin gateway
+    # (its ops soul + SB-MCP toolset), household untouched — the admin acts in
+    # the one shared ops row, materialized lazily (profile=admin, maintenance=1)
+    # on this first turn.
+    household, admin = _FakeHermes(), _FakeHermes()
+    db = _db(tmp_path)
+    wartung = store.wartung_session_id("household")
+    app = build_app(
+        hermes=household,
+        hermes_admin=admin,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        attachments_dir=str(tmp_path / "att"),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat",
+        json={"input": "restart the media pod", "session_id": wartung},
+        headers=ADMIN_HDRS,
+    )
+    assert resp.status == 200
+    assert admin.turns and admin.turns[0][0] == wartung
+    assert household.turns == []
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT profile, maintenance FROM engine_sessions WHERE id = ?",
+        (wartung,),
+    ).fetchone()
+    conn.close()
+    assert row == ("admin", 1)
+
+
+async def test_non_admin_wartung_turn_never_reaches_admin(aiohttp_client, tmp_path):
+    # Even presenting the Wartung session id, a non-admin is routed to household,
+    # never the admin gateway — the Remote-Groups gate holds at the router, so
+    # the ops toolset (SB-MCP) is unreachable without admin group membership.
+    household, admin = _FakeHermes(), _FakeHermes()
+    db = _db(tmp_path)
+    wartung = store.wartung_session_id("household")
+    app = build_app(
+        hermes=household,
+        hermes_admin=admin,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        attachments_dir=str(tmp_path / "att"),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.post(
+        "/api/chat",
+        json={"input": "restart the media pod", "session_id": wartung},
+        headers=RESIDENT_HDRS,
+    )
+    assert resp.status == 200
+    assert household.turns and household.turns[0][0] == wartung
+    assert admin.turns == []
+    # The non-admin turn never materializes the admin ops row.
+    conn = sqlite3.connect(db)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM engine_sessions WHERE id = ?", (wartung,)
+    ).fetchone()[0]
+    conn.close()
+    assert n == 0
+
+
 async def test_falls_back_to_household_when_no_admin_gateway(aiohttp_client):
     # No admin gateway configured (single-instance/offline): admin routing is a
     # no-op — everything stays on household and nothing breaks.
