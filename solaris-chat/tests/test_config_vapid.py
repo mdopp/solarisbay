@@ -12,8 +12,16 @@ import pytest
 
 from solaris_chat.config import Settings
 
-# A fixed P-256 keypair (private scalar 0x11..11). Both encodings py_vapid
-# accepts and the matching uncompressed public point, base64url, no padding.
+# A fixed P-256 keypair (private scalar 0x11..11). Three encodings: PEM
+# (TraditionalOpenSSL), raw 32-byte base64url scalar, and DER base64url —
+# and the matching uncompressed public point, base64url, no padding.
+PEM_PRIV = (
+    "-----BEGIN EC PRIVATE KEY-----\n"
+    "MHcCAQEEIBERERERERERERERERERERERERERERERERERERERERERoAoGCCqGSM49\n"
+    "AwEHoUQDQgAEAhfmF/C2RDkoJ4+WmZ5pojpPLBUr321s32bluAKC1O0ZSn3ry5dx\n"
+    "LS3aPKhaqHZaVvRfx1hZllLyiXxlMG5XlA==\n"
+    "-----END EC PRIVATE KEY-----"
+)
 RAW_PRIV = "ERERERERERERERERERERERERERERERERERERERERERE"
 DER_PRIV = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgERERERERERERERERERERERERERERERERERERERERERGhRANCAAQCF-YX8LZEOSgnj5aZnmmiOk8sFSvfbWzfZuW4AoLU7RlKfevLl3EtLdo8qFqodlpW9F_HWFmWUvKJfGUwbleU"  # noqa: E501
 EXPECTED_PUB = "BAIX5hfwtkQ5KCePlpmeaaI6TywVK99tbN9m5bgCgtTtGUp968uXcS0t2jyoWqh2Wlb0X8dYWZZS8ol8ZTBuV5Q"
@@ -24,6 +32,12 @@ def clean_env(monkeypatch):
     for key in ("VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"):
         monkeypatch.delenv(key, raising=False)
     return monkeypatch
+
+
+def test_derives_public_from_pem_private_when_public_unset(clean_env):
+    clean_env.setenv("VAPID_PRIVATE_KEY", PEM_PRIV)
+    settings = Settings.from_env()
+    assert settings.vapid_public_key == EXPECTED_PUB
 
 
 def test_derives_public_from_raw_private_when_public_unset(clean_env):
