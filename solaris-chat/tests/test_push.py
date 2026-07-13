@@ -176,6 +176,32 @@ def _fake_pywebpush(monkeypatch, calls, raise_status=None):
     monkeypatch.setitem(sys.modules, "pywebpush", mod)
 
 
+# A fixed P-256 keypair (private scalar 0x11..11): PEM and its raw base64url scalar.
+_PEM_PRIV = (
+    "-----BEGIN EC PRIVATE KEY-----\n"
+    "MHcCAQEEIBERERERERERERERERERERERERERERERERERERERERERoAoGCCqGSM49\n"
+    "AwEHoUQDQgAEAhfmF/C2RDkoJ4+WmZ5pojpPLBUr321s32bluAKC1O0ZSn3ry5dx\n"
+    "LS3aPKhaqHZaVvRfx1hZllLyiXxlMG5XlA==\n"
+    "-----END EC PRIVATE KEY-----"
+)
+_RAW_PRIV = "ERERERERERERERERERERERERERERERERERERERERERE"
+
+
+def test_notifier_converts_pem_private_to_raw_scalar():
+    import base64
+
+    notifier = Notifier("db", "PUB", _PEM_PRIV)
+    scalar = notifier._private_key
+    assert not scalar.startswith("-----")
+    assert len(base64.urlsafe_b64decode(scalar + "==")) == 32
+    assert scalar == _RAW_PRIV
+
+
+def test_notifier_passes_raw_scalar_through_unchanged():
+    notifier = Notifier("db", "PUB", _RAW_PRIV)
+    assert notifier._private_key == _RAW_PRIV
+
+
 async def test_notifier_noops_without_vapid(tmp_path, monkeypatch):
     db = _db(tmp_path)
     push_store.upsert(db, "mdopp", "https://push/1", "p", "a")

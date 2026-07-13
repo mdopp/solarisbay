@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from solaris_chat.config import Settings
+from solaris_chat.config import Settings, _load_vapid_private_key
 
 # A fixed P-256 keypair (private scalar 0x11..11). Three encodings: PEM
 # (TraditionalOpenSSL), raw 32-byte base64url scalar, and DER base64url —
@@ -69,3 +69,12 @@ def test_malformed_private_key_does_not_crash(clean_env):
     clean_env.setenv("VAPID_PRIVATE_KEY", "not-a-valid-key")
     settings = Settings.from_env()
     assert settings.vapid_public_key == ""
+
+
+def test_shared_loader_reads_both_pem_and_raw_scalar():
+    # The one place that turns VAPID_PRIVATE_KEY into an EC key object, shared by
+    # the public-derive and the notifier's raw-scalar conversion (#804): both
+    # formats must yield the same private scalar.
+    pem_scalar = _load_vapid_private_key(PEM_PRIV).private_numbers().private_value
+    raw_scalar = _load_vapid_private_key(RAW_PRIV).private_numbers().private_value
+    assert pem_scalar == raw_scalar == int.from_bytes(b"\x11" * 32, "big")
