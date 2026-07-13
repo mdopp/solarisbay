@@ -49,6 +49,39 @@ def read_token(path: str) -> str:
         return ""
 
 
+async def exchange_sb_token(sb_api_url: str) -> str:
+    """Mint a short-lived scoped SB token from the ACTING admin's live Authelia
+    session (#794), for a code-path REST call that needs the admin's authority
+    (the approval-verdict callbacks, #790) rather than the deploy-time token.
+
+    Forwards the turn's pinned Remote-User / Remote-Groups to
+    `token-from-authelia-session`, which returns a read+lifecycle+mutate token.
+    NO standing minting credential and NO client Bearer is sent (the endpoint
+    403s a token caller). Best-effort: no SB API base or no admin identity ⇒ ""
+    (the caller decides what to do without a session token); any failure ⇒ ""."""
+    base = sb_api_url.rstrip("/")
+    if not base:
+        return ""
+    user, groups = current_admin_identity.get()
+    if not user:
+        return ""
+    try:
+        async with aiohttp.ClientSession(timeout=_EXCHANGE_TIMEOUT) as client:
+            async with client.post(
+                f"{base}{_EXCHANGE_PATH}",
+                headers={"Remote-User": user, "Remote-Groups": groups},
+            ) as resp:
+                if resp.status != 200:
+                    log.warn("engine.sb.exchange_failed", status=resp.status)
+                    return ""
+                body = await resp.json()
+    except (aiohttp.ClientError, ValueError) as e:
+        log.warn("engine.sb.exchange_failed", error=str(e))
+        return ""
+    token = body.get("token") if isinstance(body, dict) else None
+    return token if isinstance(token, str) and token else ""
+
+
 def _is_401(exc: BaseException) -> bool:
     """True when `exc` is (or, for a task-group ExceptionGroup, wraps) an HTTP
     401. The MCP streamable-http client runs in an anyio task group, so a stale

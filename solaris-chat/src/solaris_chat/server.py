@@ -43,7 +43,7 @@ from solaris_chat import (
 )
 from solaris_chat.attachments import AttachmentStore, attach_to_messages
 from solaris_chat.context import STATIC_DEFAULT, ContextWindow
-from solaris_chat.engine import action_cards, confirm, store
+from solaris_chat.engine import action_cards, approvals, confirm, store
 from solaris_chat.engine.client import (
     EngineClient,
     EngineError,
@@ -72,7 +72,7 @@ from solaris_chat.engine.tools.ha import (
     fetch_entity_history,
     fetch_entity_names,
 )
-from solaris_chat.engine.tools.mcp_tools import McpToolbox
+from solaris_chat.engine.tools.mcp_tools import McpToolbox, exchange_sb_token
 from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.logging import log
 
@@ -1053,6 +1053,7 @@ def build_app(
     notifier: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
+    sb_api_url: str = "",
     hass_url: str = "",
     hass_token: str = "",
     crons: Any = None,
@@ -1850,6 +1851,54 @@ def build_app(
             if isinstance(box, McpToolbox):
                 return box
         return None
+
+    async def _approval_verdict(body: dict[str, Any], approve: bool) -> dict[str, Any]:
+        """Deliver an [Approve]/[Deny] verdict on a Wartung approval-card (#790):
+        POST the operator's decision to ServiceBay's verdict endpoint, then report
+        the outcome back into the Wartung chat.
+
+        The verdict runs under a LIVE admin's session-exchanged mutate-scope token
+        (#794) — action_callback pinned the acting admin's identity, so the token
+        is minted from THAT session, never a standing credential. Fail-open at the
+        button: an unreachable SB or a non-2xx is reported into the chat, never
+        raised. `approve` is registered destructive=True (it runs the request's
+        declared side effect), so a bare tap can't fire it; `deny` needs no
+        confirm."""
+        params = body.get("params")
+        approval_id = params.get("approval_id") if isinstance(params, dict) else None
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            return {"ok": False, "reason": "no_approval_id"}
+        if not sb_api_url:
+            return {"ok": False, "reason": "no_sb_api"}
+        token = await exchange_sb_token(sb_api_url)
+        if not token:
+            return {"ok": False, "reason": "no_token"}
+        ok, detail = await approvals.submit_verdict(
+            sb_api_url, token, approval_id, approve
+        )
+        verb = "genehmigt" if approve else "abgelehnt"
+        if event_bus is not None:
+            outcome = f"Freigabe {verb}" if ok else f"Freigabe fehlgeschlagen ({verb})"
+            await inject(
+                solaris_db_path,
+                event_bus,
+                notifier,
+                store.wartung_session_id(default_uid),
+                default_uid,
+                f"{outcome}: {detail[:400]}",
+            )
+        return {"ok": ok, "approval_id": approval_id, "detail": detail[:2000]}
+
+    async def _approve_request(body: dict[str, Any]) -> dict[str, Any]:
+        return await _approval_verdict(body, approve=True)
+
+    async def _deny_request(body: dict[str, Any]) -> dict[str, Any]:
+        return await _approval_verdict(body, approve=False)
+
+    action_cards.register(
+        approvals.APPROVE_ACTION, _approve_request, admin=True, destructive=True
+    )
+    action_cards.register(approvals.DENY_ACTION, _deny_request, admin=True)
 
     async def list_mcp(request: web.Request) -> web.Response:
         # The engine's MCP surface is the admin profile's servicebay_admin
@@ -4410,6 +4459,7 @@ async def serve(
     notifier: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
+    sb_api_url: str = "",
     hass_url: str = "",
     hass_token: str = "",
     crons: Any = None,
@@ -4449,6 +4499,7 @@ async def serve(
         notifier=notifier,
         sb_mcp_url=sb_mcp_url,
         sb_mcp_token_path=sb_mcp_token_path,
+        sb_api_url=sb_api_url,
         hass_url=hass_url,
         hass_token=hass_token,
         crons=crons,
