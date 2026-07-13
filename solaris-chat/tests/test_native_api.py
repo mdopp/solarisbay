@@ -13,9 +13,12 @@ SQL (a chat test must NOT import alembic).
 
 from __future__ import annotations
 
+import asyncio
+import json
 import sqlite3
 
 from solaris_chat import device_token_store
+from solaris_chat.engine.notify import EventBus
 from solaris_chat.server import build_app, native_uid
 
 # The table migration 0021 creates, replayed locally (no alembic).
@@ -747,3 +750,63 @@ async def test_api_energy_still_falls_back_to_default_uid(
     r = await client.get("/api/portal/energy")
     assert r.status == 200
     assert (await r.json())["ok"] is True
+
+
+# ---- /napi/portal/events (SSE card_state stream, #806) ---------------------
+
+
+def _bus_app(tmp_path, db, bus):
+    return build_app(
+        hermes=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        event_bus=bus,
+    )
+
+
+async def _read_card_state(resp) -> dict:
+    event = None
+    while True:
+        line = (await asyncio.wait_for(resp.content.readline(), 2)).decode().strip()
+        if line.startswith("event:"):
+            event = line.split(":", 1)[1].strip()
+        elif line.startswith("data:") and event == "card_state":
+            return json.loads(line.split(":", 1)[1].strip())
+
+
+async def test_napi_portal_events_without_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_bus_app(tmp_path, db, EventBus()))
+    r = await client.get("/napi/portal/events")
+    assert r.status == 401
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+
+
+async def test_napi_portal_events_remote_user_header_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_bus_app(tmp_path, db, EventBus()))
+    r = await client.get("/napi/portal/events", headers={"Remote-User": "mdopp"})
+    assert r.status == 401
+
+
+async def test_napi_portal_events_valid_token_streams_owner_scoped(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    bus = EventBus()
+    client = await aiohttp_client(_bus_app(tmp_path, db, bus))
+    resp = await client.get(
+        "/napi/portal/events", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status == 200
+    assert resp.headers["Content-Type"] == "text/event-stream"
+    await asyncio.sleep(0.05)  # let the subscription register
+    # Another resident's event must NOT reach lena's device-scoped stream.
+    bus.publish("mdopp", "card_state", {"entity_id": "light.buero", "card": {}})
+    bus.publish("lena", "card_state", {"entity_id": "cover.garage", "card": {"x": 1}})
+    data = await _read_card_state(resp)
+    assert data["entity_id"] == "cover.garage"
+    resp.close()
