@@ -109,6 +109,7 @@ class Settings:
     admin_skills_dir: str
     sb_mcp_url: str
     sb_mcp_token_path: str
+    sb_api_url: str
     gatekeeper_url: str
     gatekeeper_token: str
     immich_base_url: str
@@ -234,6 +235,13 @@ class Settings:
             sb_mcp_token_path=os.environ.get(
                 "SB_MCP_TOKEN_PATH", "/var/lib/solaris/sb-admin-token"
             ),
+            # ServiceBay control-plane base for the Authelia-session token
+            # exchange (#794): the admin toolbox mints its SB-MCP token from the
+            # acting admin's live forward-auth identity via
+            # token-from-authelia-session — no standing minting credential in
+            # the pod. Empty ⇒ no runtime exchange (a token rotation then needs
+            # a redeploy of the deploy-time token file).
+            sb_api_url=os.environ.get("SB_API_URL", "").strip(),
             # The gatekeeper's in-pod HTTP listener (push + /enrol), reached
             # over loopback like the other pod-internal callers. The
             # onboarding dialog (#354) uses /enrol to register a resident's

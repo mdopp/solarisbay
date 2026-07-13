@@ -64,6 +64,18 @@ current_session: contextvars.ContextVar[str] = contextvars.ContextVar(
     "engine_session", default=""
 )
 
+# The acting admin's verified Authelia identity for THIS turn (#794): the
+# (Remote-User, Remote-Groups) forward-auth headers of the admin driving a
+# Wartung turn, so the SB-MCP toolbox can exchange them for a short-lived
+# scoped token (token-from-authelia-session) instead of holding a standing
+# minting credential. Empty for every non-admin turn — the token exchange is
+# then never attempted, so a household/guest turn can mint nothing. Like
+# current_uid it must be re-pinned INSIDE the dispatch task (the SSE heartbeat
+# runs gather in a fresh task that doesn't inherit the enclosing set()).
+current_admin_identity: contextvars.ContextVar[tuple[str, str]] = (
+    contextvars.ContextVar("engine_admin_identity", default=("", ""))
+)
+
 # Tool-call passes per turn: enough for list->act->confirm chains plus a
 # retry, small enough that a confused model can't spin.
 _MAX_PASSES = 6
@@ -723,6 +735,10 @@ class EngineClient:
         """
         if isinstance(pending_key, _Unset):
             pending_key = session_id
+        # The acting admin's Authelia identity (#794), captured in THIS task
+        # (the server handler set it before dispatch) so it can be re-pinned in
+        # the gather child task below — prepare() already runs in this task.
+        admin_identity = current_admin_identity.get()
         await self._profile.toolbox.prepare()
         tools = self._profile.toolbox.definitions()
         # Per-turn sink the HA state tools fill with read-only card-specs (#475);
@@ -934,6 +950,10 @@ class EngineClient:
                 if uid:
                     current_uid.set(uid)
                 current_session.set(session_id)
+                # Re-pin the acting admin's Authelia identity (#794) too: the
+                # SB-MCP toolbox reads it from this task to exchange for a
+                # short-lived token, so it must survive the gather task hop.
+                current_admin_identity.set(admin_identity)
                 ha_tools.card_sink.set(ha_cards)
                 choice_tools.choice_sink.set(quick_replies)
                 async with sem:
