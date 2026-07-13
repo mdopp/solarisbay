@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.21.0](https://github.com/mdopp/solarisbay/compare/v0.20.0...v0.21.0) (2026-07-13)
+
+
+### Features
+
+* **chat:** /napi/portal/cameras — camera list for the Android widget picker — closes [#779](https://github.com/mdopp/solarisbay/issues/779) ([#780](https://github.com/mdopp/solarisbay/issues/780)) ([3cc6026](https://github.com/mdopp/solarisbay/commit/3cc60261facd1c8a70417658e19d3c5eaef1980f))
+* **chat:** action-card type with callback endpoint and confirm-gate ([8ef17bb](https://github.com/mdopp/solarisbay/commit/8ef17bb30e5e2840ce411c5bf121bd301e2409d5))
+* **chat:** action-card type with callback endpoint and confirm-gate ([83c40c5](https://github.com/mdopp/solarisbay/commit/83c40c59c3e0d785bb832cf14019dbb5b354f9dc)), closes [#787](https://github.com/mdopp/solarisbay/issues/787)
+* **chat:** approval-gated delete/exec via one-shot elevated SB-MCP scope ([#807](https://github.com/mdopp/solarisbay/issues/807)) ([d6ea820](https://github.com/mdopp/solarisbay/commit/d6ea8200dca9dd20ecf660fd46c7f95026bc5eb6)), closes [#789](https://github.com/mdopp/solarisbay/issues/789)
+* **chat:** expose card_state SSE stream under /napi/portal/events ([#808](https://github.com/mdopp/solarisbay/issues/808)) ([f5ed82a](https://github.com/mdopp/solarisbay/commit/f5ed82a8729a03f7c831341648bc93d41c4e9b95)), closes [#806](https://github.com/mdopp/solarisbay/issues/806)
+* **chat:** pinned admin-only Wartung ops chat with SB-MCP at default scope ([0d6dd18](https://github.com/mdopp/solarisbay/commit/0d6dd18ab202af9507645d9518740687ead167a3)), closes [#786](https://github.com/mdopp/solarisbay/issues/786)
+* **chat:** PWA camera-view route + shared Solar figure wordmark ([d3c52d7](https://github.com/mdopp/solarisbay/commit/d3c52d7c20ee85cbc0bd1aba2bae5780b5c6e093))
+* **chat:** PWA camera-view route + shared Solar[figure]s wordmark ([cf4aff1](https://github.com/mdopp/solarisbay/commit/cf4aff12895a93c068c9d1b28fc908439462b37a)), closes [#782](https://github.com/mdopp/solarisbay/issues/782) [#783](https://github.com/mdopp/solarisbay/issues/783)
+* **chat:** server-initiated message/card injection into a chat + push ([29b7fca](https://github.com/mdopp/solarisbay/commit/29b7fca29a32d636ab56e01a87fefcb72ca760b6)), closes [#785](https://github.com/mdopp/solarisbay/issues/785)
+* **chat:** Wartung incoming approval-request cards + verdict callback ([#800](https://github.com/mdopp/solarisbay/issues/800)) ([540a1fe](https://github.com/mdopp/solarisbay/commit/540a1feb8e9f7d23c992614d0a6de3d94f530bba)), closes [#790](https://github.com/mdopp/solarisbay/issues/790)
+* **chat:** Wartung phase 1 — server-initiated injection + pinned admin ops chat ([7b32747](https://github.com/mdopp/solarisbay/commit/7b32747c056d9cf6afcd4f127777c87967f544d4))
+* **chat:** Wartung update-notification cards + admin SB-MCP deploy action ([#799](https://github.com/mdopp/solarisbay/issues/799)) ([ef0cd83](https://github.com/mdopp/solarisbay/commit/ef0cd8383bc192daff0e7100fe83d5101e6c04ed)), closes [#788](https://github.com/mdopp/solarisbay/issues/788)
+
+
+### Bug Fixes
+
+* **chat:** action_callback enforces admin on admin-only handlers ([#797](https://github.com/mdopp/solarisbay/issues/797)) ([98ad8ba](https://github.com/mdopp/solarisbay/commit/98ad8bae63f04dd4ea99d82333f31c952eb0894f)), closes [#796](https://github.com/mdopp/solarisbay/issues/796)
+* **chat:** admin SB-MCP token via Authelia-session exchange ([#798](https://github.com/mdopp/solarisbay/issues/798)) ([8eab5b2](https://github.com/mdopp/solarisbay/commit/8eab5b20f758e621dba3d9fde6c1fc0d4cbd25d2)), closes [#794](https://github.com/mdopp/solarisbay/issues/794)
+* **chat:** convert PEM VAPID_PRIVATE_KEY to raw scalar for pywebpush ([#805](https://github.com/mdopp/solarisbay/issues/805)) ([932633d](https://github.com/mdopp/solarisbay/commit/932633d86934309e54ed0eea24130e7791642ca8)), closes [#804](https://github.com/mdopp/solarisbay/issues/804)
+* **chat:** derive VAPID_PUBLIC_KEY from the private key when unset ([#802](https://github.com/mdopp/solarisbay/issues/802)) ([234c8e6](https://github.com/mdopp/solarisbay/commit/234c8e6a3a5115881a9e59f2aec8fc46f351fe9e)), closes [#801](https://github.com/mdopp/solarisbay/issues/801)
+* **chat:** handle PEM-format VAPID_PRIVATE_KEY in derive path ([#801](https://github.com/mdopp/solarisbay/issues/801) gap) ([#803](https://github.com/mdopp/solarisbay/issues/803)) ([f3facf4](https://github.com/mdopp/solarisbay/commit/f3facf4116f2b76d877411c66f2671d3c70c2a93))
+
 ## [0.20.0](https://github.com/mdopp/solarisbay/compare/v0.19.0...v0.20.0) (2026-07-12)
 
 
