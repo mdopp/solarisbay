@@ -12,6 +12,7 @@ from solaris_chat.engine.ha_watch import HaStateWatcher
 from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.profiles import build_engine_clients
+from solaris_chat.engine.approvals import ApprovalPoller
 from solaris_chat.engine.scheduler import TimerScheduler
 from solaris_chat.engine.updates import UpdatePoller
 from solaris_chat.logging import log
@@ -88,6 +89,20 @@ async def _run() -> None:
         notifier=notifier,
     )
     update_poller.start()
+    # ServiceBay approval signal → Wartung approval-cards (#790): poll the generic
+    # pending-approval feed and card each NEW request into the shared Wartung admin
+    # chat (dedup persisted, phone push via inject). Reads the deploy-time SB-MCP
+    # token; dormant when SB_API_URL is unset. The [Approve]/[Deny] verdict handlers
+    # (server.py) run under the acting admin's session-exchanged token.
+    approval_poller = ApprovalPoller(
+        settings.solaris_db_path,
+        settings.sb_api_url,
+        settings.sb_mcp_token_path,
+        event_bus,
+        settings.default_uid,
+        notifier=notifier,
+    )
+    approval_poller.start()
     crons = CronRunner(
         db_path=settings.solaris_db_path,
         deep=deep,
@@ -143,6 +158,7 @@ async def _run() -> None:
         notifier=notifier,
         sb_mcp_url=settings.sb_mcp_url,
         sb_mcp_token_path=settings.sb_mcp_token_path,
+        sb_api_url=settings.sb_api_url,
         hass_url=settings.hass_url,
         hass_token=settings.hass_token,
         crons=crons,
