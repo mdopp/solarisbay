@@ -11,8 +11,10 @@ def _db(tmp_path) -> str:
     return str(tmp_path / "solaris.db")
 
 
-def test_default_is_thorough_when_unset(tmp_path):
-    assert settings_store.get_other_model_pref(_db(tmp_path)) == "thorough"
+def test_default_is_fast_when_unset(tmp_path):
+    # Fresh chats default to fast (#809): DEFAULT_PREF flipped when 12b retired.
+    assert settings_store.get_other_model_pref(_db(tmp_path)) == "fast"
+    assert settings_store.DEFAULT_PREF == "fast"
 
 
 def test_roundtrip_fast(tmp_path):
@@ -30,7 +32,7 @@ def test_roundtrip_thorough(tmp_path):
 def test_invalid_persisted_value_falls_back_to_default(tmp_path):
     db = _db(tmp_path)
     (tmp_path / "app_settings.json").write_text('{"other_model_pref": "12b"}', "utf-8")
-    assert settings_store.get_other_model_pref(db) == "thorough"
+    assert settings_store.get_other_model_pref(db) == "fast"
 
 
 def test_set_rejects_invalid_value(tmp_path):

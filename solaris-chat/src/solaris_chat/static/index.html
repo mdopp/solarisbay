@@ -1652,7 +1652,7 @@
       <div class="pane">
         <div class="doc">
           <h2>Model</h2>
-          <p class="lead">Which model everyday chats run on (admin only). <strong>Schnell</strong> is the fast e2b model; <strong>Gründlich</strong> is the larger 12b model for harder questions. The household ("Zuhause") chat runs its own model — fast by default — set below. Applies to the next turn — no restart.</p>
+          <p class="lead">How everyday chats run by default (admin only). <strong>Schnell</strong> answers directly; <strong>Gründlich</strong> reasons first for harder questions — both on the same e4b model. The household ("Zuhause") chat runs its own model — fast by default — set below. Applies to the next turn — no restart.</p>
           <div class="model-row">
             <label for="model-select">Everyday chats</label>
             <select id="model-select"></select>
@@ -4966,16 +4966,14 @@
       // Each persona is crossed with a speed: "schnell" (reasoning none) or
       // "Thinking" (reasoning high — the model reasons and the chat renders the
       // thinking block). The household ("Zuhause") chat hides this selector and
-      // is always Solaris/schnell on e2b; every OTHER chat uses this cross, and the
-      // model it runs on (e2b vs 12b) follows the admin Model setting. Thinking
-      // only renders a block on the 12b model — e2b's hidden reasoning is
-      // suppressed by the proxy — so "Thinking" is meaningful when Model =
-      // Gründlich (12b).
+      // is always Solaris/schnell; every OTHER chat uses this cross. All chats
+      // run the same e4b model — "Thinking" turns reasoning on (the effort knob),
+      // it is not a bigger model (12b retired 2026-07-13).
       var PERSONA_SPEEDS = [
         { suffix: "schnell", reasoning: "none" },
         { suffix: "Thinking", reasoning: "high" },
       ];
-      // The ServiceBay admin profile (#293): a single fixed choice (12b, no speed
+      // The ServiceBay admin profile (#293): a single fixed choice (no speed
       // cross) whose value packs the maintenance persona id, so a new chat under
       // it routes to the admin gateway server-side. Offered only to admins; the
       // server re-checks Remote-Groups, so the choice is convenience, not the gate.

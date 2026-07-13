@@ -1093,17 +1093,21 @@ def build_app(
     # client is configured both fall back to `hermes` (offline-test topology).
     household_gw = hermes
     admin_gw = hermes_admin or hermes
+    # The deep (e4b + think_default) profile still backs the `/ollama` facade's
+    # `solaris-deep` model (voice "Gründlich") and the night crons; chat turns no
+    # longer route to it — thorough is the reasoning knob on the household model.
     deep_gw = hermes_deep or hermes
     admin_sessions: set[str] = set()
-    deep_sessions: set[str] = set()
-    # Sessions pinned to the household (fast e2b) gateway — the pinned "Zuhause"
-    # chat. Populated at create (like deep_sessions); the persisted primary topic
-    # is the restart-survival source of truth, this set is just the fast path.
+    # Sessions pinned to the household (e4b) gateway — the pinned "Zuhause"
+    # chat. Populated at create; the persisted primary topic is the
+    # restart-survival source of truth, this set is just the fast path.
     household_sessions: set[str] = set()
 
-    # The everyday-chat model preference (#332-followup): "fast" (e2b household
-    # gateway) or "thorough" (12b solaris-deep gateway). Cached in memory; the JSON
-    # sidecar beside solaris.db survives restarts. Household chats ignore it.
+    # The everyday-chat reasoning preference (#332-followup / #809): "fast" (no
+    # reasoning) or "thorough" (reasoning/thought). Sets the per-turn effort
+    # default when the UI selector is absent; both run the same e4b model. Cached
+    # in memory; the JSON sidecar beside solaris.db survives restarts. Household
+    # chats ignore it (always fast).
     other_model_pref = settings_store.get_other_model_pref(solaris_db_path)
 
     # The one shared "Zuhause" every resident opens (#649): with speaker-ID off
@@ -1152,18 +1156,12 @@ def build_app(
         uid: str = "",
         topic_slug: str = "",
     ) -> EngineClient:
-        """Pick the Hermes gateway for a turn (#293/#332/#332-followup).
+        """Pick the Hermes gateway for a turn (#293/#332/#809).
 
-        The pinned household ("Zuhause") chat is ALWAYS the fast e2b household
-        gateway, regardless of the everyday-chat model preference — it is the
-        one chat pinned to one model at one strength.
-
-        Every OTHER chat follows the everyday-chat model preference (the Model
-        setting): "thorough" routes to the solaris-deep gateway (12b), "fast" to the
-        household gateway (e2b). Both carry the same Solaris soul; the model is fixed
-        by which gateway the turn lands on (a per-session override is ignored,
-        #293). An explicit solaris-deep persona / recorded deep session also routes
-        to 12b.
+        Every household/everyday chat rides the one e4b household gateway; the
+        fast/thorough distinction is the reasoning knob on that same model
+        (chosen in `choose_effort`), not a separate 12b gateway — 12b was retired
+        2026-07-13 (does not fit the 16GB GPU).
 
         Admin gateway only when the caller is an Authelia admin AND either the
         session was created on the admin gateway (recorded at create) or this
@@ -1184,9 +1182,7 @@ def build_app(
                 return admin_gw
             if sel == personalities.MAINTENANCE_ID:
                 return admin_gw
-        if (session_id and session_id in deep_sessions) or sel == personalities.DEEP_ID:
-            return deep_gw
-        return deep_gw if other_model_pref == "thorough" else household_gw
+        return household_gw
 
     def ensure_wartung_row(request: web.Request, session_id: str) -> None:
         """Create the durable Wartung row on an admin's first turn into it (#786).
@@ -1337,8 +1333,6 @@ def build_app(
         session_id = await client.create_session(uid, title=_title_from(text))
         if client is admin_gw and client is not household_gw:
             admin_sessions.add(session_id)
-        elif client is deep_gw and client is not household_gw:
-            deep_sessions.add(session_id)
         log.info(
             "chat.session.created",
             uid=uid,
@@ -2354,9 +2348,9 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "invalid_value"}, status=400
             )
-        # A routing toggle, not a Hermes config rewrite: the household chat stays
-        # on e2b; every OTHER chat routes to e2b ("fast") or the 12b solaris-deep
-        # gateway ("thorough"). Takes effect on the next turn — no restart.
+        # A reasoning toggle, not a Hermes config rewrite: every everyday chat
+        # runs e4b; "fast" sets no-reasoning, "thorough" turns reasoning/thought
+        # on (the effort default). Takes effect on the next turn — no restart.
         other_model_pref = value
         settings_store.set_other_model_pref(solaris_db_path, value)
         log.info(
@@ -2418,8 +2412,9 @@ def build_app(
 
     # The model tags whose combined VRAM footprint the headroom estimate sums:
     # the household model (selected or fast default), the thorough model the
-    # deep/"Gründlich" path runs, and the embedding model — i.e. what's
-    # actually meant to be co-resident on the box.
+    # deep/"Gründlich" facade path runs, and the embedding model — i.e. what's
+    # actually meant to be co-resident on the box. fast/thorough collapse to one
+    # e4b tag now; combined_selected_bytes dedups, so it's counted once.
     def selected_models() -> list[str]:
         tags = [current_household_model(), thorough_model]
         embed = os.environ.get("EMBED_MODEL", "").strip()
@@ -3936,6 +3931,7 @@ def build_app(
                 text,
                 selector=body.get("reasoning"),
                 admin=is_admin(request, remote_groups_header, admin_group),
+                pref=other_model_pref,
             )
         )
         client = gateway_for(
@@ -4038,6 +4034,7 @@ def build_app(
                 text,
                 selector=body.get("reasoning"),
                 admin=is_admin(request, remote_groups_header, admin_group),
+                pref=other_model_pref,
             )
         )
         client = gateway_for(

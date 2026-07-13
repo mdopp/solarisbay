@@ -368,14 +368,16 @@ async def test_falls_back_to_household_when_no_admin_gateway(aiohttp_client):
     assert household.turns
 
 
-# ---- everyday-chat model preference routing (#332-followup) ----
+# ---- everyday-chat reasoning preference (#332-followup / #809) ----
+# 12b retired 2026-07-13: fast+thorough both run the e4b household gateway; the
+# preference sets the per-turn reasoning effort, not a separate deep gateway.
 
 
 async def test_household_topic_chat_routes_to_household_even_when_thorough(
     aiohttp_client, tmp_path
 ):
     # The pinned "Zuhause" chat (primary topic = household) is ALWAYS the fast
-    # e2b household gateway, even though the everyday-chat preference is thorough.
+    # e4b household gateway, even though the everyday-chat preference is thorough.
     household, deep = _FakeHermes(), _FakeHermes()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="thorough"))
 
@@ -511,26 +513,26 @@ async def test_household_followup_reads_persisted_primary_topic(
     assert deep.turns == []
 
 
-async def test_other_chat_thorough_routes_to_deep(aiohttp_client, tmp_path):
-    # A normal (non-household) chat with the thorough preference routes to the
-    # solaris-deep (12b) gateway and keeps the resident's reasoning selector.
+async def test_other_chat_thorough_reasons_on_household(aiohttp_client, tmp_path):
+    # A normal (non-household) chat with the thorough preference stays on the e4b
+    # household gateway (no 12b/deep switch) but runs WITH reasoning — thorough is
+    # the effort knob, not a bigger model (#809). A plain turn (no selector, no
+    # cue) escalates to "high" purely from the pref.
     household, deep = _FakeHermes(), _FakeHermes()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="thorough"))
 
     resp = await client.post(
-        "/api/chat",
-        json={"input": "erklär mir das", "reasoning": "high"},
-        headers=RESIDENT_HDRS,
+        "/api/chat", json={"input": "erklär mir das"}, headers=RESIDENT_HDRS
     )
     assert resp.status == 200
-    assert deep.turns and deep.turns[0][0] == "sess-1"
-    assert household.turns == []
-    assert deep.efforts == ["high"]
+    assert household.turns and household.turns[0][0] == "sess-1"
+    assert deep.turns == []
+    assert household.efforts == ["high"]
 
 
-async def test_other_chat_fast_routes_to_household(aiohttp_client, tmp_path):
-    # The same normal chat with the fast preference stays on the e2b household
-    # gateway.
+async def test_other_chat_fast_runs_none_but_escalates_on_cue(aiohttp_client, tmp_path):
+    # The same normal chat with the fast preference runs "none" on the household
+    # gateway, but an explicit "think harder" cue still escalates it to "high".
     household, deep = _FakeHermes(), _FakeHermes()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="fast"))
 
@@ -539,11 +541,20 @@ async def test_other_chat_fast_routes_to_household(aiohttp_client, tmp_path):
     )
     assert resp.status == 200
     assert household.turns and deep.turns == []
+    assert household.efforts == ["none"]
+
+    resp = await client.post(
+        "/api/chat", json={"input": "denk mal scharf nach"}, headers=RESIDENT_HDRS
+    )
+    assert resp.status == 200
+    assert household.efforts == ["none", "high"]
+    assert deep.turns == []
 
 
-async def test_model_put_toggles_routing(aiohttp_client, tmp_path):
-    # The admin Model setting is a live routing toggle: after switching to fast,
-    # a fresh normal chat routes to household instead of deep — no restart.
+async def test_model_put_toggles_effort_not_gateway(aiohttp_client, tmp_path):
+    # The admin Model setting is a live effort toggle: after switching to fast, a
+    # fresh normal plain turn runs "none" instead of the thorough "high" — both on
+    # the household gateway, no restart.
     household, deep = _FakeHermes(), _FakeHermes()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="thorough"))
 
@@ -556,6 +567,7 @@ async def test_model_put_toggles_routing(aiohttp_client, tmp_path):
     )
     assert resp.status == 200
     assert household.turns and deep.turns == []
+    assert household.efforts == ["none"]
 
 
 async def test_model_get_returns_options_and_current(aiohttp_client, tmp_path):

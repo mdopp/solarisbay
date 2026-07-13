@@ -1,10 +1,11 @@
 """Tiny persisted app-settings store (JSON sidecar next to solaris.db).
 
-The only setting today is the **non-household model preference** (#332-followup):
-which of the two gateway-backed models everyday (non-household) chats route to —
-`"fast"` (e2b, the household gateway) or `"thorough"` (12b, the solaris-deep
-gateway). It is a routing toggle, not a Hermes config rewrite, so it lives here
-rather than in `config.yaml`: the chat server owns it and reads it per turn.
+The only setting today is the **everyday-chat reasoning preference**
+(#332-followup / #809): the default effort everyday (non-household) chats run at
+when the per-turn selector is absent — `"fast"` (no reasoning) or `"thorough"`
+(reasoning/thought). Both run the same e4b model; the preference only sets the
+reasoning knob, not a separate gateway. It lives here rather than in
+`config.yaml`: the chat server owns it and reads it per turn.
 
 It rides a JSON file beside `solaris.db` (the same persistent writable volume
 `topics_store` uses) so no schema migration is needed. The chat server caches
@@ -17,7 +18,7 @@ import json
 from pathlib import Path
 
 _VALID = ("fast", "thorough")
-DEFAULT_PREF = "thorough"
+DEFAULT_PREF = "fast"
 _KEY = "other_model_pref"
 _HOUSEHOLD_KEY = "household_model"
 _TTS_VOICE_KEY = "tts_voice"

@@ -2255,7 +2255,7 @@ async def test_get_model_admin(aiohttp_client, tmp_path):
     resp = await client.get("/api/model", headers={"Remote-Groups": "admins"})
     body = await resp.json()
     assert resp.status == 200
-    assert body["current"] == "thorough"  # default
+    assert body["current"] == "fast"  # default (#809: fresh chats start fast)
     assert body["options"] == [
         {"value": "fast", "label": "Schnell", "model": "gemma4:e2b"},
         {"value": "thorough", "label": "Gründlich", "model": "gemma4:12b"},
@@ -2331,9 +2331,7 @@ async def test_put_household_model_admin_persists(aiohttp_client, tmp_path):
         settings_store.get_household_model(str(tmp_path / "solaris.db")) == "gemma4:12b"
     )
     # The everyday-chat pref is untouched by a household-model write.
-    assert (
-        settings_store.get_other_model_pref(str(tmp_path / "solaris.db")) == "thorough"
-    )
+    assert settings_store.get_other_model_pref(str(tmp_path / "solaris.db")) == "fast"
 
 
 async def test_put_household_model_non_admin_forbidden(aiohttp_client, tmp_path):
@@ -2914,72 +2912,47 @@ async def test_maint_persona_cannot_escalate_mid_session(aiohttp_client):
     _assert_turns(fake.turns, [("maint-1", "status")])
 
 
-# --- Solaris Gründlich (solaris-deep) routing (#332) ------------------------------
+# --- Solaris Gründlich = e4b + reasoning (12b retired, #809) ------------------
 
 
-async def test_deep_persona_routes_turn_to_deep_gateway(aiohttp_client):
-    # Selecting the solaris-deep persona routes a NEW chat to the solaris-deep gateway
-    # (12b) — open to every resident, NO admin gate. The household gateway never
-    # sees the turn.
+async def test_chat_never_routes_to_deep_gateway(aiohttp_client, tmp_path):
+    # 12b retired 2026-07-13: no chat persona/pref routes a turn to the deep
+    # gateway anymore — "Gründlich" is the reasoning knob on the household model
+    # (covered in test_gateway_routing), so the chat path never touches deep.
+    from solaris_chat import settings_store
+
     household = _FakeHermes()
     deep = _FakeHermes()
+    db = str(tmp_path / "solaris.db")
+    settings_store.set_other_model_pref(db, "thorough")
     app = build_app(
         hermes=household,
         hermes_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
+        solaris_db_path=db,
+        attachments_dir=str(tmp_path / "att"),
     )
     client = await aiohttp_client(app)
 
+    # A once-"solaris-deep" persona is now just an unknown overlay id: it does not
+    # switch gateways — the turn stays on household, reasoning driven by the pref.
     resp = await client.post(
         "/api/chat",
         json={"input": "denk gründlich nach", "personality": "solaris-deep"},
         headers={"Remote-User": "cdopp", "Remote-Groups": "family"},
     )
     assert resp.status == 200
-    body = await resp.json()
-    assert deep.created == ["cdopp"]
-    _assert_turns(deep.turns, [(body["session_id"], "denk gründlich nach")])
-    assert household.created == []
-    assert household.turns == []
-
-
-async def test_deep_session_followups_stay_on_deep_gateway(aiohttp_client):
-    # A session born on the deep gateway is sticky: its follow-up turns route
-    # back to deep even when the per-turn persona isn't re-sent (Hermes session
-    # state is per-gateway).
-    household = _FakeHermes()
-    deep = _FakeHermes()
-    app = build_app(
-        hermes=household,
-        hermes_deep=deep,
-        remote_user_header="Remote-User",
-        default_uid="household",
-    )
-    client = await aiohttp_client(app)
-
-    first = await client.post(
-        "/api/chat",
-        json={"input": "eins", "personality": "solaris-deep"},
-        headers={"Remote-User": "cdopp", "Remote-Groups": "family"},
-    )
-    sid = (await first.json())["session_id"]
-    second = await client.post(
-        "/api/chat",
-        json={"input": "zwei", "session_id": sid},
-        headers={"Remote-User": "cdopp", "Remote-Groups": "family"},
-    )
-    assert second.status == 200
-    assert household.turns == []
-    assert [t[1].rsplit("\n\n", 1)[-1] for t in deep.turns] == ["eins", "zwei"]
+    assert household.created == ["cdopp"]
+    assert deep.created == [] and deep.turns == []
 
 
 async def test_default_persona_with_fast_pref_stays_on_household(
     aiohttp_client, tmp_path
 ):
-    # Without the solaris-deep persona a normal turn follows the everyday-chat model
-    # pref: with "fast" it stays on the household (e2b) gateway. (The "thorough"
-    # path → deep is covered in test_gateway_routing.)
+    # A normal turn follows the everyday-chat pref: with "fast" it stays on the
+    # household (e4b) gateway and runs no reasoning. (The "thorough" path — same
+    # gateway + reasoning — is covered in test_gateway_routing.)
     from solaris_chat import settings_store
 
     household = _FakeHermes()
@@ -3003,6 +2976,7 @@ async def test_default_persona_with_fast_pref_stays_on_household(
     )
     assert resp.status == 200
     assert household.created == ["cdopp"]
+    assert household.efforts == ["none"]
     assert deep.created == []
     assert deep.turns == []
 
