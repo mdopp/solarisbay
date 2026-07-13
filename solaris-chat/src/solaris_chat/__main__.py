@@ -13,6 +13,7 @@ from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.profiles import build_engine_clients
 from solaris_chat.engine.scheduler import TimerScheduler
+from solaris_chat.engine.updates import UpdatePoller
 from solaris_chat.logging import log
 from solaris_chat.server import serve
 
@@ -74,6 +75,19 @@ async def _run() -> None:
         notifier=notifier,
     )
     ha_watcher.start()
+    # ServiceBay update signal → Wartung update-cards (#788): poll the pending
+    # image/template updates and card each NEW one into the shared Wartung admin
+    # chat (dedup persisted, phone push via inject). Reads the deploy-time
+    # SB-MCP token; dormant when SB_API_URL is unset.
+    update_poller = UpdatePoller(
+        settings.solaris_db_path,
+        settings.sb_api_url,
+        settings.sb_mcp_token_path,
+        event_bus,
+        settings.default_uid,
+        notifier=notifier,
+    )
+    update_poller.start()
     crons = CronRunner(
         db_path=settings.solaris_db_path,
         deep=deep,
