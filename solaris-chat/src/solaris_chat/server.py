@@ -4040,6 +4040,9 @@ def build_app(
     # entity's card for the #/p/device/<entity_id> route (the /napi/ twin serves
     # the device-token widget path).
     app.router.add_get("/api/portal/state", portal_state)
+    app.router.add_get(
+        "/api/portal/camera/{entity_id}/snapshot", portal_camera_snapshot
+    )
     app.router.add_get("/api/events", portal_events)
     app.router.add_post("/api/inject", inject_message)
     app.router.add_post("/api/action-callback", action_callback)

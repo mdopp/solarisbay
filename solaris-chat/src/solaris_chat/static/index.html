@@ -381,6 +381,8 @@
       border-radius: 999px; background: rgba(127,127,127,0.14);
     }
     .concept-desc { color: var(--muted); margin: 6px 0; }
+    /* Camera page (#782): the live snapshot fills the card width. */
+    .camera-view { display: block; width: 100%; height: auto; border-radius: var(--radius); background: #000; }
     .concept-section { font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
     .concept-card ul { margin: 2px 0; padding-left: 18px; }
     .concept-card ul li { margin: 2px 0; }
@@ -1415,7 +1417,7 @@
       <div class="rs-head">
         <!-- Brand over the full-page Chats overlay (#777), consistent with the
              chat-header wordmark; sits before the "Chats" section label. -->
-        <span class="brand-wordmark rs-brand" aria-label="Solaris">Solar<img class="brand-i" src="/static/solaris-mark.svg" alt="i" />s</span>
+        <span class="brand-wordmark rs-brand" aria-label="Solaris">Solar<img class="brand-i" src="/static/solaris-figure.svg" alt="i" />s</span>
         <span>Chats</span><span class="grow"></span>
         <button class="icon-btn" id="new-incognito" type="button" title="Temporärer Chat (incognito) — wird beim Schließen gelöscht, nichts wird gespeichert" aria-label="Temporärer Chat"><svg class="ic"><use href="#i-ghost"></use></svg></button>
         <button class="icon-btn" id="new-session" type="button" title="New chat" aria-label="New chat"><svg class="ic"><use href="#i-plus"></use></svg></button>
@@ -1460,7 +1462,7 @@
         <button class="icon-btn" id="push-bell" type="button" title="Benachrichtigungen aktivieren" aria-label="Benachrichtigungen aktivieren" hidden><svg class="ic"><use href="#i-bell"></use></svg></button>
         <!-- "Solaris" wordmark with the "i" as our brand glyph (#411), shown on
              mobile in the merged header in place of the retired .topbar. -->
-        <span class="brand-wordmark" aria-label="Solaris">Solar<img class="brand-i" src="/static/solaris-mark.svg" alt="i" />s</span>
+        <span class="brand-wordmark" aria-label="Solaris">Solar<img class="brand-i" src="/static/solaris-figure.svg" alt="i" />s</span>
         <button class="icon-btn embed-settings" id="embed-settings" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-settings"></use></svg></button>
       </header>
       <div id="log" aria-live="polite"></div>
@@ -4529,6 +4531,7 @@
         if (startTimer) { clearInterval(startTimer); startTimer = null; }
         stopStartEvents();
         startPageCard = null;
+        stopCameraRefresh();
       }
       // Swap one entity favorite's card in place by entity_id — shared by the
       // 12s poll (#711) and the SSE event stream (#714).
@@ -5330,10 +5333,11 @@
         // focused on ONE device's live card (a device-widget tap target). The
         // entity_id keeps its dots, so match the sub-path prefix, not a slug.
         if (type.indexOf("device/") === 0) { openDevicePage(type.slice(7)); return; }
-        // Camera deep link (#769): the route name is reserved so the Android
-        // camera widget can wire it now, but the camera VIEW needs the snapshot
-        // fetch from #770 — until then show a placeholder, don't fake a feed.
-        if (type.indexOf("camera/") === 0 || type === "camera") { openCameraPlaceholder(); return; }
+        // Camera deep link (#782): #/p/camera/<entity_id> opens a page showing
+        // one camera's live snapshot (the Android camera-widget tap target). The
+        // entity_id keeps its dots, so match the sub-path prefix, not a slug.
+        if (type.indexOf("camera/") === 0) { openCameraPage(type.slice(7)); return; }
+        if (type === "camera") { showView("chat"); return; }
         if (type !== "energy" && type !== "start" && type !== "notes") { showView("chat"); return; }
         // Leaving the start page for another portal stops its refresh timer (#711).
         if (type !== "start") stopStartRefresh();
@@ -5395,17 +5399,44 @@
           .catch(function () { card.textContent = "Konnte das Gerät nicht laden."; });
       }
 
-      // #769/#770: the camera route name is reserved so the Android camera widget
-      // can wire it, but the camera feed needs the snapshot fetch from #770.
-      function openCameraPlaceholder() {
+      // #782: a page focused on ONE camera — shows the live HA snapshot for the
+      // #/p/camera/<entity_id> route (the Android camera-widget tap target). The
+      // browser/Authelia session reads /api/portal/camera/<id>/snapshot (the
+      // /napi/ twin serves the device-token widget). The still is re-fetched on a
+      // timer with a cache-buster so the view stays current; the timer is cleared
+      // when the route leaves (routeFromLocation → stopStartRefresh path).
+      var cameraTimer = null;
+      function stopCameraRefresh() {
+        if (cameraTimer) { clearInterval(cameraTimer); cameraTimer = null; }
+      }
+      function openCameraPage(entityId) {
         stopStartRefresh();
+        stopCameraRefresh();
         closeRail();
         clearLog();
         var card = document.createElement("div");
-        card.className = "msg info concept-card";
-        card.textContent = "Kamera-Ansicht kommt bald (#770).";
+        card.className = "msg info concept-card start-page";
         log.appendChild(card);
         card.scrollIntoView({ block: "start" });
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = "Kamera";
+        head.appendChild(title);
+        card.appendChild(head);
+        var snapUrl =
+          "/api/portal/camera/" + encodeURIComponent(entityId) + "/snapshot";
+        var img = document.createElement("img");
+        img.className = "camera-view";
+        img.alt = "Kamera-Ansicht";
+        img.onerror = function () {
+          card.textContent = "Kamera nicht verfügbar.";
+        };
+        card.appendChild(img);
+        function refresh() { img.src = snapUrl + "?t=" + Date.now(); }
+        refresh();
+        cameraTimer = setInterval(refresh, 5000);
       }
 
       function loadStartPage(card) {
