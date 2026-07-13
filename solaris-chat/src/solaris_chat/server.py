@@ -43,7 +43,14 @@ from solaris_chat import (
 )
 from solaris_chat.attachments import AttachmentStore, attach_to_messages
 from solaris_chat.context import STATIC_DEFAULT, ContextWindow
-from solaris_chat.engine import action_cards, approvals, confirm, store, updates
+from solaris_chat.engine import (
+    action_cards,
+    approvals,
+    confirm,
+    escalation,
+    store,
+    updates,
+)
 from solaris_chat.engine.client import (
     EngineClient,
     EngineError,
@@ -1941,6 +1948,80 @@ def build_app(
         approvals.APPROVE_ACTION, _approve_request, admin=True, destructive=True
     )
     action_cards.register(approvals.DENY_ACTION, _deny_request, admin=True)
+
+    async def _escalation_sink(
+        op: dict[str, Any], request_id: str, _approval_id: str | None
+    ) -> None:
+        """Inject the one-shot delete/exec approval-card into the Wartung chat
+        (#789). Called from the admin turn's SB-MCP dispatch when a destroy/exec
+        call was refused and parked as a one-shot request; the card's [Approve]
+        runs it once with the owner-minted token. Fail-open: no bus ⇒ no card
+        (the model still saw the "pending approval" tool result)."""
+        if event_bus is None:
+            return
+        await inject(
+            solaris_db_path,
+            event_bus,
+            notifier,
+            store.wartung_session_id(default_uid),
+            default_uid,
+            f"Freigabe angefragt: {escalation.op_label(op.get('tool_name'), op.get('service'))}.",
+            card=escalation.card(op, request_id),
+        )
+
+    mcp_box = _admin_mcp()
+    if mcp_box is not None:
+        mcp_box._on_escalation = _escalation_sink
+
+    async def _run_approved_op(body: dict[str, Any]) -> dict[str, Any]:
+        """[Approve] on a one-shot delete/exec card (#789): collect the owner-
+        minted single-use token and run the bound op ONCE, then report into the
+        Wartung chat.
+
+        Registered admin=True AND destructive=True — the endpoint refuses a
+        non-admin and requires `confirmed=true`. The one-shot token is used on a
+        fresh connection and never stored on the ambient toolbox, so the ambient
+        SB-MCP token stays read+lifecycle+mutate (no standing elevation)."""
+        params = body.get("params")
+        if not isinstance(params, dict):
+            return {"ok": False, "reason": "no_params"}
+        request_id = params.get("request_id")
+        tool_name = params.get("tool_name")
+        arguments = params.get("arguments") or {}
+        if not isinstance(request_id, str) or not request_id.strip():
+            return {"ok": False, "reason": "no_request_id"}
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return {"ok": False, "reason": "no_tool"}
+        mcp = _admin_mcp()
+        if mcp is None:
+            return {"ok": False, "reason": "no_mcp"}
+        await mcp.prepare()
+        ok, detail = await mcp.run_one_shot(tool_name, arguments, request_id)
+        if event_bus is not None:
+            outcome = "ausgeführt" if ok else "fehlgeschlagen"
+            await inject(
+                solaris_db_path,
+                event_bus,
+                notifier,
+                store.wartung_session_id(default_uid),
+                default_uid,
+                f"{tool_name} {outcome}: {detail[:400]}",
+            )
+        return {"ok": ok, "tool_name": tool_name, "detail": detail[:2000]}
+
+    async def _deny_op(body: dict[str, Any]) -> dict[str, Any]:
+        """[Deny] on a one-shot delete/exec card (#789): nothing runs. The parked
+        one-shot request is left for the owner's SB Approvals view to reject or
+        lapse; the ambient token never gained delete/exec, so denying is a no-op
+        beyond acknowledging the card."""
+        params = body.get("params")
+        tool_name = params.get("tool_name") if isinstance(params, dict) else None
+        return {"ok": True, "denied": True, "tool_name": tool_name}
+
+    action_cards.register(
+        escalation.RUN_ACTION, _run_approved_op, admin=True, destructive=True
+    )
+    action_cards.register(escalation.DENY_ACTION, _deny_op, admin=True)
 
     async def list_mcp(request: web.Request) -> web.Response:
         # The engine's MCP surface is the admin profile's servicebay_admin
