@@ -232,8 +232,13 @@
   },
   "SERVICEBAY_MCP_URL": {
     "type": "text",
-    "description": "ServiceBay MCP control surface URL. The admin persona's servicebay_admin toolbox connects here (token minted by the post-deploy, scopes read+lifecycle+mutate). Reached via host loopback.",
+    "description": "ServiceBay MCP control surface URL. The admin persona's servicebay_admin toolbox connects here (token minted from the acting admin's Authelia session, scopes read+lifecycle+mutate). Reached via host loopback.",
     "default": "http://127.0.0.1:5888/mcp"
+  },
+  "SERVICEBAY_API_URL": {
+    "type": "text",
+    "description": "ServiceBay control-plane API base (no /mcp suffix). The admin toolbox mints its short-lived SB-MCP token on demand from the acting admin's live Authelia forward-auth identity via POST /api/auth/token-from-authelia-session (#794) — no standing token-minting credential lives in the pod. Reached via host loopback, same host:port as SERVICEBAY_MCP_URL.",
+    "default": "http://127.0.0.1:5888"
   },
   "SOLARIS_SPEAKER_ID_ENABLED": {
     "type": "select",

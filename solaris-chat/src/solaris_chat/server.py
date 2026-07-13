@@ -44,7 +44,12 @@ from solaris_chat import (
 from solaris_chat.attachments import AttachmentStore, attach_to_messages
 from solaris_chat.context import STATIC_DEFAULT, ContextWindow
 from solaris_chat.engine import action_cards, confirm, store
-from solaris_chat.engine.client import EngineClient, EngineError, current_uid
+from solaris_chat.engine.client import (
+    EngineClient,
+    EngineError,
+    current_admin_identity,
+    current_uid,
+)
 from solaris_chat.engine import vram
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.notify import emit_chat, inject
@@ -1187,6 +1192,25 @@ def build_app(
             return
         store.ensure_wartung_session(solaris_db_path, default_uid)
 
+    def pin_admin_identity(request: web.Request) -> None:
+        """Bind THIS turn's verified Authelia admin identity for the SB-MCP
+        toolbox (#794). Only an admin's forward-auth identity is forwarded — the
+        engine exchanges it (Remote-User/Remote-Groups → token-from-authelia-
+        session) for a short-lived scoped SB-MCP token, so a non-admin turn
+        carries the empty identity and the exchange is never attempted. Set on
+        the request-handling task; EngineClient re-pins it inside the dispatch
+        task (like current_uid). The headers themselves are trustworthy only
+        because NPM's forward-auth chain overwrites any client-supplied copy."""
+        if is_admin(request, remote_groups_header, admin_group):
+            current_admin_identity.set(
+                (
+                    request.headers.get(remote_user_header, ""),
+                    request.headers.get(remote_groups_header, ""),
+                )
+            )
+        else:
+            current_admin_identity.set(("", ""))
+
     async def maybe_compact(
         uid: str, session_id: str, client: EngineClient
     ) -> tuple[str, bool]:
@@ -1822,12 +1846,15 @@ def build_app(
                 return box
         return None
 
-    async def list_mcp(_request: web.Request) -> web.Response:
+    async def list_mcp(request: web.Request) -> web.Response:
         # The engine's MCP surface is the admin profile's servicebay_admin
         # toolbox — report it (name/url/reachable/tools, no tokens).
         mcp = _admin_mcp()
         if mcp is None:
             return web.json_response({"ok": True, "servers": []})
+        # Carry the admin's Authelia identity into the probe so a stale token
+        # can be re-exchanged here too (#794); a non-admin caller pins nothing.
+        pin_admin_identity(request)
         await mcp.prepare()
         names = mcp.names()
         return web.json_response(
@@ -1869,6 +1896,7 @@ def build_app(
         mcp = _admin_mcp()
         if mcp is None or request.match_info["server"] != "servicebay_admin":
             return web.json_response({"ok": False, "error": "Unknown MCP server"})
+        pin_admin_identity(request)
         await mcp.prepare()
         output = await mcp.dispatch(tool.strip(), arguments)
         log.info(
@@ -3741,6 +3769,7 @@ def build_app(
             topic_slug=topic_slug,
         )
         ensure_wartung_row(request, session_id)
+        pin_admin_identity(request)
 
         clock = asyncio.get_event_loop().time
         t_start = clock() * 1000.0
@@ -3842,6 +3871,7 @@ def build_app(
             topic_slug=topic_slug,
         )
         ensure_wartung_row(request, session_id)
+        pin_admin_identity(request)
 
         resp = web.StreamResponse(
             headers={
