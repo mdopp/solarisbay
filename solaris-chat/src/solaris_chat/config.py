@@ -78,6 +78,33 @@ def _parse_library_owners(raw: str) -> dict[str, str]:
     return owners
 
 
+def _derive_vapid_public_key(private_key: str) -> str:
+    """Derive the base64url VAPID public key from the private key (#801).
+
+    VAPID_PUBLIC_KEY is a non-secret text var that a ServiceBay install does not
+    preserve across a redeploy unless passed explicitly, so it silently empties
+    and Web Push breaks. It's fully derivable from VAPID_PRIVATE_KEY (the EC
+    P-256 private key): the uncompressed public point, base64url, no padding —
+    the same encoding `web-push generate-vapid-keys` emits. Reuses py_vapid
+    (a pywebpush dep, already used to sign) so both key formats it accepts (raw
+    32-byte scalar or DER) load identically. Returns "" if the key can't load,
+    so a malformed private key just disables push rather than crashing boot."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from py_vapid import Vapid01
+
+    try:
+        public_key = Vapid01.from_string(private_key).public_key
+    except Exception:  # noqa: BLE001 — a bad key disables push, never breaks boot
+        return ""
+    point = public_key.public_bytes(
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint,
+    )
+    return base64.urlsafe_b64encode(point).rstrip(b"=").decode()
+
+
 @dataclass(frozen=True)
 class Settings:
     host: str
@@ -134,6 +161,13 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        # Web Push / VAPID (#713, #801): a redeploy can empty the non-secret
+        # VAPID_PUBLIC_KEY env, so derive it from the private key when unset
+        # rather than depend on the env surviving. An explicit public key wins.
+        vapid_private_key = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
+        vapid_public_key = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
+        if not vapid_public_key and vapid_private_key:
+            vapid_public_key = _derive_vapid_public_key(vapid_private_key)
         return cls(
             host=os.environ.get("CHAT_HOST", "127.0.0.1"),
             port=int(os.environ.get("CHAT_PORT", "8787")),
@@ -295,8 +329,8 @@ class Settings:
             # subject sign the push. An operator prerequisite (generated once,
             # dropped in the pod env) — NOT in the repo. Empty ⇒ Web Push
             # no-ops end-to-end, so the box is safe before they are set.
-            vapid_public_key=os.environ.get("VAPID_PUBLIC_KEY", "").strip(),
-            vapid_private_key=os.environ.get("VAPID_PRIVATE_KEY", "").strip(),
+            vapid_public_key=vapid_public_key,
+            vapid_private_key=vapid_private_key,
             vapid_subject=os.environ.get("VAPID_SUBJECT", "").strip(),
             # Android TWA / Digital Asset Links (#716): the /.well-known/
             # assetlinks.json route binds the app to this domain. The package
