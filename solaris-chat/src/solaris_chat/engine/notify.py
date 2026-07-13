@@ -22,8 +22,9 @@ from solaris_chat.engine import store
 from solaris_chat.logging import log
 
 # The typed event kinds the bus carries (#714). `card_state` is a live HA card
-# update, `reminder` a fired timer, `chat` a backgrounded turn (Phase 1c).
-EVENT_KINDS = frozenset({"reminder", "card_state", "chat"})
+# update, `reminder` a fired timer, `chat` a backgrounded turn (Phase 1c),
+# `servicebay` a republished ServiceBay approval event (BFF, #811).
+EVENT_KINDS = frozenset({"reminder", "card_state", "chat", "servicebay"})
 
 
 class EventBus:
