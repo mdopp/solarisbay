@@ -85,17 +85,23 @@ def _derive_vapid_public_key(private_key: str) -> str:
     preserve across a redeploy unless passed explicitly, so it silently empties
     and Web Push breaks. It's fully derivable from VAPID_PRIVATE_KEY (the EC
     P-256 private key): the uncompressed public point, base64url, no padding —
-    the same encoding `web-push generate-vapid-keys` emits. Reuses py_vapid
-    (a pywebpush dep, already used to sign) so both key formats it accepts (raw
-    32-byte scalar or DER) load identically. Returns "" if the key can't load,
-    so a malformed private key just disables push rather than crashing boot."""
+    the same encoding `web-push generate-vapid-keys` emits. Accepts three
+    formats: PEM (-----BEGIN EC PRIVATE KEY-----), raw 32-byte base64url scalar,
+    and DER base64url — the last two via py_vapid. Returns "" if the key can't
+    load, so a malformed private key just disables push rather than crashing boot."""
     import base64
 
+    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import serialization
     from py_vapid import Vapid01
 
     try:
-        public_key = Vapid01.from_string(private_key).public_key
+        if private_key.strip().startswith("-----"):
+            public_key = serialization.load_pem_private_key(
+                private_key.encode(), password=None, backend=default_backend()
+            ).public_key()
+        else:
+            public_key = Vapid01.from_string(private_key).public_key
     except Exception:  # noqa: BLE001 — a bad key disables push, never breaks boot
         return ""
     point = public_key.public_bytes(
