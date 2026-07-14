@@ -154,6 +154,7 @@ class Settings:
     admin_skills_dir: str
     sb_mcp_url: str
     sb_mcp_token_path: str
+    sb_read_token_path: str
     sb_api_url: str
     sb_mint_url: str
     gatekeeper_url: str
@@ -288,6 +289,14 @@ class Settings:
             sb_mcp_url=os.environ.get("SB_MCP_URL", "").strip(),
             sb_mcp_token_path=os.environ.get(
                 "SB_MCP_TOKEN_PATH", "/var/lib/solaris/sb-admin-token"
+            ),
+            # The non-expiring read-only SB token (servicebay#2302) the
+            # unattended pollers use so they don't 401-churn when the rotating
+            # deploy-time SB_MCP_TOKEN_PATH lapses (~1h TTL, #818). The
+            # post-deploy mints it once and drops it here; the pollers fall back
+            # to SB_MCP_TOKEN_PATH when this file is absent (pre-deploy).
+            sb_read_token_path=os.environ.get(
+                "SB_READ_TOKEN_PATH", "/var/lib/solaris/sb-read-token"
             ),
             # ServiceBay control-plane base for the Authelia-session token
             # exchange (#794): the admin toolbox mints its SB-MCP token from the

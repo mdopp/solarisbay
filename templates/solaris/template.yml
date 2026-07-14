@@ -138,6 +138,13 @@ spec:
       value: "{{SERVICEBAY_MCP_URL}}"
     - name: SB_MCP_TOKEN_PATH
       value: "/var/lib/solaris/sb-admin-token"
+    # The non-expiring read-only SB token (servicebay#2302) the unattended
+    # pollers (update poller + approval-event SSE bridge) read so they don't
+    # 401-churn when the rotating SB_MCP_TOKEN_PATH lapses (~1h TTL, #818). The
+    # post-deploy mints it once and drops it here; the pollers fall back to
+    # SB_MCP_TOKEN_PATH when this file is absent (pre-deploy).
+    - name: SB_READ_TOKEN_PATH
+      value: "/var/lib/solaris/sb-read-token"
     # ServiceBay control-plane base for the Authelia-session token exchange
     # (#794): the admin toolbox mints its SB-MCP token on demand from the
     # acting admin's live forward-auth identity (Remote-User/Remote-Groups →
