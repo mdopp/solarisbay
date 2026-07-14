@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/mdopp/solarisbay/compare/v0.22.0...v0.22.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* **chat:** non-expiring read token for the unattended SB pollers ([#824](https://github.com/mdopp/solarisbay/issues/824)) ([45d602e](https://github.com/mdopp/solarisbay/commit/45d602e2420b8f59b6e6cef9a595fb580afd3bfd)), closes [#818](https://github.com/mdopp/solarisbay/issues/818) [#799](https://github.com/mdopp/solarisbay/issues/799)
+
 ## [0.22.0](https://github.com/mdopp/solarisbay/compare/v0.21.0...v0.22.0) (2026-07-14)
 
 
