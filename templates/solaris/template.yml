@@ -145,6 +145,15 @@ spec:
     # token-minting credential. Host loopback, same as the MCP endpoint.
     - name: SB_API_URL
       value: "{{SERVICEBAY_API_URL}}"
+    # ServiceBay's public portal base (through NPM) for the delegated-admin
+    # session mint (servicebay#2278/#2279). That mint is a no-Bearer/no-Origin
+    # forward-auth POST, so SB's proxy CSRF gate 403s it on the loopback :5888
+    # path; it passes only through NPM, which injects the CSRF-exempt
+    # X-SB-Internal-Token on that route. So the mint alone targets the portal
+    # host (e.g. https://dopp.cloud); reads + the verdict keep the loopback base.
+    # Empty ⇒ fall back to SB_API_URL (correct for a LAN/no-portal deploy).
+    - name: SB_MINT_URL
+      value: "{{SERVICEBAY_MINT_URL}}"
     # Context window (tokens) = the chat-compaction cap (#210) + /context.
     # Empty/auto => AUTO-DERIVE from the live Ollama active model at runtime
     # (#235). A positive integer OVERRIDES the derivation (ops control).

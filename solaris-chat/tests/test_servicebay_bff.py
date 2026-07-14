@@ -466,6 +466,68 @@ async def test_client_submit_verdict_reject_maps_to_deny(monkeypatch, tmp_path):
     assert calls[1]["url"] == "http://sb:5888/napi/approvals/req-7/deny"
 
 
+# ---- #811 last mile / servicebay#2278: the mint goes THROUGH NPM ------------
+# The delegated-admin mint is a no-Bearer/no-Origin forward-auth POST, so SB's
+# proxy CSRF gate 403s it on the loopback :5888 path; it only passes through NPM
+# (the portal host), which injects the CSRF-exempt X-SB-Internal-Token on that
+# route (servicebay#2279). So ONLY the mint targets sb_mint_url; the verdict
+# (Bearer-authenticated → CSRF-exempt) stays on the loopback base.
+
+
+async def test_client_mint_targets_mint_base_verdict_stays_on_api_base(
+    monkeypatch, tmp_path
+):
+    from solaris_chat.engine import sb_companion as mod
+    from solaris_chat.engine.client import current_admin_identity
+
+    tok = tmp_path / "sbtok"
+    tok.write_text("service-tok")
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        mod.aiohttp, "ClientSession", lambda *a, **k: _MintVerdictSession(calls)
+    )
+    current_admin_identity.set(("michael", "admins"))
+
+    client = mod.SbCompanionClient(
+        "http://127.0.0.1:5888", str(tok), sb_mint_url="https://dopp.cloud"
+    )
+    ok, _ = await client.submit_verdict("req-42", "approve")
+    assert ok is True
+
+    mint, verdict = calls
+    # The mint hits the NPM portal host (CSRF-exempt X-SB-Internal-Token path).
+    assert (
+        mint["url"]
+        == "https://dopp.cloud/api/auth/delegated-admin-from-authelia-session"
+    )
+    # The verdict (Bearer) stays on the loopback control-plane base.
+    assert verdict["url"] == "http://127.0.0.1:5888/napi/approvals/req-42/approve"
+
+
+async def test_client_mint_falls_back_to_api_base_when_mint_url_empty(
+    monkeypatch, tmp_path
+):
+    from solaris_chat.engine import sb_companion as mod
+    from solaris_chat.engine.client import current_admin_identity
+
+    tok = tmp_path / "sbtok"
+    tok.write_text("service-tok")
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        mod.aiohttp, "ClientSession", lambda *a, **k: _MintVerdictSession(calls)
+    )
+    current_admin_identity.set(("michael", "admins"))
+
+    # No mint URL (LAN/no-portal deploy) → mint falls back to the loopback base.
+    client = mod.SbCompanionClient("http://127.0.0.1:5888", str(tok))
+    ok, _ = await client.submit_verdict("req-9", "approve")
+    assert ok is True
+    assert (
+        calls[0]["url"]
+        == "http://127.0.0.1:5888/api/auth/delegated-admin-from-authelia-session"
+    )
+
+
 async def test_client_submit_verdict_no_admin_identity_fails_closed(
     monkeypatch, tmp_path
 ):
