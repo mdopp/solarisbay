@@ -146,12 +146,13 @@ spec:
     - name: SB_API_URL
       value: "{{SERVICEBAY_API_URL}}"
     # ServiceBay's public portal base (through NPM) for the delegated-admin
-    # session mint (servicebay#2278/#2279). That mint is a no-Bearer/no-Origin
-    # forward-auth POST, so SB's proxy CSRF gate 403s it on the loopback :5888
-    # path; it passes only through NPM, which injects the CSRF-exempt
-    # X-SB-Internal-Token on that route. So the mint alone targets the portal
-    # host (e.g. https://dopp.cloud); reads + the verdict keep the loopback base.
-    # Empty ⇒ fall back to SB_API_URL (correct for a LAN/no-portal deploy).
+    # session mint (servicebay#2278/#2285). The BFF forwards the acting admin's
+    # authelia_session cookie to that mint; NPM's forward-auth validates the
+    # cookie and injects the CSRF-exempt X-SB-Internal-Token. Must be a
+    # *.dopp.cloud host (e.g. https://www.dopp.cloud) — the bare apex is Authelia
+    # default-deny (401s even with a cookie) and loopback has neither the token
+    # nor Authelia. Reads + the verdict keep the loopback base. Empty ⇒ fall back
+    # to SB_API_URL (correct for a LAN/no-portal deploy).
     - name: SB_MINT_URL
       value: "{{SERVICEBAY_MINT_URL}}"
     # Context window (tokens) = the chat-compaction cap (#210) + /context.
