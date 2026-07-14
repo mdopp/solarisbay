@@ -84,11 +84,12 @@ async def _run() -> None:
     ha_watcher.start()
     # ServiceBay update signal → Wartung update-cards (#788): poll the pending
     # image/template updates and card each NEW one into the shared Wartung admin
-    # chat (dedup persisted, phone push via inject). Reads the deploy-time
-    # SB-MCP token; dormant when SB_API_URL is unset.
+    # chat (dedup persisted, phone push via inject). Reads the non-expiring
+    # read-only SB token (#818); dormant when SB_API_URL is unset.
     update_poller = UpdatePoller(
         settings.solaris_db_path,
         settings.sb_api_url,
+        settings.sb_read_token_path,
         settings.sb_mcp_token_path,
         event_bus,
         settings.default_uid,
@@ -113,9 +114,11 @@ async def _run() -> None:
     # SB's server-server SSE (/napi/approvals/events) open and republish each new
     # approval onto the event bus so it reaches the paired admin device over the
     # existing /napi/portal/events SSE — the app never subscribes to SB directly
-    # (ADR 0010). Read-scoped SB-MCP token; dormant when SB_API_URL is unset.
+    # (ADR 0010). Non-expiring read-only SB token (#818); dormant when SB_API_URL
+    # is unset.
     sb_event_bridge = SbApprovalEventBridge(
         settings.sb_api_url,
+        settings.sb_read_token_path,
         settings.sb_mcp_token_path,
         event_bus,
         settings.default_uid,

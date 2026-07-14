@@ -215,7 +215,11 @@ async def test_bridge_republishes_sb_event_onto_bus(monkeypatch, tmp_path):
     Wartung uid, so it reaches /napi/portal/events."""
     bus = EventBus()
     bridge = SbApprovalEventBridge(
-        "http://sb:5888", str(tmp_path / "tok"), bus, "household"
+        "http://sb:5888",
+        str(tmp_path / "read"),
+        str(tmp_path / "tok"),
+        bus,
+        "household",
     )
 
     class _FakeContent:
@@ -284,6 +288,67 @@ async def test_bridge_republishes_sb_event_onto_bus(monkeypatch, tmp_path):
             "data": {"id": "req-9", "kind": "media", "summary": "Enable providers"},
         }
     ]
+
+
+async def _bridge_auth(monkeypatch, base, read_path, mcp_path) -> str | None:
+    """Run one bridge consume against a capturing fake SSE and return the Bearer
+    the bridge sent (which token file won)."""
+    seen: dict[str, str | None] = {}
+
+    class _EmptyContent:
+        def __aiter__(self):
+            async def gen():
+                return
+                yield  # pragma: no cover — makes this an async generator
+
+            return gen()
+
+    class _Resp:
+        status = 200
+        content = _EmptyContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def get(self, url, headers=None):
+            seen["auth"] = (headers or {}).get("Authorization")
+            return _Resp()
+
+    monkeypatch.setattr("solaris_chat.engine.sb_events.aiohttp.ClientSession", _Session)
+    bridge = SbApprovalEventBridge(base, read_path, mcp_path, EventBus(), "household")
+    await bridge._consume_once()
+    return seen.get("auth")
+
+
+async def test_bridge_uses_read_token_when_present(monkeypatch, tmp_path):
+    read_path = tmp_path / "read"
+    mcp_path = tmp_path / "mcp"
+    read_path.write_text("sb_read_TOKEN")
+    mcp_path.write_text("sb_admin_TOKEN")
+    auth = await _bridge_auth(monkeypatch, "http://sb", str(read_path), str(mcp_path))
+    assert auth == "Bearer sb_read_TOKEN"
+
+
+async def test_bridge_falls_back_to_mcp_token_when_read_absent(monkeypatch, tmp_path):
+    mcp_path = tmp_path / "mcp"
+    mcp_path.write_text("sb_admin_TOKEN")
+    auth = await _bridge_auth(
+        monkeypatch, "http://sb", str(tmp_path / "missing"), str(mcp_path)
+    )
+    assert auth == "Bearer sb_admin_TOKEN"
 
 
 # ---- /api/servicebay/approvals/{id}/{approve,reject}: Authelia admin gate ----

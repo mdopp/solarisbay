@@ -127,6 +127,7 @@ async def test_poll_once_cards_new_updates_into_wartung(tmp_path):
     poller = _FakePoller(
         db,
         "http://sb",
+        str(tmp_path / "read-token"),
         str(tmp_path / "token"),
         bus,
         "household",
@@ -158,7 +159,14 @@ async def test_poll_once_cards_new_updates_into_wartung(tmp_path):
 
 async def test_poll_once_no_updates_is_quiet(tmp_path):
     db = _db(tmp_path)
-    poller = _FakePoller(db, "http://sb", str(tmp_path / "t"), EventBus(), "household")
+    poller = _FakePoller(
+        db,
+        "http://sb",
+        str(tmp_path / "r"),
+        str(tmp_path / "t"),
+        EventBus(),
+        "household",
+    )
     assert await poller.poll_once() == 0
 
 
@@ -173,6 +181,7 @@ async def test_poll_once_carding_pushes_when_backgrounded(tmp_path):
     poller = _FakePoller(
         db,
         "http://sb",
+        str(tmp_path / "r"),
         str(tmp_path / "t"),
         EventBus(),  # nobody watching → backgrounded
         "household",
@@ -182,6 +191,52 @@ async def test_poll_once_carding_pushes_when_backgrounded(tmp_path):
     assert await poller.poll_once() == 1
     assert len(pushes) == 1  # phone push for the new card
     assert pushes[0][0] == "household"
+
+
+# ---- token selection: read-token with fallback (#818) ----------------------
+
+
+class _CapturePoller(UpdatePoller):
+    """Capture the Bearer the poll sends, so we can assert which token file won."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.seen_auth: str | None = None
+
+    async def _get(self, url, headers):
+        self.seen_auth = headers.get("Authorization")
+        return (
+            {"services": []} if url.endswith(updates._IMAGE_PATH) else {"pending": []}
+        )
+
+
+async def test_poll_uses_read_token_when_present(tmp_path):
+    db = _db(tmp_path)
+    read_path = tmp_path / "read"
+    mcp_path = tmp_path / "mcp"
+    read_path.write_text("sb_read_TOKEN")
+    mcp_path.write_text("sb_admin_TOKEN")
+    poller = _CapturePoller(
+        db, "http://sb", str(read_path), str(mcp_path), EventBus(), "household"
+    )
+    await poller.poll_once()
+    assert poller.seen_auth == "Bearer sb_read_TOKEN"
+
+
+async def test_poll_falls_back_to_mcp_token_when_read_absent(tmp_path):
+    db = _db(tmp_path)
+    mcp_path = tmp_path / "mcp"
+    mcp_path.write_text("sb_admin_TOKEN")
+    poller = _CapturePoller(
+        db,
+        "http://sb",
+        str(tmp_path / "missing-read"),
+        str(mcp_path),
+        EventBus(),
+        "household",
+    )
+    await poller.poll_once()
+    assert poller.seen_auth == "Bearer sb_admin_TOKEN"
 
 
 # ---- [Deploy] handler registration + gate ----------------------------------

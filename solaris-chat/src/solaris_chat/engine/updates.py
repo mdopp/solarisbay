@@ -18,11 +18,12 @@ everything; the store degrades to "nothing seen" when the table is missing, and
 that just means the next poll re-cards — never a crash.
 
 Credentials: the two endpoints require a `read`-scope Bearer. The poller runs in
-the background with no acting admin session, so it reads the deploy-time SB-MCP
-token file (`sb_mcp_token_path`, read+lifecycle+mutate) — the same token
-`call_sb_tool` uses for the boot/code path, NOT a second credential. The [Deploy]
-action the card offers runs under a live admin's session token (its handler lives
-in `server.py`, admin+destructive-gated).
+the background with no acting admin session, so it reads the non-expiring
+read-only SB token (servicebay#2302, `sb_read_token_path`) so it never 401-churns
+when the rotating deploy-time SB-MCP token lapses (#818), falling back to that
+deploy-time token file (`sb_mcp_token_path`) when the read-token file is absent.
+The [Deploy] action the card offers runs under a live admin's session token (its
+handler lives in `server.py`, admin+destructive-gated).
 
 Fail-open everywhere: an unreachable ServiceBay, a non-200, or malformed JSON
 logs and skips this tick — it never kills the loop and never cards a phantom
@@ -39,7 +40,7 @@ import aiohttp
 
 from solaris_chat.engine import store
 from solaris_chat.engine.notify import EventBus, Notifier, inject
-from solaris_chat.engine.tools.mcp_tools import read_token
+from solaris_chat.engine.tools.mcp_tools import read_sb_token
 from solaris_chat.logging import log
 
 # The [Deploy] button's action id, shared with the server-side handler (#788).
@@ -143,6 +144,7 @@ class UpdatePoller:
         self,
         db_path: str,
         sb_api_url: str,
+        sb_read_token_path: str,
         sb_mcp_token_path: str,
         bus: EventBus,
         wartung_uid: str,
@@ -150,6 +152,7 @@ class UpdatePoller:
     ):
         self._db_path = db_path
         self._sb_api_url = sb_api_url.rstrip("/")
+        self._read_token_path = sb_read_token_path
         self._token_path = sb_mcp_token_path
         self._bus = bus
         self._uid = wartung_uid
@@ -180,7 +183,7 @@ class UpdatePoller:
     async def poll_once(self) -> int:
         """One poll: read both signals, card each NEW pending update. Returns the
         number of cards injected this tick (0 when nothing new / unreachable)."""
-        token = read_token(self._token_path)
+        token = read_sb_token(self._read_token_path, self._token_path)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         images = await self._get(f"{self._sb_api_url}{_IMAGE_PATH}", headers)
         templates = await self._get(f"{self._sb_api_url}{_TEMPLATE_PATH}", headers)

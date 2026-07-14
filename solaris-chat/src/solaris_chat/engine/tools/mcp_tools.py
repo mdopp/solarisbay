@@ -67,6 +67,14 @@ def read_token(path: str) -> str:
         return ""
 
 
+def read_sb_token(read_path: str, fallback_path: str) -> str:
+    """The unattended pollers' Bearer: the non-expiring read-only token
+    (servicebay#2302), falling back to the rotating deploy-time SB-MCP token
+    when its file is absent (pre-deploy / an older box). Read fresh each call so
+    a 401 recovery is just "call again" — no cached staleness."""
+    return read_token(read_path) or read_token(fallback_path)
+
+
 def _scope_refusal(text: str) -> tuple[str, str] | None:
     """`(required_scope, tool_name)` when `text` is SB-MCP's destroy/exec scope
     refusal, else None. The Wartung ambient token holds read+lifecycle+mutate,

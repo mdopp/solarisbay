@@ -14,8 +14,9 @@ paired admin device over the existing `/napi/portal/events` SSE (#806) — one b
 one stream, no ServiceBay knowledge on the app.
 
 Credentials: the SSE is `read`-scoped (servicebay#2268). Runs unattended, so it
-reads the deploy-time SB-MCP token file — the same token the pollers use, NOT a
-second credential.
+reads the non-expiring read-only SB token (servicebay#2302, `sb_read_token_path`)
+so it never 401-churns when the rotating deploy-time SB-MCP token lapses (#818),
+falling back to that deploy-time token file when the read-token file is absent.
 
 Fail-soft: an unreachable ServiceBay, a non-200, or a broken stream logs,
 backs off, and reconnects — it never kills the loop and never republishes a
@@ -31,7 +32,7 @@ from typing import Any
 import aiohttp
 
 from solaris_chat.engine.notify import EventBus
-from solaris_chat.engine.tools.mcp_tools import read_token
+from solaris_chat.engine.tools.mcp_tools import read_sb_token
 from solaris_chat.logging import log
 
 # The bus kind the app's `/napi/portal/events` pump forwards for SB events.
@@ -62,11 +63,13 @@ class SbApprovalEventBridge:
     def __init__(
         self,
         sb_api_url: str,
+        sb_read_token_path: str,
         sb_mcp_token_path: str,
         bus: EventBus,
         wartung_uid: str,
     ):
         self._base = sb_api_url.rstrip("/")
+        self._read_token_path = sb_read_token_path
         self._token_path = sb_mcp_token_path
         self._bus = bus
         self._uid = wartung_uid
@@ -94,7 +97,7 @@ class SbApprovalEventBridge:
 
     async def _consume_once(self) -> None:
         """Hold the SB SSE open and republish new-approval frames until it drops."""
-        token = read_token(self._token_path)
+        token = read_sb_token(self._read_token_path, self._token_path)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         url = f"{self._base}{_EVENTS_PATH}"
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
