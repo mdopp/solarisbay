@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from pathlib import Path
 
 from solaris_chat import device_token_store
 from solaris_chat.engine.notify import EventBus
@@ -910,6 +911,187 @@ def test_native_watch_store_per_device_union():
         "light.buero": {"lena", "mdopp"},
         "cover.garage": {"mdopp"},
     }
+
+
+# ---- /napi/upload — camera/PDF capture into the notes vault (#826) ---------
+
+
+def _find_upload_file(root, uid, ext):
+    """The single uploaded file of `ext` under the resident's uploads subtree."""
+    base = root / "users" / uid / "uploads"
+    return next(base.glob(f"*{ext}"), None)
+
+
+async def _search_notes(root, uid, query):
+    """Run the real notes_search tool for `uid` over the vault at `root`."""
+    from solaris_chat.engine.tools.notes import build_notes_tools
+
+    tools = build_notes_tools(str(root), lambda: uid)
+    search = next(t for t in tools if t.name == "notes_search")
+    return json.loads(await search.handler({"query": query}))
+
+
+async def test_napi_upload_without_bearer_is_401(aiohttp_client, tmp_path):
+    import aiohttp
+
+    db = _db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+    fd = aiohttp.FormData()
+    fd.add_field(
+        "file", b"\xff\xd8\xff-jpeg", filename="shot.jpg", content_type="image/jpeg"
+    )
+    r = await client.post("/napi/upload", data=fd)
+    assert r.status == 401
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+    # Fail-closed: nothing written for a token-less caller.
+    assert not (tmp_path / "users").exists()
+
+
+async def test_napi_upload_jpeg_lands_in_vault_and_is_searchable(
+    aiohttp_client, tmp_path
+):
+    import aiohttp
+
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_app(tmp_path, db))
+    fd = aiohttp.FormData()
+    fd.add_field("filename", "2026-07-14_0900_Rechnung")
+    fd.add_field(
+        "file",
+        b"\xff\xd8\xff-jpeg-bytes",
+        filename="cam.jpg",
+        content_type="image/jpeg",
+    )
+    r = await client.post(
+        "/napi/upload", data=fd, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 200
+    j = await r.json()
+    assert j["ok"] is True and j["id"].endswith(".jpg")
+    # The raw file landed in lena's uploads subtree.
+    stored = _find_upload_file(tmp_path, "lena", ".jpg")
+    assert stored is not None and stored.read_bytes() == b"\xff\xd8\xff-jpeg-bytes"
+    # A referencing markdown note embeds it and carries the chosen name.
+    note = stored.with_suffix(".md")
+    assert note.is_file()
+    note_text = note.read_text()
+    assert f"![[{stored.name}]]" in note_text
+    assert "added_by: lena" in note_text
+    # notes_search finds it by the user-chosen filename (markdown, not the binary).
+    hits = await _search_notes(tmp_path, "lena", "Rechnung")
+    assert any(h["path"] == str(note.relative_to(tmp_path)) for h in hits)
+
+
+async def test_napi_upload_pdf_works(aiohttp_client, tmp_path):
+    import aiohttp
+
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_app(tmp_path, db))
+    fd = aiohttp.FormData()
+    fd.add_field("filename", "Vertrag")
+    fd.add_field(
+        "file",
+        b"%PDF-1.4 bytes",
+        filename="doc.pdf",
+        content_type="application/pdf",
+    )
+    r = await client.post(
+        "/napi/upload", data=fd, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 200
+    assert (await r.json())["id"].endswith(".pdf")
+    assert _find_upload_file(tmp_path, "lena", ".pdf") is not None
+
+
+async def test_napi_upload_unsupported_mime_is_415(aiohttp_client, tmp_path):
+    import aiohttp
+
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_app(tmp_path, db))
+    fd = aiohttp.FormData()
+    fd.add_field(
+        "file",
+        b"MZ-exe",
+        filename="x.exe",
+        content_type="application/octet-stream",
+    )
+    r = await client.post(
+        "/napi/upload", data=fd, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 415
+    # Nothing was written to the vault.
+    assert _find_upload_file(tmp_path, "lena", ".exe") is None
+
+
+async def test_napi_upload_oversize_is_413(aiohttp_client, tmp_path):
+    import aiohttp
+
+    from solaris_chat.server import _UPLOAD_MAX_BYTES
+
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_app(tmp_path, db))
+    fd = aiohttp.FormData()
+    fd.add_field(
+        "file",
+        b"\xff" * (_UPLOAD_MAX_BYTES + 1),
+        filename="big.jpg",
+        content_type="image/jpeg",
+    )
+    r = await client.post(
+        "/napi/upload", data=fd, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 413
+
+
+async def test_napi_upload_sanitizes_traversal_filename(aiohttp_client, tmp_path):
+    import aiohttp
+
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_app(tmp_path, db))
+    fd = aiohttp.FormData()
+    fd.add_field("filename", "../../etc/passwd")
+    fd.add_field(
+        "file",
+        b"\xff\xd8\xff",
+        filename="../../evil.jpg",
+        content_type="image/jpeg",
+    )
+    r = await client.post(
+        "/napi/upload", data=fd, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 200
+    stored = _find_upload_file(tmp_path, "lena", ".jpg")
+    # The `../` is neutralised: the file stays inside lena's uploads subtree.
+    assert stored is not None
+    uploads = (tmp_path / "users" / "lena" / "uploads").resolve()
+    assert str(stored.resolve()).startswith(str(uploads) + "/")
+    assert "/" not in stored.name and ".." not in stored.name
+
+
+async def test_napi_upload_series_returns_a_list(aiohttp_client, tmp_path):
+    import aiohttp
+
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "lena")
+    client = await aiohttp_client(_app(tmp_path, db))
+    fd = aiohttp.FormData()
+    fd.add_field("filename", "Serie")
+    fd.add_field("file", b"\xff\xd8\xff-a", filename="a.jpg", content_type="image/jpeg")
+    fd.add_field("file", b"\xff\xd8\xff-b", filename="b.jpg", content_type="image/jpeg")
+    r = await client.post(
+        "/napi/upload", data=fd, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert r.status == 200
+    j = await r.json()
+    assert j["ok"] is True and len(j["files"]) == 2
+    # Two distinct files, collision-suffixed.
+    names = {Path(f["id"]).name for f in j["files"]}
+    assert len(names) == 2
 
 
 def test_ha_watch_unions_native_watch_into_pinned_owners(tmp_path):
