@@ -1667,6 +1667,38 @@ def build_app(
             )
         return web.json_response(body)
 
+    async def servicebay_approval_verdict(request: web.Request) -> web.Response:
+        """Proxy an admin's Approve/Reject verdict on a ServiceBay approval
+        (BFF, ADR 0010, #811 part 2).
+
+        Served on the Authelia-gated `/api/` surface — the caller's Remote-User/
+        Remote-Groups are TRUSTED here (NPM forward-auth injected them), so
+        `is_admin()` genuinely gates admins, unlike the proxy-bypassed `/napi/`
+        prefix. The app's notification button deep-links to open the app (its
+        Authelia session), then hits this route. The verdict itself runs under a
+        per-action, single-use `X-SB-Delegated-Admin` assertion minted from THIS
+        admin's session (servicebay#2276) — no standing delegation key in the pod.
+
+        Admin-gated (403 for a non-admin), then `pin_admin_identity` binds the
+        forward-auth identity the companion client forwards to SB's mint."""
+        if not is_admin(request, remote_groups_header, admin_group):
+            return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
+        verb = request.match_info["verb"]
+        if verb not in ("approve", "reject"):
+            return web.json_response({"ok": False, "reason": "bad_verb"}, status=404)
+        approval_id = request.match_info["id"]
+        if sb_companion is None or not sb_companion.enabled:
+            return web.json_response(
+                {"ok": False, "reason": "servicebay_unconfigured"}, status=503
+            )
+        pin_admin_identity(request)
+        ok, detail = await sb_companion.submit_verdict(approval_id, verb)
+        status = 200 if ok else 502
+        return web.json_response(
+            {"ok": ok, "approval_id": approval_id, "detail": detail[:2000]},
+            status=status,
+        )
+
     async def inject_message(request: web.Request) -> web.Response:
         # Server-initiated turn into a resident's chat (Wartung P1a, #785): the
         # Wartung chat (#784) needs the server to speak first. Admin-gated — it
@@ -4313,6 +4345,13 @@ def build_app(
     app.router.add_get("/api/events", portal_events)
     app.router.add_post("/api/inject", inject_message)
     app.router.add_post("/api/action-callback", action_callback)
+    # ServiceBay BFF verdict (#811 part 2): the app deep-links Approve/Reject to
+    # this Authelia-gated route (trusted admin identity) — NOT /napi (proxy-
+    # bypassed, no trusted admin gate). It mints a per-action delegated-admin
+    # assertion from the acting admin's session (servicebay#2276), no standing key.
+    app.router.add_post(
+        "/api/servicebay/approvals/{id}/{verb}", servicebay_approval_verdict
+    )
     app.router.add_get("/api/portal/notes", portal_notes)
     app.router.add_get("/api/portal/notes/browse", portal_notes_browse)
     app.router.add_get("/api/portal/notes/note", portal_notes_note)
