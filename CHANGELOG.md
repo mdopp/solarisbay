@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.22.0](https://github.com/mdopp/solarisbay/compare/v0.21.0...v0.22.0) (2026-07-14)
+
+
+### Features
+
+* **chat:** /napi/portal/watch per-device native watch-set feeds ha_watch ([#814](https://github.com/mdopp/solarisbay/issues/814)) ([07a1923](https://github.com/mdopp/solarisbay/commit/07a19239edb6509ea8f0867f9972c488e86df3c5)), closes [#810](https://github.com/mdopp/solarisbay/issues/810)
+* **chat:** Solaris BFF — aggregate ServiceBay reads + republish approval events under /napi ([#816](https://github.com/mdopp/solarisbay/issues/816)) ([5cc5a03](https://github.com/mdopp/solarisbay/commit/5cc5a03a8fb6c558b7eb8c36a1eef475082ae2fc))
+* **chat:** Solaris BFF approve/reject to ServiceBay via session-mint delegation ([#817](https://github.com/mdopp/solarisbay/issues/817)) ([4e9457b](https://github.com/mdopp/solarisbay/commit/4e9457b92e77f55df273f1ba56aece43f5773e1c)), closes [#811](https://github.com/mdopp/solarisbay/issues/811)
+
+
+### Bug Fixes
+
+* **chat:** BFF forwards the admin authelia_session cookie to the www mint host ([#821](https://github.com/mdopp/solarisbay/issues/821)) ([b34ec02](https://github.com/mdopp/solarisbay/commit/b34ec02e02e1d547b71cfefe53284156fd924316)), closes [#820](https://github.com/mdopp/solarisbay/issues/820)
+* **chat:** route the delegated-admin mint through NPM to pass SB CSRF gate ([#819](https://github.com/mdopp/solarisbay/issues/819)) ([c023c74](https://github.com/mdopp/solarisbay/commit/c023c7484aaef81cc3052bbe1abc0fe99141171d)), closes [#811](https://github.com/mdopp/solarisbay/issues/811)
+
 ## [0.21.0](https://github.com/mdopp/solarisbay/compare/v0.20.0...v0.21.0) (2026-07-13)
 
 
