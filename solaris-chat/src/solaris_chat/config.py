@@ -297,14 +297,14 @@ class Settings:
             # a redeploy of the deploy-time token file).
             sb_api_url=os.environ.get("SB_API_URL", "").strip(),
             # ServiceBay's public portal base (through NPM) for the session-mint
-            # routes (servicebay#2278/#2279). The delegated-admin mint
-            # (`delegated-admin-from-authelia-session`) is a POST that carries a
-            # forward-auth identity but NO Bearer/Origin, so SB's proxy CSRF gate
-            # 403s it on the loopback :5888 path — it only passes when it comes
-            # THROUGH NPM, which injects the CSRF-exempt `X-SB-Internal-Token`
-            # on exactly those two routes. So the mint must target the portal
-            # host, not loopback. Empty ⇒ fall back to SB_API_URL (the pre-#2279
-            # loopback path — correct for a LAN/no-portal deploy).
+            # routes (servicebay#2278/#2285). The BFF forwards the acting admin's
+            # authelia_session cookie to the delegated-admin mint
+            # (`delegated-admin-from-authelia-session`); NPM's forward-auth
+            # validates the cookie and injects the CSRF-exempt
+            # `X-SB-Internal-Token`. Must be a *.dopp.cloud host (www, not the
+            # apex — the apex is Authelia default-deny; loopback has neither the
+            # token nor Authelia). Empty ⇒ fall back to SB_API_URL (the loopback
+            # path — correct for a LAN/no-portal deploy).
             sb_mint_url=os.environ.get("SB_MINT_URL", "").strip(),
             # The gatekeeper's in-pod HTTP listener (push + /enrol), reached
             # over loopback like the other pod-internal callers. The

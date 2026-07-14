@@ -64,10 +64,12 @@ class _FakeCompanion:
         self.calls.append(key)
         return self._bodies.get(key)
 
-    async def submit_verdict(self, approval_id, verb):
+    async def submit_verdict(self, approval_id, verb, authelia_cookie=""):
         from solaris_chat.engine.client import current_admin_identity
 
-        self.verdicts.append((approval_id, verb, current_admin_identity.get()))
+        self.verdicts.append(
+            (approval_id, verb, current_admin_identity.get(), authelia_cookie)
+        )
         return self._verdict
 
 
@@ -320,14 +322,21 @@ async def test_api_verdict_admin_approve_forwards_identity(aiohttp_client, tmp_p
     client = await aiohttp_client(_app(tmp_path, db, companion))
     r = await client.post(
         "/api/servicebay/approvals/req-42/approve",
-        headers={"Remote-User": "michael", "Remote-Groups": "admins,users"},
+        headers={
+            "Remote-User": "michael",
+            "Remote-Groups": "admins,users",
+            "Cookie": "authelia_session=sess-abc",
+        },
     )
     assert r.status == 200
     body = await r.json()
     assert body == {"ok": True, "approval_id": "req-42", "detail": "ok"}
-    # The verdict ran with the acting admin's forward-auth identity pinned, so the
-    # companion's #2276 mint has a verified admin to present to ServiceBay.
-    assert companion.verdicts == [("req-42", "approve", ("michael", "admins,users"))]
+    # The verdict ran with the acting admin's forward-auth identity pinned AND the
+    # admin's authelia_session cookie forwarded, so the companion's #2285 mint can
+    # act as that verified admin against ServiceBay's www portal.
+    assert companion.verdicts == [
+        ("req-42", "approve", ("michael", "admins,users"), "sess-abc")
+    ]
 
 
 async def test_api_verdict_admin_reject_path(aiohttp_client, tmp_path):
@@ -336,11 +345,31 @@ async def test_api_verdict_admin_reject_path(aiohttp_client, tmp_path):
     client = await aiohttp_client(_app(tmp_path, db, companion))
     r = await client.post(
         "/api/servicebay/approvals/req-7/reject",
-        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+        headers={
+            "Remote-User": "michael",
+            "Remote-Groups": "admins",
+            "Cookie": "authelia_session=sess-xyz",
+        },
     )
     assert r.status == 200
     assert (await r.json())["ok"] is True
-    assert companion.verdicts == [("req-7", "reject", ("michael", "admins"))]
+    assert companion.verdicts == [
+        ("req-7", "reject", ("michael", "admins"), "sess-xyz")
+    ]
+
+
+async def test_api_verdict_without_cookie_forwards_empty(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion(verdict=(False, "no_authelia_cookie"))
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    # An admin request with no authelia_session cookie (shouldn't happen on the
+    # Authelia /api surface) → the handler forwards "" and the mint fails cleanly.
+    r = await client.post(
+        "/api/servicebay/approvals/req-1/approve",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+    )
+    assert r.status == 502
+    assert companion.verdicts == [("req-1", "approve", ("michael", "admins"), "")]
 
 
 async def test_api_verdict_reports_sb_failure_as_502(aiohttp_client, tmp_path):
@@ -429,14 +458,14 @@ async def test_client_submit_verdict_mints_then_posts_with_assertion(
     current_admin_identity.set(("michael", "admins"))
 
     client = mod.SbCompanionClient("http://sb:5888", str(tok))
-    ok, detail = await client.submit_verdict("req-42", "approve")
+    ok, detail = await client.submit_verdict("req-42", "approve", "sess-abc")
     assert ok is True
 
     mint, verdict = calls
-    # 1) Mint from the ACTING admin's forward-auth identity — NO Bearer (the mint
-    # refuses a token caller), action+target bound to this approval.
+    # 1) Mint from the ACTING admin's forwarded authelia_session cookie — NO Bearer
+    # (the mint refuses a token caller), action+target bound to this approval.
     assert mint["url"].endswith("/api/auth/delegated-admin-from-authelia-session")
-    assert mint["headers"] == {"Remote-User": "michael", "Remote-Groups": "admins"}
+    assert mint["headers"] == {"Cookie": "authelia_session=sess-abc"}
     assert "Authorization" not in mint["headers"]
     assert mint["json"] == {"action": "approvals.approve", "target": "req-42"}
     # 2) Verdict presents the service-token Bearer PLUS the minted assertion; SB
@@ -459,22 +488,23 @@ async def test_client_submit_verdict_reject_maps_to_deny(monkeypatch, tmp_path):
     current_admin_identity.set(("michael", "admins"))
 
     client = mod.SbCompanionClient("http://sb:5888", str(tok))
-    ok, _ = await client.submit_verdict("req-7", "reject")
+    ok, _ = await client.submit_verdict("req-7", "reject", "sess-abc")
     assert ok is True
     assert calls[0]["json"] == {"action": "approvals.deny", "target": "req-7"}
     # SB's verdict verb is "deny" for a reject.
     assert calls[1]["url"] == "http://sb:5888/napi/approvals/req-7/deny"
 
 
-# ---- #811 last mile / servicebay#2278: the mint goes THROUGH NPM ------------
-# The delegated-admin mint is a no-Bearer/no-Origin forward-auth POST, so SB's
-# proxy CSRF gate 403s it on the loopback :5888 path; it only passes through NPM
-# (the portal host), which injects the CSRF-exempt X-SB-Internal-Token on that
-# route (servicebay#2279). So ONLY the mint targets sb_mint_url; the verdict
-# (Bearer-authenticated → CSRF-exempt) stays on the loopback base.
+# ---- #811 last mile / servicebay#2285: mint via www portal, forward cookie ---
+# The delegated-admin mint is a no-Bearer forward-auth POST that carries the
+# admin's authelia_session cookie; it 403s on the loopback :5888 path (no CSRF-
+# exempt X-SB-Internal-Token) and 401s on the bare apex (Authelia default-deny).
+# It passes only through the *.dopp.cloud NPM portal host (www), where forward-
+# auth validates the cookie and injects the internal token. So ONLY the mint
+# targets sb_mint_url; the verdict (Bearer → CSRF-exempt) stays on the loopback.
 
 
-async def test_client_mint_targets_mint_base_verdict_stays_on_api_base(
+async def test_client_mint_targets_www_portal_verdict_stays_on_api_base(
     monkeypatch, tmp_path
 ):
     from solaris_chat.engine import sb_companion as mod
@@ -489,17 +519,19 @@ async def test_client_mint_targets_mint_base_verdict_stays_on_api_base(
     current_admin_identity.set(("michael", "admins"))
 
     client = mod.SbCompanionClient(
-        "http://127.0.0.1:5888", str(tok), sb_mint_url="https://dopp.cloud"
+        "http://127.0.0.1:5888", str(tok), sb_mint_url="https://www.dopp.cloud"
     )
-    ok, _ = await client.submit_verdict("req-42", "approve")
+    ok, _ = await client.submit_verdict("req-42", "approve", "sess-abc")
     assert ok is True
 
     mint, verdict = calls
-    # The mint hits the NPM portal host (CSRF-exempt X-SB-Internal-Token path).
+    # The mint hits the www portal host (Authelia-validated, X-SB-Internal-Token
+    # injected) and forwards the admin's authelia_session cookie verbatim.
     assert (
         mint["url"]
-        == "https://dopp.cloud/api/auth/delegated-admin-from-authelia-session"
+        == "https://www.dopp.cloud/api/auth/delegated-admin-from-authelia-session"
     )
+    assert mint["headers"]["Cookie"] == "authelia_session=sess-abc"
     # The verdict (Bearer) stays on the loopback control-plane base.
     assert verdict["url"] == "http://127.0.0.1:5888/napi/approvals/req-42/approve"
 
@@ -520,7 +552,7 @@ async def test_client_mint_falls_back_to_api_base_when_mint_url_empty(
 
     # No mint URL (LAN/no-portal deploy) → mint falls back to the loopback base.
     client = mod.SbCompanionClient("http://127.0.0.1:5888", str(tok))
-    ok, _ = await client.submit_verdict("req-9", "approve")
+    ok, _ = await client.submit_verdict("req-9", "approve", "sess-abc")
     assert ok is True
     assert (
         calls[0]["url"]
@@ -541,9 +573,27 @@ async def test_client_submit_verdict_no_admin_identity_fails_closed(
     # No verified admin identity → no mint attempted, fail closed.
     current_admin_identity.set(("", ""))
     client = mod.SbCompanionClient("http://sb:5888", str(tmp_path / "t"))
-    ok, detail = await client.submit_verdict("req-1", "approve")
+    ok, detail = await client.submit_verdict("req-1", "approve", "sess-abc")
     assert ok is False
     assert detail == "no_admin_identity"
+    assert calls == []
+
+
+async def test_client_submit_verdict_no_cookie_fails_closed(monkeypatch, tmp_path):
+    from solaris_chat.engine import sb_companion as mod
+    from solaris_chat.engine.client import current_admin_identity
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        mod.aiohttp, "ClientSession", lambda *a, **k: _MintVerdictSession(calls)
+    )
+    # Verified admin but no authelia_session cookie to forward → no mint, fail
+    # closed (there is nothing to authenticate the mint with).
+    current_admin_identity.set(("michael", "admins"))
+    client = mod.SbCompanionClient("http://sb:5888", str(tmp_path / "t"))
+    ok, detail = await client.submit_verdict("req-1", "approve", "")
+    assert ok is False
+    assert detail == "no_authelia_cookie"
     assert calls == []
 
 
@@ -562,7 +612,7 @@ async def test_client_submit_verdict_mint_refusal_fails_closed(monkeypatch, tmp_
     )
     current_admin_identity.set(("michael", "admins"))
     client = mod.SbCompanionClient("http://sb:5888", str(tok))
-    ok, detail = await client.submit_verdict("req-1", "approve")
+    ok, detail = await client.submit_verdict("req-1", "approve", "sess-abc")
     assert ok is False
     assert detail == "mint_failed"
     # Only the mint was attempted; no verdict posted without an assertion.

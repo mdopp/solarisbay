@@ -18,10 +18,11 @@ Verdict side (ADR 0010, #811 part 2): the app's [Approve]/[Reject] deep-links to
 the Authelia-gated `/api/servicebay/approvals/{id}/{approve,reject}` route, where
 Solaris holds the acting admin's TRUSTED forward-auth identity. That verdict runs
 under a per-action, single-use, ≤2min `X-SB-Delegated-Admin` assertion minted
-from THAT admin's session (servicebay#2276) — NOT a standing delegation key in
-the pod. Solaris mints by forwarding the admin's Remote-User/Remote-Groups to
-SB's session mint (the delegation analogue of #794's token-from-authelia-session),
-then presents the returned assertion PLUS the mutate-scope SB-MCP token to SB's
+from THAT admin's session (servicebay#2276/#2285) — NOT a standing delegation key
+in the pod. Solaris mints by forwarding the admin's `authelia_session` cookie to
+SB's www portal mint (the delegation analogue of #794's
+token-from-authelia-session), where NPM's forward-auth validates it; then
+presents the returned assertion PLUS the mutate-scope SB-MCP token to SB's
 verdict route, which re-derives the admin against LLDAP before acting.
 """
 
@@ -101,30 +102,36 @@ class SbCompanionClient:
             log.warn("engine.sb_companion.fetch_failed", key=key, error=str(e))
             return None
 
-    async def submit_verdict(self, approval_id: str, verb: str) -> tuple[bool, str]:
+    async def submit_verdict(
+        self, approval_id: str, verb: str, authelia_cookie: str = ""
+    ) -> tuple[bool, str]:
         """Deliver the acting admin's verdict on an approval to ServiceBay
         (ADR 0010, #811 part 2). `verb` is `approve` or `reject`.
 
         Two server-to-server hops, both fail-closed on the report side:
           1. mint a per-action, single-use `X-SB-Delegated-Admin` assertion from
-             the acting admin's LIVE Authelia session (servicebay#2276) — Solaris
-             forwards the turn's pinned Remote-User/Remote-Groups (trusted only
-             because this runs inside a forward-auth `/api/` request);
+             the acting admin's LIVE Authelia session (servicebay#2276/#2285) —
+             Solaris forwards that admin's `authelia_session` cookie to the www
+             portal mint, where NPM's forward-auth validates it and injects the
+             CSRF-exempt X-SB-Internal-Token;
           2. present that assertion PLUS the mutate-scope SB-MCP Bearer to SB's
              verdict route, which re-derives the admin against LLDAP and acts.
 
         NO standing delegation key is held here; the assertion is ephemeral and
         bound to THIS admin + action + approval id. Returns `(ok, detail)` —
-        `ok` iff SB returned 2xx; any failure (no admin identity, mint refusal,
-        non-2xx, unreachable SB) returns `(False, <reason>)`, never a false ok."""
+        `ok` iff SB returned 2xx; any failure (no admin identity, no cookie, mint
+        refusal, non-2xx, unreachable SB) returns `(False, <reason>)`, never a
+        false ok."""
         if verb not in _VERDICT_PATHS or not self._base:
             return False, "bad_verb" if verb not in _VERDICT_PATHS else "no_sb_api"
         user, groups = current_admin_identity.get()
         if not user:
             return False, "no_admin_identity"
+        if not authelia_cookie:
+            return False, "no_authelia_cookie"
         action = "approvals.approve" if verb == "approve" else "approvals.deny"
         assertion, header = await self._mint_delegation(
-            user, groups, action, approval_id
+            action, approval_id, authelia_cookie
         )
         if not assertion:
             return False, "mint_failed"
@@ -151,19 +158,21 @@ class SbCompanionClient:
             return False, str(e)
 
     async def _mint_delegation(
-        self, user: str, groups: str, action: str, target: str
+        self, action: str, target: str, authelia_cookie: str
     ) -> tuple[str, str]:
-        """Mint the single-use `X-SB-Delegated-Admin` assertion (servicebay#2276)
-        from the acting admin's forward-auth identity. Forwards Remote-User /
-        Remote-Groups (NO client Bearer — the mint 403s a token caller) and names
-        the exact action+target the assertion may be used for. Returns
-        `(assertion, header_name)`, or `("", "")` on any failure."""
+        """Mint the single-use `X-SB-Delegated-Admin` assertion
+        (servicebay#2276/#2285) from the acting admin's live Authelia session.
+        Forwards the admin's `authelia_session` cookie to the www portal mint —
+        NPM's forward-auth validates it, derives Remote-User/Remote-Groups, and
+        injects the CSRF-exempt X-SB-Internal-Token (NO client Bearer — the mint
+        403s a token caller). Names the exact action+target the assertion may be
+        used for. Returns `(assertion, header_name)`, or `("", "")` on failure."""
         url = f"{self._mint_base}{_MINT_PATH}"
         try:
             async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
                 async with client.post(
                     url,
-                    headers={"Remote-User": user, "Remote-Groups": groups},
+                    headers={"Cookie": f"authelia_session={authelia_cookie}"},
                     json={"action": action, "target": target},
                 ) as resp:
                     if resp.status != 200:

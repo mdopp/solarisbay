@@ -1680,7 +1680,10 @@ def build_app(
         admin's session (servicebay#2276) — no standing delegation key in the pod.
 
         Admin-gated (403 for a non-admin), then `pin_admin_identity` binds the
-        forward-auth identity the companion client forwards to SB's mint."""
+        forward-auth identity. The companion mints the delegated-admin assertion
+        by forwarding THIS admin's `authelia_session` cookie to SB's www portal
+        mint (servicebay#2285) — the cookie is `dopp.cloud`-scoped, so the browser
+        already sent it to this subdomain."""
         if not is_admin(request, remote_groups_header, admin_group):
             return web.json_response({"ok": False, "reason": "forbidden"}, status=403)
         verb = request.match_info["verb"]
@@ -1692,7 +1695,10 @@ def build_app(
                 {"ok": False, "reason": "servicebay_unconfigured"}, status=503
             )
         pin_admin_identity(request)
-        ok, detail = await sb_companion.submit_verdict(approval_id, verb)
+        authelia_cookie = request.cookies.get("authelia_session", "")
+        ok, detail = await sb_companion.submit_verdict(
+            approval_id, verb, authelia_cookie
+        )
         status = 200 if ok else 502
         return web.json_response(
             {"ok": ok, "approval_id": approval_id, "detail": detail[:2000]},
