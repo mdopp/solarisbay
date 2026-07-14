@@ -53,14 +53,22 @@ class _FakeEngine:
 class _FakeCompanion:
     """Stand-in for `SbCompanionClient` — the mock the routes read through."""
 
-    def __init__(self, enabled=True, bodies=None):
+    def __init__(self, enabled=True, bodies=None, verdict=(True, "ok")):
         self.enabled = enabled
         self._bodies = bodies or {}
+        self._verdict = verdict
         self.calls: list[str] = []
+        self.verdicts: list[tuple] = []
 
     async def read(self, key):
         self.calls.append(key)
         return self._bodies.get(key)
+
+    async def submit_verdict(self, approval_id, verb):
+        from solaris_chat.engine.client import current_admin_identity
+
+        self.verdicts.append((approval_id, verb, current_admin_identity.get()))
+        return self._verdict
 
 
 def _app(tmp_path, db, companion=None):
@@ -274,3 +282,226 @@ async def test_bridge_republishes_sb_event_onto_bus(monkeypatch, tmp_path):
             "data": {"id": "req-9", "kind": "media", "summary": "Enable providers"},
         }
     ]
+
+
+# ---- /api/servicebay/approvals/{id}/{approve,reject}: Authelia admin gate ----
+#
+# Owner-chosen option (i): the verdict rides the Authelia forward-auth /api/
+# surface (trusted Remote-User/Remote-Groups), NOT the proxy-bypassed /napi/
+# device-token surface. is_admin() is trustworthy here.
+
+
+async def test_api_verdict_forbidden_for_non_admin(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion()
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post("/api/servicebay/approvals/req-1/approve")
+    assert r.status == 403
+    assert (await r.json())["reason"] == "forbidden"
+    # A non-admin caller never reaches ServiceBay.
+    assert companion.verdicts == []
+
+
+async def test_api_verdict_forbidden_for_non_admin_group(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion()
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post(
+        "/api/servicebay/approvals/req-1/approve",
+        headers={"Remote-User": "bob", "Remote-Groups": "users"},
+    )
+    assert r.status == 403
+    assert companion.verdicts == []
+
+
+async def test_api_verdict_admin_approve_forwards_identity(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion(verdict=(True, "ok"))
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post(
+        "/api/servicebay/approvals/req-42/approve",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins,users"},
+    )
+    assert r.status == 200
+    body = await r.json()
+    assert body == {"ok": True, "approval_id": "req-42", "detail": "ok"}
+    # The verdict ran with the acting admin's forward-auth identity pinned, so the
+    # companion's #2276 mint has a verified admin to present to ServiceBay.
+    assert companion.verdicts == [("req-42", "approve", ("michael", "admins,users"))]
+
+
+async def test_api_verdict_admin_reject_path(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion(verdict=(True, "denied"))
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post(
+        "/api/servicebay/approvals/req-7/reject",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+    )
+    assert r.status == 200
+    assert (await r.json())["ok"] is True
+    assert companion.verdicts == [("req-7", "reject", ("michael", "admins"))]
+
+
+async def test_api_verdict_reports_sb_failure_as_502(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion(verdict=(False, "HTTP 403: bad_window"))
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post(
+        "/api/servicebay/approvals/req-9/approve",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+    )
+    assert r.status == 502
+    assert (await r.json())["ok"] is False
+
+
+async def test_api_verdict_unconfigured_is_503(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion(enabled=False)
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post(
+        "/api/servicebay/approvals/req-1/approve",
+        headers={"Remote-User": "michael", "Remote-Groups": "admins"},
+    )
+    assert r.status == 503
+    assert (await r.json())["reason"] == "servicebay_unconfigured"
+
+
+# ---- SbCompanionClient.submit_verdict: mint → verdict, no standing key -------
+
+
+class _MintVerdictSession:
+    """Records the mint POST and the verdict POST so a test can assert the
+    #2276 flow: mint from the admin session, then present the assertion +
+    service-token to SB's verdict route. NO standing delegation key is used."""
+
+    def __init__(self, calls, mint_status=200, verdict_status=200):
+        self._calls = calls
+        self._mint_status = mint_status
+        self._verdict_status = verdict_status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def post(self, url, headers=None, json=None):
+        self._calls.append({"url": url, "headers": headers, "json": json})
+        outer = self
+
+        class _Resp:
+            status = (
+                outer._mint_status
+                if "delegated-admin" in url
+                else outer._verdict_status
+            )
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def json(self):
+                return {"assertion": "ASSERT", "header": "X-SB-Delegated-Admin"}
+
+            async def text(self):
+                return '{"ok":true}'
+
+        return _Resp()
+
+
+async def test_client_submit_verdict_mints_then_posts_with_assertion(
+    monkeypatch, tmp_path
+):
+    from solaris_chat.engine import sb_companion as mod
+    from solaris_chat.engine.client import current_admin_identity
+
+    tok = tmp_path / "sbtok"
+    tok.write_text("service-tok")
+    calls: list[dict] = []
+
+    def _factory(*a, **k):
+        return _MintVerdictSession(calls)
+
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", _factory)
+    current_admin_identity.set(("michael", "admins"))
+
+    client = mod.SbCompanionClient("http://sb:5888", str(tok))
+    ok, detail = await client.submit_verdict("req-42", "approve")
+    assert ok is True
+
+    mint, verdict = calls
+    # 1) Mint from the ACTING admin's forward-auth identity — NO Bearer (the mint
+    # refuses a token caller), action+target bound to this approval.
+    assert mint["url"].endswith("/api/auth/delegated-admin-from-authelia-session")
+    assert mint["headers"] == {"Remote-User": "michael", "Remote-Groups": "admins"}
+    assert "Authorization" not in mint["headers"]
+    assert mint["json"] == {"action": "approvals.approve", "target": "req-42"}
+    # 2) Verdict presents the service-token Bearer PLUS the minted assertion; SB
+    # uses "deny" (not "reject"). No standing delegation key anywhere.
+    assert verdict["url"] == "http://sb:5888/napi/approvals/req-42/approve"
+    assert verdict["headers"]["Authorization"] == "Bearer service-tok"
+    assert verdict["headers"]["X-SB-Delegated-Admin"] == "ASSERT"
+
+
+async def test_client_submit_verdict_reject_maps_to_deny(monkeypatch, tmp_path):
+    from solaris_chat.engine import sb_companion as mod
+    from solaris_chat.engine.client import current_admin_identity
+
+    tok = tmp_path / "sbtok"
+    tok.write_text("service-tok")
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        mod.aiohttp, "ClientSession", lambda *a, **k: _MintVerdictSession(calls)
+    )
+    current_admin_identity.set(("michael", "admins"))
+
+    client = mod.SbCompanionClient("http://sb:5888", str(tok))
+    ok, _ = await client.submit_verdict("req-7", "reject")
+    assert ok is True
+    assert calls[0]["json"] == {"action": "approvals.deny", "target": "req-7"}
+    # SB's verdict verb is "deny" for a reject.
+    assert calls[1]["url"] == "http://sb:5888/napi/approvals/req-7/deny"
+
+
+async def test_client_submit_verdict_no_admin_identity_fails_closed(
+    monkeypatch, tmp_path
+):
+    from solaris_chat.engine import sb_companion as mod
+    from solaris_chat.engine.client import current_admin_identity
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        mod.aiohttp, "ClientSession", lambda *a, **k: _MintVerdictSession(calls)
+    )
+    # No verified admin identity → no mint attempted, fail closed.
+    current_admin_identity.set(("", ""))
+    client = mod.SbCompanionClient("http://sb:5888", str(tmp_path / "t"))
+    ok, detail = await client.submit_verdict("req-1", "approve")
+    assert ok is False
+    assert detail == "no_admin_identity"
+    assert calls == []
+
+
+async def test_client_submit_verdict_mint_refusal_fails_closed(monkeypatch, tmp_path):
+    from solaris_chat.engine import sb_companion as mod
+    from solaris_chat.engine.client import current_admin_identity
+
+    tok = tmp_path / "sbtok"
+    tok.write_text("service-tok")
+    calls: list[dict] = []
+    # Mint 403s (e.g. a Bearer leaked in) → never reach the verdict route.
+    monkeypatch.setattr(
+        mod.aiohttp,
+        "ClientSession",
+        lambda *a, **k: _MintVerdictSession(calls, mint_status=403),
+    )
+    current_admin_identity.set(("michael", "admins"))
+    client = mod.SbCompanionClient("http://sb:5888", str(tok))
+    ok, detail = await client.submit_verdict("req-1", "approve")
+    assert ok is False
+    assert detail == "mint_failed"
+    # Only the mint was attempted; no verdict posted without an assertion.
+    assert len(calls) == 1

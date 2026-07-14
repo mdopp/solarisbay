@@ -13,6 +13,16 @@ pollers use for their unattended polls, NOT a second credential.
 
 Fail-soft: an unreachable ServiceBay, a non-200, or malformed JSON returns None
 so the caller can turn it into a 502 for the app rather than crash.
+
+Verdict side (ADR 0010, #811 part 2): the app's [Approve]/[Reject] deep-links to
+the Authelia-gated `/api/servicebay/approvals/{id}/{approve,reject}` route, where
+Solaris holds the acting admin's TRUSTED forward-auth identity. That verdict runs
+under a per-action, single-use, ≤2min `X-SB-Delegated-Admin` assertion minted
+from THAT admin's session (servicebay#2276) — NOT a standing delegation key in
+the pod. Solaris mints by forwarding the admin's Remote-User/Remote-Groups to
+SB's session mint (the delegation analogue of #794's token-from-authelia-session),
+then presents the returned assertion PLUS the mutate-scope SB-MCP token to SB's
+verdict route, which re-derives the admin against LLDAP before acting.
 """
 
 from __future__ import annotations
@@ -21,6 +31,7 @@ from typing import Any
 
 import aiohttp
 
+from solaris_chat.engine.client import current_admin_identity
 from solaris_chat.engine.tools.mcp_tools import read_token
 from solaris_chat.logging import log
 
@@ -34,6 +45,19 @@ READ_PATHS = {
     "services": "/napi/services",
     "upgrades": "/napi/upgrades",
 }
+
+# SB's session-driven delegated-admin mint (servicebay#2276): a verified Authelia
+# admin session (proxy-injected Remote-User/Remote-Groups) mints a short-lived,
+# single-use `X-SB-Delegated-Admin` assertion action+target-bound to
+# `approvals.approve|deny`. Refuses a client Bearer (no self-elevation) and 401s
+# without Remote-User.
+_MINT_PATH = "/api/auth/delegated-admin-from-authelia-session"
+# The token-scoped verdict routes the assertion is presented to (servicebay#2268):
+# the mutate-scope SB-MCP Bearer PLUS the assertion header run the verdict AS the
+# named admin. SB uses "deny" (not "reject") on its side.
+_VERDICT_PATHS = {"approve": "approve", "reject": "deny"}
+# Fallback header name; the mint response echoes `header` (DELEGATION_HEADER).
+_DELEGATION_HEADER = "X-SB-Delegated-Admin"
 
 
 class SbCompanionClient:
@@ -68,3 +92,85 @@ class SbCompanionClient:
         except (aiohttp.ClientError, ValueError, TimeoutError, OSError) as e:
             log.warn("engine.sb_companion.fetch_failed", key=key, error=str(e))
             return None
+
+    async def submit_verdict(self, approval_id: str, verb: str) -> tuple[bool, str]:
+        """Deliver the acting admin's verdict on an approval to ServiceBay
+        (ADR 0010, #811 part 2). `verb` is `approve` or `reject`.
+
+        Two server-to-server hops, both fail-closed on the report side:
+          1. mint a per-action, single-use `X-SB-Delegated-Admin` assertion from
+             the acting admin's LIVE Authelia session (servicebay#2276) — Solaris
+             forwards the turn's pinned Remote-User/Remote-Groups (trusted only
+             because this runs inside a forward-auth `/api/` request);
+          2. present that assertion PLUS the mutate-scope SB-MCP Bearer to SB's
+             verdict route, which re-derives the admin against LLDAP and acts.
+
+        NO standing delegation key is held here; the assertion is ephemeral and
+        bound to THIS admin + action + approval id. Returns `(ok, detail)` —
+        `ok` iff SB returned 2xx; any failure (no admin identity, mint refusal,
+        non-2xx, unreachable SB) returns `(False, <reason>)`, never a false ok."""
+        if verb not in _VERDICT_PATHS or not self._base:
+            return False, "bad_verb" if verb not in _VERDICT_PATHS else "no_sb_api"
+        user, groups = current_admin_identity.get()
+        if not user:
+            return False, "no_admin_identity"
+        action = "approvals.approve" if verb == "approve" else "approvals.deny"
+        assertion, header = await self._mint_delegation(
+            user, groups, action, approval_id
+        )
+        if not assertion:
+            return False, "mint_failed"
+        token = read_token(self._token_path)
+        if not token:
+            return False, "no_token"
+        sb_verb = _VERDICT_PATHS[verb]
+        url = f"{self._base}/napi/approvals/{approval_id}/{sb_verb}"
+        headers = {"Authorization": f"Bearer {token}", header: assertion}
+        try:
+            async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+                async with client.post(url, headers=headers) as resp:
+                    text = (await resp.text())[:400]
+                    if resp.status // 100 != 2:
+                        log.warn(
+                            "engine.sb_companion.verdict_http",
+                            verb=verb,
+                            status=resp.status,
+                        )
+                        return False, f"HTTP {resp.status}: {text}"
+                    return True, text or "ok"
+        except (aiohttp.ClientError, TimeoutError, OSError) as e:
+            log.warn("engine.sb_companion.verdict_failed", verb=verb, error=str(e))
+            return False, str(e)
+
+    async def _mint_delegation(
+        self, user: str, groups: str, action: str, target: str
+    ) -> tuple[str, str]:
+        """Mint the single-use `X-SB-Delegated-Admin` assertion (servicebay#2276)
+        from the acting admin's forward-auth identity. Forwards Remote-User /
+        Remote-Groups (NO client Bearer — the mint 403s a token caller) and names
+        the exact action+target the assertion may be used for. Returns
+        `(assertion, header_name)`, or `("", "")` on any failure."""
+        url = f"{self._base}{_MINT_PATH}"
+        try:
+            async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+                async with client.post(
+                    url,
+                    headers={"Remote-User": user, "Remote-Groups": groups},
+                    json={"action": action, "target": target},
+                ) as resp:
+                    if resp.status != 200:
+                        log.warn("engine.sb_companion.mint_http", status=resp.status)
+                        return "", ""
+                    body = await resp.json()
+        except (aiohttp.ClientError, ValueError, TimeoutError, OSError) as e:
+            log.warn("engine.sb_companion.mint_failed", error=str(e))
+            return "", ""
+        if not isinstance(body, dict):
+            return "", ""
+        assertion = body.get("assertion")
+        header = body.get("header") or _DELEGATION_HEADER
+        if not isinstance(assertion, str) or not assertion:
+            return "", ""
+        return assertion, header if isinstance(
+            header, str
+        ) and header else _DELEGATION_HEADER
