@@ -240,6 +240,11 @@
     "description": "ServiceBay control-plane API base (no /mcp suffix). The admin toolbox mints its short-lived SB-MCP token on demand from the acting admin's live Authelia forward-auth identity via POST /api/auth/token-from-authelia-session (#794) — no standing token-minting credential lives in the pod. Reached via host loopback, same host:port as SERVICEBAY_MCP_URL.",
     "default": "http://127.0.0.1:5888"
   },
+  "SERVICEBAY_MINT_URL": {
+    "type": "text",
+    "description": "ServiceBay public portal base (through NPM) used ONLY for the delegated-admin session mint that backs app approve/reject (servicebay#2278/#2279, solarisbay#811). That mint is a no-Bearer/no-Origin forward-auth POST, so SB's proxy CSRF gate 403s it on the loopback :5888 path; it passes only when it comes THROUGH NPM, which injects the CSRF-exempt X-SB-Internal-Token on exactly that route. Set to the SB portal apex (e.g. https://dopp.cloud). Companion reads and the verdict callback keep using SERVICEBAY_API_URL (loopback, Bearer-authenticated). Empty ⇒ fall back to SERVICEBAY_API_URL — correct for a LAN/no-portal deploy where NPM isn't in front.",
+    "default": "https://dopp.cloud"
+  },
   "SOLARIS_SPEAKER_ID_ENABLED": {
     "type": "select",
     "description": "Speaker-ID (#84, #350): resolve which resident is speaking per voice turn from enrolled voice embeddings. BIOMETRIC — stores per-resident voice fingerprints in solaris.db. When on, the post-deploy registers the gatekeeper as the Assist pipeline's Wyoming STT engine so the live Voice PE path runs through speaker-ID; the resolved resident is attributed to the turn via a transcript-keyed side-channel. Requires the solaris-gatekeeper-ml image (see GATEKEEPER_IMAGE); with the base image this stays inert (falls back to DEFAULT_UID). Off by default.",

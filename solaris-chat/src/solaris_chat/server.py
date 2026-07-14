@@ -4687,6 +4687,7 @@ async def serve(
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
     sb_api_url: str = "",
+    sb_mint_url: str = "",
     hass_url: str = "",
     hass_token: str = "",
     crons: Any = None,
@@ -4701,7 +4702,9 @@ async def serve(
     # ServiceBay BFF read client (#811): the app reaches SB's companion reads only
     # through Solaris. Built from the same SB base + read-scoped SB-MCP token the
     # pollers use; dormant (503) when SB_API_URL is unset.
-    sb_companion = sb_companion_module.SbCompanionClient(sb_api_url, sb_mcp_token_path)
+    sb_companion = sb_companion_module.SbCompanionClient(
+        sb_api_url, sb_mcp_token_path, sb_mint_url
+    )
     app = build_app(
         hermes=hermes,
         hermes_admin=hermes_admin,

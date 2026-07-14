@@ -155,6 +155,7 @@ class Settings:
     sb_mcp_url: str
     sb_mcp_token_path: str
     sb_api_url: str
+    sb_mint_url: str
     gatekeeper_url: str
     gatekeeper_token: str
     immich_base_url: str
@@ -295,6 +296,16 @@ class Settings:
             # the pod. Empty ⇒ no runtime exchange (a token rotation then needs
             # a redeploy of the deploy-time token file).
             sb_api_url=os.environ.get("SB_API_URL", "").strip(),
+            # ServiceBay's public portal base (through NPM) for the session-mint
+            # routes (servicebay#2278/#2279). The delegated-admin mint
+            # (`delegated-admin-from-authelia-session`) is a POST that carries a
+            # forward-auth identity but NO Bearer/Origin, so SB's proxy CSRF gate
+            # 403s it on the loopback :5888 path — it only passes when it comes
+            # THROUGH NPM, which injects the CSRF-exempt `X-SB-Internal-Token`
+            # on exactly those two routes. So the mint must target the portal
+            # host, not loopback. Empty ⇒ fall back to SB_API_URL (the pre-#2279
+            # loopback path — correct for a LAN/no-portal deploy).
+            sb_mint_url=os.environ.get("SB_MINT_URL", "").strip(),
             # The gatekeeper's in-pod HTTP listener (push + /enrol), reached
             # over loopback like the other pod-internal callers. The
             # onboarding dialog (#354) uses /enrol to register a resident's

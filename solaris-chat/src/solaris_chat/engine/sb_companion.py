@@ -61,8 +61,16 @@ _DELEGATION_HEADER = "X-SB-Delegated-Admin"
 
 
 class SbCompanionClient:
-    def __init__(self, sb_api_url: str, sb_mcp_token_path: str):
+    def __init__(self, sb_api_url: str, sb_mcp_token_path: str, sb_mint_url: str = ""):
         self._base = sb_api_url.rstrip("/")
+        # The delegated-admin mint (servicebay#2276) is the ONLY call that can't
+        # use the loopback base: it's a no-Bearer/no-Origin forward-auth POST, so
+        # SB's proxy CSRF gate 403s it on :5888 (servicebay#2278). It passes only
+        # THROUGH NPM, which injects the CSRF-exempt X-SB-Internal-Token on that
+        # route (servicebay#2279). Reads + the verdict carry a Bearer, so they
+        # satisfy the CSRF gate over loopback and stay on `_base`. Empty mint
+        # base ⇒ fall back to `_base` (the pre-#2279 loopback path).
+        self._mint_base = (sb_mint_url or sb_api_url).rstrip("/")
         self._token_path = sb_mcp_token_path
 
     @property
@@ -150,7 +158,7 @@ class SbCompanionClient:
         Remote-Groups (NO client Bearer — the mint 403s a token caller) and names
         the exact action+target the assertion may be used for. Returns
         `(assertion, header_name)`, or `("", "")` on any failure."""
-        url = f"{self._base}{_MINT_PATH}"
+        url = f"{self._mint_base}{_MINT_PATH}"
         try:
             async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
                 async with client.post(
