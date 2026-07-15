@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.1](https://github.com/mdopp/solarisbay/compare/v0.25.0...v0.25.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* **template:** consume SB-injected SB_READ_TOKEN instead of self-minting ([cd89de4](https://github.com/mdopp/solarisbay/commit/cd89de42b370d44ba264cc01e86a2c9815eae252)), closes [#818](https://github.com/mdopp/solarisbay/issues/818)
+* **template:** post-deploy writes the SB-provided SB_READ_TOKEN instead of self-minting ([b67fd60](https://github.com/mdopp/solarisbay/commit/b67fd60834f5949ba157fe5b2974fbcede9500b9))
+
 ## [0.25.0](https://github.com/mdopp/solarisbay/compare/v0.24.0...v0.25.0) (2026-07-15)
 
 
