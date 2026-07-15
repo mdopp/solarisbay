@@ -99,13 +99,18 @@ approval (from the SSE `servicebay` event) and hands off to that authed web acti
 
 - **VAPID public key:** returned as `vapid_public_key` in `/napi/whoami` (and `/api/whoami`).
   Use it as `applicationServerKey` when subscribing.
-- **Subscribe / unsubscribe** (Authelia-gated `/api/`, owner-scoped):
-  - `POST /api/push/subscribe` body `{endpoint,keys:{p256dh,auth}}` → `{ok}`
-  - `POST /api/push/unsubscribe` body `{endpoint}` → `{ok}`
+- **Subscribe / unsubscribe** — the native app uses the **device-token** `/napi` twins
+  (owner-scoped; same body/semantics as the browser `/api` pair):
+  - `POST /napi/push/subscribe` body `{endpoint,keys:{p256dh,auth}}` → `{ok}` (401 without a `sol_device_` token)
+  - `POST /napi/push/unsubscribe` body `{endpoint}` → `{ok}`
+  - `endpoint` is any HTTPS URL — for the native app, your **UnifiedPush distributor**
+    endpoint (self-hosted ntfy etc.); the server POSTs standard RFC8291/VAPID Web Push there.
+  - Browser PWA equivalents (Authelia-gated): `POST /api/push/subscribe` / `/api/push/unsubscribe`.
 - **Selective push:** the server only sends a Web Push when the app is **backgrounded**
   (no open SSE subscriber for that uid). If the app is foregrounded, it gets the event
   live over SSE — no redundant push.
-- **Payload:** `{title, body(≤140 chars), data:{kind:"chat"|"reminder"|"card_state", session_id?, url?, timer_id?}}`.
+- **Payload:** `{title, body(≤140 chars), data:{kind:"chat"|"reminder"|"card_state"|"servicebay", session_id?, url?, timer_id?, id?}}`.
+  `servicebay` (approval) events are pushed too when backgrounded: `data:{kind:"servicebay", id, url}`.
   Service worker (`/sw.js`) shows the notification; `notificationclick` deep-links to
   `data.url` (e.g. `/#/c/<session>`), else app root. `tag` collapses per session/timer.
 
