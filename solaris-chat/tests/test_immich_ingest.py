@@ -124,10 +124,14 @@ def test_asset_maps_to_event_with_media_and_resource(env):
     concept = conn.execute(
         "SELECT okf_path FROM concepts WHERE ref_kind = 'event'"
     ).fetchone()
-    # Private asset (not shared) -> mdopp-owned, routed under the user path (#576).
-    assert concept["okf_path"] == "users/mdopp/okf/events/2026-05-30-img-0001-jpg-a1.md"
+    # Private asset (not shared) -> mdopp-owned, routed under the user path (#576),
+    # year-sharded under okf/events/<year>/ (#830b).
+    assert (
+        concept["okf_path"]
+        == "users/mdopp/okf/events/2026/2026-05-30-img-0001-jpg-a1.md"
+    )
     conn.close()
-    text = next((env[2] / "notes").glob("users/mdopp/okf/events/*.md")).read_text()
+    text = next((env[2] / "notes").glob("users/mdopp/okf/events/2026/*.md")).read_text()
     assert "resource: immich://asset/a1" in text
     assert "media:" in text and "- immich://asset/a1" in text
 

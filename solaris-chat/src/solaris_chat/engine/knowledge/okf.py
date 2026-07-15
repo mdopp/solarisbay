@@ -22,8 +22,10 @@ _SHARED_RESIDENT = "household"
 
 
 def okf_path(record: ConceptRecord) -> str:
-    """`okf/<domain>/<slug>.md` — events are date-prefixed (§2).
+    """`okf/<domain>/<slug>.md` — events are date-prefixed and year-sharded (§2).
 
+    Events land under `okf/events/<year>/<slug>.md` (#830): a flat `events/` dir
+    grew to ~76k immich notes, so we shard by the asset's year (from `event_ts`).
     Path-based ownership (#576): a concept owned by a real resident lands under
     `users/<resident>/okf/...` (private to them); household stays shared at the
     vault-root `okf/...`."""
@@ -33,7 +35,10 @@ def okf_path(record: ConceptRecord) -> str:
         day = (record.event_ts or record.timestamp or "")[:10]
         if day:
             slug = f"{safe_slug(day)}-{slug}"
-    rel = f"okf/{domain}/{slug}.md"
+        year = day[:4]
+        rel = f"okf/{domain}/{year}/{slug}.md" if year else f"okf/{domain}/{slug}.md"
+    else:
+        rel = f"okf/{domain}/{slug}.md"
     if record.resident and record.resident != _SHARED_RESIDENT:
         return f"users/{safe_slug(record.resident)}/{rel}"
     return rel

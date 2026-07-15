@@ -173,7 +173,7 @@ def test_body_umlauts_multiline_and_media_skip(env):
     assert "Gut, danke.\nZweite Zeile der Nachricht." in text  # continuation joined.
     assert "Medien ausgeschlossen" not in text  # media message skipped.
     assert "Ende-zu-Ende" not in text  # system line skipped.
-    assert path.startswith("users/anna/okf/events/2024-05-15-")
+    assert path.startswith("users/anna/okf/events/2024/2024-05-15-")
 
 
 # --- ios + unsaved number -----------------------------------------------------

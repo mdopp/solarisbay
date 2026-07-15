@@ -180,7 +180,7 @@ def test_mail_maps_to_email_event(env, monkeypatch):
     concept = conn.execute(
         "SELECT okf_path FROM concepts WHERE ref_kind = 'event'"
     ).fetchone()
-    assert concept["okf_path"].startswith("users/mdopp/okf/events/2026-05-30-")
+    assert concept["okf_path"].startswith("users/mdopp/okf/events/2026/2026-05-30-")
     conn.close()
     text = (tmp_path / "notes" / concept["okf_path"]).read_text()
     assert "kind: email" not in text  # kind is a projection field, not frontmatter.

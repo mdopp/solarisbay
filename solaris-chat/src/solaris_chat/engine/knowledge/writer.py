@@ -15,6 +15,7 @@ the writer owns OKF + db + embed + log.
 
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
@@ -23,6 +24,15 @@ from solaris_chat import notes_index
 from . import okf, projection
 from .embedding import EmbeddingQueue, NullEmbeddingQueue
 from .records import ConceptRecord, WriteResult, is_event_type
+
+# `<...>/okf/events/<year>/<leaf>` → its pre-#830 flat form `<...>/okf/events/<leaf>`.
+_SHARDED_EVENT_RE = re.compile(r"((?:.*/)?okf/events)/\d{4}/([^/]+\.md)$")
+
+
+def _deshard_event_path(rel_path: str) -> str:
+    """The flat `okf/events/<leaf>.md` a sharded event path shards from (#830)."""
+    m = _SHARDED_EVENT_RE.match(rel_path)
+    return f"{m.group(1)}/{m.group(2)}" if m else rel_path
 
 
 class OkfWriter:
@@ -206,10 +216,27 @@ class OkfWriter:
 
     def _existing_event_id(self, conn, record: ConceptRecord) -> str | None:
         """Events have no canonical-name dedup; the stable key is the OKF path
-        (date-prefixed slug), so a re-ingest of the same event reuses its id."""
+        (date-prefixed slug), so a re-ingest of the same event reuses its id.
+
+        Match by the deterministic leaf filename, not the literal path, so a note
+        migrated from the old flat `okf/events/<slug>.md` to the year-sharded
+        `okf/events/<year>/<slug>.md` (#830) is still found — otherwise the
+        re-ingest would mint a duplicate at the new path."""
+        rel_path = okf.okf_path(record)
+        # The pre-migration flat form of the same note: `<...>/okf/events/<leaf>`
+        # (the sharded path with its `<year>/` segment removed). Matching both the
+        # sharded and the flat path exactly keeps the lookup resident-scoped (the
+        # full path carries `users/<resident>/`), so it can't cross-match a
+        # different resident's note the way a bare `%/<leaf>` LIKE would.
+        candidates = [rel_path]
+        flat = _deshard_event_path(rel_path)
+        if flat != rel_path:
+            candidates.append(flat)
         row = conn.execute(
-            "SELECT ref_id FROM concepts WHERE ref_kind = 'event' AND okf_path = ?",
-            (okf.okf_path(record),),
+            "SELECT ref_id FROM concepts "
+            "WHERE ref_kind = 'event' AND okf_path IN "
+            f"({','.join('?' for _ in candidates)})",
+            candidates,
         ).fetchone()
         return row["ref_id"] if row else None
 
