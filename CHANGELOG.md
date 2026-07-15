@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.25.0](https://github.com/mdopp/solarisbay/compare/v0.24.0...v0.25.0) (2026-07-15)
+
+
+### Features
+
+* **chat:** /napi/servicebay operate — start/stop/restart via lifecycle-scoped token ([97baebf](https://github.com/mdopp/solarisbay/commit/97baebfb720990210dde50a614512eb5588f1275))
+* **chat:** /napi/servicebay operate — start/stop/restart via lifecycle-scoped token ([550f72f](https://github.com/mdopp/solarisbay/commit/550f72f49bf60450f111d8d990e507d2808ded1f)), closes [#827](https://github.com/mdopp/solarisbay/issues/827)
+
+
+### Bug Fixes
+
+* **chat:** consistent WAL + busy_timeout across solaris.db writers so ingest stops dropping rows on lock ([aef929a](https://github.com/mdopp/solarisbay/commit/aef929a78434b34015c3565035c9975fcde61ac3))
+* **chat:** raise ingest write-path busy_timeout + WAL the FTS backfill so boots stop dropping songs ([5252d4e](https://github.com/mdopp/solarisbay/commit/5252d4e40eef20e0fbb03af7b6db3f0059c7ca48)), closes [#835](https://github.com/mdopp/solarisbay/issues/835)
+
 ## [0.24.0](https://github.com/mdopp/solarisbay/compare/v0.23.0...v0.24.0) (2026-07-15)
 
 
