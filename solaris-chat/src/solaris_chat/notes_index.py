@@ -136,6 +136,10 @@ def backfill(db_path: str, notes_dir: str) -> int:
         return 0
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("PRAGMA busy_timeout = 10000")
+    # WAL so the long full-vault index pass and any concurrent chat/poller writer
+    # coexist instead of racing to "database is locked" (#835); persisted in the
+    # db header, so this also repairs a db a non-WAL connection last touched.
+    conn.execute("PRAGMA journal_mode = WAL")
     try:
         ensure_schema(conn)
         seen = 0

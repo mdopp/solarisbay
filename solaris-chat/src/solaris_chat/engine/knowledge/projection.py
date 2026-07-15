@@ -16,11 +16,14 @@ from typing import Any
 def _conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
+    # 10s (matches the chat store) so the long boot ingest — now heavier per item
+    # after the incremental FTS write (#830) — waits out a WAL checkpoint or a
+    # contending poller instead of raising "database is locked" and dropping the
+    # row (#835); busy_timeout makes a blocked writer wait instead of raising.
+    conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL (persisted in the db header) so the ingest writer and concurrent
-    # chat-turn readers/writers don't immediately hit "database is locked";
-    # busy_timeout makes a blocked writer wait instead of raising (#600).
+    # chat-turn readers/writers don't immediately hit "database is locked" (#600).
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
