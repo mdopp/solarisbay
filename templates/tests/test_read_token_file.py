@@ -15,6 +15,7 @@ import pytest
 
 TEMPLATES = pathlib.Path(__file__).resolve().parents[1]
 GOOD = "sb_0123abcd_ABCDEFG234567"
+ENV_GOOD = "sb_beef1234_ZZZZ234567AB"
 JUNK = "not-a-token"
 
 
@@ -110,6 +111,62 @@ def test_mint_failure_writes_nothing(pd, data_dir, monkeypatch):
     monkeypatch.setattr(pd, "mint_read_token", lambda sb: None)
     assert pd.ensure_read_token_file(str(data_dir), "http://sb") is False
     assert not _token_path(data_dir).exists()
+
+
+def test_env_token_written_without_minting(pd, data_dir, monkeypatch):
+    # servicebay#2317: SB injects a well-formed SB_READ_TOKEN → write it to the
+    # file, never touch the legacy mint path.
+    monkeypatch.setenv("SB_READ_TOKEN", ENV_GOOD)
+    monkeypatch.setattr(
+        pd, "mint_read_token", lambda sb: pytest.fail("must not mint when env present")
+    )
+    monkeypatch.setattr(
+        pd,
+        "read_token_exists",
+        lambda sb: pytest.fail("must not query when env present"),
+    )
+    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
+    path = _token_path(data_dir)
+    assert path.read_text().strip() == ENV_GOOD
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_malformed_env_falls_through_to_mint(pd, data_dir, monkeypatch):
+    monkeypatch.setenv("SB_READ_TOKEN", JUNK)
+    monkeypatch.setattr(pd, "read_token_exists", lambda sb: False)
+    monkeypatch.setattr(pd, "mint_read_token", lambda sb: GOOD)
+    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
+    assert _token_path(data_dir).read_text().strip() == GOOD
+
+
+def test_empty_env_falls_through_to_mint(pd, data_dir, monkeypatch):
+    monkeypatch.setenv("SB_READ_TOKEN", "")
+    monkeypatch.setattr(pd, "read_token_exists", lambda sb: False)
+    monkeypatch.setattr(pd, "mint_read_token", lambda sb: GOOD)
+    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
+    assert _token_path(data_dir).read_text().strip() == GOOD
+
+
+def test_env_same_as_file_is_idempotent_noop(pd, data_dir, monkeypatch):
+    _token_path(data_dir).write_text(ENV_GOOD + "\n")
+    monkeypatch.setenv("SB_READ_TOKEN", ENV_GOOD)
+    monkeypatch.setattr(
+        pd, "mint_read_token", lambda sb: pytest.fail("must not mint on no-op")
+    )
+    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
+    assert _token_path(data_dir).read_text().strip() == ENV_GOOD
+
+
+def test_env_differs_from_file_updates_to_env(pd, data_dir, monkeypatch):
+    # SB revokes+re-mints each deploy → the env token is authoritative over a
+    # stale file token, even a well-formed one.
+    _token_path(data_dir).write_text(GOOD + "\n")
+    monkeypatch.setenv("SB_READ_TOKEN", ENV_GOOD)
+    monkeypatch.setattr(
+        pd, "mint_read_token", lambda sb: pytest.fail("must not mint when env present")
+    )
+    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
+    assert _token_path(data_dir).read_text().strip() == ENV_GOOD
 
 
 def test_read_token_exists_matches_by_name(pd, monkeypatch):
