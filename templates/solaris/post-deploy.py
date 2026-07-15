@@ -18,10 +18,14 @@ remains is the wiring only a deploy can do:
   3. admin MCP     — mint the servicebay_admin token (read+lifecycle+mutate,
                      no destroy/exec) and drop it at
                      <DATA_DIR>/solarisbay/sb-admin-token for the engine's admin
-                     toolbox (read lazily — no restart needed); AND mint the
-                     non-expiring read-only token (servicebay#2302) at
+                     toolbox (read lazily — no restart needed); AND land the
+                     non-expiring read-only token at
                      <DATA_DIR>/solarisbay/sb-read-token so the unattended
                      pollers don't 401-churn on the rotating admin token (#818).
+                     ServiceBay now mints that read token itself and injects it
+                     as the SB_READ_TOKEN env var (servicebay#2317) — the
+                     post-deploy just writes it to the file; self-minting is the
+                     legacy fallback for an older ServiceBay.
   4. ONE restart   — POST /api/services/solaris/action {restart} as the LAST
                      step. Risk-2-safe (#271 spike): ServiceBay runs this
                      script in an SSH session and the restart is `--no-block`
@@ -60,10 +64,11 @@ GATEKEEPER_CONTAINER = os.environ.get("GATEKEEPER_CONTAINER", "solaris-gatekeepe
 ADMIN_TOKEN_NAME = "admin-soul"
 ADMIN_MCP_SCOPES = ["read", "lifecycle", "mutate"]
 
-# The non-expiring read-only token (servicebay#2302) the unattended pollers use
-# so they don't 401-churn when the rotating admin token lapses (#818). Minted
-# once and reused across deploys — checked by name so we don't churn SB's token
-# list. Read-only is the ceiling SB enforces for a never-expiring token.
+# The non-expiring read-only token the unattended pollers use so they don't
+# 401-churn when the rotating admin token lapses (#818). Modern ServiceBay
+# (servicebay#2317) mints this itself and injects it as SB_READ_TOKEN; these
+# name/scope constants drive only the LEGACY self-mint fallback for an older
+# ServiceBay. Read-only is the ceiling SB enforces for a never-expiring token.
 READ_TOKEN_NAME = "solaris-unattended-read"
 READ_TOKEN_SCOPES = ["read"]
 
@@ -2047,12 +2052,17 @@ def ensure_read_token_file(data_dir: str, sb_api: str) -> bool:
     """Keep the non-expiring read-only SB token at
     <data_dir>/solarisbay/sb-read-token (0600) for the unattended pollers (#818).
 
-    Idempotent: a present, well-formed file is kept (the token never expires, so
-    no probe/rotation is needed). If the file is missing but SB already has a
-    token named READ_TOKEN_NAME, its secret is unrecoverable (shown once), so we
-    leave the pollers on the fallback rather than mint a duplicate. Otherwise
-    mint once and write it. Best-effort; a miss just leaves the pollers on the
-    rotating admin token (they fall back to SB_MCP_TOKEN_PATH)."""
+    Modern ServiceBay (servicebay#2317) mints the durable read-scoped token
+    itself and injects it as the SB_READ_TOKEN env var, revoking+re-minting it
+    each deploy — so when that env var is present and well-formed it is
+    authoritative: write it (replacing a stale file token). The self-mint below
+    is the LEGACY FALLBACK for an older ServiceBay that doesn't inject it.
+
+    Idempotent: a present, well-formed file that already matches the authoritative
+    source is kept (the token never expires under the legacy path, and the env
+    path re-mints to the same file on a converged deploy). Best-effort; a miss
+    just leaves the pollers on the rotating admin token (they fall back to
+    SB_MCP_TOKEN_PATH)."""
     path = os.path.join(data_dir, "solarisbay", "sb-read-token")
     existing = ""
     try:
@@ -2060,6 +2070,21 @@ def ensure_read_token_file(data_dir: str, sb_api: str) -> bool:
             existing = f.read().strip()
     except OSError:
         pass
+    env_token = env("SB_READ_TOKEN").strip()
+    if env_token and SB_MCP_TOKEN_RE.match(env_token):
+        if existing == env_token:
+            jlog("info", "read-token", "SB_READ_TOKEN already current in file")
+            return True
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(env_token + "\n")
+            os.chmod(path, 0o600)
+        except OSError as e:
+            jlog("error", "read-token", "could not write read token file", error=str(e))
+            return False
+        jlog("info", "read-token", "wrote SB_READ_TOKEN to read-only token file")
+        return True
     if existing and SB_MCP_TOKEN_RE.match(existing):
         jlog("info", "read-token", "existing read-only token file present")
         return True
