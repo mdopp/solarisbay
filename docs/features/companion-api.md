@@ -1,14 +1,22 @@
 # Solaris Companion API — the contract the `solaris-android` app talks to
 
 This is the authoritative reference for the **companion-facing surface** of the
-Solaris engine (`solaris-chat`): the `/napi/*` native API, device-token auth, the
-live event stream, and Web Push. The Android companion app (repo
-**`mdopp/solaris-android`**) targets only this surface — it never talks to
-ServiceBay or Home Assistant directly; Solaris aggregates those behind `/napi`.
+Solaris engine (`solaris-chat`): the `/napi/*` native API, device-token auth, and
+the **live event stream (SSE)** the app holds open for notifications. The Android
+companion app (repo **`mdopp/solaris-android`**) targets only this surface — it
+never talks to ServiceBay or Home Assistant directly; Solaris aggregates those
+behind `/napi`.
+
+> **Architecture (binding):** Client = the app, Server = Solaris, **nothing in
+> between** — no Google/FCM, no third-party distributor (ntfy/UnifiedPush), no
+> proxy service. The native app receives everything (including background
+> notifications) over **its own direct SSE connection to `/napi/portal/events`**
+> (§3), kept alive by the app's own foreground service. **Web Push / VAPID (§4)
+> is the browser-PWA path only — the native app does NOT use it.**
 
 > **Source of truth is the code, not this file.** This doc is generated from
 > `solaris-chat/src/solaris_chat/{server.py,engine/sb_companion.py,engine/sb_events.py,engine/notify.py,push_store.py,device_token_store.py,config.py,static/sw.js}`
-> as of **v0.25.1**. If a detail here disagrees with the running engine, the code
+> as of **v0.26.0**. If a detail here disagrees with the running engine, the code
 > wins — file an issue. Paths are stable; response shapes may gain fields.
 
 ## Base URL, transport, auth surfaces
@@ -18,9 +26,9 @@ ServiceBay or Home Assistant directly; Solaris aggregates those behind `/napi`.
   - **`/napi/*` — native, device-token only, proxy-bypassed (Authelia is skipped).**
     Every route is **fail-closed**: a missing/invalid `sol_device_` bearer ⇒ **401**.
     It never falls back to `default_uid` and never trusts the `Remote-User` header.
-  - **`/api/*` — browser/PWA, Authelia-gated** (forward-auth `Remote-User`). The app
-    uses a couple of these for pairing and Web Push (called out below); everything
-    else the app needs is under `/napi`.
+  - **`/api/*` — browser/PWA, Authelia-gated** (forward-auth `Remote-User`). The native
+    app uses only `/pair-device` here (pairing needs an interactive login); everything
+    else it needs is under `/napi`. The `/api/push/*` Web-Push routes are **browser-only** (§4).
 - **No API version in the path.** Capability is signalled in responses (e.g.
   `vapid_public_key` in `whoami` ⇒ push available).
 
@@ -79,40 +87,49 @@ All require `Authorization: Bearer sol_device_...`. Common errors: **401** (no/b
 Stored in the notes vault (`users/<uid>/uploads/`, household → shared `uploads/`) as a
 companion note with an Obsidian embed — so uploads are also searchable via notes_search.
 
-## 3. Live events — SSE (`/napi/portal/events`)
+## 3. Live events & notifications — the SSE stream (`/napi/portal/events`) — **the native app's only push channel**
+
+This is how the native companion receives everything, foreground **and** background.
+The app's own **foreground service** (Android) holds this one connection open directly
+to Solaris — no Google, no third-party distributor. On Android, an app can only be
+woken while backgrounded by (1) FCM [forbidden], (2) a foreign distributor [forbidden],
+or (3) its own running service — so **(3) is the design-conformant answer**, and its
+unavoidable price is a discreet persistent notification + a battery exception. There is
+no "process fully dead + push + no third-party" option on Android; this is it.
 
 - `GET /napi/portal/events` — device-token authed, `Content-Type: text/event-stream`,
   long-lived (socket-connect timeout 20s, **no** read timeout; reconnect on drop).
 - One multiplexed stream per resident (`uid`), in-process pub/sub (`EventBus`), per-resident privacy.
 - **Event kinds** (`event: <kind>` + `data: <json>`):
-  - `card_state` — an HA entity changed (fan-out from the HA watcher). Update the card in place.
+  - `card_state` — an HA entity changed (fan-out from the HA watcher) → update the card / **wake the device widget**.
   - `chat` — a backgrounded/finished chat turn or a server-injected card.
   - `servicebay` — a ServiceBay **approval** event, republished from SB's SSE:
-    `data:{id,kind,summary}`. Show an approval card. (Verdict flow below.)
+    `data:{id,kind,summary}` → show an **approval notification**. (Verdict flow below.)
 
 **Approval verdict** is *not* on `/napi`: the admin deep-links to
 `/api/servicebay/approvals/{id}/{approve|reject}` (Authelia-gated), which mints an
 ephemeral delegated-admin assertion from the live session. The companion surfaces the
 approval (from the SSE `servicebay` event) and hands off to that authed web action.
 
-## 4. Web Push (VAPID) — background notifications
+## 4. Web Push (VAPID) — **browser PWA only, NOT the native app**
 
-- **VAPID public key:** returned as `vapid_public_key` in `/napi/whoami` (and `/api/whoami`).
-  Use it as `applicationServerKey` when subscribing.
-- **Subscribe / unsubscribe** — the native app uses the **device-token** `/napi` twins
-  (owner-scoped; same body/semantics as the browser `/api` pair):
-  - `POST /napi/push/subscribe` body `{endpoint,keys:{p256dh,auth}}` → `{ok}` (401 without a `sol_device_` token)
-  - `POST /napi/push/unsubscribe` body `{endpoint}` → `{ok}`
-  - `endpoint` is any HTTPS URL — for the native app, your **UnifiedPush distributor**
-    endpoint (self-hosted ntfy etc.); the server POSTs standard RFC8291/VAPID Web Push there.
-  - Browser PWA equivalents (Authelia-gated): `POST /api/push/subscribe` / `/api/push/unsubscribe`.
-- **Selective push:** the server only sends a Web Push when the app is **backgrounded**
-  (no open SSE subscriber for that uid). If the app is foregrounded, it gets the event
-  live over SSE — no redundant push.
-- **Payload:** `{title, body(≤140 chars), data:{kind:"chat"|"reminder"|"card_state"|"servicebay", session_id?, url?, timer_id?, id?}}`.
-  `servicebay` (approval) events are pushed too when backgrounded: `data:{kind:"servicebay", id, url}`.
-  Service worker (`/sw.js`) shows the notification; `notificationclick` deep-links to
-  `data.url` (e.g. `/#/c/<session>`), else app root. `tag` collapses per session/timer.
+> **The native Android companion does NOT use Web Push.** Web Push on Android means
+> FCM or a third-party distributor (UnifiedPush/ntfy), both of which the architecture
+> forbids. The native app gets background notifications via its own foreground service
+> on the §3 SSE stream. This section is only for the **browser PWA** (installed web app).
+
+- **VAPID public key:** `vapid_public_key` in `/api/whoami` (also present in `/napi/whoami`).
+  The browser uses it as `applicationServerKey` when subscribing.
+- **Subscribe / unsubscribe** (browser, Authelia-gated): `POST /api/push/subscribe`
+  body `{endpoint,keys:{p256dh,auth}}` → `{ok}`; `POST /api/push/unsubscribe` `{endpoint}` → `{ok}`.
+- **Selective push:** the server sends a Web Push only when no SSE subscriber is open
+  for that uid (backgrounded). Payload `{title, body, data:{kind:"chat"|"reminder"|"card_state"|"servicebay", …}}`;
+  service worker `/sw.js` shows it and deep-links on click.
+
+> Note: device-token `/napi/push/subscribe` twins were added in v0.26.0 for a
+> UnifiedPush experiment that the architecture has since rejected (native app uses SSE,
+> not Web Push). They are **not** part of the native contract and are candidates for
+> removal — do not build against them.
 
 ## 5. Android app-domain binding (TWA)
 
