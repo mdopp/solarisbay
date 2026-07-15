@@ -18,6 +18,8 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from solaris_chat import notes_index
+
 from . import okf, projection
 from .embedding import EmbeddingQueue, NullEmbeddingQueue
 from .records import ConceptRecord, WriteResult, is_event_type
@@ -80,8 +82,11 @@ class OkfWriter:
                 conn.commit()
                 return existing
 
-            # 2. write/update the OKF concept file (source of truth).
+            # 2. write/update the OKF concept file (source of truth), then keep
+            # the FTS index in step with it (#830) — incremental, content-hash
+            # gated inside index_note so an unchanged note is a no-op.
             self._write_okf_file(rel_path, text)
+            notes_index.index_note(conn, self._notes_root, rel_path)
 
             # 3. update the .db projection.
             if is_event:

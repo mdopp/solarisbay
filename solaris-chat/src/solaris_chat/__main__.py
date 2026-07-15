@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 
+from solaris_chat import notes_index
 from solaris_chat.config import settings
 from solaris_chat.context import build_context_window
 from solaris_chat.engine.crons import CronRunner
@@ -146,6 +147,14 @@ async def _run() -> None:
             asyncio.run(run_ingest(settings))
         except Exception as e:  # noqa: BLE001 — ingest must never crash the box.
             log.error("engine.ingest.thread_failed", error=str(e))
+        # Full-vault FTS backfill (#830): index every note so notes_search covers
+        # 100% of the ~99k-file vault (the ingest incrementally indexes its own
+        # writes; this catches everything already on disk). Content-hash gated, so
+        # a re-boot only touches changed notes. On the same off-loop thread.
+        try:
+            notes_index.backfill(settings.solaris_db_path, settings.notes_dir)
+        except Exception as e:  # noqa: BLE001 — backfill must never crash the box.
+            log.error("engine.notes_index.backfill_failed", error=str(e))
 
     threading.Thread(target=_bg_ingest, name="okf-ingest", daemon=True).start()
     await serve(
