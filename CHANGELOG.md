@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.26.0](https://github.com/mdopp/solarisbay/compare/v0.25.1...v0.26.0) (2026-07-15)
+
+
+### Features
+
+* **chat:** token-authed /napi/push subscribe + push servicebay approvals ([8ffd8cd](https://github.com/mdopp/solarisbay/commit/8ffd8cdcd42725c8a19229401137e8684ba59286)), closes [#843](https://github.com/mdopp/solarisbay/issues/843)
+* **chat:** token-authed /napi/push subscribe/unsubscribe + servicebay approval push ([76a4bf9](https://github.com/mdopp/solarisbay/commit/76a4bf9508088b8e4bc35cad60d88d824d877dfe))
+
 ## [0.25.1](https://github.com/mdopp/solarisbay/compare/v0.25.0...v0.25.1) (2026-07-15)
 
 
