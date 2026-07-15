@@ -13,6 +13,7 @@ import sqlite3
 import numpy as np
 import pytest
 
+from solaris_chat import notes_index
 from solaris_chat.engine.tools.notes import build_notes_tools
 
 # Mirrors 0016_okf_knowledge_index + 0018_okf_vectors.
@@ -96,6 +97,9 @@ def _search_tool(root, db_path, uid, ollama=None):
 
 
 async def _search(root, db_path, uid, query, ollama=None, **kw):
+    # The FTS index (#830) is what notes_search now queries for keyword candidates;
+    # on the box the boot backfill fills it — mirror that here before searching.
+    notes_index.backfill(db_path, str(root))
     tool = _search_tool(root, db_path, uid, ollama)
     return json.loads(await tool.handler({"query": query, **kw}))
 

@@ -56,15 +56,18 @@ _PRUNE_DIRS = frozenset({"processed", "exports"})
 _VAULT_WALK_BUDGET = 20000
 
 
-def iter_vault_md(root: Path, budget: int = _VAULT_WALK_BUDGET) -> Iterator[Path]:
+def iter_vault_md(
+    root: Path, budget: int | None = _VAULT_WALK_BUDGET
+) -> Iterator[Path]:
     """Yield `.md` file paths under `root`, pruning non-note subtrees (#705).
 
     Skips any dot-directory (`.stversions`, `.stfolder`, `.git`, `.obsidian`,
     `.trash`, …) and the `_PRUNE_DIRS` (already-consolidated inbox trees), so a
-    Syncthing vault's history copies never inflate the walk. Bounded: stops after
-    `budget` files so a pathological vault can never wedge the caller — the walk
-    degrades to partial rather than hanging. Directory order is sorted for stable
-    output; callers that need a global sort still sort the yielded paths.
+    Syncthing vault's history copies never inflate the walk. Bounded by `budget`
+    so a pathological vault can never wedge the caller — the walk degrades to
+    partial rather than hanging; `budget=None` is unbounded (the FTS backfill's
+    full-vault pass, #830). Directory order is sorted for stable output; callers
+    that need a global sort still sort the yielded paths.
     """
     if not root.is_dir():
         return
@@ -76,7 +79,7 @@ def iter_vault_md(root: Path, budget: int = _VAULT_WALK_BUDGET) -> Iterator[Path
         for name in sorted(filenames):
             if not name.endswith(".md"):
                 continue
-            if seen >= budget:
+            if budget is not None and seen >= budget:
                 return
             seen += 1
             yield Path(dirpath) / name

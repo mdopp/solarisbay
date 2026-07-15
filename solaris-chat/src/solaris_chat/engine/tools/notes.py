@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from solaris_chat import notes_search
+from solaris_chat import notes_index, notes_search
 from solaris_chat.engine.fuzzy import fuzzy_score, tokens
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
@@ -104,20 +104,35 @@ def build_notes_tools(
 ) -> list[Tool]:
     root = Path(notes_dir)
 
+    def _candidate_rels(query: str) -> list[str]:
+        """Vault-relative candidate paths for `query` (#830).
+
+        The FTS5 index covers 100% of the vault, so a keyword hit anywhere in the
+        ~99k files surfaces — the 20k-file walk budget of `iter_vault_md` left
+        ~80% invisible. Falls back to the prune-bounded walk only when there's no
+        db (tests wiring a vault with no engine DB)."""
+        if db_path:
+            conn = projection.open_conn(db_path)
+            try:
+                return notes_index.search(conn, query)
+            finally:
+                conn.close()
+        return [str(p.relative_to(root)) for p in notes_search.iter_vault_md(root)]
+
     def _fuzzy_hits(
         query: str, terms: list[str], caller_uid: str, boost_paths: set[str]
     ) -> dict[str, tuple[float, dict[str, Any]]]:
         by_path: dict[str, tuple[float, dict[str, Any]]] = {}
-        # Prune-bounded walk (#705): the vault is a Syncthing folder whose
-        # `.stversions/` history would make an rglob never finish on the box.
-        for path in sorted(notes_search.iter_vault_md(root)):
+        for rel in _candidate_rels(query):
+            path = (root / rel).resolve()
+            if not str(path).startswith(str(root.resolve())):
+                continue
             try:
-                if path.stat().st_size > _MAX_BYTES:
+                if not path.is_file() or path.stat().st_size > _MAX_BYTES:
                     continue
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            rel = str(path.relative_to(root))
             # Scope BEFORE scoring (#576): never score what the caller can't see.
             if not notes_search.is_visible(
                 notes_search.owner_of(rel, text), caller_uid
