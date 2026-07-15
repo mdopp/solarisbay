@@ -53,16 +53,24 @@ class _FakeEngine:
 class _FakeCompanion:
     """Stand-in for `SbCompanionClient` — the mock the routes read through."""
 
-    def __init__(self, enabled=True, bodies=None, verdict=(True, "ok")):
+    def __init__(
+        self, enabled=True, bodies=None, verdict=(True, "ok"), operate=(True, "ok")
+    ):
         self.enabled = enabled
         self._bodies = bodies or {}
         self._verdict = verdict
+        self._operate = operate
         self.calls: list[str] = []
         self.verdicts: list[tuple] = []
+        self.operations: list[tuple] = []
 
     async def read(self, key):
         self.calls.append(key)
         return self._bodies.get(key)
+
+    async def operate(self, name, action):
+        self.operations.append((name, action))
+        return self._operate
 
     async def submit_verdict(self, approval_id, verb, authelia_cookie=""):
         from solaris_chat.engine.client import current_admin_identity
@@ -187,6 +195,98 @@ async def test_napi_servicebay_unconfigured_is_503(aiohttp_client, tmp_path):
     )
     assert r.status == 503
     assert (await r.json()) == {"ok": False, "error": "servicebay_unconfigured"}
+
+
+# ---- /napi/servicebay/services/{name}/operate: lifecycle mutation, #827 ------
+#
+# The operate half of #827: start/stop/restart a service. Same fail-closed
+# device-token surface as the reads (native()); an action outside the allowed
+# set never reaches ServiceBay, and an SB failure surfaces as 502.
+
+
+async def test_napi_operate_without_bearer_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    companion = _FakeCompanion()
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post(
+        "/napi/servicebay/services/solaris-chat/operate", json={"action": "restart"}
+    )
+    assert r.status == 401
+    # Fail-closed: an unauthenticated caller never reaches ServiceBay.
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+    assert companion.operations == []
+
+
+async def test_napi_operate_valid_actions_proxy_to_sb(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "mdopp")
+    companion = _FakeCompanion(operate=(True, "ok"))
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    hdr = {"Authorization": f"Bearer {token}"}
+    for action in ("start", "stop", "restart"):
+        r = await client.post(
+            "/napi/servicebay/services/solaris-chat/operate",
+            json={"action": action},
+            headers=hdr,
+        )
+        assert r.status == 200
+        assert (await r.json()) == {
+            "ok": True,
+            "name": "solaris-chat",
+            "action": action,
+        }
+    assert companion.operations == [
+        ("solaris-chat", "start"),
+        ("solaris-chat", "stop"),
+        ("solaris-chat", "restart"),
+    ]
+
+
+async def test_napi_operate_bad_action_is_400(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "mdopp")
+    companion = _FakeCompanion()
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post(
+        "/napi/servicebay/services/solaris-chat/operate",
+        json={"action": "delete"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 400
+    assert (await r.json()) == {"ok": False, "error": "bad_action"}
+    # A rejected action must never reach ServiceBay.
+    assert companion.operations == []
+
+
+async def test_napi_operate_sb_failure_is_502(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "mdopp")
+    companion = _FakeCompanion(operate=(False, "HTTP 500: boom"))
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post(
+        "/napi/servicebay/services/solaris-chat/operate",
+        json={"action": "restart"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 502
+    body = await r.json()
+    assert body["ok"] is False
+    assert body["error"] == "servicebay_unavailable"
+    assert companion.operations == [("solaris-chat", "restart")]
+
+
+async def test_napi_operate_unconfigured_is_503(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    _, token = device_token_store.create(db, "mdopp")
+    companion = _FakeCompanion(enabled=False)
+    client = await aiohttp_client(_app(tmp_path, db, companion))
+    r = await client.post(
+        "/napi/servicebay/services/solaris-chat/operate",
+        json={"action": "restart"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 503
+    assert (await r.json())["error"] == "servicebay_unconfigured"
 
 
 # ---- event bridge: SB NewApprovalEvent → event bus → /napi/portal/events ----
@@ -682,3 +782,96 @@ async def test_client_submit_verdict_mint_refusal_fails_closed(monkeypatch, tmp_
     assert detail == "mint_failed"
     # Only the mint was attempted; no verdict posted without an assertion.
     assert len(calls) == 1
+
+
+# ---- SbCompanionClient.operate: POST to SB with the lifecycle-scoped token ----
+
+
+class _OperateSession:
+    """Records the operate POST so a test can assert the URL, the lifecycle
+    SB-MCP Bearer, and the {action} body."""
+
+    def __init__(self, calls, status=200):
+        self._calls = calls
+        self._status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def post(self, url, headers=None, json=None):
+        self._calls.append({"url": url, "headers": headers, "json": json})
+        outer = self
+
+        class _Resp:
+            status = outer._status
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def text(self):
+                return '{"ok":true}'
+
+        return _Resp()
+
+
+async def test_client_operate_posts_to_sb_with_lifecycle_token(monkeypatch, tmp_path):
+    from solaris_chat.engine import sb_companion as mod
+
+    tok = tmp_path / "sbtok"
+    tok.write_text("service-tok")
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        mod.aiohttp, "ClientSession", lambda *a, **k: _OperateSession(calls)
+    )
+
+    client = mod.SbCompanionClient("http://sb:5888", str(tok))
+    ok, _ = await client.operate("solaris-chat", "restart")
+    assert ok is True
+    (call,) = calls
+    # The SAME read+lifecycle+mutate SB-MCP token the reads use — no new credential;
+    # SB's lifecycle scope is what authorises the operate.
+    assert call["url"] == "http://sb:5888/napi/services/solaris-chat/operate"
+    assert call["headers"]["Authorization"] == "Bearer service-tok"
+    assert call["json"] == {"action": "restart"}
+
+
+async def test_client_operate_bad_action_never_calls_sb(monkeypatch, tmp_path):
+    from solaris_chat.engine import sb_companion as mod
+
+    tok = tmp_path / "sbtok"
+    tok.write_text("service-tok")
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        mod.aiohttp, "ClientSession", lambda *a, **k: _OperateSession(calls)
+    )
+
+    client = mod.SbCompanionClient("http://sb:5888", str(tok))
+    ok, detail = await client.operate("solaris-chat", "delete")
+    assert ok is False
+    assert detail == "bad_action"
+    # An out-of-set action is rejected before any network call.
+    assert calls == []
+
+
+async def test_client_operate_surfaces_sb_error(monkeypatch, tmp_path):
+    from solaris_chat.engine import sb_companion as mod
+
+    tok = tmp_path / "sbtok"
+    tok.write_text("service-tok")
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        mod.aiohttp,
+        "ClientSession",
+        lambda *a, **k: _OperateSession(calls, status=500),
+    )
+
+    client = mod.SbCompanionClient("http://sb:5888", str(tok))
+    ok, detail = await client.operate("solaris-chat", "stop")
+    assert ok is False
+    assert detail.startswith("HTTP 500")
