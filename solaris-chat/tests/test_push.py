@@ -15,9 +15,10 @@ import sqlite3
 
 import pytest
 
-from solaris_chat import push_store
-from solaris_chat.engine.notify import Notifier
+from solaris_chat import device_token_store, push_store
+from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.scheduler import TimerScheduler
+from solaris_chat.engine.sb_events import SbApprovalEventBridge
 from solaris_chat.server import build_app
 
 # The table migration 0020 creates, replayed locally (no alembic).
@@ -35,11 +36,35 @@ CREATE TABLE push_subscriptions (
 CREATE INDEX push_subscriptions_owner_idx ON push_subscriptions (owner_uid);
 """
 
+# The device-token table migration 0021 creates (for the /napi device-token gate).
+_DEVICE_TOKENS_SCHEMA = """
+CREATE TABLE device_tokens (
+  id         TEXT PRIMARY KEY,
+  owner_uid  TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  label      TEXT,
+  created    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_used  TEXT,
+  revoked    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX device_tokens_hash_idx ON device_tokens (token_hash);
+CREATE INDEX device_tokens_owner_idx ON device_tokens (owner_uid);
+"""
+
 
 def _db(tmp_path) -> str:
     path = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(path)
     conn.executescript(_SCHEMA)
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _db_with_device_tokens(tmp_path) -> str:
+    path = _db(tmp_path)
+    conn = sqlite3.connect(path)
+    conn.executescript(_DEVICE_TOKENS_SCHEMA)
     conn.commit()
     conn.close()
     return path
@@ -139,6 +164,72 @@ async def test_unsubscribe_only_removes_own_endpoint(aiohttp_client, tmp_path):
     )
     assert r.status == 200
     assert len(push_store.list_for_uid(db, "lena")) == 1
+
+
+# ---- /napi/push/* (device-token, fail-closed, owner-scoped, #843) ---------
+
+
+async def test_napi_subscribe_without_token_is_401(aiohttp_client, tmp_path):
+    db = _db_with_device_tokens(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+    body = {"endpoint": "https://up/1", "keys": {"p256dh": "p", "auth": "a"}}
+    # No `sol_device_` bearer, and a Remote-User header must NOT authenticate.
+    r = await client.post(
+        "/napi/push/subscribe", json=body, headers={"Remote-User": "mdopp"}
+    )
+    assert r.status == 401
+    assert push_store.list_for_uid(db, "mdopp") == []
+
+
+async def test_napi_subscribe_stores_owner_scoped(aiohttp_client, tmp_path):
+    db = _db_with_device_tokens(tmp_path)
+    _, token = device_token_store.create(db, "mdopp")
+    client = await aiohttp_client(_app(tmp_path, db))
+    body = {"endpoint": "https://up/1", "keys": {"p256dh": "p", "auth": "a"}}
+    r = await client.post(
+        "/napi/push/subscribe",
+        json=body,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    subs = push_store.list_for_uid(db, "mdopp")
+    assert subs[0]["owner_uid"] == "mdopp" and subs[0]["endpoint"] == "https://up/1"
+    assert push_store.list_for_uid(db, "lena") == []
+
+
+async def test_napi_unsubscribe_removes_owner_scoped(aiohttp_client, tmp_path):
+    db = _db_with_device_tokens(tmp_path)
+    _, token = device_token_store.create(db, "mdopp")
+    push_store.upsert(db, "mdopp", "https://up/1", "p", "a")
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.post(
+        "/napi/push/unsubscribe",
+        json={"endpoint": "https://up/1"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status == 200
+    assert push_store.list_for_uid(db, "mdopp") == []
+
+
+async def test_napi_and_api_subscribe_share_one_store(aiohttp_client, tmp_path):
+    db = _db_with_device_tokens(tmp_path)
+    _, token = device_token_store.create(db, "mdopp")
+    client = await aiohttp_client(_app(tmp_path, db))
+    # /napi (device token) and /api (Remote-User) write the SAME push_store row set.
+    await client.post(
+        "/napi/push/subscribe",
+        json={"endpoint": "https://up/napi", "keys": {"p256dh": "p", "auth": "a"}},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    await client.post(
+        "/api/push/subscribe",
+        json={"endpoint": "https://up/api", "keys": {"p256dh": "p", "auth": "a"}},
+        headers={"Remote-User": "mdopp"},
+    )
+    assert sorted(s["endpoint"] for s in push_store.list_for_uid(db, "mdopp")) == [
+        "https://up/api",
+        "https://up/napi",
+    ]
 
 
 async def test_whoami_returns_vapid_public_key(aiohttp_client, tmp_path):
@@ -291,3 +382,49 @@ async def test_fire_due_without_notifier_is_safe(tmp_path, notifier):
     conn.close()
     sched = TimerScheduler(db, "", "", notifier=notifier)
     await sched._fire_due()  # must not raise
+
+
+# ---- servicebay approval events → selective Web Push (#843) ----------------
+
+_SB_FRAME = {
+    "type": "new-approval",
+    "id": "appr-1",
+    "kind": "deploy",
+    "summary": "Deploy media-stack v3",
+}
+
+
+def _bridge(db, bus, notifier):
+    return SbApprovalEventBridge(
+        "http://sb", "", "", bus, "household", notifier=notifier
+    )
+
+
+async def test_servicebay_event_pushes_when_no_sse_subscriber(tmp_path):
+    db = _db(tmp_path)
+    push_store.upsert(db, "household", "https://up/admin", "p", "a")
+    bus = EventBus()  # no subscriber open for `household`
+    notifier = _FakeNotifier()
+    await _bridge(db, bus, notifier)._publish(_SB_FRAME)
+    assert len(notifier.pushes) == 1
+    uid, _title, _body, data = notifier.pushes[0]
+    assert uid == "household"
+    assert data["kind"] == "servicebay" and data["id"] == "appr-1"
+
+
+async def test_servicebay_event_no_push_when_sse_subscriber_open(tmp_path):
+    import asyncio
+
+    db = _db(tmp_path)
+    push_store.upsert(db, "household", "https://up/admin", "p", "a")
+    bus = EventBus()
+    notifier = _FakeNotifier()
+    # An open SSE client already receives the event live → no double-notify. The
+    # subscribe generator registers its queue on the first __anext__ await.
+    agen = bus.subscribe("household")
+    consumer = asyncio.ensure_future(agen.__anext__())
+    await asyncio.sleep(0)  # let subscribe() register its queue
+    assert bus.has_subscriber("household")
+    await _bridge(db, bus, notifier)._publish(_SB_FRAME)
+    assert notifier.pushes == []
+    consumer.cancel()

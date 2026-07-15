@@ -31,7 +31,8 @@ from typing import Any
 
 import aiohttp
 
-from solaris_chat.engine.notify import EventBus
+from solaris_chat.engine import store
+from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.tools.mcp_tools import read_sb_token
 from solaris_chat.logging import log
 
@@ -67,12 +68,14 @@ class SbApprovalEventBridge:
         sb_mcp_token_path: str,
         bus: EventBus,
         wartung_uid: str,
+        notifier: Notifier | None = None,
     ):
         self._base = sb_api_url.rstrip("/")
         self._read_token_path = sb_read_token_path
         self._token_path = sb_mcp_token_path
         self._bus = bus
         self._uid = wartung_uid
+        self._notifier = notifier
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -113,11 +116,20 @@ class SbApprovalEventBridge:
                         frame = json.loads(line[len("data:") :].strip())
                     except ValueError:
                         continue
-                    self._publish(frame)
+                    await self._publish(frame)
 
-    def _publish(self, frame: dict[str, Any]) -> None:
+    async def _publish(self, frame: dict[str, Any]) -> None:
         event = _to_bus_event(frame)
         if event is None:
             return
         self._bus.publish(self._uid, SERVICEBAY_KIND, event)
         log.info("engine.sb_events.republished", approval_id=event["id"])
+        # When no SSE client is watching this uid the app is backgrounded, so the
+        # approval reaches the phone only as a Web Push — same selective gate as
+        # emit_chat (#843). The deep link opens the Wartung chat the approval cards
+        # into (store.wartung_session_id); the SSE consumer opens the same target.
+        if self._notifier is not None and not self._bus.has_subscriber(self._uid):
+            url = f"/#/c/{store.wartung_session_id(self._uid)}"
+            data = {"kind": SERVICEBAY_KIND, "id": event["id"], "url": url}
+            body = event["summary"] or "Neue Freigabe angefragt."
+            await self._notifier.push(self._uid, "Freigabe angefragt", body, data)

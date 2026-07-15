@@ -4604,6 +4604,13 @@ def build_app(
     )
     app.router.add_post("/napi/ha/call", native(ha_call))
     app.router.add_post("/napi/upload", native(napi_upload))
+    # Native Web Push subscribe (#843): the twins of /api/push/*, wrapped in
+    # native(...) so the companion registers its UnifiedPush endpoint with only a
+    # sol_device_ bearer (it has no Authelia cookie) — same body/store/owner-scope,
+    # only the auth differs. resolve_uid is native-prefix aware, so the wrapped
+    # handlers resolve the SAME device-token owner and behave identically to /api.
+    app.router.add_post("/napi/push/subscribe", native(push_subscribe))
+    app.router.add_post("/napi/push/unsubscribe", native(push_unsubscribe))
     # ServiceBay BFF reads (#811): re-serve SB's companion reads under Solaris's
     # own /napi so the app never talks to ServiceBay directly (ADR 0010).
     app.router.add_get("/napi/servicebay/{key}", native(servicebay_read))
