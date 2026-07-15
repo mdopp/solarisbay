@@ -53,7 +53,9 @@ _LIST_PATH = "/api/approvals"
 
 def _conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=10)
-    conn.execute("PRAGMA busy_timeout = 5000")
+    # 10s so a poll tick that lands mid-ingest waits out the busy write path
+    # instead of raising and skipping the tick (#835).
+    conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
