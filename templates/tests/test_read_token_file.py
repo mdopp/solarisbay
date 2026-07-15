@@ -1,9 +1,9 @@
-"""Tests for the non-expiring read-only SB token file (#818, servicebay#2302):
-minted once via the SB API with {scopes:["read"], neverExpires:true} and dropped
-at <DATA_DIR>/solarisbay/sb-read-token so the unattended pollers don't 401-churn
-when the rotating admin token lapses. Idempotent: an existing file is kept; a
-missing file with the named token still present in SB (secret unrecoverable) is
-left on the fallback rather than minting a duplicate."""
+"""Tests for the non-expiring read-only SB token file (#818, servicebay#2317):
+ServiceBay mints the durable read-scoped token itself and injects it as the
+SB_READ_TOKEN env var; the post-deploy just persists it at
+<DATA_DIR>/solarisbay/sb-read-token so the unattended pollers don't 401-churn
+when the rotating admin token lapses. It never self-mints (durable creds are the
+platform's job). Idempotent: an existing well-formed file is kept."""
 
 from __future__ import annotations
 
@@ -43,145 +43,50 @@ def _token_path(data_dir):
     return data_dir / "solarisbay" / "sb-read-token"
 
 
-def test_read_scopes_are_read_only(pd):
-    assert pd.READ_TOKEN_SCOPES == ["read"]
-
-
-def test_mint_sends_neverexpires_read_only(pd, monkeypatch):
-    calls = []
-
-    def fake_post(url, payload, timeout=10.0):
-        calls.append((url, payload))
-        return 200, {"secret": GOOD}
-
-    monkeypatch.setattr(pd, "post_json", fake_post)
-    assert pd.mint_read_token("http://sb:3000") == GOOD
-    url, payload = calls[0]
-    assert url.endswith("/api/system/api-tokens")
-    assert payload["scopes"] == ["read"]
-    assert payload["neverExpires"] is True
-
-
-def test_mint_rejects_non_sb_shaped_secret(pd, monkeypatch):
-    monkeypatch.setattr(pd, "post_json", lambda *a, **k: (200, {"secret": JUNK}))
-    assert pd.mint_read_token("http://sb:3000", attempts=1) is None
-
-
-def test_file_written_0600_on_mint(pd, data_dir, monkeypatch):
-    monkeypatch.setattr(pd, "read_token_exists", lambda sb: False)
-    monkeypatch.setattr(pd, "mint_read_token", lambda sb: GOOD)
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
-    path = _token_path(data_dir)
-    assert path.read_text().strip() == GOOD
-    assert (path.stat().st_mode & 0o777) == 0o600
-
-
-def test_existing_file_kept_without_minting(pd, data_dir, monkeypatch):
-    _token_path(data_dir).write_text(GOOD + "\n")
-    monkeypatch.setattr(
-        pd, "mint_read_token", lambda sb: pytest.fail("must not re-mint")
-    )
-    monkeypatch.setattr(
-        pd, "read_token_exists", lambda sb: pytest.fail("must not query when file OK")
-    )
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
-
-
-def test_missing_file_but_token_exists_leaves_fallback(pd, data_dir, monkeypatch):
-    # SB already has the named token but the file is gone → the secret is
-    # unrecoverable; must NOT mint a duplicate, leave the pollers on the fallback.
-    monkeypatch.setattr(pd, "read_token_exists", lambda sb: True)
-    monkeypatch.setattr(
-        pd, "mint_read_token", lambda sb: pytest.fail("must not mint a duplicate")
-    )
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is False
-    assert not _token_path(data_dir).exists()
-
-
-def test_junk_existing_file_replaced(pd, data_dir, monkeypatch):
-    _token_path(data_dir).write_text(JUNK + "\n")
-    monkeypatch.setattr(pd, "read_token_exists", lambda sb: False)
-    monkeypatch.setattr(pd, "mint_read_token", lambda sb: GOOD)
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
-    assert _token_path(data_dir).read_text().strip() == GOOD
-
-
-def test_mint_failure_writes_nothing(pd, data_dir, monkeypatch):
-    monkeypatch.setattr(pd, "read_token_exists", lambda sb: False)
-    monkeypatch.setattr(pd, "mint_read_token", lambda sb: None)
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is False
-    assert not _token_path(data_dir).exists()
-
-
-def test_env_token_written_without_minting(pd, data_dir, monkeypatch):
-    # servicebay#2317: SB injects a well-formed SB_READ_TOKEN → write it to the
-    # file, never touch the legacy mint path.
+def test_env_token_written_0600(pd, data_dir, monkeypatch):
+    # servicebay#2317: SB injects a well-formed SB_READ_TOKEN → write it 0600.
     monkeypatch.setenv("SB_READ_TOKEN", ENV_GOOD)
-    monkeypatch.setattr(
-        pd, "mint_read_token", lambda sb: pytest.fail("must not mint when env present")
-    )
-    monkeypatch.setattr(
-        pd,
-        "read_token_exists",
-        lambda sb: pytest.fail("must not query when env present"),
-    )
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
+    assert pd.ensure_read_token_file(str(data_dir)) is True
     path = _token_path(data_dir)
     assert path.read_text().strip() == ENV_GOOD
     assert (path.stat().st_mode & 0o777) == 0o600
 
 
-def test_malformed_env_falls_through_to_mint(pd, data_dir, monkeypatch):
-    monkeypatch.setenv("SB_READ_TOKEN", JUNK)
-    monkeypatch.setattr(pd, "read_token_exists", lambda sb: False)
-    monkeypatch.setattr(pd, "mint_read_token", lambda sb: GOOD)
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
-    assert _token_path(data_dir).read_text().strip() == GOOD
-
-
-def test_empty_env_falls_through_to_mint(pd, data_dir, monkeypatch):
-    monkeypatch.setenv("SB_READ_TOKEN", "")
-    monkeypatch.setattr(pd, "read_token_exists", lambda sb: False)
-    monkeypatch.setattr(pd, "mint_read_token", lambda sb: GOOD)
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
-    assert _token_path(data_dir).read_text().strip() == GOOD
-
-
-def test_env_same_as_file_is_idempotent_noop(pd, data_dir, monkeypatch):
-    _token_path(data_dir).write_text(ENV_GOOD + "\n")
-    monkeypatch.setenv("SB_READ_TOKEN", ENV_GOOD)
-    monkeypatch.setattr(
-        pd, "mint_read_token", lambda sb: pytest.fail("must not mint on no-op")
-    )
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
-    assert _token_path(data_dir).read_text().strip() == ENV_GOOD
-
-
-def test_env_differs_from_file_updates_to_env(pd, data_dir, monkeypatch):
-    # SB revokes+re-mints each deploy → the env token is authoritative over a
-    # stale file token, even a well-formed one.
+def test_existing_file_kept(pd, data_dir, monkeypatch):
     _token_path(data_dir).write_text(GOOD + "\n")
+    monkeypatch.delenv("SB_READ_TOKEN", raising=False)
+    assert pd.ensure_read_token_file(str(data_dir)) is True
+    assert _token_path(data_dir).read_text().strip() == GOOD
+
+
+def test_no_env_no_file_returns_false_without_write(pd, data_dir, monkeypatch):
+    monkeypatch.delenv("SB_READ_TOKEN", raising=False)
+    assert pd.ensure_read_token_file(str(data_dir)) is False
+    assert not _token_path(data_dir).exists()
+
+
+def test_malformed_env_no_file_returns_false(pd, data_dir, monkeypatch):
+    monkeypatch.setenv("SB_READ_TOKEN", JUNK)
+    assert pd.ensure_read_token_file(str(data_dir)) is False
+    assert not _token_path(data_dir).exists()
+
+
+def test_junk_existing_file_replaced_by_env(pd, data_dir, monkeypatch):
+    _token_path(data_dir).write_text(JUNK + "\n")
     monkeypatch.setenv("SB_READ_TOKEN", ENV_GOOD)
-    monkeypatch.setattr(
-        pd, "mint_read_token", lambda sb: pytest.fail("must not mint when env present")
-    )
-    assert pd.ensure_read_token_file(str(data_dir), "http://sb") is True
+    assert pd.ensure_read_token_file(str(data_dir)) is True
     assert _token_path(data_dir).read_text().strip() == ENV_GOOD
 
 
-def test_read_token_exists_matches_by_name(pd, monkeypatch):
+def test_never_touches_sb_api(pd, data_dir, monkeypatch):
+    # The boundary lesson: Solaris must not mint durable creds. The function only
+    # reads the injected env + writes the file — it must never hit the SB API.
+    monkeypatch.setenv("SB_READ_TOKEN", ENV_GOOD)
     monkeypatch.setattr(
-        pd,
-        "get_json",
-        lambda url, timeout=10.0: (
-            200,
-            {"tokens": [{"name": pd.READ_TOKEN_NAME, "id": "aa"}]},
-        ),
+        pd, "post_json", lambda *a, **k: pytest.fail("must not call the SB API")
     )
-    assert pd.read_token_exists("http://sb") is True
     monkeypatch.setattr(
-        pd,
-        "get_json",
-        lambda url, timeout=10.0: (200, {"tokens": [{"name": "other", "id": "bb"}]}),
+        pd, "get_json", lambda *a, **k: pytest.fail("must not call the SB API")
     )
-    assert pd.read_token_exists("http://sb") is False
+    assert pd.ensure_read_token_file(str(data_dir)) is True
+    assert _token_path(data_dir).read_text().strip() == ENV_GOOD

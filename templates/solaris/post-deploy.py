@@ -22,10 +22,9 @@ remains is the wiring only a deploy can do:
                      non-expiring read-only token at
                      <DATA_DIR>/solarisbay/sb-read-token so the unattended
                      pollers don't 401-churn on the rotating admin token (#818).
-                     ServiceBay now mints that read token itself and injects it
-                     as the SB_READ_TOKEN env var (servicebay#2317) — the
-                     post-deploy just writes it to the file; self-minting is the
-                     legacy fallback for an older ServiceBay.
+                     ServiceBay mints that read token itself and injects it as
+                     the SB_READ_TOKEN env var (servicebay#2317) — the
+                     post-deploy just persists it to the file.
   4. ONE restart   — POST /api/services/solaris/action {restart} as the LAST
                      step. Risk-2-safe (#271 spike): ServiceBay runs this
                      script in an SSH session and the restart is `--no-block`
@@ -63,14 +62,6 @@ GATEKEEPER_CONTAINER = os.environ.get("GATEKEEPER_CONTAINER", "solaris-gatekeepe
 
 ADMIN_TOKEN_NAME = "admin-soul"
 ADMIN_MCP_SCOPES = ["read", "lifecycle", "mutate"]
-
-# The non-expiring read-only token the unattended pollers use so they don't
-# 401-churn when the rotating admin token lapses (#818). Modern ServiceBay
-# (servicebay#2317) mints this itself and injects it as SB_READ_TOKEN; these
-# name/scope constants drive only the LEGACY self-mint fallback for an older
-# ServiceBay. Read-only is the ceiling SB enforces for a never-expiring token.
-READ_TOKEN_NAME = "solaris-unattended-read"
-READ_TOKEN_SCOPES = ["read"]
 
 # Jellyfin service-user credential converge (#626). The engine authenticates to
 # Jellyfin as the read-only `solaris` lldap user via JELLYFIN_PASSWORD, but that
@@ -2004,65 +1995,18 @@ def mint_admin_token(
     return None
 
 
-def read_token_exists(sb_api: str) -> bool:
-    """True when a token named READ_TOKEN_NAME already lives in SB's token list.
-
-    The mint shows the secret exactly once, so we can't re-read it from SB — the
-    file on disk is the only copy. If the file is gone but SB still has the named
-    token, minting again would just leave an orphaned duplicate in the list; so a
-    missing file with the token present means we cannot recover the secret and
-    must NOT mint a second one. Returns False on any read error (be conservative:
-    don't skip minting because a hiccup hid an existing token — a dup is churn,
-    but never minting is worse)."""
-    status, body = get_json(f"{sb_api}/api/system/api-tokens", timeout=15)
-    if status != 200 or not isinstance(body, dict):
-        return False
-    tokens = body.get("tokens")
-    if not isinstance(tokens, list):
-        return False
-    return any(isinstance(t, dict) and t.get("name") == READ_TOKEN_NAME for t in tokens)
-
-
-def mint_read_token(sb_api: str, attempts: int = 4, backoff_s: float = 3.0):
-    """Mint the non-expiring read-only token (servicebay#2302). SB fail-closed
-    guards `neverExpires` to the `read` scope, so the body is `read`-only. Retries
-    for the SB readiness race (#126); never persists a non-`sb_` fallback."""
-    for attempt in range(1, attempts + 1):
-        status, body = post_json(
-            f"{sb_api}/api/system/api-tokens",
-            {
-                "name": READ_TOKEN_NAME,
-                "scopes": READ_TOKEN_SCOPES,
-                "neverExpires": True,
-            },
-            timeout=15,
-        )
-        if status == 200 and isinstance(body, dict):
-            secret = body.get("secret")
-            if isinstance(secret, str) and SB_MCP_TOKEN_RE.match(secret):
-                jlog("info", "read-token", "minted read-only SB token", attempt=attempt)
-                return secret
-        if attempt < attempts:
-            time.sleep(backoff_s)
-    jlog("warn", "read-token", "could not mint read-only SB token", attempts=attempts)
-    return None
-
-
-def ensure_read_token_file(data_dir: str, sb_api: str) -> bool:
-    """Keep the non-expiring read-only SB token at
+def ensure_read_token_file(data_dir: str) -> bool:
+    """Persist the non-expiring read-only SB token at
     <data_dir>/solarisbay/sb-read-token (0600) for the unattended pollers (#818).
 
-    Modern ServiceBay (servicebay#2317) mints the durable read-scoped token
-    itself and injects it as the SB_READ_TOKEN env var, revoking+re-minting it
-    each deploy — so when that env var is present and well-formed it is
-    authoritative: write it (replacing a stale file token). The self-mint below
-    is the LEGACY FALLBACK for an older ServiceBay that doesn't inject it.
+    ServiceBay (servicebay#2317) mints the durable read-scoped token itself and
+    injects it as the SB_READ_TOKEN env var, revoking+re-minting it each deploy —
+    so this just persists that env var to the file; it never self-mints (durable
+    creds are the platform's job).
 
-    Idempotent: a present, well-formed file that already matches the authoritative
-    source is kept (the token never expires under the legacy path, and the env
-    path re-mints to the same file on a converged deploy). Best-effort; a miss
-    just leaves the pollers on the rotating admin token (they fall back to
-    SB_MCP_TOKEN_PATH)."""
+    Idempotent: a present, well-formed file that already matches the injected
+    token is kept. Best-effort; a miss just leaves the pollers on the rotating
+    admin token (they fall back to SB_MCP_TOKEN_PATH)."""
     path = os.path.join(data_dir, "solarisbay", "sb-read-token")
     existing = ""
     try:
@@ -2070,11 +2014,11 @@ def ensure_read_token_file(data_dir: str, sb_api: str) -> bool:
             existing = f.read().strip()
     except OSError:
         pass
+    if existing and SB_MCP_TOKEN_RE.match(existing):
+        jlog("info", "read-token", "existing read-only token file present")
+        return True
     env_token = env("SB_READ_TOKEN").strip()
     if env_token and SB_MCP_TOKEN_RE.match(env_token):
-        if existing == env_token:
-            jlog("info", "read-token", "SB_READ_TOKEN already current in file")
-            return True
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -2085,32 +2029,13 @@ def ensure_read_token_file(data_dir: str, sb_api: str) -> bool:
             return False
         jlog("info", "read-token", "wrote SB_READ_TOKEN to read-only token file")
         return True
-    if existing and SB_MCP_TOKEN_RE.match(existing):
-        jlog("info", "read-token", "existing read-only token file present")
-        return True
-    if read_token_exists(sb_api):
-        jlog(
-            "warn",
-            "read-token",
-            "SB has a read-only token but its file is missing (secret is "
-            "unrecoverable) — leaving pollers on the fallback; revoke it in SB to "
-            "re-mint",
-            name=READ_TOKEN_NAME,
-        )
-        return False
-    token = mint_read_token(sb_api)
-    if not token:
-        return False
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(token + "\n")
-        os.chmod(path, 0o600)
-    except OSError as e:
-        jlog("error", "read-token", "could not write read token file", error=str(e))
-        return False
-    jlog("info", "read-token", "wrote read-only token file", path=path)
-    return True
+    jlog(
+        "warn",
+        "read-token",
+        "no SB_READ_TOKEN injected and no read-token file — leaving pollers on "
+        "the rotating admin-token fallback",
+    )
+    return False
 
 
 def ensure_admin_token_file(data_dir: str, sb_api: str, mcp_url: str) -> bool:
@@ -2220,8 +2145,8 @@ def main() -> int:
     # ── 3. admin MCP token ───────────────────────────────────────────────────
     ensure_admin_token_file(data_dir, sb_api, mcp_url)
     # The non-expiring read-only token the unattended pollers use so they don't
-    # 401-churn when the rotating admin token lapses (servicebay#2302, #818).
-    ensure_read_token_file(data_dir, sb_api)
+    # 401-churn when the rotating admin token lapses (servicebay#2317, #818).
+    ensure_read_token_file(data_dir)
 
     # ── 4. restart ───────────────────────────────────────────────────────────
     time.sleep(3)
