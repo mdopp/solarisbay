@@ -206,7 +206,7 @@ def test_event_concept_is_date_prefixed_and_event_kind(env):
     writer.write_concept(_person(), ingesting_uid="mdopp")
     res = writer.write_concept(rec, ingesting_uid="mdopp")
     assert res.ref_kind == "event"
-    assert res.okf_path == "users/mdopp/okf/events/2026-05-30-climbing-trip.md"
+    assert res.okf_path == "users/mdopp/okf/events/2026/2026-05-30-climbing-trip.md"
     assert (tmp_path / "notes" / res.okf_path).is_file()
     conn = projection.open_conn(db_path)
     assert projection.row_count(conn, "events") == 1

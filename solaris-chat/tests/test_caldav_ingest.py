@@ -189,7 +189,9 @@ def test_event_maps_to_event_with_when_and_kind(env):
         "SELECT okf_path FROM concepts WHERE ref_kind = 'event'"
     ).fetchone()
     # Caldav events default to the ingesting resident -> private user path (#576).
-    assert concept["okf_path"] == "users/mdopp/okf/events/2026-05-30-team-dinner.md"
+    assert (
+        concept["okf_path"] == "users/mdopp/okf/events/2026/2026-05-30-team-dinner.md"
+    )
     conn.close()
     text = (
         tmp_path
@@ -198,6 +200,7 @@ def test_event_maps_to_event_with_when_and_kind(env):
         / "mdopp"
         / "okf"
         / "events"
+        / "2026"
         / "2026-05-30-team-dinner.md"
     ).read_text()
     assert "when: 2026-05-30T19:00:00/2026-05-30T21:00:00" in text
