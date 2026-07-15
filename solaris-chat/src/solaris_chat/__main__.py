@@ -123,6 +123,7 @@ async def _run() -> None:
         settings.sb_mcp_token_path,
         event_bus,
         settings.default_uid,
+        notifier=notifier,
     )
     sb_event_bridge.start()
     crons = CronRunner(
