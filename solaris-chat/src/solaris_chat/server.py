@@ -804,6 +804,78 @@ _IMAGE_UPLOAD_EVENT = "image-upload"
 # product limit (the panel sends at most a couple of camera/upload images).
 _MAX_IMAGES = 4
 
+# Native camera upload (#826): the companion app captures 1 image / a series /
+# a multi-page PDF and POSTs it to `/napi/upload`. Uploads land in the resident's
+# notes vault so they are `notes_search`-visible and PWA-visible — NOT Immich, NOT
+# a separate inbox. Allowed types map to their canonical extension; anything else
+# is 415. Per-file and per-request caps fail cleanly (413 / 400).
+_UPLOAD_MIME_EXT = {"image/jpeg": ".jpg", "application/pdf": ".pdf"}
+_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+_UPLOAD_MAX_FILES = 20
+# Room for `_UPLOAD_MAX_FILES` max-size parts plus multipart framing, so a legit
+# series upload isn't rejected by aiohttp's whole-body `client_max_size` before
+# the handler's own per-file guard runs.
+_UPLOAD_REQUEST_MAX_BYTES = _UPLOAD_MAX_FILES * _UPLOAD_MAX_BYTES + 8 * 1024 * 1024
+# Vault subfolder the raw upload bytes are stored under (the companion note lives
+# beside it and embeds it, so `notes_search` — which indexes markdown, not raw
+# binaries — can surface the upload).
+_UPLOAD_SUBDIR = "uploads"
+_UPLOAD_UNSAFE_RE = re.compile(r"[^A-Za-z0-9äöüÄÖÜß._ -]+")
+
+
+def _sanitize_upload_name(filename: str, mime: str) -> str:
+    """A safe vault filename for an uploaded file, extension forced to `mime`.
+
+    Neutralises any path (`../`, separators) by keeping only the basename, maps
+    unsafe chars to `_`, and forces the extension to the one implied by the MIME
+    so a `.jpg` labelled `application/pdf` (or an extension-less name) is stored
+    consistently. Falls back to `upload` when nothing usable remains."""
+    ext = _UPLOAD_MIME_EXT[mime]
+    base = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = base[: -len(Path(base).suffix)] if Path(base).suffix else base
+    stem = _UPLOAD_UNSAFE_RE.sub("_", stem).strip(" ._-")
+    return f"{stem or 'upload'}{ext}"
+
+
+def _unique_upload_path(directory: Path, name: str) -> Path:
+    """A collision-free path in `directory` for `name` (append `_1`, `_2`, …)."""
+    candidate = directory / name
+    if not candidate.exists():
+        return candidate
+    stem, ext = Path(name).stem, Path(name).suffix
+    for i in range(1, 1000):
+        candidate = directory / f"{stem}_{i}{ext}"
+        if not candidate.exists():
+            return candidate
+    return directory / f"{stem}_{uuid.uuid4().hex}{ext}"
+
+
+def _write_upload_note(notes_dir: str, uid: str, dest: Path, mime: str) -> str:
+    """Write a markdown note beside `dest` that embeds the upload (#826).
+
+    `notes_search` indexes markdown, not raw JPEG/PDF bytes, so an uploaded file
+    is only discoverable through a note that names and references it. The note
+    sits next to the file in the same `uploads/` folder, titled with the file's
+    stem, embeds it via an Obsidian `![[...]]` link, and carries the capture date
+    plus `added_by:` so the vault's per-owner scope (#576) treats it as the
+    resident's private note. Returns the note's vault-relative path."""
+    root = Path(notes_dir).resolve()
+    note_path = dest.with_suffix(".md")
+    if note_path.exists():
+        note_path = _unique_upload_path(dest.parent, f"{dest.stem}_note.md")
+    title = dest.stem
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    label = "PDF" if mime == "application/pdf" else "Bild"
+    body = (
+        f"---\nadded_by: {uid}\ndate: {day}\nkind: upload\n---\n\n"
+        f"# {title}\n\n"
+        f"{label} hochgeladen am {day}.\n\n"
+        f"![[{dest.name}]]\n"
+    )
+    note_path.write_text(body, encoding="utf-8")
+    return str(note_path.relative_to(root))
+
+
 # Ephemeral/incognito chats (#246): the proxy prepends this to every turn so the
 # agent knows nothing is durable — it must NOT auto-ingest notes, write memory
 # facts, or otherwise persist anything unless the resident explicitly asks to
@@ -3665,6 +3737,93 @@ def build_app(
         ok = device_token_store.revoke(solaris_db_path, owner, token_id)
         return web.json_response({"ok": ok}, status=200 if ok else 404)
 
+    async def napi_upload(request: web.Request) -> web.Response:
+        """Store a camera capture / PDF from the companion app into the vault (#826).
+
+        Only reached via `native(...)` on `/napi/`: device-token-only, fail-closed
+        (401 without a valid `sol_device_` bearer), uid resolved from the token.
+
+        `multipart/form-data` with N `file` parts (a single shot or a series) plus
+        an optional user-chosen `filename` (sanitized server-side) and `kind`. Each
+        file is written into the resident's notes vault under `<owner>/uploads/`
+        (household → shared `uploads/`), and a small markdown note that embeds it is
+        written beside it — so it is `notes_search`-visible (search indexes markdown,
+        not raw binaries) and shows up in the PWA. Owner-scoped to the token's uid,
+        matching how the vault is scoped. Fails cleanly: 415 unsupported type, 413
+        too large, 400 bad request."""
+        uid = request["native_uid"]
+        if not request.content_type.startswith("multipart/"):
+            return web.json_response(
+                {"ok": False, "error": "expected multipart/form-data"}, status=400
+            )
+        base = (
+            Path(notes_dir)
+            if uid == notes_search.SHARED_UID
+            else Path(notes_dir) / "users" / uid
+        )
+        upload_dir = base / _UPLOAD_SUBDIR
+        chosen_name = ""
+        results: list[dict[str, Any]] = []
+        try:
+            reader = await request.multipart()
+        except (ValueError, AssertionError):
+            return web.json_response(
+                {"ok": False, "error": "malformed multipart"}, status=400
+            )
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name == "filename":
+                chosen_name = (await part.text()).strip()
+                continue
+            if part.name in ("kind",):
+                await part.text()  # drained, advisory only
+                continue
+            if part.name != "file":
+                await part.read()  # drain an unexpected part
+                continue
+            mime = (part.headers.get("Content-Type") or "").split(";")[0].strip()
+            if mime not in _UPLOAD_MIME_EXT:
+                return web.json_response(
+                    {"ok": False, "error": f"unsupported type: {mime or 'unknown'}"},
+                    status=415,
+                )
+            if len(results) >= _UPLOAD_MAX_FILES:
+                return web.json_response(
+                    {"ok": False, "error": "too many files"}, status=400
+                )
+            data = bytearray()
+            while True:
+                chunk = await part.read_chunk()
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > _UPLOAD_MAX_BYTES:
+                    return web.json_response(
+                        {"ok": False, "error": "file too large"}, status=413
+                    )
+            if not data:
+                return web.json_response(
+                    {"ok": False, "error": "empty file"}, status=400
+                )
+            raw_name = chosen_name or part.filename or "upload"
+            safe = _sanitize_upload_name(raw_name, mime)
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            dest = _unique_upload_path(upload_dir, safe)
+            dest.write_bytes(bytes(data))
+            rel_file = str(dest.relative_to(Path(notes_dir).resolve()))
+            note_rel = _write_upload_note(notes_dir, uid, dest, mime)
+            results.append({"ok": True, "id": rel_file, "url": f"/notes/{rel_file}"})
+            log.info(
+                "napi.upload.stored", uid=uid, file=rel_file, note=note_rel, mime=mime
+            )
+        if not results:
+            return web.json_response({"ok": False, "error": "no file part"}, status=400)
+        if len(results) == 1:
+            return web.json_response(results[0])
+        return web.json_response({"ok": True, "files": results})
+
     async def pair_device_page(request: web.Request) -> web.Response:
         """Authelia-gated confirm page for pairing a native Android client (#751).
 
@@ -4299,7 +4458,10 @@ def build_app(
         resp.headers["Content-Security-Policy"] = f"frame-ancestors {frame_ancestors}"
         return resp
 
-    app = web.Application(middlewares=[csp])
+    # Raise the whole-body cap above aiohttp's 1 MB default so a native camera
+    # upload / PDF series (#826) reaches its handler; the per-file (413) and
+    # per-request-count (400) guards there are the real limits.
+    app = web.Application(middlewares=[csp], client_max_size=_UPLOAD_REQUEST_MAX_BYTES)
     app.router.add_get("/", index)
     app.router.add_get("/sw.js", service_worker)
     app.router.add_get("/.well-known/assetlinks.json", assetlinks)
@@ -4401,6 +4563,7 @@ def build_app(
         "/napi/portal/camera/{entity_id}/snapshot", native(portal_camera_snapshot)
     )
     app.router.add_post("/napi/ha/call", native(ha_call))
+    app.router.add_post("/napi/upload", native(napi_upload))
     # ServiceBay BFF reads (#811): re-serve SB's companion reads under Solaris's
     # own /napi so the app never talks to ServiceBay directly (ADR 0010).
     app.router.add_get("/napi/servicebay/{key}", native(servicebay_read))
