@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.0](https://github.com/mdopp/solarisbay/compare/v0.23.0...v0.24.0) (2026-07-15)
+
+
+### Features
+
+* **chat:** shard immich event notes by year with an idempotent runtime migration ([307e6c7](https://github.com/mdopp/solarisbay/commit/307e6c7ae709bf78c3264918adba18ea386214c7))
+* **chat:** shard okf/events by year + one-time flat-note migration ([042a684](https://github.com/mdopp/solarisbay/commit/042a6845bbccf636107ee37a324859a657fa1c29)), closes [#830](https://github.com/mdopp/solarisbay/issues/830)
+
 ## [0.23.0](https://github.com/mdopp/solarisbay/compare/v0.22.1...v0.23.0) (2026-07-15)
 
 
