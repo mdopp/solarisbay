@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.23.0](https://github.com/mdopp/solarisbay/compare/v0.22.1...v0.23.0) (2026-07-15)
+
+
+### Features
+
+* **chat:** notes_search FTS5 index so it covers the full ~99k-file vault ([3634f25](https://github.com/mdopp/solarisbay/commit/3634f25ced8a589bcff9ee9ef9f7186c7502a25f))
+* **chat:** SQLite-FTS5 index over the notes vault for notes_search ([99bfeac](https://github.com/mdopp/solarisbay/commit/99bfeac112a93e4c3facdb9c25fa0a04055c0dc5)), closes [#830](https://github.com/mdopp/solarisbay/issues/830)
+* **chat:** token-authed /napi/upload stores camera captures into the notes vault ([#828](https://github.com/mdopp/solarisbay/issues/828)) ([b4867c0](https://github.com/mdopp/solarisbay/commit/b4867c024f4af224271a0e0f86ef70748496fa74)), closes [#826](https://github.com/mdopp/solarisbay/issues/826)
+
 ## [0.22.1](https://github.com/mdopp/solarisbay/compare/v0.22.0...v0.22.1) (2026-07-14)
 
 
