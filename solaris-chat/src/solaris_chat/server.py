@@ -1739,6 +1739,46 @@ def build_app(
             )
         return web.json_response(body)
 
+    async def servicebay_operate(request: web.Request) -> web.Response:
+        """Run a lifecycle action on a ServiceBay service for the app
+        (BFF, ADR 0010, #827 operate half).
+
+        Solaris is the BFF/hub: the app asks Solaris to start/stop/restart a
+        service and Solaris forwards it to SB's lifecycle-scoped `POST
+        /napi/services/:name/operate` (servicebay#2264) via the SB-MCP token —
+        the app never talks to ServiceBay. Body `{action: start|stop|restart}`.
+
+        Only reached via `native(...)` on `/napi/`: device-token-only,
+        fail-closed (401 without a valid `sol_device_` bearer). An action outside
+        start/stop/restart is 400; SB unreachable / non-2xx is 502; no SB
+        companion configured is 503. Client-side confirmation (#44) gates the
+        button; the route itself is not confirm-gated. Infra mutation — exposed
+        under the device-token native surface, re-checked against SB's lifecycle
+        scope on the ServiceBay side."""
+        name = request.match_info["name"]
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        action = body.get("action")
+        if action not in sb_companion_module.OPERATE_ACTIONS:
+            return web.json_response({"ok": False, "error": "bad_action"}, status=400)
+        if sb_companion is None or not sb_companion.enabled:
+            return web.json_response(
+                {"ok": False, "error": "servicebay_unconfigured"}, status=503
+            )
+        ok, detail = await sb_companion.operate(name, action)
+        if not ok:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "servicebay_unavailable",
+                    "detail": detail[:2000],
+                },
+                status=502,
+            )
+        return web.json_response({"ok": True, "name": name, "action": action})
+
     async def servicebay_approval_verdict(request: web.Request) -> web.Response:
         """Proxy an admin's Approve/Reject verdict on a ServiceBay approval
         (BFF, ADR 0010, #811 part 2).
@@ -4567,6 +4607,9 @@ def build_app(
     # ServiceBay BFF reads (#811): re-serve SB's companion reads under Solaris's
     # own /napi so the app never talks to ServiceBay directly (ADR 0010).
     app.router.add_get("/napi/servicebay/{key}", native(servicebay_read))
+    app.router.add_post(
+        "/napi/servicebay/services/{name}/operate", native(servicebay_operate)
+    )
     app.router.add_get("/napi/device-tokens", native(device_token_list))
     app.router.add_delete("/napi/device-tokens/{id}", native(device_token_revoke))
     app.router.add_get("/p/{type}", portal_page)

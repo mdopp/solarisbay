@@ -47,6 +47,10 @@ READ_PATHS = {
     "upgrades": "/napi/upgrades",
 }
 
+# The lifecycle actions SB's operate route accepts (servicebay#2264). Solaris
+# rejects anything else before it ever reaches ServiceBay.
+OPERATE_ACTIONS = ("start", "stop", "restart")
+
 # SB's session-driven delegated-admin mint (servicebay#2276): a verified Authelia
 # admin session (proxy-injected Remote-User/Remote-Groups) mints a short-lived,
 # single-use `X-SB-Delegated-Admin` assertion action+target-bound to
@@ -101,6 +105,53 @@ class SbCompanionClient:
         except (aiohttp.ClientError, ValueError, TimeoutError, OSError) as e:
             log.warn("engine.sb_companion.fetch_failed", key=key, error=str(e))
             return None
+
+    async def operate(self, name: str, action: str) -> tuple[bool, str]:
+        """Run a lifecycle action (`start`/`stop`/`restart`) on a ServiceBay
+        service for the app (BFF, ADR 0010, #827 operate half).
+
+        POSTs to SB's lifecycle-scoped `POST /napi/services/:name/operate`
+        (servicebay#2264) with the deploy-time SB-MCP token — the SAME
+        read+lifecycle+mutate token the reads use, no new credential. The
+        lifecycle scope is what authorises this on SB's side; a `read`-only token
+        would be refused there, so least privilege lives in the token's scope.
+
+        Rejects an action outside `OPERATE_ACTIONS` before any network call.
+        Returns `(ok, detail)` — `ok` iff SB returned 2xx; a bad action, no
+        token, unreachable SB, or non-2xx returns `(False, <reason>)`, never a
+        false ok."""
+        if action not in OPERATE_ACTIONS:
+            return False, "bad_action"
+        if not self._base:
+            return False, "no_sb_api"
+        token = read_token(self._token_path)
+        if not token:
+            return False, "no_token"
+        url = f"{self._base}/napi/services/{name}/operate"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            async with aiohttp.ClientSession(timeout=_TIMEOUT) as client:
+                async with client.post(
+                    url, headers=headers, json={"action": action}
+                ) as resp:
+                    text = (await resp.text())[:400]
+                    if resp.status // 100 != 2:
+                        log.warn(
+                            "engine.sb_companion.operate_http",
+                            name=name,
+                            action=action,
+                            status=resp.status,
+                        )
+                        return False, f"HTTP {resp.status}: {text}"
+                    return True, text or "ok"
+        except (aiohttp.ClientError, TimeoutError, OSError) as e:
+            log.warn(
+                "engine.sb_companion.operate_failed",
+                name=name,
+                action=action,
+                error=str(e),
+            )
+            return False, str(e)
 
     async def submit_verdict(
         self, approval_id: str, verb: str, authelia_cookie: str = ""
