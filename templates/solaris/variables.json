@@ -24,7 +24,8 @@
       "authSkipPaths": [
         "/.well-known/",
         "/static/",
-        "/napi/"
+        "/napi/",
+        "/download"
       ]
     }
   },
