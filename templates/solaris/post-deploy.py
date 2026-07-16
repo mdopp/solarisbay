@@ -2014,11 +2014,17 @@ def ensure_read_token_file(data_dir: str) -> bool:
             existing = f.read().strip()
     except OSError:
         pass
-    if existing and SB_MCP_TOKEN_RE.match(existing):
-        jlog("info", "read-token", "existing read-only token file present")
-        return True
     env_token = env("SB_READ_TOKEN").strip()
+    # ServiceBay REVOKES + re-mints this token on every deploy (servicebay#2317),
+    # so a merely well-formed EXISTING token may already be revoked — keeping it
+    # would strand the pollers on a dead credential (they'd 401 against every
+    # /napi call). Only keep the file as-is when it already equals the freshly
+    # injected token; otherwise OVERWRITE it with the injected one. (The old code
+    # kept any well-formed file, which broke #818 from the 2nd deploy onward.)
     if env_token and SB_MCP_TOKEN_RE.match(env_token):
+        if existing == env_token:
+            jlog("info", "read-token", "read-only token file already matches injected token")
+            return True
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -2028,6 +2034,11 @@ def ensure_read_token_file(data_dir: str) -> bool:
             jlog("error", "read-token", "could not write read token file", error=str(e))
             return False
         jlog("info", "read-token", "wrote SB_READ_TOKEN to read-only token file")
+        return True
+    # No token injected (legacy ServiceBay without #2317): keep an existing
+    # well-formed file as the fallback rather than clobbering it.
+    if existing and SB_MCP_TOKEN_RE.match(existing):
+        jlog("info", "read-token", "no SB_READ_TOKEN injected; keeping existing read-only token file")
         return True
     jlog(
         "warn",
