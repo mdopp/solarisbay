@@ -161,7 +161,10 @@ class HaStateWatcher:
             return
         new_state = data.get("new_state") or {}
         card = card_spec(
-            entity_id, new_state.get("state"), new_state.get("attributes") or {}
+            entity_id,
+            new_state.get("state"),
+            new_state.get("attributes") or {},
+            new_state.get("last_updated"),
         )
         if card is None:
             return
