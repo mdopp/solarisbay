@@ -2023,7 +2023,11 @@ def ensure_read_token_file(data_dir: str) -> bool:
     # kept any well-formed file, which broke #818 from the 2nd deploy onward.)
     if env_token and SB_MCP_TOKEN_RE.match(env_token):
         if existing == env_token:
-            jlog("info", "read-token", "read-only token file already matches injected token")
+            jlog(
+                "info",
+                "read-token",
+                "read-only token file already matches injected token",
+            )
             return True
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -2038,7 +2042,11 @@ def ensure_read_token_file(data_dir: str) -> bool:
     # No token injected (legacy ServiceBay without #2317): keep an existing
     # well-formed file as the fallback rather than clobbering it.
     if existing and SB_MCP_TOKEN_RE.match(existing):
-        jlog("info", "read-token", "no SB_READ_TOKEN injected; keeping existing read-only token file")
+        jlog(
+            "info",
+            "read-token",
+            "no SB_READ_TOKEN injected; keeping existing read-only token file",
+        )
         return True
     jlog(
         "warn",
