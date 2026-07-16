@@ -99,12 +99,14 @@ async def _run() -> None:
     update_poller.start()
     # ServiceBay approval signal → Wartung approval-cards (#790): poll the generic
     # pending-approval feed and card each NEW request into the shared Wartung admin
-    # chat (dedup persisted, phone push via inject). Reads the deploy-time SB-MCP
-    # token; dormant when SB_API_URL is unset. The [Approve]/[Deny] verdict handlers
-    # (server.py) run under the acting admin's session-exchanged token.
+    # chat (dedup persisted, phone push via inject). Reads the non-expiring
+    # read-only SB token (#818); dormant when SB_API_URL is unset. The
+    # [Approve]/[Deny] verdict handlers (server.py) run under the acting admin's
+    # session-exchanged token.
     approval_poller = ApprovalPoller(
         settings.solaris_db_path,
         settings.sb_api_url,
+        settings.sb_read_token_path,
         settings.sb_mcp_token_path,
         event_bus,
         settings.default_uid,
@@ -189,6 +191,7 @@ async def _run() -> None:
         notifier=notifier,
         sb_mcp_url=settings.sb_mcp_url,
         sb_mcp_token_path=settings.sb_mcp_token_path,
+        sb_read_token_path=settings.sb_read_token_path,
         sb_api_url=settings.sb_api_url,
         sb_mint_url=settings.sb_mint_url,
         hass_url=settings.hass_url,

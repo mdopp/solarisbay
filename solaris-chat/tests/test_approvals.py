@@ -120,6 +120,7 @@ async def test_poll_once_cards_new_requests_into_wartung(tmp_path):
     poller = _FakePoller(
         db,
         "http://sb",
+        str(tmp_path / "read"),
         str(tmp_path / "token"),
         EventBus(),
         "household",
@@ -158,7 +159,14 @@ async def test_poll_once_no_requests_is_quiet(tmp_path):
     from solaris_chat.engine.notify import EventBus
 
     db = _db(tmp_path)
-    poller = _FakePoller(db, "http://sb", str(tmp_path / "t"), EventBus(), "household")
+    poller = _FakePoller(
+        db,
+        "http://sb",
+        str(tmp_path / "read"),
+        str(tmp_path / "t"),
+        EventBus(),
+        "household",
+    )
     assert await poller.poll_once() == 0
 
 
@@ -175,6 +183,7 @@ async def test_poll_once_carding_pushes_when_backgrounded(tmp_path):
     poller = _FakePoller(
         db,
         "http://sb",
+        str(tmp_path / "read"),
         str(tmp_path / "t"),
         EventBus(),  # nobody watching → backgrounded
         "household",
@@ -188,6 +197,57 @@ async def test_poll_once_carding_pushes_when_backgrounded(tmp_path):
     assert await poller.poll_once() == 1
     assert len(pushes) == 1  # phone push for the new card
     assert pushes[0][0] == "household"
+
+
+# ---- token selection: the unattended poll uses the read token, #838 ---------
+
+
+class _AuthCapturePoller(ApprovalPoller):
+    """Captures the Bearer the poll GET carried (which token file won)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.auth: str | None = None
+
+    async def _get(self, url, headers):
+        self.auth = headers.get("Authorization")
+        return {"approvals": []}
+
+
+async def test_poll_uses_read_token_when_present(tmp_path):
+    from solaris_chat.engine.notify import EventBus
+
+    read_path = tmp_path / "read"
+    mcp_path = tmp_path / "mcp"
+    read_path.write_text("sb_read_TOKEN")
+    mcp_path.write_text("sb_admin_TOKEN")
+    poller = _AuthCapturePoller(
+        _db(tmp_path),
+        "http://sb",
+        str(read_path),
+        str(mcp_path),
+        EventBus(),
+        "household",
+    )
+    await poller.poll_once()
+    assert poller.auth == "Bearer sb_read_TOKEN"
+
+
+async def test_poll_falls_back_to_mcp_token_when_read_absent(tmp_path):
+    from solaris_chat.engine.notify import EventBus
+
+    mcp_path = tmp_path / "mcp"
+    mcp_path.write_text("sb_admin_TOKEN")
+    poller = _AuthCapturePoller(
+        _db(tmp_path),
+        "http://sb",
+        str(tmp_path / "missing"),
+        str(mcp_path),
+        EventBus(),
+        "household",
+    )
+    await poller.poll_once()
+    assert poller.auth == "Bearer sb_admin_TOKEN"
 
 
 # ---- verdict callback ------------------------------------------------------

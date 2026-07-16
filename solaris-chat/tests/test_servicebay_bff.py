@@ -875,3 +875,76 @@ async def test_client_operate_surfaces_sb_error(monkeypatch, tmp_path):
     ok, detail = await client.operate("solaris-chat", "stop")
     assert ok is False
     assert detail.startswith("HTTP 500")
+
+
+# ---- SbCompanionClient token selection: reads use the read token, #838 -------
+
+
+class _ReadSession:
+    """Records the read GET so a test can assert which token file won."""
+
+    def __init__(self, seen, status=200):
+        self._seen = seen
+        self._status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def get(self, url, headers=None):
+        self._seen["auth"] = (headers or {}).get("Authorization")
+        outer = self
+
+        class _Resp:
+            status = outer._status
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def json(self):
+                return {"ok": True}
+
+        return _Resp()
+
+
+async def test_client_read_uses_read_token_when_present(monkeypatch, tmp_path):
+    from solaris_chat.engine import sb_companion as mod
+
+    read_path = tmp_path / "read"
+    mcp_path = tmp_path / "mcp"
+    read_path.write_text("sb_read_TOKEN")
+    mcp_path.write_text("sb_admin_TOKEN")
+    seen: dict[str, str | None] = {}
+    monkeypatch.setattr(
+        mod.aiohttp, "ClientSession", lambda *a, **k: _ReadSession(seen)
+    )
+
+    client = mod.SbCompanionClient(
+        "http://sb:5888", str(mcp_path), sb_read_token_path=str(read_path)
+    )
+    assert await client.read("home") == {"ok": True}
+    assert seen["auth"] == "Bearer sb_read_TOKEN"
+
+
+async def test_client_read_falls_back_to_mcp_token_when_read_absent(
+    monkeypatch, tmp_path
+):
+    from solaris_chat.engine import sb_companion as mod
+
+    mcp_path = tmp_path / "mcp"
+    mcp_path.write_text("sb_admin_TOKEN")
+    seen: dict[str, str | None] = {}
+    monkeypatch.setattr(
+        mod.aiohttp, "ClientSession", lambda *a, **k: _ReadSession(seen)
+    )
+
+    client = mod.SbCompanionClient(
+        "http://sb:5888", str(mcp_path), sb_read_token_path=str(tmp_path / "missing")
+    )
+    assert await client.read("home") == {"ok": True}
+    assert seen["auth"] == "Bearer sb_admin_TOKEN"
