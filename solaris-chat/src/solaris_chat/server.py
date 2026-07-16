@@ -86,6 +86,14 @@ from solaris_chat.logging import log
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Stable "always the latest signed build" link for the companion app (#…): the
+# Android CI publishes a GitHub release per tag with `app-release.apk`, and
+# GitHub's `releases/latest/download/<asset>` redirect always points at the
+# newest one — so `www.dopp.cloud/download` never needs bumping on a new release.
+ANDROID_APK_URL = (
+    "https://github.com/mdopp/solaris-android/releases/latest/download/app-release.apk"
+)
+
 # Native-API prefix (#757). Authelia BYPASSES this prefix for the Android widgets,
 # which authenticate with a `sol_device_` device-token bearer alone. Because it is
 # proxy-bypassed, the `/napi/*` routes are device-token-ONLY and fail-closed: no
@@ -1969,6 +1977,17 @@ def build_app(
             else []
         )
         return web.json_response(statement)
+
+    async def download(_request: web.Request) -> web.Response:
+        """Redirect `www.dopp.cloud/download` to the latest signed companion APK.
+
+        A stable, shareable install/update link: it 302s to GitHub's
+        `releases/latest/download/app-release.apk`, so it always resolves to the
+        newest CI-published build without ever touching this route. For a truly
+        public (pre-login) install, ServiceBay must add a forwardAuth exception
+        for `/download` on the proxy — same as `/.well-known/*`; logged-in users
+        (the update case) reach it regardless."""
+        raise web.HTTPFound(ANDROID_APK_URL)
 
     async def health(_request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
@@ -4505,6 +4524,7 @@ def build_app(
     app.router.add_get("/", index)
     app.router.add_get("/sw.js", service_worker)
     app.router.add_get("/.well-known/assetlinks.json", assetlinks)
+    app.router.add_get("/download", download)
     app.router.add_get("/health", health)
     app.router.add_get("/api/whoami", whoami)
     app.router.add_post("/api/ha/call", ha_call)
