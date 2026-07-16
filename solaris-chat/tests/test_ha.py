@@ -952,3 +952,53 @@ async def test_fetch_entity_history_rejects_bad_entity_id(monkeypatch):
         await ha_mod.fetch_entity_history("http://ha", "tok", "not-an-id", "24h")
         is None
     )
+
+
+# --- updated_at_ms ordering stamp (#850 / solaris-android #66) -----------------
+
+
+def test_last_updated_ms_parses_iso_variants():
+    from datetime import UTC, datetime
+
+    from solaris_chat.engine.tools.ha import _last_updated_ms
+
+    expected = int(
+        datetime(2026, 7, 16, 10, 0, 0, 123000, tzinfo=UTC).timestamp() * 1000
+    )
+    # offset form (what HA sends), Z form, and a naive value (assumed UTC)
+    assert _last_updated_ms("2026-07-16T10:00:00.123+00:00") == expected
+    assert _last_updated_ms("2026-07-16T10:00:00.123Z") == expected
+    assert _last_updated_ms("2026-07-16T10:00:00.123") == expected
+    # strictly increasing across two updates → orders concurrent toggles
+    assert _last_updated_ms("2026-07-16T10:00:01+00:00") > _last_updated_ms(
+        "2026-07-16T10:00:00+00:00"
+    )
+
+
+def test_last_updated_ms_none_on_absent_or_garbage():
+    from solaris_chat.engine.tools.ha import _last_updated_ms
+
+    assert _last_updated_ms(None) is None
+    assert _last_updated_ms("") is None
+    assert _last_updated_ms("not-a-timestamp") is None
+
+
+def test_card_spec_forwards_updated_at_ms_when_last_updated_given():
+    from solaris_chat.engine.tools.ha import _last_updated_ms, card_spec
+
+    card = card_spec(
+        "light.kitchen",
+        "on",
+        {"friendly_name": "Küche"},
+        "2026-07-16T10:00:00.123+00:00",
+    )
+    assert card is not None
+    assert card["updated_at_ms"] == _last_updated_ms("2026-07-16T10:00:00.123+00:00")
+
+
+def test_card_spec_omits_updated_at_ms_without_last_updated():
+    from solaris_chat.engine.tools.ha import card_spec
+
+    card = card_spec("light.kitchen", "on", {})
+    assert card is not None
+    assert "updated_at_ms" not in card  # legacy path → guard stays inert

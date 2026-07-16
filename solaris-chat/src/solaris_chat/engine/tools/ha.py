@@ -158,12 +158,40 @@ def group_cards_by_room(
     return all(n >= 2 for n in counts.values())
 
 
+def _last_updated_ms(iso: str | None) -> int | None:
+    """HA `last_updated` (ISO-8601) → epoch **milliseconds**, or None when
+    absent/unparseable.
+
+    This is the source-authoritative ordering stamp the companion app needs to
+    drop stale/out-of-order card updates (the multi-device toggle "spring",
+    solaris-android #66). HA is the single writer, so `last_updated` is monotonic
+    per entity — unlike a client wall-clock or SSE receive-time, which drift and
+    jitter across devices. A naive timestamp is treated as UTC.
+    """
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return int(dt.timestamp() * 1000)
+
+
 def card_spec(
-    entity_id: str, state: Any, attrs: dict[str, Any]
+    entity_id: str,
+    state: Any,
+    attrs: dict[str, Any],
+    last_updated: str | None = None,
 ) -> dict[str, Any] | None:
     """Build one renderable card-spec from a live HA state, or None if the
     entity's domain has no card (#502 concept page reuses this; same shape as
-    `_emit_card`)."""
+    `_emit_card`).
+
+    `last_updated` is the HA state's ISO timestamp; when given it is forwarded as
+    `updated_at_ms` (epoch-ms) so the companion app can order concurrent updates
+    and reject stale ones (#850 / solaris-android #66)."""
     domain = entity_id.split(".", 1)[0]
     if domain not in _CARD_DOMAINS:
         return None
@@ -175,6 +203,9 @@ def card_spec(
         "state": None if state is None else str(state),
         "unit": attrs.get("unit_of_measurement"),
     }
+    ms = _last_updated_ms(last_updated)
+    if ms is not None:
+        spec["updated_at_ms"] = ms
     for key in _CONTROL_ATTRS:
         if attrs.get(key) is not None:
             spec[key] = attrs[key]
@@ -204,7 +235,12 @@ async def fetch_card(
                 body = await resp.json()
     except aiohttp.ClientError:
         return None
-    return card_spec(entity_id, body.get("state"), body.get("attributes") or {})
+    return card_spec(
+        entity_id,
+        body.get("state"),
+        body.get("attributes") or {},
+        body.get("last_updated"),
+    )
 
 
 async def fetch_entity_names(
@@ -257,7 +293,9 @@ async def fetch_addable_cards(
         eid = str(s.get("entity_id") or "")
         if eid.split(".", 1)[0] not in _ROOM_ACTUATOR_DOMAINS:
             continue
-        spec = card_spec(eid, s.get("state"), s.get("attributes") or {})
+        spec = card_spec(
+            eid, s.get("state"), s.get("attributes") or {}, s.get("last_updated")
+        )
         if spec is None:
             continue
         spec["room"] = entity_area.get(eid, "")
