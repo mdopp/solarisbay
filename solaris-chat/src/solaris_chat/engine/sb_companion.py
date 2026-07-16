@@ -33,7 +33,7 @@ from typing import Any
 import aiohttp
 
 from solaris_chat.engine.client import current_admin_identity
-from solaris_chat.engine.tools.mcp_tools import read_token
+from solaris_chat.engine.tools.mcp_tools import read_sb_token, read_token
 from solaris_chat.logging import log
 
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
@@ -66,7 +66,13 @@ _DELEGATION_HEADER = "X-SB-Delegated-Admin"
 
 
 class SbCompanionClient:
-    def __init__(self, sb_api_url: str, sb_mcp_token_path: str, sb_mint_url: str = ""):
+    def __init__(
+        self,
+        sb_api_url: str,
+        sb_mcp_token_path: str,
+        sb_mint_url: str = "",
+        sb_read_token_path: str = "",
+    ):
         self._base = sb_api_url.rstrip("/")
         # The delegated-admin mint (servicebay#2276) is the ONLY call that can't
         # use the loopback base: it's a no-Bearer/no-Origin forward-auth POST, so
@@ -77,6 +83,7 @@ class SbCompanionClient:
         # base ⇒ fall back to `_base` (the pre-#2279 loopback path).
         self._mint_base = (sb_mint_url or sb_api_url).rstrip("/")
         self._token_path = sb_mcp_token_path
+        self._read_token_path = sb_read_token_path
 
     @property
     def enabled(self) -> bool:
@@ -86,11 +93,17 @@ class SbCompanionClient:
         """Fetch one companion read (`home`/`approvals`/`services`/`upgrades`).
 
         Returns ServiceBay's JSON body verbatim (the app renders it directly), or
-        None when SB is unreachable / non-200 / malformed / unknown key."""
+        None when SB is unreachable / non-200 / malformed / unknown key.
+
+        Reads the non-expiring read-only SB token (servicebay#2302,
+        `sb_read_token_path`) so it never 401-churns when the deploy-time SB-MCP
+        token rotates, falling back to that token when the read-token file is
+        absent. The mutating `operate`/`submit_verdict` paths keep the SB-MCP
+        token — a read-only token would be refused there."""
         path = READ_PATHS.get(key)
         if path is None or not self._base:
             return None
-        token = read_token(self._token_path)
+        token = read_sb_token(self._read_token_path, self._token_path)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         url = f"{self._base}{path}"
         try:

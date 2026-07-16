@@ -18,11 +18,13 @@ missing, and that just means the next poll re-cards — never a crash.
 
 Credentials — the UNATTENDED poll: `GET /api/approvals` requires a `read`-scope
 Bearer (servicebay#2244). The poller runs in the background with no acting admin
-session, so it reads the deploy-time SB-MCP token file (`sb_mcp_token_path`,
-read+lifecycle+mutate) — the same token `UpdatePoller` uses for its unattended
-poll, NOT a second credential. The [Approve]/[Deny] verdicts run under a LIVE
-admin's session-exchanged token (their handlers live in `server.py`, admin-gated,
-approve additionally destructive-gated).
+session, so it reads the non-expiring read-only SB token (servicebay#2302,
+`sb_read_token_path`) so it never 401-churns when the rotating deploy-time SB-MCP
+token lapses (#818), falling back to that deploy-time token file
+(`sb_mcp_token_path`) when the read-token file is absent — the same credential
+`UpdatePoller` uses for its unattended poll. The [Approve]/[Deny] verdicts run
+under a LIVE admin's session-exchanged token (their handlers live in `server.py`,
+admin-gated, approve additionally destructive-gated).
 
 Fail-open everywhere: an unreachable ServiceBay, a non-200, or malformed JSON
 logs and skips this tick — it never kills the loop and never cards a phantom
@@ -39,7 +41,7 @@ import aiohttp
 
 from solaris_chat.engine import store
 from solaris_chat.engine.notify import EventBus, Notifier, inject
-from solaris_chat.engine.tools.mcp_tools import read_token
+from solaris_chat.engine.tools.mcp_tools import read_sb_token
 from solaris_chat.logging import log
 
 # The [Approve] / [Deny] button action ids, shared with the server-side handlers.
@@ -173,6 +175,7 @@ class ApprovalPoller:
         self,
         db_path: str,
         sb_api_url: str,
+        sb_read_token_path: str,
         sb_mcp_token_path: str,
         bus: EventBus,
         wartung_uid: str,
@@ -180,6 +183,7 @@ class ApprovalPoller:
     ):
         self._db_path = db_path
         self._sb_api_url = sb_api_url.rstrip("/")
+        self._read_token_path = sb_read_token_path
         self._token_path = sb_mcp_token_path
         self._bus = bus
         self._uid = wartung_uid
@@ -209,7 +213,7 @@ class ApprovalPoller:
     async def poll_once(self) -> int:
         """One poll: card each NEW pending approval request. Returns the number of
         cards injected this tick (0 when nothing new / unreachable)."""
-        token = read_token(self._token_path)
+        token = read_sb_token(self._read_token_path, self._token_path)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         feed = await self._get(f"{self._sb_api_url}{_LIST_PATH}", headers)
         pending = _pending((feed or {}).get("approvals") or [])

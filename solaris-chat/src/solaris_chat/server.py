@@ -4905,6 +4905,7 @@ async def serve(
     notifier: Any = None,
     sb_mcp_url: str = "",
     sb_mcp_token_path: str = "",
+    sb_read_token_path: str = "",
     sb_api_url: str = "",
     sb_mint_url: str = "",
     hass_url: str = "",
@@ -4919,10 +4920,11 @@ async def serve(
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
     # ServiceBay BFF read client (#811): the app reaches SB's companion reads only
-    # through Solaris. Built from the same SB base + read-scoped SB-MCP token the
-    # pollers use; dormant (503) when SB_API_URL is unset.
+    # through Solaris. Reads use the non-expiring read-only SB token (#818) with
+    # SB-MCP fallback, like the pollers; the mutating operate/verdict paths keep
+    # the SB-MCP token. Dormant (503) when SB_API_URL is unset.
     sb_companion = sb_companion_module.SbCompanionClient(
-        sb_api_url, sb_mcp_token_path, sb_mint_url
+        sb_api_url, sb_mcp_token_path, sb_mint_url, sb_read_token_path
     )
     app = build_app(
         hermes=hermes,
