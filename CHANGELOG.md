@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.27.0](https://github.com/mdopp/solarisbay/compare/v0.26.0...v0.27.0) (2026-07-17)
+
+
+### Features
+
+* **portal:** /download → latest signed companion APK ([4d8b587](https://github.com/mdopp/solarisbay/commit/4d8b587871dda8ea30e0cd3697ae7ba1d91b02e7))
+* **portal:** /download → latest signed companion APK (www.dopp.cloud/download) ([abcf4d6](https://github.com/mdopp/solarisbay/commit/abcf4d6b42be7158457143f6753cb53dbb87098d))
+* **portal:** forward HA last_updated as updated_at_ms on card specs ([#850](https://github.com/mdopp/solarisbay/issues/850)) ([e534a41](https://github.com/mdopp/solarisbay/commit/e534a41ddb8701e8d6afd9047828dff3d4628d77))
+* **portal:** forward HA last_updated as updated_at_ms on card specs ([#850](https://github.com/mdopp/solarisbay/issues/850)) ([76d510a](https://github.com/mdopp/solarisbay/commit/76d510a674d01fc9cd3e88fe70f7c49d7390b86d))
+* **solaris:** make /download public — add it to CHAT_SUBDOMAIN authSkipPaths ([4175d9c](https://github.com/mdopp/solarisbay/commit/4175d9c23868ec9cc525a0da82c65dd0c857200b))
+* **solaris:** make /download public (authSkipPaths) ([70f3563](https://github.com/mdopp/solarisbay/commit/70f35635007c3f1a6b8e89ee8a8aa45d490ff9dc))
+
+
+### Bug Fixes
+
+* **engine:** move ApprovalPoller and SbCompanionClient reads onto read_sb_token ([4019d04](https://github.com/mdopp/solarisbay/commit/4019d04ddea074323c90ddda6b51e0508c740be0))
+* **engine:** move ApprovalPoller and SbCompanionClient reads onto read_sb_token ([ba93624](https://github.com/mdopp/solarisbay/commit/ba93624e9aadcad0848f1f068f9a697a8883278e))
+* **post-deploy:** overwrite a stale read-token file, don't keep it ([#818](https://github.com/mdopp/solarisbay/issues/818)) ([f248cb4](https://github.com/mdopp/solarisbay/commit/f248cb48ed4c5eb66e747aa3b88468d8c8c35bdf))
+* **post-deploy:** overwrite a stale read-token file, don't keep it ([#818](https://github.com/mdopp/solarisbay/issues/818)) ([74abf27](https://github.com/mdopp/solarisbay/commit/74abf27fa4318424315113e61db698c30e753208))
+
 ## [0.26.0](https://github.com/mdopp/solarisbay/compare/v0.25.1...v0.26.0) (2026-07-15)
 
 
