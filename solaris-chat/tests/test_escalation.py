@@ -75,7 +75,7 @@ def test_scope_refusal_ignores_non_refusal():
 
 
 def test_op_service_matches_sb_anchor():
-    assert _op_service({"name": "honcho"}) == "honcho"
+    assert _op_service({"name": "demo-svc"}) == "demo-svc"
     assert _op_service({"service": "media"}) == "media"
     assert _op_service({"name": "../etc"}) is None
     assert _op_service({}) is None
@@ -100,7 +100,7 @@ async def test_destroy_refusal_routes_to_one_shot_request_not_run():
     )
     box._on_escalation = sink
 
-    out = await box.dispatch("delete_service", {"name": "honcho"})
+    out = await box.dispatch("delete_service", {"name": "demo-svc"})
     parsed = json.loads(out)
     assert parsed["status"] == "pending_approval"
     assert parsed["request_id"] == "req-1"
@@ -110,7 +110,7 @@ async def test_destroy_refusal_routes_to_one_shot_request_not_run():
     assert len(rt) == 1
     args = rt[0][1]
     assert args["scopes"] == ["destroy"]
-    assert args["one_shot_op"] == {"tool_name": "delete_service", "service": "honcho"}
+    assert args["one_shot_op"] == {"tool_name": "delete_service", "service": "demo-svc"}
     assert args["ttl_seconds"] == 600
     assert args["reason"]
 
@@ -148,7 +148,7 @@ async def test_exec_refusal_binds_op_to_no_service():
 async def test_no_escalation_sink_surfaces_refusal_unchanged():
     # Without a sink wired the refusal is returned raw (nothing escalates).
     box = _FakeMcp(wire={"delete_service": _DESTROY_REFUSAL})
-    out = await box.dispatch("delete_service", {"name": "honcho"})
+    out = await box.dispatch("delete_service", {"name": "demo-svc"})
     assert out == _DESTROY_REFUSAL
     assert not any(c[0] == "request_token" for c in box.calls)
 
@@ -185,9 +185,9 @@ async def test_run_one_shot_polls_then_runs_bound_op_with_one_shot_token():
             "delete_service": delete_service,
         },
     )
-    ok, detail = await box.run_one_shot("delete_service", {"name": "honcho"}, "req-1")
+    ok, detail = await box.run_one_shot("delete_service", {"name": "demo-svc"}, "req-1")
     assert ok is True
-    assert "honcho" in detail
+    assert "demo-svc" in detail
 
     # poll_token_request was called with the request id.
     poll = [c for c in box.calls if c[0] == "poll_token_request"][0]
@@ -237,13 +237,13 @@ def test_card_names_exact_op_and_carries_request_id():
     c = escalation.card(
         {
             "tool_name": "delete_service",
-            "service": "honcho",
-            "arguments": {"name": "honcho"},
+            "service": "demo-svc",
+            "arguments": {"name": "demo-svc"},
         },
         "req-7",
     )
     assert c["kind"] == "action"
-    assert "delete_service" in c["body"] and "honcho" in c["body"]
+    assert "delete_service" in c["body"] and "demo-svc" in c["body"]
     approve, deny = c["buttons"]
     assert approve["action_id"] == escalation.RUN_ACTION
     assert approve["destructive"] is True
