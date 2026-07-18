@@ -1,6 +1,6 @@
 # autoloop-issues — how to run (mdopp/solarisbay)
 
-`autoloop-issues` is the **orchestrator** of a multi-agent pipeline. It spawns a fresh sub-agent per stage (Planner → Builder → Verify), coordinated through `.claude/state/work-queue.json`, so the loop session stays clean. Solaris is a bundle of ServiceBay artifacts (templates, Hermes skills, the `voice-gatekeeper` Python service, the `database` schema-init, the Hermes plugin) that runs **on ServiceBay** at `<SERVICEBAY_BOX>`.
+`autoloop-issues` is the **orchestrator** of a multi-agent pipeline. It spawns a fresh sub-agent per stage (Planner → Builder → Verify), coordinated through `.claude/state/work-queue.json`, so the loop session stays clean. Solaris is a bundle of ServiceBay artifacts (the `ollama` + `solaris` templates, the `solaris-chat` Solaris Engine and its skill packs, the `voice-gatekeeper` Python service, the `database` schema-init) that runs **on ServiceBay** at `<SERVICEBAY_BOX>`.
 
 ## Self-paced loop (recommended)
 ```

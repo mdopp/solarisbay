@@ -41,7 +41,7 @@ async def test_lists_room_tools(db_path):
 
 def test_only_tools_capability_advertised(db_path):
     """#312 — we register zero prompts/resources, so the server must advertise
-    only the tools capability (else Hermes surfaces list_prompts/get_prompt/
+    only the tools capability (else the engine surfaces list_prompts/get_prompt/
     list_resources/read_resource as four useless tools in every prompt)."""
     from mcp.server.lowlevel.server import NotificationOptions
 

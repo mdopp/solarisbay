@@ -100,7 +100,7 @@ def resolve_speaker(
     threshold: float,
     default_uid: str,
 ) -> tuple[str, SpeakerMatch | None]:
-    """Top-level resolver: gives the uid Hermes should be told this
+    """Top-level resolver: gives the uid the Solaris Engine should be told this
     turn belongs to, plus the raw match for logging. Falls back to
     `default_uid` when no query embedding was extracted, no rows
     are enrolled, or the best match falls below threshold."""

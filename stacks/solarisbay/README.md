@@ -4,8 +4,8 @@ End-to-end install for the household deployment of Solaris on a
 ServiceBay full-stack host.
 
 Bundles: `ollama` + `solaris`. The merged `solaris` service (#271) is one
-ServiceBay service / one tile holding the Hermes runtime, chat UI,
-household glue + skills, voice bridge, and operator soul as separate
+ServiceBay service / one tile holding the Solaris Engine (agent core + chat
+UI), household glue + skills, voice bridge, and operator soul as separate
 containers in one Pod; `ollama` stays its own service (GPU/LLM engine).
 Does NOT bundle `home-assistant` or `voice` — those are smart-home
 infra that lives in ServiceBay's default registry. Enable both

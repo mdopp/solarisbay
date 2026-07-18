@@ -2,7 +2,7 @@
 
 Measured on the box: a household tool turn ("welche Lichter sind an") spent
 ~90% of its 12-15s budget generating a reasoning block that the operator never
-sees. `reasoning_effort: "none"` over Hermes' /v1 cuts the SAME tool call to
+sees. `reasoning_effort: "none"` over the engine's /v1 cuts the SAME tool call to
 ~1.35s (`extra_body.think=False` had no effect — `reasoning_effort` is the
 working knob). Voice is household *control*; almost every turn is a tool action
 that wants the fast path.
