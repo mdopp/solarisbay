@@ -19,7 +19,7 @@ class _FakeEngine:
 
 def _app(tmp_path):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),

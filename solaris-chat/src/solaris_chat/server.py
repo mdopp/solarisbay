@@ -908,10 +908,10 @@ HOUSEHOLD_TOPIC = "household"
 def _now_hint() -> str:
     """A fresh local wall-clock line prepended to every user turn.
 
-    Hermes stamps the session with a frozen, date-granular "Conversation
+    the engine stamps the session with a frozen, date-granular "Conversation
     started" line at create time and replays it verbatim; the container also
     runs UTC. Without a per-turn line the agent reports a wrong/frozen
-    date-time. Hermes binds system_prompt at create and rejects per-turn
+    date-time. the engine binds system_prompt at create and rejects per-turn
     updates, so injecting this into the user turn is the only lever.
     """
     now = datetime.now(_LOCAL_TZ)
@@ -924,7 +924,7 @@ def _now_hint() -> str:
 #   server.topic_turn_text  -> "[Aktuelle Zeit: ...]", "[Active topic: ... #topic/<slug>]",
 #                              the "[Temporary/incognito ...]" ephemeral guard,
 #                              "[Extract this to a note #topic/<slug> (...)]"
-#   voice gatekeeper.hermes -> "[room: <location>]" (#312/#313)
+#   voice gatekeeper.engine -> "[room: <location>]" (#312/#313)
 # Each rides as a leading bracketed block; topic_turn_text joins them with "\n\n",
 # the voice room hint with "\n". `[uid:...]` lives on the title (marker.py), but a
 # leading one is stripped too for safety. Only LEADING hints are removed so a hint
@@ -938,7 +938,7 @@ _HINT_PREFIX_RE = re.compile(
 def strip_internal_hints(content: str) -> str:
     """Drop leading internal-hint prefixes from a user message for DISPLAY (#309).
 
-    Display-only: what was sent to Hermes is unchanged — this runs on the way out
+    Display-only: what was sent to the engine is unchanged — this runs on the way out
     of the messages API. Strips each consecutive leading bracketed hint block,
     then the whitespace it was joined with, leaving the resident's actual text.
     """
@@ -1021,7 +1021,7 @@ def seeded_persons(residents: Any) -> list[str]:
 def _title_from(text: str) -> str:
     """Derive a short session title from the first user message.
 
-    Hermes leaves chat-created sessions title-null; we PATCH this in so the
+    the engine leaves chat-created sessions title-null; we PATCH this in so the
     list shows a meaningful label instead of a placeholder for every row.
     """
     snippet = " ".join(text.split())
@@ -1034,7 +1034,7 @@ def resolve_uid(
     default_uid: str,
     solaris_db_path: str | None = None,
 ) -> str:
-    """Map the Authelia trusted-proxy identity header to a Hermes uid.
+    """Map the Authelia trusted-proxy identity header to an engine uid.
 
     Precedence (unchanged for the existing paths):
 
@@ -1048,7 +1048,7 @@ def resolve_uid(
        left untouched and falls through to the header path below exactly as
        today.
     2. NPM sets `Remote-User` after Authelia authenticates; we fold that into
-       the Hermes uid so there is no second login.
+       the engine uid so there is no second login.
     3. Absent header (e.g. direct loopback access for offline testing) falls
        back to `default_uid`.
 
@@ -1112,10 +1112,10 @@ def is_admin(request: web.Request, header: str, admin_group: str) -> bool:
 
 def build_app(
     *,
-    hermes: EngineClient | Any,
-    hermes_admin: EngineClient | Any = None,
-    hermes_deep: EngineClient | Any = None,
-    hermes_guest: EngineClient | Any = None,
+    engine: EngineClient | Any,
+    engine_admin: EngineClient | Any = None,
+    engine_deep: EngineClient | Any = None,
+    engine_guest: EngineClient | Any = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -1158,28 +1158,28 @@ def build_app(
     resident_uids = list(residents or [])
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
-    # Hermes drops inbound images (persists a `[screenshot]` placeholder, no
+    # the engine drops inbound images (persists a `[screenshot]` placeholder, no
     # attachment API), so the proxy persists the sent data URLs itself and
     # re-attaches them on history load (#202) — the one stateful exception.
     attachments = AttachmentStore(attachments_dir)
 
     # Active streaming turns, keyed by session id (#192). Each entry is an
     # asyncio.Event the stream loop polls; POST /api/chat/cancel sets it, which
-    # breaks the loop and closes the upstream Hermes connection (closing that
+    # breaks the loop and closes the upstream engine connection (closing that
     # connection is what actually interrupts the model's generation).
     cancels: dict[str, asyncio.Event] = {}
 
-    # Profile routing: household sessions ride `hermes` (the engine's
+    # Profile routing: household sessions ride `engine` (the engine's
     # household profile); admin/servicebay-maintenance sessions ride the
     # admin profile. A session created on the admin profile is recorded here
     # so its follow-up turns route back to the same profile. When no admin
-    # client is configured both fall back to `hermes` (offline-test topology).
-    household_gw = hermes
-    admin_gw = hermes_admin or hermes
+    # client is configured both fall back to `engine` (offline-test topology).
+    household_gw = engine
+    admin_gw = engine_admin or engine
     # The deep (e4b + think_default) profile still backs the `/ollama` facade's
     # `solaris-deep` model (voice "Gründlich") and the night crons; chat turns no
     # longer route to it — thorough is the reasoning knob on the household model.
-    deep_gw = hermes_deep or hermes
+    deep_gw = engine_deep or engine
     admin_sessions: set[str] = set()
     # Sessions pinned to the household (e4b) gateway — the pinned "Zuhause"
     # chat. Populated at create; the persisted primary topic is the
@@ -1239,7 +1239,7 @@ def build_app(
         uid: str = "",
         topic_slug: str = "",
     ) -> EngineClient:
-        """Pick the Hermes gateway for a turn (#293/#332/#809).
+        """Pick the engine gateway for a turn (#293/#332/#809).
 
         Every household/everyday chat rides the one e4b household gateway; the
         fast/thorough distinction is the reasoning knob on that same model
@@ -1361,7 +1361,7 @@ def build_app(
         Ephemeral (#246): an incognito chat is created with the `[temp:]` marker
         (kept out of the durable list, deleted on close) plus a unique title
         suffix after the marker (#286 — so two temp chats can't collide on
-        Hermes' unique-title constraint), is NOT bound to a topic, NOT re-titled
+        the engine's unique-title constraint), is NOT bound to a topic, NOT re-titled
         (re-titling would re-stamp the `[uid:]` marker and surface it), and never
         has a `session_topics` row — it carries no durable state. Normal chats
         bind a primary topic and persist the auto-title.
@@ -2069,7 +2069,7 @@ def build_app(
 
     async def list_toolsets(_request: web.Request) -> web.Response:
         try:
-            toolsets = await hermes.list_toolsets()
+            toolsets = await engine.list_toolsets()
         except EngineError:
             return web.json_response(
                 {"ok": False, "reason": "engine_unavailable"}, status=502
@@ -2312,7 +2312,7 @@ def build_app(
 
     async def cancel_chat(request: web.Request) -> web.Response:
         # Interrupt an in-flight stream for a session (#192). Sets the cancel
-        # event the stream loop polls; the loop then stops reading from Hermes
+        # event the stream loop polls; the loop then stops reading from the engine
         # and closes that connection, releasing the model run.
         try:
             body = await request.json()
@@ -2580,7 +2580,7 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "invalid_value"}, status=400
             )
-        # A reasoning toggle, not a Hermes config rewrite: every everyday chat
+        # A reasoning toggle, not an engine config rewrite: every everyday chat
         # runs e4b; "fast" sets no-reasoning, "thorough" turns reasoning/thought
         # on (the effort default). Takes effect on the next turn — no restart.
         other_model_pref = value
@@ -2719,7 +2719,7 @@ def build_app(
     async def list_sessions(request: web.Request) -> web.Response:
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         try:
-            sessions = await hermes.list_sessions(uid)
+            sessions = await engine.list_sessions(uid)
         except EngineError:
             return web.json_response(
                 {"ok": False, "reason": "engine_unavailable"}, status=502
@@ -2756,7 +2756,7 @@ def build_app(
                     {"ok": False, "reason": "engine_unavailable"}, status=502
                 )
             # Pin this session to the admin gateway so its follow-up turns route
-            # back to the same instance (Hermes session state is per-gateway).
+            # back to the same instance (engine session state is per-gateway).
             admin_sessions.add(session_id)
             log.info(
                 "chat.session.created",
@@ -2770,7 +2770,7 @@ def build_app(
         # the soul, so an empty create lets the profile supply it instead of a
         # per-session persona overlay that would fight it.
         try:
-            session_id = await hermes.create_session(uid)
+            session_id = await engine.create_session(uid)
         except EngineError:
             return web.json_response(
                 {"ok": False, "reason": "engine_unavailable"}, status=502
@@ -2782,7 +2782,7 @@ def build_app(
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         session_id = request.match_info["session_id"]
         try:
-            session = await hermes.get_session(
+            session = await engine.get_session(
                 session_id, effective_uid(uid, session_id)
             )
         except EngineError:
@@ -2807,7 +2807,7 @@ def build_app(
         uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
         session_id = request.match_info["session_id"]
         try:
-            ok = await hermes.delete_session(session_id, uid)
+            ok = await engine.delete_session(session_id, uid)
         except EngineError:
             return web.json_response(
                 {"ok": False, "reason": "engine_unavailable"}, status=502
@@ -4080,7 +4080,7 @@ def build_app(
                 {"ok": False, "error": "sensitive_action"}, status=403
             )
         current_uid.set(uid)
-        output = await hermes.dispatch_tool(tool, args)
+        output = await engine.dispatch_tool(tool, args)
         favorites_store.record_usage(solaris_db_path, row["owner_uid"], tool, args)
         try:
             result = json.loads(output)
@@ -4268,9 +4268,9 @@ def build_app(
         wall_t0 = time.time()  # wall-clock window for proxy trace correlation (#306)
         compacted = False
         try:
-            # Only a missing session_id starts a fresh Hermes session; turn 2+
+            # Only a missing session_id starts a fresh engine session; turn 2+
             # carry the same id back, so consecutive turns reuse one warm
-            # Hermes session (and its KV prefix cache). A cold turn-2 TTFT is
+            # engine session (and its KV prefix cache). A cold turn-2 TTFT is
             # therefore Ollama model eviction, not a per-turn session (#268).
             if not session_id:
                 session_id = await create_turn_session(
@@ -4410,7 +4410,7 @@ def build_app(
             await _send_event(
                 resp, "session", {"session_id": session_id, "compacted": compacted}
             )
-            # Persist the attachment once the turn is under way (Hermes has the
+            # Persist the attachment once the turn is under way (the engine has the
             # user message; we hold the pixels it drops) so history re-renders
             # the thumbnail after a refresh (#202).
             attachments.add(session_id, images)
@@ -4428,7 +4428,7 @@ def build_app(
             )
             async for event in _heartbeat(stream, resp):
                 if cancel.is_set():
-                    # Closing the upstream generator aborts the Hermes/Ollama
+                    # Closing the upstream generator aborts the engine/Ollama
                     # run (#192) — stops generation, not just our forwarding.
                     await stream.aclose()
                     await _send_event(resp, "cancelled", {})
@@ -4451,7 +4451,7 @@ def build_app(
                 elif name == "completed":
                     # gemma4 returns its reasoning on every run.completed (the
                     # `reasoning_content` field), regardless of effort — so the
-                    # block is gated here on the per-turn effort, not on Hermes:
+                    # block is gated here on the per-turn effort, not on the engine:
                     # a fast ("none") turn surfaces nothing (#222); a thorough
                     # turn emits a distinct `reasoning` event the panel renders
                     # collapsibly (#231). The forwarded `completed` stays bare.
@@ -4655,12 +4655,12 @@ def build_app(
     # Ollama-compatible facade under /ollama — HA's `ollama` integration
     # points here so Solaris is the Assist conversation agent; the gatekeeper
     # speaks the same surface for wyoming-satellite hardware.
-    if hasattr(hermes, "respond"):
-        facade_clients = {"solaris": hermes, "solaris-deep": deep_gw}
+    if hasattr(engine, "respond"):
+        facade_clients = {"solaris": engine, "solaris-deep": deep_gw}
         # The guest profile (#353) is reachable as its own model but not yet
         # auto-triggered — speaker-ID routing into it is #351 (blocked).
-        if hermes_guest is not None:
-            facade_clients["solaris-guest"] = hermes_guest
+        if engine_guest is not None:
+            facade_clients["solaris-guest"] = engine_guest
         add_facade_routes(
             app,
             clients=facade_clients,
@@ -4715,13 +4715,13 @@ def _trace_from_phases(
     """Assemble a per-turn latency trace from measured phase durations (#225).
 
     `phases` is `[(label, ms), ...]` for the spans the proxy could actually
-    time on the wire — what it observes is the Hermes *session stream*, so the
+    time on the wire — what it observes is the engine *session stream*, so the
     honest, measurable breakdown is: time-to-first-token (prefill), reasoning
     generation (the `<thinking>` block, when one streamed), answer generation,
     and tool round-trips (`tool.started`→`tool.completed`). The fine-grained
     Ollama prompt_eval/eval (prefill vs decode token) split happens *inside*
-    Hermes and is never streamed to this proxy, so it is deliberately absent —
-    it would need Hermes to expose per-pass timings to be shown.
+    the engine and is never streamed to this proxy, so it is deliberately absent —
+    it would need the engine to expose per-pass timings to be shown.
 
     Each phase becomes `{label, seconds, pct}` (pct of total wall-time, so a
     sum < 100% is expected — the gaps are orchestration the proxy can't
@@ -4742,9 +4742,9 @@ def _trace_from_phases(
 def _images_from(body: Any) -> list[str]:
     """Pull image-attachment data URLs from a chat body (#183).
 
-    The browser sends `data:image/...;base64,<b64>` URLs. Hermes' session-chat
+    The browser sends `data:image/...;base64,<b64>` URLs. the engine's session-chat
     consumes images as OpenAI `image_url` parts and requires the *full* data URL
-    (the `data:` prefix must stay — stripping it makes Hermes reject the part as
+    (the `data:` prefix must stay — stripping it makes the engine reject the part as
     a non-image payload, #202), so we keep each URL as-is. Non-strings, empties,
     and anything past `_MAX_IMAGES` are dropped.
     """
@@ -4769,7 +4769,7 @@ async def _send_event(
 
 
 # A tool-invocation turn runs two sequential Ollama passes (tool-selection, then
-# the answer) with a tool round-trip between them — Hermes streams nothing for
+# the answer) with a tool round-trip between them — the engine streams nothing for
 # the whole prefill of each pass, which on a busy GPU is well over a minute of
 # dead air. The browser's streaming fetch (and any reverse proxy in front) drops
 # an idle connection long before the late answer arrives (#319), so we emit a
@@ -4805,7 +4805,7 @@ async def _heartbeat(
 
 
 def _normalize(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Fold a Hermes SSE event into a browser-facing `(event, data)` pair.
+    """Fold an engine SSE event into a browser-facing `(event, data)` pair.
 
     The browser needs a token delta, a tool start/stop hint, an end marker,
     and (for the live activity bubble, #347) a per-LLM-pass `step`. Anything
@@ -4897,10 +4897,10 @@ async def serve(
     host: str,
     port: int,
     *,
-    hermes: EngineClient,
-    hermes_admin: EngineClient | None = None,
-    hermes_deep: EngineClient | None = None,
-    hermes_guest: EngineClient | None = None,
+    engine: EngineClient,
+    engine_admin: EngineClient | None = None,
+    engine_deep: EngineClient | None = None,
+    engine_guest: EngineClient | None = None,
     remote_user_header: str,
     default_uid: str,
     remote_groups_header: str = "Remote-Groups",
@@ -4947,10 +4947,10 @@ async def serve(
         sb_api_url, sb_mcp_token_path, sb_mint_url, sb_read_token_path
     )
     app = build_app(
-        hermes=hermes,
-        hermes_admin=hermes_admin,
-        hermes_deep=hermes_deep,
-        hermes_guest=hermes_guest,
+        engine=engine,
+        engine_admin=engine_admin,
+        engine_deep=engine_deep,
+        engine_guest=engine_guest,
         remote_user_header=remote_user_header,
         default_uid=default_uid,
         remote_groups_header=remote_groups_header,

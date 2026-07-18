@@ -61,9 +61,9 @@ class _FakeEngine:
         return json.dumps({"ok": True, "say": "erledigt"})
 
 
-def _app(tmp_path, hermes=None, **kw):
+def _app(tmp_path, engine=None, **kw):
     return build_app(
-        hermes=hermes or _FakeEngine(),
+        engine=engine or _FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -92,7 +92,7 @@ async def test_start_scopes_personal_and_household(aiohttp_client, tmp_path):
         db, "anna", "action", "Annas", {"tool": "play_radio", "args": {}}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -120,7 +120,7 @@ async def test_start_enriches_entity_with_live_card(
         db, "mdopp", "entity", "buerolicht", {"entity_id": "light.buero"}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -150,7 +150,7 @@ async def test_start_reports_ha_ok_when_reachable(
         db, "mdopp", "entity", "buerolicht", {"entity_id": "light.buero"}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -183,7 +183,7 @@ async def test_start_flags_unreachable_when_fetch_returns_none(
         db, "mdopp", "entity", "buerolicht", {"entity_id": "light.buero"}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -209,7 +209,7 @@ async def test_start_reports_unconfigured_without_ha(aiohttp_client, tmp_path):
         db, "mdopp", "entity", "buerolicht", {"entity_id": "light.buero"}
     )
     app = build_app(  # no hass_url/hass_token → HA unconfigured
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -241,7 +241,7 @@ async def test_start_ha_status_prefers_watcher(aiohttp_client, tmp_path, monkeyp
         db, "mdopp", "entity", "buerolicht", {"entity_id": "light.buero"}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -272,7 +272,7 @@ async def test_state_only_flags_unavailable_on_ha_drop(
         db, "mdopp", "entity", "garage", {"entity_id": "cover.garage"}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -309,7 +309,7 @@ async def test_start_state_only_returns_pinned_card_state(
         db, "mdopp", "entity", "garage", {"entity_id": "cover.garage"}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -333,7 +333,7 @@ async def test_frequent_excluded_from_curated(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     favorites_store.record_usage(db, "mdopp", "play_radio", {"station": "NDR"})
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -394,7 +394,7 @@ async def test_addable_groups_by_room_and_marks_state(
         "solaris_chat.engine.areas.AreaRegistry.snapshot", _fake_snapshot
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -451,7 +451,7 @@ async def test_addable_marks_pinned_automation(aiohttp_client, tmp_path, monkeyp
         "solaris_chat.engine.areas.AreaRegistry.snapshot", _fake_snapshot
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -479,7 +479,7 @@ async def test_run_dispatches_scene_script_action(aiohttp_client, tmp_path):
         {"tool": "ha_run_scene_script", "args": {"entity": "scene.abend"}},
     )
     app = build_app(
-        hermes=engine,
+        engine=engine,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -503,7 +503,7 @@ async def test_addable_503_without_ha(aiohttp_client, tmp_path):
 async def test_create_delete_reorder(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -546,7 +546,7 @@ async def test_start_dedups_both_scoped_entity_into_personal(aiohttp_client, tmp
         db, "household", "entity", "Büro", {"entity_id": "light.buro"}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -570,7 +570,7 @@ async def test_start_single_scope_when_uid_is_household(aiohttp_client, tmp_path
         db, "household", "entity", "Flur", {"entity_id": "light.flur"}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -595,7 +595,7 @@ async def test_favorites_scope_move_reowns_both_directions(aiohttp_client, tmp_p
         db, "mdopp", "entity", "Büro", {"entity_id": "light.buro"}
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -645,7 +645,7 @@ async def test_create_action_accepts_scene_script(aiohttp_client, tmp_path):
     non-sensitive tool, so the create is accepted (#702)."""
     db = _db(tmp_path)
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -678,7 +678,7 @@ async def test_run_dispatches_routine_action(aiohttp_client, tmp_path):
         {"tool": "play_radio", "args": {"station": "NDR"}},
     )
     app = build_app(
-        hermes=engine,
+        engine=engine,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -709,7 +709,7 @@ async def test_run_403_on_sensitive_action(aiohttp_client, tmp_path):
         },
     )
     app = build_app(
-        hermes=engine,
+        engine=engine,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -730,7 +730,7 @@ async def test_run_403_on_unlisted_tool(aiohttp_client, tmp_path):
         db, "mdopp", "action", "x", {"tool": "ha_list_entities", "args": {}}
     )
     app = build_app(
-        hermes=engine,
+        engine=engine,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,

@@ -187,12 +187,12 @@ def test_seeded_persons_unions_residents_and_manual():
 
 # ---- endpoints ----
 
-from tests.test_server import _FakeHermes  # noqa: E402
+from tests.test_server import _FakeEngine  # noqa: E402
 
 
 def _app(db):
     return build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -297,7 +297,7 @@ async def test_session_mentions_endpoint_degrades_when_db_missing(
     aiohttp_client, tmp_path
 ):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "nope.db"),
@@ -316,9 +316,9 @@ async def test_session_mentions_endpoint_degrades_when_db_missing(
 
 async def test_chat_turn_persists_mentions(aiohttp_client, tmp_path):
     db = _db(tmp_path)
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -343,7 +343,7 @@ async def test_chat_turn_records_auto_anchors_deduped(aiohttp_client, tmp_path):
     """#501: the agent's auto-surfaced anchors land in `mentions`, deduped
     against the tokens the user already typed this turn (here `#urlaub`)."""
     db = _db(tmp_path)
-    fake = _FakeHermes(
+    fake = _FakeEngine(
         events=[
             {"type": "assistant.delta", "data": {"delta": "Klar."}},
             {
@@ -354,7 +354,7 @@ async def test_chat_turn_records_auto_anchors_deduped(aiohttp_client, tmp_path):
         ]
     )
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -377,9 +377,9 @@ async def test_chat_turn_records_auto_anchors_deduped(aiohttp_client, tmp_path):
 
 async def test_ephemeral_chat_persists_no_mentions(aiohttp_client, tmp_path):
     db = _db(tmp_path)
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -399,7 +399,7 @@ async def test_ephemeral_chat_persists_no_mentions(aiohttp_client, tmp_path):
 @pytest.mark.parametrize("path", ["/api/mentions/tags", "/api/mentions/persons"])
 async def test_autosuggest_degrades_when_db_missing(aiohttp_client, tmp_path, path):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "nope.db"),

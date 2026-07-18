@@ -60,7 +60,7 @@ class _FakeRequest:
 
 def _app(tmp_path, db):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -70,7 +70,7 @@ def _app(tmp_path, db):
 
 def _ha_app(tmp_path, db):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -758,7 +758,7 @@ async def test_api_energy_still_falls_back_to_default_uid(
 
 def _bus_app(tmp_path, db, bus):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -818,7 +818,7 @@ async def test_napi_portal_events_valid_token_streams_owner_scoped(
 
 def _watch_app(tmp_path, db, store):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,

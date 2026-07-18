@@ -84,7 +84,7 @@ def test_extract_prompt_still_targets_substantive_knowledge():
 # --- Extract-before-compact ordering ---------------------------------------
 
 
-class _RecordingHermes:
+class _RecordingEngine:
     """Records the order of chat turns and create_session calls so we can
     assert extract precedes summary precedes the continuation create."""
 
@@ -127,7 +127,7 @@ _OVER = {"id": "s1", "input_tokens": 31000, "output_tokens": 1000}  # ~0.98 of 3
 
 
 async def test_compaction_extracts_before_summary_before_create():
-    h = _RecordingHermes(session=_OVER)
+    h = _RecordingEngine(session=_OVER)
     new_id = await compaction.compact_session(
         h, "mdopp", "s1", base_system_prompt="", context_window=32768
     )
@@ -138,7 +138,7 @@ async def test_compaction_extracts_before_summary_before_create():
 
 
 async def test_compaction_seeds_continuation_with_summary_and_overlay():
-    h = _RecordingHermes(session=_OVER, summary="we discussed the boiler")
+    h = _RecordingEngine(session=_OVER, summary="we discussed the boiler")
     await compaction.compact_session(
         h, "mdopp", "s1", base_system_prompt="Be concise.", context_window=32768
     )
@@ -150,12 +150,12 @@ async def test_compaction_seeds_continuation_with_summary_and_overlay():
 
 async def test_compaction_continuation_title_is_unique_not_bare_marker(monkeypatch):
     # #267: the continuation must NOT be created with a bare uid marker as its
-    # title — Hermes enforces title uniqueness, so a bare marker collides with
+    # title — the engine enforces title uniqueness, so a bare marker collides with
     # an abandoned stub session and 400s, stalling compaction. The continuation
     # gets a non-empty, unique human suffix so two continuations never clash.
     from solaris_chat import marker
 
-    h = _RecordingHermes(session=_OVER)
+    h = _RecordingEngine(session=_OVER)
     await compaction.compact_session(h, "mdopp", "s1", context_window=32768)
     title = h.created_titles[0]
     assert title  # a human suffix is passed (not the empty default = bare marker)
@@ -174,7 +174,7 @@ async def test_compaction_continuation_title_is_unique_not_bare_marker(monkeypat
             return datetime(2026, 6, 8, 12, 0, 0) + timedelta(seconds=cls.n)
 
     monkeypatch.setattr(compaction, "datetime", _Clock)
-    h2 = _RecordingHermes(session=_OVER)
+    h2 = _RecordingEngine(session=_OVER)
     await compaction.compact_session(h2, "mdopp", "s1", context_window=32768)
     await compaction.compact_session(h2, "mdopp", "s1", context_window=32768)
     assert h2.created_titles[0] != h2.created_titles[1]
@@ -182,7 +182,7 @@ async def test_compaction_continuation_title_is_unique_not_bare_marker(monkeypat
 
 async def test_compaction_skips_when_under_threshold():
     under = {"id": "s1", "input_tokens": 1000, "output_tokens": 0}
-    h = _RecordingHermes(session=under)
+    h = _RecordingEngine(session=under)
     new_id = await compaction.compact_session(h, "mdopp", "s1", context_window=32768)
     assert new_id is None
     assert h.calls == []  # no extract, no summary, no create
@@ -190,7 +190,7 @@ async def test_compaction_skips_when_under_threshold():
 
 async def test_compaction_force_ignores_threshold():
     under = {"id": "s1", "input_tokens": 10, "output_tokens": 0}
-    h = _RecordingHermes(session=under)
+    h = _RecordingEngine(session=under)
     new_id = await compaction.compact_session(
         h, "mdopp", "s1", context_window=32768, force=True
     )
@@ -201,14 +201,14 @@ async def test_compaction_force_ignores_threshold():
 async def test_compaction_aborts_if_extract_fails_no_create():
     # A failed extraction must abort: never summarise/continue past a failed
     # learning-store (that would risk losing durable facts).
-    h = _RecordingHermes(session=_OVER, fail_on="extract")
+    h = _RecordingEngine(session=_OVER, fail_on="extract")
     new_id = await compaction.compact_session(h, "mdopp", "s1", context_window=32768)
     assert new_id is None
     assert "create" not in h.calls
 
 
 async def test_compaction_missing_session_is_noop():
-    h = _RecordingHermes(session=None)
+    h = _RecordingEngine(session=None)
     new_id = await compaction.compact_session(
         h, "mdopp", "missing", context_window=32768
     )

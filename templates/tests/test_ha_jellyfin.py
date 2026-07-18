@@ -1,4 +1,4 @@
-"""Tests for the HA Jellyfin integration auto-install in the hermes
+"""Tests for the HA Jellyfin integration auto-install in the solaris
 post-deploy (#195).
 
 ensure_ha_jellyfin_integration drives Home Assistant's config-entries flow
@@ -31,11 +31,11 @@ def _load(name: str, path: pathlib.Path):
 
 
 @pytest.fixture(scope="module")
-def hermes():
-    return _load("hermes_post_deploy", TEMPLATES / "solaris" / "post-deploy.py")
+def post_deploy():
+    return _load("solaris_post_deploy", TEMPLATES / "solaris" / "post-deploy.py")
 
 
-def _wire(hermes, monkeypatch, *, entries, flow_start, flow_submit):
+def _wire(post_deploy, monkeypatch, *, entries, flow_start, flow_submit):
     """Patch the HA helpers with canned responses and record the calls.
 
     entries: (status, body) for GET /config_entries/entry
@@ -57,22 +57,22 @@ def _wire(hermes, monkeypatch, *, entries, flow_start, flow_submit):
     def fake_delete(path, token, timeout=10.0):
         calls["deletes"].append(path)
 
-    monkeypatch.setattr(hermes, "_ha_get", fake_get)
-    monkeypatch.setattr(hermes, "_ha_post", fake_post)
-    monkeypatch.setattr(hermes, "_ha_request_delete", fake_delete)
+    monkeypatch.setattr(post_deploy, "_ha_get", fake_get)
+    monkeypatch.setattr(post_deploy, "_ha_post", fake_post)
+    monkeypatch.setattr(post_deploy, "_ha_request_delete", fake_delete)
     return calls
 
 
-def test_creates_entry_when_absent(hermes, monkeypatch):
+def test_creates_entry_when_absent(post_deploy, monkeypatch):
     calls = _wire(
-        hermes,
+        post_deploy,
         monkeypatch,
         entries=(200, [{"domain": "cast"}, {"domain": "androidtv"}]),
         flow_start=(200, {"flow_id": "FLOW1", "step_id": "user"}),
         flow_submit=(200, {"type": "create_entry", "title": "media"}),
     )
     assert (
-        hermes.ensure_ha_jellyfin_integration(
+        post_deploy.ensure_ha_jellyfin_integration(
             "tok", "http://127.0.0.1:8096", "sol", "pw"
         )
         is True
@@ -90,16 +90,16 @@ def test_creates_entry_when_absent(hermes, monkeypatch):
     assert calls["deletes"] == []
 
 
-def test_skips_when_entry_exists(hermes, monkeypatch):
+def test_skips_when_entry_exists(post_deploy, monkeypatch):
     calls = _wire(
-        hermes,
+        post_deploy,
         monkeypatch,
         entries=(200, [{"domain": "jellyfin"}, {"domain": "cast"}]),
         flow_start=(200, {"flow_id": "X"}),
         flow_submit=(200, {"type": "create_entry"}),
     )
     assert (
-        hermes.ensure_ha_jellyfin_integration("tok", "http://h:8096", "sol", "")
+        post_deploy.ensure_ha_jellyfin_integration("tok", "http://h:8096", "sol", "")
         is False
     )
     # Idempotent: never even starts a flow.
@@ -110,58 +110,58 @@ def test_skips_when_entry_exists(hermes, monkeypatch):
     "url,user",
     [("", "sol"), ("http://h:8096", ""), ("", "")],
 )
-def test_skips_when_creds_unset(hermes, monkeypatch, url, user):
+def test_skips_when_creds_unset(post_deploy, monkeypatch, url, user):
     # No HA call at all when URL or username is blank.
     monkeypatch.setattr(
-        hermes,
+        post_deploy,
         "_ha_get",
         lambda *a, **k: pytest.fail("should not call HA when creds unset"),
     )
-    assert hermes.ensure_ha_jellyfin_integration("tok", url, user, "pw") is False
+    assert post_deploy.ensure_ha_jellyfin_integration("tok", url, user, "pw") is False
 
 
-def test_fail_soft_when_jellyfin_unreachable(hermes, monkeypatch):
+def test_fail_soft_when_jellyfin_unreachable(post_deploy, monkeypatch):
     # Flow submit returns a form again with errors (HA couldn't reach
     # Jellyfin / bad creds) — abort the dangling flow, return False.
     calls = _wire(
-        hermes,
+        post_deploy,
         monkeypatch,
         entries=(200, []),
         flow_start=(200, {"flow_id": "FLOW2"}),
         flow_submit=(200, {"type": "form", "errors": {"base": "cannot_connect"}}),
     )
     assert (
-        hermes.ensure_ha_jellyfin_integration("tok", "http://h:8096", "sol", "pw")
+        post_deploy.ensure_ha_jellyfin_integration("tok", "http://h:8096", "sol", "pw")
         is False
     )
     assert calls["deletes"] == ["/api/config/config_entries/flow/FLOW2"]
 
 
-def test_fail_soft_when_list_entries_fails(hermes, monkeypatch):
+def test_fail_soft_when_list_entries_fails(post_deploy, monkeypatch):
     calls = _wire(
-        hermes,
+        post_deploy,
         monkeypatch,
         entries=(0, None),
         flow_start=(200, {"flow_id": "X"}),
         flow_submit=(200, {"type": "create_entry"}),
     )
     assert (
-        hermes.ensure_ha_jellyfin_integration("tok", "http://h:8096", "sol", "pw")
+        post_deploy.ensure_ha_jellyfin_integration("tok", "http://h:8096", "sol", "pw")
         is False
     )
     assert calls["posts"] == []
 
 
-def test_fail_soft_when_flow_start_fails(hermes, monkeypatch):
+def test_fail_soft_when_flow_start_fails(post_deploy, monkeypatch):
     calls = _wire(
-        hermes,
+        post_deploy,
         monkeypatch,
         entries=(200, []),
         flow_start=(0, None),
         flow_submit=(200, {"type": "create_entry"}),
     )
     assert (
-        hermes.ensure_ha_jellyfin_integration("tok", "http://h:8096", "sol", "pw")
+        post_deploy.ensure_ha_jellyfin_integration("tok", "http://h:8096", "sol", "pw")
         is False
     )
     # Started but got no flow_id → never submits the step, nothing to abort.

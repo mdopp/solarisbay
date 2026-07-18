@@ -62,7 +62,7 @@ def test_resolve_uid_falls_back_on_empty_header():
     assert resolve_uid(req, "Remote-User", "household") == "household"
 
 
-class _FakeHermes:
+class _FakeEngine:
     def __init__(self, events=None, store=None):
         self.created = []
         self.created_prompts = []
@@ -184,7 +184,7 @@ class _FakeHermes:
                 "title": marker.strip(title),
                 "last_activity": s.get("last_activity", ""),
                 "messages": s.get("messages", []),
-                # Hermes per-session token totals (#210 compaction trigger);
+                # engine per-session token totals (#210 compaction trigger);
                 # default 0 so a store item without them never trips the cap.
                 "input_tokens": s.get("input_tokens", 0),
                 "output_tokens": s.get("output_tokens", 0),
@@ -522,9 +522,9 @@ def test_images_from_non_list():
 
 
 async def test_chat_forwards_images(aiohttp_client, tmp_path):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -537,14 +537,14 @@ async def test_chat_forwards_images(aiohttp_client, tmp_path):
     )
     assert resp.status == 200
     _assert_turns(fake.turns, [("sess-1", "scan this")])
-    # Full data URL reaches Hermes (prefix kept, #202).
+    # Full data URL reaches the engine (prefix kept, #202).
     assert fake.images == [["data:image/jpeg;base64,ZZ"]]
 
 
 async def test_chat_image_only_uses_default_prompt(aiohttp_client, tmp_path):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -570,9 +570,9 @@ async def test_chat_image_only_resolves_the_hook_from_the_registry(
         "hooks_for_event",
         lambda skills_dir, event: calls.append(event) or [],
     )
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -590,9 +590,9 @@ async def test_chat_image_only_resolves_the_hook_from_the_registry(
 
 
 async def test_chat_defaults_to_fast_reasoning(aiohttp_client, tmp_path):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -604,9 +604,9 @@ async def test_chat_defaults_to_fast_reasoning(aiohttp_client, tmp_path):
 
 
 async def test_chat_selector_overrides_to_thorough(aiohttp_client, tmp_path):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -623,9 +623,9 @@ async def test_chat_selector_overrides_to_thorough(aiohttp_client, tmp_path):
 async def test_fast_turn_keeps_effort_none_without_model_override(
     aiohttp_client, tmp_path
 ):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -645,9 +645,9 @@ async def test_fast_turn_keeps_effort_none_without_model_override(
 async def test_thinking_turn_keeps_effort_high_without_model_override(
     aiohttp_client, tmp_path
 ):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -664,24 +664,24 @@ async def test_thinking_turn_keeps_effort_high_without_model_override(
 
 
 async def test_chat_no_routing_tags_no_model_override(aiohttp_client, tmp_path):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
     )
     client = await aiohttp_client(app)
-    # Routing off by default → no per-session model override (Hermes' default).
+    # Routing off by default → no per-session model override (the engine's default).
     resp = await client.post("/api/chat", json={"input": "hi"})
     assert resp.status == 200
     assert fake.models == [""]
 
 
 async def test_chat_admin_escalates_reasoning(aiohttp_client, tmp_path):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -696,9 +696,9 @@ async def test_chat_admin_escalates_reasoning(aiohttp_client, tmp_path):
 
 
 async def test_chat_no_text_no_images_rejected(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -708,9 +708,9 @@ async def test_chat_no_text_no_images_rejected(aiohttp_client):
 
 
 async def test_stream_forwards_images(aiohttp_client, tmp_path):
-    fake = _FakeHermes(events=[{"type": "assistant.delta", "data": {"delta": "ok"}}])
+    fake = _FakeEngine(events=[{"type": "assistant.delta", "data": {"delta": "ok"}}])
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -728,9 +728,9 @@ async def test_stream_forwards_images(aiohttp_client, tmp_path):
 
 
 async def test_first_turn_creates_session(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -754,12 +754,12 @@ async def test_first_turn_creates_session(aiohttp_client):
 
 async def test_first_turn_create_title_is_non_bare_marker_unique(aiohttp_client):
     # Regression for #277: two first turns for the SAME uid must not collide on
-    # the bare `[uid:...]` marker title (Hermes enforces title uniqueness). The
+    # the bare `[uid:...]` marker title (the engine enforces title uniqueness). The
     # session must be born with a marker-embedded title (uid-attributable for
     # owner-scoping / has_marker) whose human suffix differs per first turn.
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -779,9 +779,9 @@ async def test_first_turn_create_title_is_non_bare_marker_unique(aiohttp_client)
 
 
 async def test_subsequent_turn_reuses_session(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -799,11 +799,11 @@ async def test_subsequent_turn_reuses_session(aiohttp_client):
 async def test_two_consecutive_turns_share_one_session(aiohttp_client):
     # The operator's #268 scenario: a 2nd turn ("welche lichter sind an", asked
     # twice) in the same chat. The browser sends back the session_id it got from
-    # turn 1, so turn 2 reuses that warm Hermes session — one create, both turns
+    # turn 1, so turn 2 reuses that warm engine session — one create, both turns
     # on the same id. A cold turn-2 TTFT is model eviction, not a session bug.
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -834,9 +834,9 @@ async def test_two_consecutive_turns_share_one_session(aiohttp_client):
 
 
 async def test_empty_input_rejected(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -846,7 +846,7 @@ async def test_empty_input_rejected(aiohttp_client):
 
 
 async def test_stream_creates_session_and_restreams(aiohttp_client):
-    fake = _FakeHermes(
+    fake = _FakeEngine(
         events=[
             {"type": "assistant.delta", "data": {"delta": "He"}},
             {"type": "tool.started", "data": {"tool": "clock"}},
@@ -855,7 +855,7 @@ async def test_stream_creates_session_and_restreams(aiohttp_client):
         ]
     )
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -879,10 +879,10 @@ async def test_stream_creates_session_and_restreams(aiohttp_client):
 
 
 async def test_stream_thorough_turn_emits_reasoning_event(aiohttp_client):
-    # Gründlich turn: Hermes returns reasoning on run.completed (no <thinking>
+    # Gründlich turn: the engine returns reasoning on run.completed (no <thinking>
     # tag in the answer deltas), so the proxy surfaces it as a distinct
     # `reasoning` event the panel renders collapsibly (#231).
-    fake = _FakeHermes(
+    fake = _FakeEngine(
         events=[
             {"type": "assistant.delta", "data": {"delta": "4"}},
             {
@@ -900,7 +900,7 @@ async def test_stream_thorough_turn_emits_reasoning_event(aiohttp_client):
         ]
     )
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -919,8 +919,8 @@ async def test_stream_thorough_turn_emits_reasoning_event(aiohttp_client):
 
 async def test_stream_fast_turn_suppresses_reasoning(aiohttp_client):
     # gemma4 returns reasoning even on a fast turn, but #222 fast-default must
-    # show no block — the proxy gates on the per-turn effort, not on Hermes.
-    fake = _FakeHermes(
+    # show no block — the proxy gates on the per-turn effort, not on the engine.
+    fake = _FakeEngine(
         events=[
             {"type": "assistant.delta", "data": {"delta": "Hallo"}},
             {
@@ -938,7 +938,7 @@ async def test_stream_fast_turn_suppresses_reasoning(aiohttp_client):
         ]
     )
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -954,11 +954,11 @@ async def test_stream_fast_turn_suppresses_reasoning(aiohttp_client):
 
 
 async def test_stream_tool_turn_surfaces_answer_as_late_delta(aiohttp_client):
-    # A HA state query is a tool-invocation turn: Hermes streams no answer
+    # A HA state query is a tool-invocation turn: the engine streams no answer
     # deltas, only tool events, and delivers the summary on run.completed. The
     # proxy must surface that text as a late delta so the bubble isn't empty
     # (#258) — otherwise the UI shows "(no reply)".
-    fake = _FakeHermes(
+    fake = _FakeEngine(
         events=[
             {"type": "tool.started", "data": {"tool": "homeassistant"}},
             {"type": "tool.completed", "data": {"tool": "homeassistant"}},
@@ -975,7 +975,7 @@ async def test_stream_tool_turn_surfaces_answer_as_late_delta(aiohttp_client):
         ]
     )
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -994,7 +994,7 @@ async def test_stream_tool_turn_surfaces_answer_as_late_delta(aiohttp_client):
 async def test_stream_no_duplicate_delta_when_answer_already_streamed(aiohttp_client):
     # When the answer was streamed normally, run.completed must NOT re-emit it
     # as a second delta (#258 guard: only fill when answer_buf is empty).
-    fake = _FakeHermes(
+    fake = _FakeEngine(
         events=[
             {"type": "assistant.delta", "data": {"delta": "Hallo"}},
             {
@@ -1004,7 +1004,7 @@ async def test_stream_no_duplicate_delta_when_answer_already_streamed(aiohttp_cl
         ]
     )
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1018,9 +1018,9 @@ async def test_stream_no_duplicate_delta_when_answer_already_streamed(aiohttp_cl
 
 
 async def test_stream_empty_input_rejected(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1050,9 +1050,9 @@ async def test_chat_persists_attachment_and_history_reattaches(
             ],
         }
     ]
-    fake = _FakeHermes(store=store)
+    fake = _FakeEngine(store=store)
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1079,9 +1079,9 @@ async def test_chat_persists_attachment_and_history_reattaches(
 async def test_get_session_without_stored_attachment_unchanged(
     aiohttp_client, tmp_path
 ):
-    fake = _FakeHermes(store=_two_user_store())
+    fake = _FakeEngine(store=_two_user_store())
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1163,9 +1163,9 @@ async def test_get_session_strips_internal_hints_from_user_messages(
             ],
         }
     ]
-    fake = _FakeHermes(store=store)
+    fake = _FakeEngine(store=store)
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1198,9 +1198,9 @@ async def test_turn_over_cap_compacts_and_switches_session(aiohttp_client, tmp_p
             "messages": [{"role": "user", "content": "hi"}],
         }
     ]
-    fake = _FakeHermes(store=store)
+    fake = _FakeEngine(store=store)
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         context_window=32768,
@@ -1235,9 +1235,9 @@ async def test_turn_under_cap_does_not_compact(aiohttp_client, tmp_path):
             "messages": [],
         }
     ]
-    fake = _FakeHermes(store=store)
+    fake = _FakeEngine(store=store)
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         context_window=32768,
@@ -1257,9 +1257,9 @@ async def test_turn_under_cap_does_not_compact(aiohttp_client, tmp_path):
 
 
 async def test_delete_session_removes_attachments(aiohttp_client, tmp_path):
-    fake = _FakeHermes(store=_two_user_store())
+    fake = _FakeEngine(store=_two_user_store())
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1311,9 +1311,9 @@ async def test_ephemeral_session_created_with_temp_marker(aiohttp_client, tmp_pa
     # is NOT re-titled (re-titling would re-stamp the durable [uid:] marker and
     # surface it in the list), and carries no session_topics row.
     db = _topics_db(tmp_path)
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1340,14 +1340,14 @@ async def test_two_ephemeral_first_turns_get_distinct_noncolliding_titles(
 ):
     # Two incognito first turns for the same resident must seed distinct
     # `create_session` titles (#286): the bare `[temp:]` marker is shared across
-    # temp chats, so without a unique suffix the second collides on Hermes'
+    # temp chats, so without a unique suffix the second collides on the engine's
     # unique-title constraint (400 -> 502). Each ephemeral create now passes
     # `title=_title_from(text)` (rides after the [temp:] marker), so two temp
     # chats with different first messages can't collide.
     db = _topics_db(tmp_path)
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1377,9 +1377,9 @@ async def test_two_ephemeral_first_turns_get_distinct_noncolliding_titles(
 async def test_ephemeral_turn_injects_no_persist_hint(aiohttp_client, tmp_path):
     # Every ephemeral turn carries the guard hint telling the agent to persist
     # nothing (suppresses auto-ingestion / memory writes at the source).
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1410,9 +1410,9 @@ async def test_ephemeral_existing_session_never_compacts(aiohttp_client, tmp_pat
             "messages": [],
         }
     ]
-    fake = _FakeHermes(store=store)
+    fake = _FakeEngine(store=store)
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         context_window=32768,
@@ -1438,9 +1438,9 @@ async def test_ephemeral_extract_to_topic_tags_the_note(aiohttp_client, tmp_path
     # topic, so the proxy appends the #topic/<slug> stamp the ingestion skill
     # reads — that one note is the only durable output.
     db = _topics_db(tmp_path)
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1471,9 +1471,9 @@ async def test_non_ephemeral_chat_unaffected(aiohttp_client, tmp_path):
     # A normal chat behaves exactly as before: created without the ephemeral
     # flag, born with a title from its first turn, and never carries the
     # incognito guard hint.
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1492,11 +1492,11 @@ async def test_non_ephemeral_chat_unaffected(aiohttp_client, tmp_path):
 
 async def test_turn_carries_current_time_line(aiohttp_client, tmp_path):
     # #265: every user turn is prepended a fresh local wall-clock line so the
-    # agent reports a correct, advancing date-time (Hermes only stamps a frozen,
+    # agent reports a correct, advancing date-time (the engine only stamps a frozen,
     # date-granular "Conversation started" line at create and runs UTC).
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1531,9 +1531,9 @@ async def test_overlay_simplification_keeps_per_turn_levers(aiohttp_client, tmp_
     # every per-turn lever the profile does NOT pin: the #265 time line leads the
     # turn text, the #278 thinking selector maps to reasoning_effort high, and
     # the session is created with no model override and no persona overlay.
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path),
@@ -1596,9 +1596,9 @@ def _two_user_store():
 async def test_list_sessions_scoped_to_caller(aiohttp_client):
     # Per-resident isolation (#153): A sees only A's sessions, never B's, and
     # never the unmarked legacy session. Marker stripped from the title.
-    fake = _FakeHermes(store=_two_user_store())
+    fake = _FakeEngine(store=_two_user_store())
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1616,9 +1616,9 @@ async def test_list_sessions_scoped_to_caller(aiohttp_client):
 
 
 async def test_delete_session(aiohttp_client):
-    fake = _FakeHermes(store=_two_user_store())
+    fake = _FakeEngine(store=_two_user_store())
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1634,9 +1634,9 @@ async def test_delete_session(aiohttp_client):
 async def test_delete_session_rejects_cross_resident(aiohttp_client):
     # #438: a resident cannot delete another resident's session. A wrong-owner
     # id is indistinguishable from a missing one (404) and deletes nothing.
-    fake = _FakeHermes(store=_two_user_store())
+    fake = _FakeEngine(store=_two_user_store())
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1648,9 +1648,9 @@ async def test_delete_session_rejects_cross_resident(aiohttp_client):
 
 
 async def test_whoami_reports_version(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
     body = await (await client.get("/api/whoami")).json()
@@ -1658,9 +1658,9 @@ async def test_whoami_reports_version(aiohttp_client):
 
 
 async def test_create_session_returns_id(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1672,9 +1672,9 @@ async def test_create_session_returns_id(aiohttp_client):
 
 
 async def test_get_own_session_returns_history(aiohttp_client):
-    fake = _FakeHermes(store=_two_user_store())
+    fake = _FakeEngine(store=_two_user_store())
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1689,9 +1689,9 @@ async def test_get_own_session_returns_history(aiohttp_client):
 async def test_get_other_residents_session_is_404(aiohttp_client):
     # Per-resident isolation (#153): mdopp cannot open lena's session by id —
     # the missing marker makes it indistinguishable from a non-existent id.
-    fake = _FakeHermes(store=_two_user_store())
+    fake = _FakeEngine(store=_two_user_store())
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1731,9 +1731,9 @@ def test_is_admin_absent_or_other_group():
 
 
 async def test_whoami_reports_uid_and_admin(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1768,9 +1768,9 @@ def test_system_prompt_for():
 
 
 async def test_list_personalities_endpoint(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
     resp = await client.get("/api/personalities")
@@ -1780,9 +1780,9 @@ async def test_list_personalities_endpoint(aiohttp_client):
 
 
 async def test_chat_does_not_inject_persona_overlay(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1797,9 +1797,9 @@ async def test_chat_does_not_inject_persona_overlay(aiohttp_client):
 
 
 async def test_chat_default_personality_no_overlay(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -1809,9 +1809,9 @@ async def test_chat_default_personality_no_overlay(aiohttp_client):
 
 
 async def test_create_session_ignores_persona_overlay(aiohttp_client):
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -2015,9 +2015,9 @@ def test_hooks_for_event(tmp_path):
 async def test_defs_endpoints(aiohttp_client, tmp_path):
     _write_def(tmp_path, "status", name="solaris-status")  # skill
     _write_def(tmp_path, "debug-set", name="debug-set", kind="command")
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         skills_dir=str(tmp_path),
@@ -2075,9 +2075,9 @@ async def test_skills_endpoints(aiohttp_client, tmp_path):
     _write_skill(
         tmp_path, "status", "solaris-status", "Health", "# Status\nrendered me"
     )
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         skills_dir=str(tmp_path),
@@ -2104,7 +2104,7 @@ async def test_soul_endpoint_reads_file(aiohttp_client, tmp_path):
     soul = tmp_path / "SOUL.md"
     soul.write_text("# Solaris\nI am the soul.", encoding="utf-8")
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         soul_path=str(soul),
@@ -2118,7 +2118,7 @@ async def test_soul_endpoint_reads_file(aiohttp_client, tmp_path):
 
 async def test_soul_endpoint_missing_file_is_502(aiohttp_client, tmp_path):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         soul_path=str(tmp_path / "missing" / "SOUL.md"),
@@ -2130,7 +2130,7 @@ async def test_soul_endpoint_missing_file_is_502(aiohttp_client, tmp_path):
 
 async def test_toolsets_endpoint(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
+        engine=_FakeEngine(), remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
     body = await (await client.get("/api/toolsets")).json()
@@ -2140,7 +2140,7 @@ async def test_toolsets_endpoint(aiohttp_client):
 
 async def test_whoami_reports_context_window(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         context_window=4096,
@@ -2158,7 +2158,7 @@ async def test_whoami_reports_shared_household_session_id(aiohttp_client):
     from solaris_chat.engine import store
 
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -2176,7 +2176,7 @@ async def test_put_soul_admin_writes_file(aiohttp_client, tmp_path):
     soul = tmp_path / "SOUL.md"
     soul.write_text("# Solaris\nold", encoding="utf-8")
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         soul_path=str(soul),
@@ -2196,7 +2196,7 @@ async def test_put_soul_non_admin_forbidden_no_write(aiohttp_client, tmp_path):
     soul = tmp_path / "SOUL.md"
     soul.write_text("# Solaris\nold", encoding="utf-8")
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         soul_path=str(soul),
@@ -2212,7 +2212,7 @@ async def test_put_soul_non_admin_forbidden_no_write(aiohttp_client, tmp_path):
 
 async def test_put_soul_empty_rejected(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
+        engine=_FakeEngine(), remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
     resp = await client.put(
@@ -2223,7 +2223,7 @@ async def test_put_soul_empty_rejected(aiohttp_client):
 
 async def test_put_soul_unwritable_path_is_502(aiohttp_client, tmp_path):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         soul_path=str(tmp_path / "missing" / "SOUL.md"),
@@ -2240,7 +2240,7 @@ async def test_put_soul_unwritable_path_is_502(aiohttp_client, tmp_path):
 
 def _model_app(tmp_path):
     return build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         fast_model="gemma4:e2b",
@@ -2359,7 +2359,7 @@ async def test_put_household_model_rejects_unoffered_tag(aiohttp_client, tmp_pat
 
 def _voice_app(tmp_path, tts_voices="martin,anna"):
     return build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         tts_voices=tts_voices,
@@ -2580,7 +2580,7 @@ def test_write_skill_rejects_missing_and_traversal(tmp_path):
 
 def _skill_app(fake, tmp_path):
     return build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         skills_dir=str(tmp_path),
@@ -2589,7 +2589,7 @@ def _skill_app(fake, tmp_path):
 
 async def test_put_skill_admin_saves(aiohttp_client, tmp_path):
     _write_skill(tmp_path, "status", "solaris-status", "Health", "# Status\nold")
-    client = await aiohttp_client(_skill_app(_FakeHermes(), tmp_path))
+    client = await aiohttp_client(_skill_app(_FakeEngine(), tmp_path))
     new = "---\nname: solaris-status\ndescription: Health\nversion: 1\n---\n\n# Status\nnew\n"
 
     resp = await client.put(
@@ -2605,7 +2605,7 @@ async def test_put_skill_admin_saves(aiohttp_client, tmp_path):
 
 async def test_put_skill_frontmatter_change_signals_restart(aiohttp_client, tmp_path):
     _write_skill(tmp_path, "status", "solaris-status", "Health", "# Status\nok")
-    client = await aiohttp_client(_skill_app(_FakeHermes(), tmp_path))
+    client = await aiohttp_client(_skill_app(_FakeEngine(), tmp_path))
     new = (
         "---\nname: solaris-status\ndescription: New\nversion: 1\n---\n\n# Status\nok\n"
     )
@@ -2621,7 +2621,7 @@ async def test_put_skill_frontmatter_change_signals_restart(aiohttp_client, tmp_
 
 async def test_put_skill_non_admin_forbidden_and_unchanged(aiohttp_client, tmp_path):
     _write_skill(tmp_path, "status", "solaris-status", "Health", "# Status\nkeep")
-    client = await aiohttp_client(_skill_app(_FakeHermes(), tmp_path))
+    client = await aiohttp_client(_skill_app(_FakeEngine(), tmp_path))
 
     resp = await client.put(
         "/api/skills/status",
@@ -2635,7 +2635,7 @@ async def test_put_skill_non_admin_forbidden_and_unchanged(aiohttp_client, tmp_p
 
 async def test_put_skill_missing_and_empty(aiohttp_client, tmp_path):
     _write_skill(tmp_path, "status", "solaris-status", "Health", "# Status\nok")
-    client = await aiohttp_client(_skill_app(_FakeHermes(), tmp_path))
+    client = await aiohttp_client(_skill_app(_FakeEngine(), tmp_path))
     admin = {"Remote-Groups": "admins"}
 
     resp = await client.put("/api/skills/missing", json={"content": "x"}, headers=admin)
@@ -2668,7 +2668,7 @@ class _FakeProfile:
         self.toolbox = toolbox
 
 
-class _FakeAdminEngine(_FakeHermes):
+class _FakeAdminEngine(_FakeEngine):
     def __init__(self, toolbox):
         super().__init__()
         self._profile = _FakeProfile(toolbox)
@@ -2676,8 +2676,8 @@ class _FakeAdminEngine(_FakeHermes):
 
 def _mcp_app(toolbox):
     return build_app(
-        hermes=_FakeHermes(),
-        hermes_admin=_FakeAdminEngine(toolbox),
+        engine=_FakeEngine(),
+        engine_admin=_FakeAdminEngine(toolbox),
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -2711,7 +2711,7 @@ async def test_mcp_endpoint_finds_toolbox_inside_combined(aiohttp_client):
 
 async def test_mcp_endpoint_empty_without_toolbox(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
+        engine=_FakeEngine(), remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
     body = await (await client.get("/api/mcp")).json()
@@ -2770,7 +2770,7 @@ async def test_test_mcp_empty_tool_rejected(aiohttp_client):
 
 async def test_cancel_unknown_session_is_noop(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(), remote_user_header="Remote-User", default_uid="household"
+        engine=_FakeEngine(), remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
     resp = await client.post("/api/chat/cancel", json={"session_id": "nope"})
@@ -2784,7 +2784,7 @@ async def test_cancel_interrupts_active_stream(aiohttp_client):
     # break the loop and emit a `cancelled` frame (#192).
     import asyncio
 
-    class _SlowHermes(_FakeHermes):
+    class _SlowEngine(_FakeEngine):
         async def chat_stream(
             self,
             session_id,
@@ -2800,7 +2800,7 @@ async def test_cancel_interrupts_active_stream(aiohttp_client):
                 await asyncio.sleep(0.01)
 
     app = build_app(
-        hermes=_SlowHermes(),
+        engine=_SlowEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -2828,11 +2828,11 @@ async def test_maint_persona_admin_locked_to_admin_profile(aiohttp_client):
     # An admin creating a session via ?persona=servicebay-maintenance lands on
     # the admin engine profile (which OWNS the operator soul — no per-session
     # prompt), tagged maintenance; any body `personality` is ignored.
-    household = _FakeHermes()
-    admin = _FakeHermes()
+    household = _FakeEngine()
+    admin = _FakeEngine()
     app = build_app(
-        hermes=household,
-        hermes_admin=admin,
+        engine=household,
+        engine_admin=admin,
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -2857,9 +2857,9 @@ async def test_maint_persona_admin_locked_to_admin_profile(aiohttp_client):
 async def test_maint_persona_non_admin_forbidden_no_create(aiohttp_client):
     # A non-admin requesting the maintenance persona is refused (403) and no
     # session is created — the Authelia admin gate is enforced server-side.
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -2875,9 +2875,9 @@ async def test_household_create_unaffected_by_query_persona(aiohttp_client):
     # A normal (non-maintenance) create stays on the household gateway: no soul
     # fetch, no maintenance marker, and (#293) no per-session persona overlay —
     # the profile supplies the soul. An unrelated query string is inert.
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -2895,9 +2895,9 @@ async def test_maint_persona_cannot_escalate_mid_session(aiohttp_client):
     # Once a session exists, per-turn `personality` is ignored — a maintenance
     # session's locked prompt can't be switched to the household Solaris persona by
     # any client-supplied field on a follow-up turn.
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake, remote_user_header="Remote-User", default_uid="household"
+        engine=fake, remote_user_header="Remote-User", default_uid="household"
     )
     client = await aiohttp_client(app)
 
@@ -2921,13 +2921,13 @@ async def test_chat_never_routes_to_deep_gateway(aiohttp_client, tmp_path):
     # (covered in test_gateway_routing), so the chat path never touches deep.
     from solaris_chat import settings_store
 
-    household = _FakeHermes()
-    deep = _FakeHermes()
+    household = _FakeEngine()
+    deep = _FakeEngine()
     db = str(tmp_path / "solaris.db")
     settings_store.set_other_model_pref(db, "thorough")
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -2955,13 +2955,13 @@ async def test_default_persona_with_fast_pref_stays_on_household(
     # gateway + reasoning — is covered in test_gateway_routing.)
     from solaris_chat import settings_store
 
-    household = _FakeHermes()
-    deep = _FakeHermes()
+    household = _FakeEngine()
+    deep = _FakeEngine()
     db = str(tmp_path / "solaris.db")
     settings_store.set_other_model_pref(db, "fast")
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -2983,7 +2983,7 @@ async def test_default_persona_with_fast_pref_stays_on_household(
 
 async def test_csp_header_from_default_frame_ancestors(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -2996,7 +2996,7 @@ async def test_csp_header_from_default_frame_ancestors(aiohttp_client):
 
 async def test_csp_header_uses_configured_frame_ancestors(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         frame_ancestors="'self' https://admin.dopp.cloud",
@@ -3023,7 +3023,7 @@ async def test_ha_call_runs_scoped_service_and_returns_state(
 
     monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         hass_url="http://ha",
@@ -3057,7 +3057,7 @@ async def test_ha_call_rejects_unsupported_domain(aiohttp_client, monkeypatch):
 
     monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         hass_url="http://ha",
@@ -3101,7 +3101,7 @@ async def test_ha_call_allows_cover_and_climate_controls(
     monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
     monkeypatch.setattr(server_mod, "fetch_card", _fake_card)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         hass_url="http://ha",
@@ -3135,7 +3135,7 @@ async def test_ha_call_refuses_unconfirmed_sensitive_cover(aiohttp_client, monke
     monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
     monkeypatch.setattr(server_mod, "fetch_card", _fake_card)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         hass_url="http://ha",
@@ -3167,7 +3167,7 @@ async def test_ha_call_runs_confirmed_sensitive_cover(aiohttp_client, monkeypatc
     monkeypatch.setattr(server_mod, "call_service_scoped", _fake_call)
     monkeypatch.setattr(server_mod, "fetch_card", _fake_card)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         hass_url="http://ha",
@@ -3189,7 +3189,7 @@ async def test_ha_call_runs_confirmed_sensitive_cover(aiohttp_client, monkeypatc
 
 async def test_ha_call_503_when_ha_not_configured(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -3205,7 +3205,7 @@ async def test_ha_call_503_when_ha_not_configured(aiohttp_client):
 
 async def test_portal_energy_history_503_when_ha_not_configured(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -3237,7 +3237,7 @@ async def test_portal_energy_history_maps_range_and_returns_series(
 
     monkeypatch.setattr(server_mod, "fetch_energy_history", fake_history)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         hass_url="http://ha.local",
@@ -3270,7 +3270,7 @@ async def test_portal_energy_history_502_when_ha_unavailable(
 
     monkeypatch.setattr(server_mod, "fetch_energy_history", fake_history)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         hass_url="http://ha.local",
