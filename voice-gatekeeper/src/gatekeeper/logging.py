@@ -15,7 +15,7 @@ Caller pattern:
 
     log.info("gatekeeper.boot", uri=settings.gatekeeper_uri)
     log.warn("gatekeeper.push.unauthorized", trace_id=trace_id)
-    log.error("gatekeeper.hermes.error", trace_id=trace_id, status=503)
+    log.error("gatekeeper.engine.error", trace_id=trace_id, status=503)
 
 `tag` defaults to `gatekeeper` (overridable via `SOLARIS_COMPONENT`).
 """

@@ -18,7 +18,7 @@ for a signature. Read-scoped `servicebay_admin` tools only.
 
 ## When to use
 
-- "Zeig mir die letzte Stunde Hermes-Logs."
+- "Zeig mir die letzte Stunde Solaris-Logs."
 - "Grep die Gatekeeper-Logs nach dem Speaker-ID-Fehler."
 - "Tail Jellyfin ab dem Crash." / "Was stand kurz vor dem Neustart im Log?"
 

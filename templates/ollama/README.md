@@ -4,15 +4,15 @@
 that speaks an OpenAI-compatible HTTP API. ServiceBay's `ollama`
 template wraps the upstream image
 (`docker.io/ollama/ollama:latest`) as a hostNetwork pod bound to
-`127.0.0.1` so other templates on the same host (e.g. `hermes`)
+`127.0.0.1` so other templates on the same host (e.g. `solaris`)
 can reach it at `http://127.0.0.1:11434` without DNS or bridge
 networking.
 
 ## Variables
 
 - `OLLAMA_PORT` — host port. Default `11434`. Bound to loopback.
-- `OLLAMA_DEFAULT_MODEL` — primary model. The tag Hermes' `model.model`
-  points at after install. Default `gemma4:12b` — 12B params,
+- `OLLAMA_DEFAULT_MODEL` — primary model. The tag the Solaris Engine's
+  `model.model` points at after install. Default `gemma4:12b` — 12B params,
   fits on a 16 GB GPU, AND ships native multimodal
   (`ollama show gemma4:12b` reports `completion, vision, audio, tools,
   thinking`). That single default backs Solaris's multimodal-ingestion
@@ -20,7 +20,7 @@ networking.
   plus user-namespaced tags like `gemma4:12b`, `gemma4:e2b`, or `VladimirGav/gemma4-26b-16GB-VRAM:latest`.
 - `OLLAMA_EXTRA_MODELS` — comma-separated list of additional models
   pre-pulled at install time on top of the default. Gives the operator
-  one-click switchable choices in Hermes' Models tab without a fresh
+  one-click switchable choices in the Solaris Engine's model settings without a fresh
   download. Default is empty (set to empty string to skip, which ensures
   only one model is loaded by default). Set to `gemma4:e2b` or `VladimirGav/gemma4-26b-16GB-VRAM:latest`
   if you want a second model. **Caveat:** the 16
@@ -37,12 +37,12 @@ networking.
   tokens. Default `32768`. gemma4:12b's full native context is actually
   `262144`, but that's far more than a household assistant needs and the
   window costs VRAM directly. 32768 is the smallest window that
-  comfortably covers Hermes' ~4157-token system prompt plus a long
+  comfortably covers the engine's lean system prompt plus a long
   conversation; it loads gemma4:12b 100% on a 16 GB GPU at **~8.95 GB**
   (vs ~10.3 GB at 131072), leaving ~6.6 GB headroom for the embedding
   model — and it avoids the eviction race at an oversized window that was
   silently bouncing the box down to `gemma4:e2b`. Forces the load size so
-  Hermes' system prompt isn't truncated to a 1-token reply by Ollama's
+  the engine's system prompt isn't truncated to a 1-token reply by Ollama's
   stock 4096 default (#146 — the `/v1` endpoint ignores per-request
   `num_ctx`, so only this env-set default lands). Tune up only if you
   genuinely need a longer context AND have the VRAM.
@@ -85,7 +85,7 @@ redeploy.
 Ollama ships **no built-in authentication**. The template binds
 `OLLAMA_HOST=127.0.0.1:<port>` so only the host's loopback
 interface accepts connections. Other ServiceBay pods that are
-also `hostNetwork: true` (e.g. `hermes`) can reach it via that
+also `hostNetwork: true` (e.g. `solaris`) can reach it via that
 loopback; bridge-networked pods cannot.
 
 For LAN or remote access, put Ollama behind NPM + Authelia using
@@ -118,7 +118,7 @@ without a separate vision pull.
 
 Where the tag matters: the `OLLAMA_EXTRA_MODELS` default is empty, but
 if you pre-pulled `VladimirGav/gemma4-26b-16GB-VRAM:latest`, that model
-**drops vision and audio** in its 16 GB quant. An operator who switches Hermes' active
+**drops vision and audio** in its 16 GB quant. An operator who switches the Solaris Engine's active
 model to that tag for "smarter text reasoning" gives up multimodal
 until they switch back to `gemma4:12b` (or pull plain `gemma4:26b`,
 ~17 GB with partial CPU offload, which keeps vision).
@@ -130,8 +130,8 @@ default has been changed to a text-only tag. Suggested alternatives:
 - `llava:13b` — older but well-tested, ~8 GB.
 - `bakllava:7b` — Mistral-based LLaVA variant, ~5 GB.
 
-Hermes' wiring picks up the new model automatically the next time
-its config is regenerated — see `templates/hermes/README.md`.
+The engine's wiring picks up the new model automatically the next time
+the `solaris` template regenerates the engine's config.
 
 ## Thinking / reasoning output
 

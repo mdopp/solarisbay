@@ -1,6 +1,6 @@
 # Gatekeeper
 
-Solaris-published Python image that bridges Wyoming-protocol satellites (HA Voice PE, `wyoming-satellite` CLI) to Hermes. Runs as a container inside Solaris's `solarisbay` pod; reaches ServiceBay's unchanged `voice` template (Whisper + Piper + openWakeWord) via host loopback. Both pods are `hostNetwork: true`, sharing the host netns. The `GATEKEEPER_IMAGE` variable on `solarisbay` picks which image tag to run.
+Solaris-published Python image that bridges Wyoming-protocol satellites (HA Voice PE, `wyoming-satellite` CLI) to the Solaris Engine. Runs as a container inside Solaris's `solarisbay` pod; reaches ServiceBay's unchanged `voice` template (Whisper + Piper + openWakeWord) via host loopback. Both pods are `hostNetwork: true`, sharing the host netns. The `GATEKEEPER_IMAGE` variable on `solarisbay` picks which image tag to run.
 
 ## What it does
 
@@ -11,12 +11,12 @@ Satellite (HA Voice PE / wyoming-satellite CLI)
   → AudioStart + AudioChunk* + AudioStop
 Gatekeeper
   → Whisper (local, GPU): transcribe
-  → Hermes (HTTP, solarisbay neighbour pod): converse(text, uid, endpoint, location, trace_id)
+  → the Solaris Engine (HTTP, same pod): converse(text, uid, endpoint, location, trace_id)
   → Piper (local): synthesize response
   → AudioStart + AudioChunk* + AudioStop back to the satellite
 ```
 
-Plus an outbound `POST /push` endpoint (port 10750, pod-internal) so Hermes' cron and proactive deliveries can address a specific Voice PE device by name.
+Plus an outbound `POST /push` endpoint (port 10750, pod-internal) so the engine's cron and proactive deliveries can address a specific Voice PE device by name.
 
 The gatekeeper terminates the Wyoming connection after each turn. Multi-turn / barge-in / streaming responses are Phase 4 topics.
 
@@ -28,7 +28,7 @@ The gatekeeper terminates the Wyoming connection after each turn. Multi-turn / b
 | **2 (framework landed, #937)** | Resolver, k-NN cosine, embeddings store, `POST /enrol` HTTP endpoint, handler wiring all live. ECAPA-TDNN itself is opt-in — see "Enabling Speaker-ID" below. |
 | **4** | Multi-room routing (response goes to the satellite the user is closest to), voice-tone sensor parallel to STT, custom "Solaris" wakeword. |
 
-Long-term target: contribute the Phase 0/1 pass-through path to Hermes as a generic `hermes gateway voice`. The Phase 2+ logic (speaker ID, multi-room, voice-tone) stays here.
+Long-term target: fold the Phase 0/1 pass-through path into the Solaris Engine core as a generic voice gateway. The Phase 2+ logic (speaker ID, multi-room, voice-tone) stays here.
 
 ## Configuration (env vars)
 
@@ -38,8 +38,8 @@ Long-term target: contribute the Phase 0/1 pass-through path to Hermes as a gene
 | `WHISPER_URI` | `tcp://127.0.0.1:10300` | Wyoming Whisper service (provided by ServiceBay's `voice` template) |
 | `PIPER_URI` | `tcp://127.0.0.1:10200` | Wyoming Piper service (same pod) |
 | `OPENWAKEWORD_URI` | `tcp://127.0.0.1:10400` | openWakeWord (advertised in Info; Phase 0 lets the satellite do wakeword on-device) |
-| `HERMES_URL` | `http://127.0.0.1:8642` | Base URL of Hermes' HTTP API (matches ServiceBay `hermes` template default; both pods use hostNetwork) |
-| `HERMES_TOKEN` | empty | Bearer for Hermes (matches its `API_SERVER_KEY` / surfaced by ServiceBay's `hermes` template as `HERMES_API_KEY`) |
+| `SOLARIS_ENGINE_URL` | `http://127.0.0.1:8787/ollama` | Base URL of the Solaris Engine's Ollama-compatible facade (the `solaris-chat` server's loopback port + `/ollama` prefix; both pods use hostNetwork) |
+| `SOLARIS_API_KEY` | empty | Bearer token for the Solaris Engine facade |
 | `DEFAULT_UID` | `michael` | Fallback uid when speaker-ID is off or doesn't match |
 | `SOLARIS_DB_PATH` | `/var/lib/solaris/solaris.db` | SQLite file (Phase 2: `voice_embeddings` read/write) |
 | `SOLARIS_SPEAKER_ID_ENABLED` | empty | Set to `1`/`true` to turn on Phase-2 speaker resolution. Off by default — the stock image has no ECAPA model anyway. |
@@ -95,14 +95,14 @@ conversation pipeline is unaffected.
 
 ## Room mapping (location)
 
-Each turn, the gatekeeper attaches a `location` (room) to the Hermes
+Each turn, the gatekeeper attaches a `location` (room) to the Solaris Engine
 `converse` payload so room-dependent commands ("turn on the light")
 resolve to the right area. The room is looked up by the originating
 satellite's id (the socket peer host, `voice-pe:<host>`) in the
 `voice_pe_rooms` table of `solaris.db`. When unknown, `location` is `null`
-and Hermes prompts the resident to name the room, then persists it — the
+and the Solaris Engine prompts the resident to name the room, then persists it — the
 spoken enrolment ("which room am I in?" / "this is the bath" remap) lives
-in Hermes (see #94).
+in the engine (see #94).
 
 Rooms are managed over the pod-internal HTTP endpoint (shares `PUSH_TOKEN`):
 
@@ -124,8 +124,8 @@ truth (HA already owns areas), dropping the local table once that lands.
 ```bash
 pip install -e ./gatekeeper
 
-# Pretend Whisper / Piper / Hermes are running on the expected URIs
-HERMES_URL=http://localhost:8642 SOLARIS_DEBUG_MODE=true gatekeeper
+# Pretend Whisper / Piper / the Solaris Engine are running on the expected URIs
+SOLARIS_ENGINE_URL=http://localhost:8787/ollama SOLARIS_DEBUG_MODE=true gatekeeper
 ```
 
 Test from another shell with a tiny Wyoming client (`wyoming-satellite` CLI or the `example_event_client.py` shipped with that package). For pure protocol smoke-testing without audio hardware, feed a WAV file through `python -m wyoming.tools.wav` → the gatekeeper.

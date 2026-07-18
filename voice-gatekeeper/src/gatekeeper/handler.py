@@ -5,7 +5,7 @@ One handler instance per inbound connection. The Phase-0 contract:
   Client → AudioStart, AudioChunk*, AudioStop
   Gatekeeper:
     1. Stream the buffered audio to whisper, await Transcript
-    2. POST transcript to HERMES with (uid, endpoint, trace_id)
+    2. POST transcript to the Solaris Engine with (uid, endpoint, trace_id)
     3. Send response text to piper, stream the resulting AudioChunks back
        to the original client
 
@@ -377,7 +377,7 @@ class GatekeeperHandler(AsyncEventHandler):
         return uid
 
     async def _resolve_location(self) -> str | None:
-        """Room of the originating satellite, or None when unknown. Hermes
+        """Room of the originating satellite, or None when unknown. The engine
         uses it to resolve room-dependent commands; absence is what triggers
         the spoken room-enrolment prompt (see #94)."""
         if not self.client_id:

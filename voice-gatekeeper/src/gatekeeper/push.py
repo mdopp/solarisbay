@@ -1,12 +1,12 @@
 """HTTP push endpoint — make the gatekeeper speak on a named Voice PE device.
 
 Skills can't talk Wyoming directly to a satellite. After a timer or alarm
-fires, HERMES POSTs here with `{endpoint, text}`; we look the endpoint up
+fires, the Solaris Engine POSTs here with `{endpoint, text}`; we look the endpoint up
 in the configured device map, synthesize via Piper, and forward the
 resulting AudioStart/Chunk*/AudioStop events to the device's Wyoming URI.
 
 Auth: bearer token (`PUSH_TOKEN` env). Empty token disables auth — fine
-for the default loopback bind (`PUSH_HOST=127.0.0.1`), where only Hermes
+for the default loopback bind (`PUSH_HOST=127.0.0.1`), where only the engine
 on the same host reaches it. If an operator rebinds it off loopback, set a
 token (under hostNetwork, 0.0.0.0 means the LAN — see #116).
 """

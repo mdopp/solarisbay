@@ -421,7 +421,7 @@ def render_gpu_container_unit(port: str, data_dir: str) -> str:
         f"Environment=OLLAMA_HOST=127.0.0.1:{port}\n"
         "# Force Ollama's DEFAULT load context. /v1/chat/completions ignores\n"
         "# per-request num_ctx, so only this env-set default lands — without\n"
-        "# it the GPU Quadlet stays at 4096 and Hermes loops at 1 token (#146).\n"
+        "# it the GPU Quadlet stays at 4096 and the engine loops at 1 token (#146).\n"
         f"Environment=OLLAMA_CONTEXT_LENGTH={context_length}\n"
         "# Keep a model loaded after its last request so a conversational\n"
         "# pause — or an overnight gap — doesn't pay a cold model reload next\n"
@@ -682,7 +682,7 @@ def main() -> int:
             )
 
     # Extras (#1046): one-click-switchable alternatives the operator can
-    # pick from Hermes' Models tab without a fresh download. Failures are
+    # pick from the Solaris Engine's model settings without a fresh download. Failures are
     # warn-not-fatal — the default model is the only one the install
     # depends on; extras enrich the choice set.
     for extra in extra_models:
@@ -693,7 +693,7 @@ def main() -> int:
             jlog(
                 "warn",
                 "ollama:pull",
-                'extra-model pull did not complete; it will not be selectable from Hermes\' Models tab until pulled manually. Run `curl -X POST http://127.0.0.1:%s/api/pull -d \'{"name":"%s"}\'`.'
+                'extra-model pull did not complete; it will not be selectable from the Solaris Engine\'s model settings until pulled manually. Run `curl -X POST http://127.0.0.1:%s/api/pull -d \'{"name":"%s"}\'`.'
                 % (port, extra),
                 model=extra,
             )
@@ -748,7 +748,7 @@ def main() -> int:
             f"   Embedding model: {embed_model} (target this for RAG, not the chat model)."
         )
     print(
-        f"   Other ServiceBay templates (hermes, solarisbay) can reach it at http://127.0.0.1:{port}."
+        f"   Other ServiceBay templates (solaris, solarisbay) can reach it at http://127.0.0.1:{port}."
     )
     return 0
 

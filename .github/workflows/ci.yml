@@ -1,7 +1,7 @@
 name: ci
 
-# Lint + test + scan the Python in Solaris (voice-gatekeeper bridge, database/alembic,
-# the Hermes plugin entrypoint, ServiceBay post-deploy scripts). Image builds
+# Lint + test + scan the Python in Solaris (the solaris-chat engine, voice-gatekeeper
+# bridge, database/alembic, ServiceBay post-deploy scripts). Image builds
 # live in build-images.yml; template-/skill-/docs-only changes are gated by
 # real-box /verify, not CI.
 
@@ -85,7 +85,7 @@ jobs:
         with:
           python-version: "3.11"
       # Post-deploy scripts are stdlib-only and loaded via importlib; pytest
-      # is the only dependency. Guards the hermes/solarisbay post-deploy logic
+      # is the only dependency. Guards the solaris/solarisbay post-deploy logic
       # (SB-MCP token self-heal, SOUL.md provisioning) that nothing else
       # exercises in CI.
       - run: pip install pytest

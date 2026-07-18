@@ -6,12 +6,12 @@
   },
   "OLLAMA_DEFAULT_MODEL": {
     "type": "text",
-    "description": "Primary model — the tag Hermes' `model.model` points at after install. Use any Ollama library tag (https://ollama.com/library) or a user-namespaced tag like `gemma4:12b`, `gemma4:e2b`, or `VladimirGav/gemma4-26b-16GB-VRAM:latest`. Default `gemma4:12b` is the household-stack sweet spot: 12B params, fits on a 16 GB GPU, AND ships native multimodal capabilities (`ollama show gemma4:12b` reports `completion, vision, audio, tools, thinking`). That single tag covers what we used to need a separate vision pull for (#923 / #938).",
+    "description": "Primary model — the tag the Solaris Engine's `model.model` points at after install. Use any Ollama library tag (https://ollama.com/library) or a user-namespaced tag like `gemma4:12b`, `gemma4:e2b`, or `VladimirGav/gemma4-26b-16GB-VRAM:latest`. Default `gemma4:12b` is the household-stack sweet spot: 12B params, fits on a 16 GB GPU, AND ships native multimodal capabilities (`ollama show gemma4:12b` reports `completion, vision, audio, tools, thinking`). That single tag covers what we used to need a separate vision pull for (#923 / #938).",
     "default": "gemma4:12b"
   },
   "OLLAMA_EXTRA_MODELS": {
     "type": "text",
-    "description": "Additional models to pre-pull on first install (comma-separated tags), on top of OLLAMA_DEFAULT_MODEL. The point is to give the operator one-click switchable alternatives in the Models tab without a fresh download. Default `gemma4:e4b`: the Solaris household FAST_MODEL (the voice/chat hot path) — pulling it here makes the bundled stack work out of the box, since OLLAMA_DEFAULT_MODEL only ships the thorough gemma4:12b. Add `VladimirGav/gemma4-26b-16GB-VRAM:latest` or any other tag to pre-pull more. CAVEAT: the aggressive quantization of the 26B-VRAM variant strips vision and audio from its `Capabilities` block. Switching the active model to that tag gives up multimodal — keep `gemma4:12b` or `gemma4:e4b` for OCR / voice-note flows. Set to empty string to skip extras.",
+    "description": "Additional models to pre-pull on first install (comma-separated tags), on top of OLLAMA_DEFAULT_MODEL. The point is to give the operator one-click switchable alternatives in the Solaris Engine's model settings without a fresh download. Default `gemma4:e4b`: the Solaris household FAST_MODEL (the voice/chat hot path) — pulling it here makes the bundled stack work out of the box, since OLLAMA_DEFAULT_MODEL only ships the thorough gemma4:12b. Add `VladimirGav/gemma4-26b-16GB-VRAM:latest` or any other tag to pre-pull more. CAVEAT: the aggressive quantization of the 26B-VRAM variant strips vision and audio from its `Capabilities` block. Switching the active model to that tag gives up multimodal — keep `gemma4:12b` or `gemma4:e4b` for OCR / voice-note flows. Set to empty string to skip extras.",
     "default": "gemma4:e4b"
   },
   "OLLAMA_VISION_MODEL": {

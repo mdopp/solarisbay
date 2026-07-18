@@ -11,8 +11,8 @@ labels: bug
 
 ## Repro
 
-<!-- Minimal steps to trigger it. Which install path (ServiceBay stack vs.
-     standalone Hermes plugin), which pod/skill/image, what input. -->
+<!-- Minimal steps to trigger it. Which install path (the ServiceBay
+     `solarisbay` stack), which pod/skill/image, what input. -->
 
 ## Starting-point files
 

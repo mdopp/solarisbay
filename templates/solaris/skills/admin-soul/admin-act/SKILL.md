@@ -22,7 +22,7 @@ permission and stop.
 ## When to use
 
 - "Starte Jellyfin neu." / "Restart Jellyfin."
-- "Stopp den Media-Stack." / "Deploy Hermes neu." / "Redeploy Hermes."
+- "Stopp den Media-Stack." / "Deploy Solaris neu." / "Redeploy Solaris."
 - "Fix die Proxy-Route für Chat." / "Ändere die Service-Config von …"
 
 Out of scope: figuring out *what* to act on (`solaris-admin-diagnose` /
@@ -36,7 +36,7 @@ Out of scope: figuring out *what* to act on (`solaris-admin-diagnose` /
 2. **Classify:** lifecycle (start/stop/restart — reversible, run directly) vs
    mutate (redeploy, config edit, proxy-route — impactful, confirm first).
 3. **Confirm impactful mutations.** State in one line what changes and the visible
-   effect ("Ich deploye Hermes neu — der Agent ist ~30 s offline. Soll ich?") and
+   effect ("Ich deploye Solaris neu — der Agent ist ~30 s offline. Soll ich?") and
    wait for an explicit yes. A single lifecycle restart needs no prompt unless
    several were asked for at once.
 4. **Run it** via the matching `servicebay_admin` tool.

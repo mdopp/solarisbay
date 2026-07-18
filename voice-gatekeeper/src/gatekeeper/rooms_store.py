@@ -2,7 +2,7 @@
 
 The `voice_pe_rooms` table (`satellite_id` PK -> `room`) is provisioned by
 the alembic migration `0003_voice_pe_rooms`. The gatekeeper reads it on
-each turn to attach `location` to the Hermes payload; the `POST /room`
+each turn to attach `location` to the engine payload; the `POST /room`
 endpoint writes it (rooms are self-enrolled by conversation — see #94).
 
 Sync sqlite3, like `embeddings_store`: each op is millisecond-cheap and the

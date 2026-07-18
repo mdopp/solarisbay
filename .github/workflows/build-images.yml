@@ -48,7 +48,7 @@ jobs:
         include:
           - image: solaris-gatekeeper
             context: voice-gatekeeper
-            description: "Solaris Wyoming-to-Hermes bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Runs as a container inside the SolarisBay pod; reaches ServiceBay's voice template via host loopback (both pods hostNetwork)."
+            description: "Solaris Wyoming bridge — STT/TTS pipeline orchestration, Phase-2 speaker ID. Runs as a container inside the SolarisBay pod; reaches ServiceBay's voice template via host loopback (both pods hostNetwork)."
           - image: solaris-gatekeeper-ml
             context: voice-gatekeeper
             build_args: |

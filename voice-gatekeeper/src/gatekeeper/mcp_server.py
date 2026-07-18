@@ -1,16 +1,16 @@
-"""MCP tool server exposing the satellite->room store to Hermes.
+"""MCP tool server exposing the satellite->room store to the Solaris Engine.
 
-#94 route (b): the Hermes agent calls these MCP tools to read/write the
+#94 route (b): the engine calls these MCP tools to read/write the
 satellite->room mapping instead of POSTing the gatekeeper's HTTP `/room`
 endpoint. `/room` shares `PUSH_TOKEN` with `/push`, so reaching it from
-Hermes would mean shipping that token into the Hermes pod — a wider trust
+the engine would mean shipping that token into the engine's pod — a wider trust
 surface (a prompt-injected session could then drive `/push`). A dedicated
 MCP server keeps room enrolment reachable while the push credential stays
 out of the agent.
 
 Runs as its own streamable-HTTP ASGI app on `MCP_PORT` (a third listener
 beside the Wyoming server and the push/HTTP app). `solarisbay`'s
-post-deploy registers it in Hermes' `mcp_servers:` block.
+post-deploy registers it in the engine's `mcp_servers:` block.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ def build_mcp(*, db_path: str) -> FastMCP:
 
     # We register zero prompts and zero resources, but FastMCP unconditionally
     # installs their protocol handlers, so `get_capabilities` advertises the
-    # prompts+resources capabilities and Hermes' MCP client surfaces
+    # prompts+resources capabilities and the engine's MCP client surfaces
     # list_prompts/get_prompt/list_resources/read_resource as four useless
     # model-callable tools in every prompt (#312). Drop those handlers so the
     # initialize response advertises only `tools`.

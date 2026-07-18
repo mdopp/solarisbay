@@ -25,7 +25,7 @@ Build-ready = clear symptom + a discernible acceptance/goal + a nameable startin
 Break into bite-size child issues filed in the repo: each independently shippable (foundations first — modules/templates before consumers, no dead-code stubs); **filed in dependency order so ascending issue number == dependency order**; each body = deliverable + starting-point files + `Depends on #N`. Comment the DAG on the parent, keep the parent open as the umbrella.
 
 ### Classification of build-ready survivors
-- **Security/privacy-sensitive** — the `security` label, **or** a change touching biometric speaker-ID, gateway credentials (Signal/Telegram/Discord), Honcho per-resident privacy, or long-lived HA/MCP tokens → set `security: true`; gate it by path like anything else (`verify` if path-mandated, else `normal`). It runs the **full loop** but ships through the **pre-merge draft gate** (builder opens a draft, adds to `review[]`, never auto-merges). Keep it its **own unit** (don't cluster) for clean review attribution. If the `security` label is missing on the issue, add it.
+- **Security/privacy-sensitive** — the `security` label, **or** a change touching biometric speaker-ID, gateway credentials (Signal/Telegram/Discord), per-resident OKF scoping/isolation (`uid`, #153), or long-lived HA/MCP tokens → set `security: true`; gate it by path like anything else (`verify` if path-mandated, else `normal`). It runs the **full loop** but ships through the **pre-merge draft gate** (builder opens a draft, adds to `review[]`, never auto-merges). Keep it its **own unit** (don't cluster) for clean review attribution. If the `security` label is missing on the issue, add it.
 - **Everything else** → `gate:"normal"`, unless its files are in the path-mandated list (Step 3 of `builder.md`) → `gate:"verify"`.
 - **A symptom actually owned by mdopp/servicebay** (the platform Solaris runs on — install runner / asset-transport, the agent, MCP wiring, NPM/reverse-proxy, registry resolver, onboarding/portal) → file it **upstream** (`gh issue create --repo mdopp/servicebay`, symptom + upstream file/line + the Solaris-side repro), mark the local issue `blocked` `blocked_by:"servicebay#<N>"`, add `{issue, servicebay_issue, reason, since}` to `upstream_waits[]`, skip. **Don't open a cross-repo PR** — filing the issue is the handoff; the ServiceBay autoloop (or a human) works it there. Re-check on later runs whether the upstream issue closed and unblock when it does.
 
@@ -57,18 +57,18 @@ The queue file is the source of truth; mirror two human-facing lists onto GitHub
 Derive labels **from the file every run** — never read a label back into the file. Create the labels once if missing (`gh label create`).
 
 ## End-to-end golden-path smoke (track d — on the box via ServiceBay)
-1. Confirm the `mdopp/solarisbay` registry is enabled in ServiceBay on `<SERVICEBAY_BOX>`, then install/refresh the Solaris stack (`stacks/solarisbay/stack.yml`: `solarisbay` + `hermes` + `hermes-webui` + `ollama`) through ServiceBay's install path. The install completes without errors.
-2. **Skills land + load** — `sudo ls /mnt/data/stacks/solarisbay/skills/` populated; `podman exec hermes-hermes ls /opt/data/skills/solaris/` shows them; Hermes' loader log lists the Solaris skills (none in a `TODO (rewrite)` stub state if its issue was to finish it).
+1. Confirm the `mdopp/solarisbay` registry is enabled in ServiceBay on `<SERVICEBAY_BOX>`, then install/refresh the Solaris stack (`stacks/solarisbay/stack.yml`: `ollama` + `solaris`) through ServiceBay's install path. The install completes without errors.
+2. **Skills land + load** — the bind-mounted pack (`<DATA_DIR>/solaris/skills/`) populated; `podman exec solaris-chat ls /data/skills/` shows them; the engine's skill-loader log lists the Solaris skills (none in a `TODO (rewrite)` stub state if its issue was to finish it).
 3. **Schema-init** — the `schema-init` sidecar ran `alembic upgrade head` cleanly; `solaris.db` schema is current.
-4. **voice-gatekeeper up** — the Wyoming bridge connects with no `AsrModel.__init__()`-class crash (see the wyoming pin in `voice-gatekeeper/pyproject.toml`); STT/TTS handoff to Hermes works.
-5. **Golden path** — a voice/chat command flows (solaris-voice → gatekeeper → Hermes → HA-MCP / a skill) and returns a sane result; multimodal ingestion writes a note to `/opt/data/notes`; `hermes-webui` is reachable through NPM.
+4. **voice-gatekeeper up** — the Wyoming bridge connects with no `AsrModel.__init__()`-class crash (see the wyoming pin in `voice-gatekeeper/pyproject.toml`); STT/TTS handoff to the engine works.
+5. **Golden path** — a voice/chat command flows (solaris-voice → gatekeeper → the engine `solaris-chat` → HA-MCP / a skill) and returns a sane result; multimodal ingestion writes a note to `/opt/data/notes`; the chat UI (`chat.dopp.cloud`) is reachable through NPM.
 6. **Observe real behaviour** — don't claim success from logs alone where you can drive the path. If you can't exercise a path (no audio satellite, no browser libs), say so explicitly rather than asserting it works.
 
 On any failure → route cross-repo (Step 2's servicebay rule): Solaris-owned → file an `mdopp/solarisbay` issue (or fix if bite-size next run); ServiceBay-platform → file `mdopp/servicebay`, mark the local item blocked + `upstream_waits[]`, wait; mixed → split.
 
 ## Codebase-evaluation prompt (track c — run verbatim against HEAD)
 ```
-Evaluate the Solaris codebase across its core areas (ServiceBay Pod-YAML templates, Hermes skills/SKILL.md, the voice-gatekeeper Wyoming bridge, the database/alembic schema, the Hermes plugin packaging in plugin.yaml/__init__.py, the bundled stack manifest, and documentation).
+Evaluate the Solaris codebase across its core areas (ServiceBay Pod-YAML templates, the Solaris Engine `solaris-chat` and its skill packs/SKILL.md, the voice-gatekeeper Wyoming bridge, the database/alembic schema, the bundled stack manifest, and documentation).
 
 Assume the baseline that Solaris is a real, deployed homelab AI assistant running on a ServiceBay node. Do not give me generic style-guide complaints unless they have a direct, measurable impact on bugs or developer velocity.
 

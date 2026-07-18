@@ -2,7 +2,7 @@
 
 The satellite->room mapping is self-enrolled by conversation: when a
 resident gives a room-dependent command and the gatekeeper has no room for
-the originating satellite, Hermes asks ("which room am I in?") and POSTs
+the originating satellite, the Solaris Engine asks ("which room am I in?") and POSTs
 the answer here; "this is the bath" remaps the same satellite (see #94).
 
 Accepts either `satellite_id` (the gatekeeper client id = peer host) or an
