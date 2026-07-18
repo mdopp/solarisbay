@@ -45,7 +45,7 @@ def test_step_row_shows_model_time_tokens():
 
 
 def test_step_row_shows_profile_badge():
-    # Each row carries the Hermes profile that served the call, so household vs
+    # Each row carries the engine profile that served the call, so household vs
     # admin turns are unambiguous in the trace.
     assert 'prof.className = "st-profile"' in _HTML
     assert "prof.textContent = s.profile" in _HTML

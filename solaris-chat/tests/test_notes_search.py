@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from solaris_chat import notes_search
 from solaris_chat.server import build_app
-from tests.test_server import _FakeHermes
+from tests.test_server import _FakeEngine
 
 
 def _note(path, body: str) -> None:
@@ -103,7 +103,7 @@ async def test_topic_items_endpoint_filters_by_tag_and_resident(
 ):
     vault = _vault(tmp_path)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         notes_dir=vault,
@@ -126,7 +126,7 @@ async def test_topic_items_endpoint_filters_by_tag_and_resident(
 async def test_topic_items_endpoint_empty_for_unknown_topic(aiohttp_client, tmp_path):
     vault = _vault(tmp_path)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         notes_dir=vault,

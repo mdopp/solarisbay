@@ -9,14 +9,14 @@ import struct
 from solaris_chat.server import STATIC_DIR, build_app
 
 
-class _FakeHermes:
+class _FakeEngine:
     """Minimal engine stub — the assetlinks route never touches it."""
 
 
 async def test_assetlinks_is_public_json_array(aiohttp_client):
     # No auth header at all (like /sw.js): Google's verifier is unauthenticated.
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -31,7 +31,7 @@ async def test_assetlinks_is_public_json_array(aiohttp_client):
 
 async def test_assetlinks_empty_without_fingerprints(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         android_cert_fingerprints=(),
@@ -45,7 +45,7 @@ async def test_assetlinks_empty_without_fingerprints(aiohttp_client):
 
 async def test_assetlinks_carries_configured_fingerprint(aiohttp_client):
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         android_package="cloud.dopp.solaris",

@@ -83,7 +83,7 @@ class _FakeCompanion:
 
 def _app(tmp_path, db, companion=None):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,

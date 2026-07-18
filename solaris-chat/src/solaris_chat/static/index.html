@@ -1717,7 +1717,7 @@
     <section id="view-tools" class="view">
       <div class="pane">
         <h2>Tools</h2>
-        <p class="lead">What Solaris can do — the toolsets and MCP servers Hermes has loaded, and whether they're active.</p>
+        <p class="lead">What Solaris can do — the toolsets and MCP servers the engine has loaded, and whether they're active.</p>
         <input id="tools-search" class="tools-search" type="search" placeholder="Search tools, toolsets, MCP servers…" autocomplete="off" />
         <h3 class="tools-h">MCP servers</h3>
         <div id="mcp-cards"></div>
@@ -1921,7 +1921,7 @@
       // <think>…</think>) block before the answer. This is a pure display
       // choice — the model still reasons; we only decide what the resident
       // sees: the raw block ("show"), a collapsible ("collapse", default), or
-      // nothing ("hide"). Stored locally; never sent to Hermes/Ollama.
+      // nothing ("hide"). Stored locally; never sent to the engine/Ollama.
       var THINK_MODES = { show: 1, collapse: 1, hide: 1 };
       var thinkingMode = (function () {
         var saved = localStorage.getItem("solaris.thinking");
@@ -3059,7 +3059,7 @@
             var prof = document.createElement("span");
             prof.className = "st-profile";
             prof.textContent = s.profile;
-            prof.title = "Hermes profile that served this call";
+            prof.title = "engine profile that served this call";
             row.appendChild(prof);
           }
           var model = document.createElement("span");
@@ -3348,7 +3348,7 @@
         return el;
       }
 
-      // A local (non-Hermes) info bubble — used by slash commands like /help.
+      // A local (non-engine) info bubble — used by slash commands like /help.
       function addInfo(markdown) {
         var el = document.createElement("div");
         el.className = "msg info";
@@ -4739,7 +4739,7 @@
             (s.messages || []).forEach(function (m) {
               var ts = m.created_at || m.timestamp || m.created || null;
               if (m.role === "user") {
-                // The proxy re-attaches stored image data-URLs (#202); Hermes
+                // The proxy re-attaches stored image data-URLs (#202); the engine
                 // persists each image as a "[screenshot]" placeholder, so strip
                 // those tokens from the displayed text when thumbnails render.
                 if (m.images && m.images.length) {
@@ -4779,7 +4779,7 @@
 
       // Tear down an open incognito chat: the ephemeral session is deleted on
       // close (#246) so it leaves no trace. Fire-and-forget — the DELETE removes
-      // it from Hermes; nothing in the durable list ever referenced it.
+      // it from the engine; nothing in the durable list ever referenced it.
       function dropIncognitoSession() {
         if (incognito && sessionId) {
           fetch("/api/sessions/" + encodeURIComponent(sessionId), { method: "DELETE" })

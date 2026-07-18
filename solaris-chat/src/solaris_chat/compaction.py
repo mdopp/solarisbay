@@ -15,9 +15,9 @@ Two triggers feed the same backend:
 Hermes-capability facts this design is built on (read from the Hermes source +
 our client, NOT box-verified here — see the verify checklist in the unit notes):
 
-  1. **Per-session token usage is measurable.** Hermes' single-session fetch
+  1. **Per-session token usage is measurable.** the engine's single-session fetch
      (`GET /api/sessions/{id}`) carries `input_tokens`/`output_tokens` running
-     totals (`hermes._session_summary` already surfaces them). `usage_fraction`
+     totals (`engine._session_summary` already surfaces them). `usage_fraction`
      reads those against the configured context window — so the hard-cap trigger
      has a real signal. (ASSUMPTION to box-verify: that these totals are the
      prompt-token running total, not just the last turn.)
@@ -38,7 +38,7 @@ our client, NOT box-verified here — see the verify checklist in the unit notes
      instructs the agent to call `fact_store` for each durable learning. That
      reuses the existing memory mechanism — we invent no new store.
 
-So both passes (extract, summarise) are ordinary Hermes chat turns on the
+So both passes (extract, summarise) are ordinary engine chat turns on the
 *source* session, run before the continuation is opened.
 """
 
@@ -114,7 +114,7 @@ SUMMARY_PROMPT = (
 def usage_fraction(session: dict[str, Any], context_window: int) -> float | None:
     """Fraction of the context window the session's running token usage occupies.
 
-    Reads Hermes' per-session `input_tokens`/`output_tokens` totals (present on
+    Reads the engine's per-session `input_tokens`/`output_tokens` totals (present on
     the single-session fetch). Returns None when neither is available (e.g. a
     list item, or a Hermes build that omits them) — the caller must treat an
     unknown usage as "don't compact", never as 0 or as over-cap.
@@ -163,7 +163,7 @@ def _continuation_prompt(base_system_prompt: str, summary: str) -> str:
 
 
 async def compact_session(
-    hermes: EngineClient,
+    engine: EngineClient,
     uid: str,
     session_id: str,
     *,
@@ -187,7 +187,7 @@ async def compact_session(
     extract/summary turn fails — the caller keeps using the original session, so
     a failed compaction degrades to "no compaction", never to data loss.
     """
-    session = await hermes.get_session(session_id, uid)
+    session = await engine.get_session(session_id, uid)
     if session is None:
         return None
     if not force and not needs_compaction(session, context_window, threshold):
@@ -195,14 +195,14 @@ async def compact_session(
 
     # Pass 1: extract durable learnings into memory BEFORE anything is dropped.
     try:
-        await hermes.chat(session_id, EXTRACT_PROMPT, None, "high")
+        await engine.chat(session_id, EXTRACT_PROMPT, None, "high")
     except Exception as e:  # noqa: BLE001 — a failed extract must abort compaction
         log.error("chat.compaction.extract_failed", session_id=session_id, error=str(e))
         return None
 
     # Pass 2: summarise the conversation to seed the continuation.
     try:
-        summary = await hermes.chat(session_id, SUMMARY_PROMPT, None, "none")
+        summary = await engine.chat(session_id, SUMMARY_PROMPT, None, "none")
     except Exception as e:  # noqa: BLE001
         log.error("chat.compaction.summary_failed", session_id=session_id, error=str(e))
         return None
@@ -212,10 +212,10 @@ async def compact_session(
 
     # Open the continuation; the original session is untouched (kept as record).
     # The title carries a timestamp suffix so it never collides with an
-    # abandoned bare-marker stub — Hermes enforces title uniqueness and a bare
+    # abandoned bare-marker stub — the engine enforces title uniqueness and a bare
     # `[uid:...] ` marker would 400 against any stub already holding it (#267).
     try:
-        new_id = await hermes.create_session(
+        new_id = await engine.create_session(
             uid,
             _continuation_prompt(base_system_prompt, summary),
             title=f"Fortsetzung {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",

@@ -326,7 +326,7 @@ async def test_submit_verdict_reports_non_2xx_as_failure(monkeypatch):
 
 def _app(tmp_path, sb_api_url=""):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),

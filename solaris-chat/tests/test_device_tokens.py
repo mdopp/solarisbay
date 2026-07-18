@@ -186,7 +186,7 @@ def test_resolve_uid_invalid_device_bearer_is_fail_closed(tmp_path):
 
 def _app(tmp_path, db):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -321,7 +321,7 @@ async def test_pair_device_confirm_rejects_device_token_bearer(
 
 def _ha_app(tmp_path, db):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,

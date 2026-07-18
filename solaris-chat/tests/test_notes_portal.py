@@ -59,7 +59,7 @@ def _vault(tmp_path):
 
 def _app(tmp_path):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -131,7 +131,7 @@ async def test_browse_by_journal_dedups_same_day(aiohttp_client, tmp_path):
     (root / "journal" / "journal_2024-05-27.md").write_text("b\n", encoding="utf-8")
     (root / "journal" / "2024" / "2024-05-27.md").write_text("c\n", encoding="utf-8")
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -229,7 +229,7 @@ def _syncthing_vault(tmp_path, versions=3000):
 
 def _big_app(tmp_path):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -325,7 +325,7 @@ def _v2_vault(tmp_path):
 
 def _v2_app(tmp_path, crons=None):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -365,7 +365,7 @@ async def test_inbox_scopes_to_caller(aiohttp_client, tmp_path):
 async def test_assign_folds_into_topic_and_stamps_source(aiohttp_client, tmp_path):
     root = _v2_vault(tmp_path)
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -396,7 +396,7 @@ async def test_assign_folds_into_topic_and_stamps_source(aiohttp_client, tmp_pat
 async def test_assign_rejects_other_resident(aiohttp_client, tmp_path):
     root = _v2_vault(tmp_path)
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -431,7 +431,7 @@ async def test_assign_path_jail_rejects_traversal(aiohttp_client, tmp_path):
 async def test_archive_moves_never_deletes(aiohttp_client, tmp_path):
     root = _v2_vault(tmp_path)
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -507,7 +507,7 @@ async def test_note_get_returns_content_hash(aiohttp_client, tmp_path):
 async def test_note_put_saves_verbatim(aiohttp_client, tmp_path):
     root = _vault(tmp_path)
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -531,7 +531,7 @@ async def test_note_put_saves_verbatim(aiohttp_client, tmp_path):
 async def test_note_put_stale_hash_is_409(aiohttp_client, tmp_path):
     root = _vault(tmp_path)
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -566,7 +566,7 @@ async def test_note_put_path_jail_rejects_traversal(aiohttp_client, tmp_path):
 async def test_note_put_denies_other_resident(aiohttp_client, tmp_path):
     root = _vault(tmp_path)
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -620,7 +620,7 @@ def _stats_vault(tmp_path):
 
 def _stats_app(tmp_path):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
@@ -684,7 +684,7 @@ async def test_stats_scopes_to_caller(aiohttp_client, tmp_path):
         "---\nadded_by: anna\n---\n\n# privat\n#nurAnna\n", encoding="utf-8"
     )
     app = build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),

@@ -1,8 +1,8 @@
 """Proxy-side persistence for chat image attachments (#202).
 
 The chat surface is otherwise stateless — all chat/session state lives in
-Hermes. But Hermes does not retain inbound images: a user turn carrying image
-parts is persisted as text with a `[screenshot]` placeholder, and Hermes
+the engine. But the engine does not retain inbound images: a user turn carrying image
+parts is persisted as text with a `[screenshot]` placeholder, and the engine
 exposes no attachment API to read the pixels back. So after a hard refresh the
 attachment is gone from history.
 
@@ -26,10 +26,10 @@ from pathlib import Path
 
 from solaris_chat.logging import log
 
-# A persisted user turn that carried images shows up in Hermes' message
-# history with this placeholder (Hermes substitutes it for every image part).
+# A persisted user turn that carried images shows up in the engine's message
+# history with this placeholder (the engine substitutes it for every image part).
 SCREENSHOT_PLACEHOLDER = "[screenshot]"
-# Hermes ids are `api_<ts>_<hex>`; map everything else (including `.` and `/`)
+# engine ids are `api_<ts>_<hex>`; map everything else (including `.` and `/`)
 # to `_` so a crafted id can't form a `..`/path component and escape the root.
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_-]")
 
@@ -45,7 +45,7 @@ class AttachmentStore:
         self._root = Path(root)
 
     def _path(self, session_id: str) -> Path:
-        # Hermes session ids are `api_<ts>_<hex>`; sanitise defensively so a
+        # engine session ids are `api_<ts>_<hex>`; sanitise defensively so a
         # crafted id can't escape the store dir.
         safe = _SAFE_ID.sub("_", session_id)
         return self._root / f"{safe}.json"

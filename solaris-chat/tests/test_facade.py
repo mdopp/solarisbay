@@ -184,8 +184,8 @@ def _app(db, soul, results, api_key="", bus=None):
     household, fake = _engine(db, soul, results, bus=bus)
     deep, _ = _engine(db, soul, [], name="solaris-deep", bus=bus)
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -293,8 +293,8 @@ async def test_followup_turn_final_text_ends_with_question_mark_non_stream(
     household._profile.toolbox = Toolbox(_offer_tool())
     deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -321,8 +321,8 @@ async def test_followup_turn_final_text_ends_with_question_mark_stream(
     household._profile.toolbox = Toolbox(_offer_tool())
     deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -350,8 +350,8 @@ async def test_followup_does_not_double_existing_question_mark(
     household._profile.toolbox = Toolbox(_offer_tool())
     deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -467,8 +467,8 @@ async def test_quick_replies_without_trailing_question_still_continues(
     household._profile.toolbox = Toolbox(_offer_tool())
     deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -582,7 +582,7 @@ async def test_stream_abort_does_not_raise_foreign_context(aiohttp_client, db, s
         [ChatResult(content="Hallo zurück!", prompt_tokens=5, completion_tokens=2)],
     )
     app = build_app(
-        hermes=household,
+        engine=household,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -752,8 +752,8 @@ async def test_failed_voice_turn_still_persists_its_trace(aiohttp_client, db, so
     )
     deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -936,8 +936,8 @@ async def test_guest_facade_turn_persists_nothing(aiohttp_client, db, soul):
     )
     guest._profile.ephemeral = True
     app = build_app(
-        hermes=household,
-        hermes_guest=guest,
+        engine=household,
+        engine_guest=guest,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1107,8 +1107,8 @@ def _app_with_guest(db, soul, results):
     guest, fake = _engine(db, soul, results, name="solaris-guest")
     guest._profile.ephemeral = True
     app = build_app(
-        hermes=household,
-        hermes_guest=guest,
+        engine=household,
+        engine_guest=guest,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1185,8 +1185,8 @@ async def test_identified_resident_runs_as_their_uid_not_guest(
     guest, guest_fake = _engine(db, soul, [], name="solaris-guest")
     guest._profile.ephemeral = True
     app = build_app(
-        hermes=household,
-        hermes_guest=guest,
+        engine=household,
+        engine_guest=guest,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1306,7 +1306,7 @@ async def test_browser_path_keeps_wikilinks(aiohttp_client, db, soul):
         [ChatResult(content="[[Anna]] kommt.", prompt_tokens=5, completion_tokens=2)],
     )
     app = build_app(
-        hermes=household,
+        engine=household,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1378,8 +1378,8 @@ async def test_chat_strips_room_prefix_and_sets_current_room(aiohttp_client, db,
     household, fake = _engine(db, soul, results, tools=[capture])
     deep, _ = _engine(db, soul, [], name="solaris-deep")
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1427,8 +1427,8 @@ async def test_voice_turn_pushes_when_no_sse_client(aiohttp_client, db, soul):
     bus = EventBus()  # nobody subscribed → app backgrounded
     notifier = _FakeNotifier()
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1465,8 +1465,8 @@ async def test_voice_turn_does_not_push_when_sse_client_open(aiohttp_client, db,
     bus = EventBus()
     notifier = _FakeNotifier()
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -1516,9 +1516,9 @@ async def test_ephemeral_guest_turn_does_not_emit(aiohttp_client, db, soul):
     bus = EventBus()
     notifier = _FakeNotifier()
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
-        hermes_guest=guest,
+        engine=household,
+        engine_deep=deep,
+        engine_guest=guest,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,

@@ -119,7 +119,7 @@ def test_mark_ok_stamps_last_ok(tmp_path):
 
 def _app(tmp_path, db, **kw):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,

@@ -1,7 +1,7 @@
-"""Chat-proxy routing across the two Hermes gateways (#293).
+"""Chat-proxy routing across the two engine gateways (#293).
 
-The household gateway (`hermes`, :8642) serves every resident session; the admin
-gateway (`hermes_admin`, :8643) serves only the admin-gated servicebay-maintenance
+The household gateway (`engine`, :8642) serves every resident session; the admin
+gateway (`engine_admin`, :8643) serves only the admin-gated servicebay-maintenance
 path. These tests pin the routing contract: a household turn lands on household, a
 maintenance turn lands on admin, a non-admin never reaches admin, and the #278
 dropdown's admin persona selects the admin gateway — all server-enforced.
@@ -15,7 +15,7 @@ from solaris_chat import personalities, settings_store, topics_store
 from solaris_chat.engine import store
 from solaris_chat.server import build_app
 
-from .test_server import _FakeHermes
+from .test_server import _FakeEngine
 
 ADMIN_HDRS = {"Remote-User": "mdopp", "Remote-Groups": "admins"}
 RESIDENT_HDRS = {"Remote-User": "cdopp", "Remote-Groups": "family"}
@@ -70,8 +70,8 @@ def _db(tmp_path) -> str:
 
 def _app(household, admin):
     return build_app(
-        hermes=household,
-        hermes_admin=admin,
+        engine=household,
+        engine_admin=admin,
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -81,8 +81,8 @@ def _deep_app(household, deep, tmp_path, *, pref="thorough"):
     db = _db(tmp_path)
     settings_store.set_other_model_pref(db, pref)
     return build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -91,7 +91,7 @@ def _deep_app(household, deep, tmp_path, *, pref="thorough"):
 
 
 async def test_household_chat_routes_to_household_gateway(aiohttp_client):
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_app(household, admin))
 
     resp = await client.post(
@@ -109,7 +109,7 @@ async def test_resident_followup_turn_routes_to_household(aiohttp_client):
     # A resident reusing an existing (household) session id keeps every follow-up
     # turn on the household gateway — the pinned "Zuhause" chat (#237) is a normal
     # resident session and never leaks onto admin.
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_app(household, admin))
 
     resp = await client.post(
@@ -123,7 +123,7 @@ async def test_resident_followup_turn_routes_to_household(aiohttp_client):
 
 
 async def test_maintenance_session_create_and_turns_route_to_admin(aiohttp_client):
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_app(household, admin))
 
     # Admin opens the servicebay-maintenance session: created on the ADMIN
@@ -139,7 +139,7 @@ async def test_maintenance_session_create_and_turns_route_to_admin(aiohttp_clien
     assert household.created == []
 
     # A follow-up turn carrying that session id routes back to the SAME (admin)
-    # gateway — Hermes session state is per-gateway, so the session must stay put.
+    # gateway — engine session state is per-gateway, so the session must stay put.
     resp = await client.post(
         "/api/chat", json={"input": "status", "session_id": sid}, headers=ADMIN_HDRS
     )
@@ -151,7 +151,7 @@ async def test_maintenance_session_create_and_turns_route_to_admin(aiohttp_clien
 async def test_non_admin_maintenance_create_forbidden_no_admin_gateway(
     aiohttp_client,
 ):
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_app(household, admin))
 
     resp = await client.post(
@@ -165,7 +165,7 @@ async def test_non_admin_maintenance_create_forbidden_no_admin_gateway(
 async def test_non_admin_admin_persona_turn_never_reaches_admin(aiohttp_client):
     # A non-admin sending the admin/maintenance persona on a chat turn is routed
     # to household, never admin — the Remote-Groups gate holds at the router.
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_app(household, admin))
 
     resp = await client.post(
@@ -181,7 +181,7 @@ async def test_non_admin_admin_persona_turn_never_reaches_admin(aiohttp_client):
 async def test_non_admin_with_known_admin_session_id_stays_household(aiohttp_client):
     # Even presenting a session id that lives on the admin gateway, a non-admin
     # is routed to household — knowing an id can't escalate the gateway choice.
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_app(household, admin))
 
     resp = await client.post(
@@ -198,7 +198,7 @@ async def test_admin_dropdown_persona_routes_new_chat_to_admin(aiohttp_client):
     # The #278 dropdown's "Admin" option sends personality=servicebay-maintenance
     # on a fresh chat; an admin caller routes that create + turn to the admin
     # gateway (the dropdown selects the profile/gateway, server re-checks the gate).
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_app(household, admin))
 
     resp = await client.post(
@@ -215,7 +215,7 @@ async def test_admin_dropdown_persona_routes_new_chat_to_admin(aiohttp_client):
 async def test_admin_household_persona_still_routes_to_household(aiohttp_client):
     # An admin choosing a normal household persona (e.g. technical) is a resident
     # chat — it must stay on the household gateway, not leak onto admin.
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_app(household, admin))
 
     resp = await client.post(
@@ -228,8 +228,8 @@ async def test_admin_household_persona_still_routes_to_household(aiohttp_client)
 
 
 async def test_stream_maintenance_session_routes_to_admin(aiohttp_client):
-    household = _FakeHermes()
-    admin = _FakeHermes(events=[{"type": "assistant.delta", "data": {"delta": "ok"}}])
+    household = _FakeEngine()
+    admin = _FakeEngine(events=[{"type": "assistant.delta", "data": {"delta": "ok"}}])
     client = await aiohttp_client(_app(household, admin))
 
     resp = await client.post(
@@ -256,11 +256,11 @@ async def test_whoami_exposes_wartung_id_only_for_admin(aiohttp_client, tmp_path
     # session id to an admin (and ensures the row exists), but NOT to a
     # household user — so a resident's UI never learns the id and can't render
     # or open the row.
-    household = _FakeHermes()
+    household = _FakeEngine()
     db = _db(tmp_path)
     app = build_app(
-        hermes=household,
-        hermes_admin=_FakeHermes(),
+        engine=household,
+        engine_admin=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -284,12 +284,12 @@ async def test_wartung_session_turn_routes_to_admin_gateway(aiohttp_client, tmp_
     # (its ops soul + SB-MCP toolset), household untouched — the admin acts in
     # the one shared ops row, materialized lazily (profile=admin, maintenance=1)
     # on this first turn.
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     db = _db(tmp_path)
     wartung = store.wartung_session_id("household")
     app = build_app(
-        hermes=household,
-        hermes_admin=admin,
+        engine=household,
+        engine_admin=admin,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -318,12 +318,12 @@ async def test_non_admin_wartung_turn_never_reaches_admin(aiohttp_client, tmp_pa
     # Even presenting the Wartung session id, a non-admin is routed to household,
     # never the admin gateway — the Remote-Groups gate holds at the router, so
     # the ops toolset (SB-MCP) is unreachable without admin group membership.
-    household, admin = _FakeHermes(), _FakeHermes()
+    household, admin = _FakeEngine(), _FakeEngine()
     db = _db(tmp_path)
     wartung = store.wartung_session_id("household")
     app = build_app(
-        hermes=household,
-        hermes_admin=admin,
+        engine=household,
+        engine_admin=admin,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -351,9 +351,9 @@ async def test_non_admin_wartung_turn_never_reaches_admin(aiohttp_client, tmp_pa
 async def test_falls_back_to_household_when_no_admin_gateway(aiohttp_client):
     # No admin gateway configured (single-instance/offline): admin routing is a
     # no-op — everything stays on household and nothing breaks.
-    household = _FakeHermes()
+    household = _FakeEngine()
     app = build_app(
-        hermes=household,
+        engine=household,
         remote_user_header="Remote-User",
         default_uid="household",
     )
@@ -378,7 +378,7 @@ async def test_household_topic_chat_routes_to_household_even_when_thorough(
 ):
     # The pinned "Zuhause" chat (primary topic = household) is ALWAYS the fast
     # e4b household gateway, even though the everyday-chat preference is thorough.
-    household, deep = _FakeHermes(), _FakeHermes()
+    household, deep = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="thorough"))
 
     resp = await client.post(
@@ -407,9 +407,9 @@ async def test_household_first_turn_lands_in_durable_session_once(
     db = _db(tmp_path)
     durable = store.household_session_id("household")
     for _ in range(2):
-        household = _FakeHermes()
+        household = _FakeEngine()
         app = build_app(
-            hermes=household,
+            engine=household,
             remote_user_header="Remote-User",
             default_uid="household",
             solaris_db_path=db,
@@ -452,7 +452,7 @@ async def test_durable_household_session_is_never_compacted(aiohttp_client, tmp_
     durable = store.household_session_id("cdopp")
     store.ensure_household_session(db, "cdopp")
 
-    class _CompactingHermes(_FakeHermes):
+    class _CompactingEngine(_FakeEngine):
         def __init__(self):
             super().__init__()
             self.gets: list[str] = []
@@ -462,9 +462,9 @@ async def test_durable_household_session_is_never_compacted(aiohttp_client, tmp_
             # Always over the cap, so a non-guarded path WOULD compact.
             return {"id": session_id, "input_tokens": 10**9, "output_tokens": 0}
 
-    household = _CompactingHermes()
+    household = _CompactingEngine()
     app = build_app(
-        hermes=household,
+        engine=household,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -489,13 +489,13 @@ async def test_household_followup_reads_persisted_primary_topic(
 ):
     # A follow-up turn (different in-memory app state) routes to household by the
     # persisted primary topic, not just the first-turn topic hint.
-    household, deep = _FakeHermes(), _FakeHermes()
+    household, deep = _FakeEngine(), _FakeEngine()
     db = _db(tmp_path)
     settings_store.set_other_model_pref(db, "thorough")
     topics_store.set_primary(db, "sess-42", "household", "cdopp")
     app = build_app(
-        hermes=household,
-        hermes_deep=deep,
+        engine=household,
+        engine_deep=deep,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -518,7 +518,7 @@ async def test_other_chat_thorough_reasons_on_household(aiohttp_client, tmp_path
     # household gateway (no 12b/deep switch) but runs WITH reasoning — thorough is
     # the effort knob, not a bigger model (#809). A plain turn (no selector, no
     # cue) escalates to "high" purely from the pref.
-    household, deep = _FakeHermes(), _FakeHermes()
+    household, deep = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="thorough"))
 
     resp = await client.post(
@@ -533,7 +533,7 @@ async def test_other_chat_thorough_reasons_on_household(aiohttp_client, tmp_path
 async def test_other_chat_fast_runs_none_but_escalates_on_cue(aiohttp_client, tmp_path):
     # The same normal chat with the fast preference runs "none" on the household
     # gateway, but an explicit "think harder" cue still escalates it to "high".
-    household, deep = _FakeHermes(), _FakeHermes()
+    household, deep = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="fast"))
 
     resp = await client.post(
@@ -555,7 +555,7 @@ async def test_model_put_toggles_effort_not_gateway(aiohttp_client, tmp_path):
     # The admin Model setting is a live effort toggle: after switching to fast, a
     # fresh normal plain turn runs "none" instead of the thorough "high" — both on
     # the household gateway, no restart.
-    household, deep = _FakeHermes(), _FakeHermes()
+    household, deep = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="thorough"))
 
     resp = await client.put("/api/model", json={"value": "fast"}, headers=ADMIN_HDRS)
@@ -571,7 +571,7 @@ async def test_model_put_toggles_effort_not_gateway(aiohttp_client, tmp_path):
 
 
 async def test_model_get_returns_options_and_current(aiohttp_client, tmp_path):
-    household, deep = _FakeHermes(), _FakeHermes()
+    household, deep = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path, pref="fast"))
 
     resp = await client.get("/api/model", headers=ADMIN_HDRS)
@@ -582,7 +582,7 @@ async def test_model_get_returns_options_and_current(aiohttp_client, tmp_path):
 
 
 async def test_model_put_rejects_unknown_value(aiohttp_client, tmp_path):
-    household, deep = _FakeHermes(), _FakeHermes()
+    household, deep = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path))
 
     resp = await client.put("/api/model", json={"value": "12b"}, headers=ADMIN_HDRS)
@@ -590,7 +590,7 @@ async def test_model_put_rejects_unknown_value(aiohttp_client, tmp_path):
 
 
 async def test_model_get_forbidden_for_non_admin(aiohttp_client, tmp_path):
-    household, deep = _FakeHermes(), _FakeHermes()
+    household, deep = _FakeEngine(), _FakeEngine()
     client = await aiohttp_client(_deep_app(household, deep, tmp_path))
 
     resp = await client.get("/api/model", headers=RESIDENT_HDRS)

@@ -2,8 +2,8 @@
 
 Measured on the box: a household tool turn ("welche Lichter sind an") spent
 ~90% of its 12-15s budget generating a reasoning block. `reasoning_effort:
-"none"` over Hermes' /v1 cuts the SAME tool call to ~1.35s (`extra_body.think`
-had no effect — `reasoning_effort` is the working knob). The live Hermes config
+"none"` over the engine's /v1 cuts the SAME tool call to ~1.35s (`extra_body.think`
+had no effect — `reasoning_effort` is the working knob). The live engine config
 has `show_reasoning: false`, so reasoning was generated but never surfaced;
 turning it on per-turn is what lets the chat render the thinking block.
 
@@ -20,7 +20,7 @@ Two inputs decide the effort, in priority order:
    NOT a complexity classifier (a fragile one would misroute the common control
    turns into the slow path, the exact pain we are fixing).
 
-When the chosen effort is reasoning (not "none") we also ask Hermes to surface
+When the chosen effort is reasoning (not "none") we also ask the engine to surface
 the reasoning block (`show_reasoning: true`) so the chat UI can render it; a
 fast turn sends neither and stays clean.
 """

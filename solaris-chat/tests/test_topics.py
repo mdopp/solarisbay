@@ -218,13 +218,13 @@ def test_topic_defaults_missing_db_or_row(tmp_path):
 
 # ---- Endpoint tests ----
 
-from tests.test_server import _FakeHermes  # noqa: E402
+from tests.test_server import _FakeEngine  # noqa: E402
 
 
 async def test_topics_endpoint_lists_registry(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -242,7 +242,7 @@ async def test_create_topic_endpoint_then_assign_primary(aiohttp_client, tmp_pat
     # then the existing assignment endpoint makes it the session's primary.
     db = _db(tmp_path)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -279,7 +279,7 @@ async def test_create_topic_endpoint_requires_slug_and_name(
 ):
     db = _db(tmp_path)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -294,7 +294,7 @@ async def test_create_topic_endpoint_requires_slug_and_name(
 async def test_session_topics_set_and_read(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -325,7 +325,7 @@ async def test_session_topics_set_and_read(aiohttp_client, tmp_path):
 async def test_session_topics_invalid_action_rejected(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -343,7 +343,7 @@ async def test_session_topics_invalid_action_rejected(aiohttp_client, tmp_path):
 async def test_session_topics_empty_slug_rejected(aiohttp_client, tmp_path, payload):
     db = _db(tmp_path)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -367,9 +367,9 @@ async def test_topic_persists_primary_without_model_or_persona_override(
     # injects a persona overlay at create — even when the topic has defaults.
     db = _db(tmp_path)
     _seed_topic_defaults(db, "projekt/wintergarten", "gemma4:12b", "technical")
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -404,9 +404,9 @@ async def test_pinned_household_chat_persists_primary(aiohttp_client, tmp_path):
 
     db = _db(tmp_path)
     _seed_topic_defaults(db, "household", "gemma4:e2b", None)
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -437,11 +437,11 @@ async def test_pinned_household_chat_persists_primary(aiohttp_client, tmp_path):
 
 async def test_no_topic_no_model_override(aiohttp_client, tmp_path):
     # #293: with the profile owning the model, an untopiced turn creates with no
-    # per-session model override (Hermes' profile default).
+    # per-session model override (the engine's profile default).
     db = _db(tmp_path)
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -460,14 +460,14 @@ async def test_no_topic_no_model_override(aiohttp_client, tmp_path):
 
 async def test_changing_topic_mid_session_reuses_one_session(aiohttp_client, tmp_path):
     # Re-assigning the primary topic on an EXISTING session updates the label +
-    # future ingestion tag but reuses the SAME Hermes session (one create) — the
+    # future ingestion tag but reuses the SAME engine session (one create) — the
     # #242 limitation. #293: the model is profile-owned, so create carries no
     # override; the invariant under test is "no second create on re-assign".
     db = _db(tmp_path)
     _seed_topic_defaults(db, "projekt/wintergarten", "gemma4:12b", "technical")
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -527,9 +527,9 @@ async def test_turn_carries_topic_hint_when_topic_active(aiohttp_client, tmp_pat
     # A turn in a topic chat gets the #topic/<slug> context line prepended so an
     # ingestion skill in the turn knows which topic to stamp (#243).
     db = _db(tmp_path)
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -550,9 +550,9 @@ async def test_turn_carries_topic_hint_when_topic_active(aiohttp_client, tmp_pat
 
 async def test_turn_has_no_hint_without_topic(aiohttp_client, tmp_path):
     db = _db(tmp_path)
-    fake = _FakeHermes()
+    fake = _FakeEngine()
     app = build_app(
-        hermes=fake,
+        engine=fake,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,
@@ -582,7 +582,7 @@ async def test_session_list_annotates_primary_topic(aiohttp_client, tmp_path):
     ]
     topics_store.set_primary(db, "sess-1", "household", "mdopp")
     app = build_app(
-        hermes=_FakeHermes(store=store),
+        engine=_FakeEngine(store=store),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,

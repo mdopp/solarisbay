@@ -139,7 +139,7 @@ def test_household_chat_title_reads_zuhause():
 def test_admin_persona_choice_selects_admin_gateway():
     # The #293 admin profile is an admin-gated /persona choice whose value packs
     # the maintenance persona id, so a new chat under it routes to the admin
-    # Hermes gateway server-side (the server re-checks Remote-Groups).
+    # engine gateway server-side (the server re-checks Remote-Groups).
     assert 'var ADMIN_PERSONA = "servicebay-maintenance";' in _HTML
     # The admin entry is appended by personaChoices() only when isAdmin.
     choices = re.search(r"function personaChoices\(\) \{(.*?)\n      \}", _HTML, re.S)

@@ -179,7 +179,7 @@ def test_empty_steps_is_noop(tmp_path):
     assert trace_store.list_session_trace(db, "sess-1", "mdopp") == []
 
 
-class _FakeHermes:
+class _FakeEngine:
     async def create_session(self, uid, system_prompt=None, **kw):
         return "sess-1"
 
@@ -211,7 +211,7 @@ def _recorder_with(session_id: str, recorder: TraceRecorder, n: int = 2) -> None
         )
 
 
-class _RecordingHermes(_FakeHermes):
+class _RecordingEngine(_FakeEngine):
     """Records trace entries during the turn, the way the engine loop does."""
 
     def __init__(self, recorder):
@@ -235,7 +235,7 @@ async def test_turn_persists_engine_steps_and_endpoint_serves_them(
     recorder.list_traces()[0]["ts"] -= 3600.0
 
     app = build_app(
-        hermes=_RecordingHermes(recorder),
+        engine=_RecordingEngine(recorder),
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path / "att"),
@@ -271,7 +271,7 @@ async def test_persisted_detail_survives_recorder_restart(aiohttp_client, tmp_pa
     db = _db(tmp_path)
     recorder = TraceRecorder()
     app = build_app(
-        hermes=_RecordingHermes(recorder),
+        engine=_RecordingEngine(recorder),
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path / "att"),
@@ -287,7 +287,7 @@ async def test_persisted_detail_survives_recorder_restart(aiohttp_client, tmp_pa
     # Fresh recorder = no in-process detail ring (ids would restart at 0).
     fresh = TraceRecorder()
     app2 = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path / "att"),
@@ -329,7 +329,7 @@ async def test_trace_detail_served_in_process(aiohttp_client, tmp_path):
     _recorder_with("sess-1", recorder, n=1)
 
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path / "att"),
@@ -351,7 +351,7 @@ async def test_trace_detail_served_in_process(aiohttp_client, tmp_path):
 async def test_endpoint_empty_when_no_trace(aiohttp_client, tmp_path):
     db = _db(tmp_path)
     app = build_app(
-        hermes=_FakeHermes(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         attachments_dir=str(tmp_path / "att"),

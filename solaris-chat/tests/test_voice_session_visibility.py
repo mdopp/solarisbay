@@ -169,7 +169,7 @@ async def test_typed_turn_into_shared_session_keeps_caller_uid(
     from solaris_chat.server import build_app
 
     app = build_app(
-        hermes=household,
+        engine=household,
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db,

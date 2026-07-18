@@ -1,6 +1,6 @@
 """Read the Solaris skill pack off the filesystem.
 
-Hermes' `/v1/skills` lists name + description only; `/v1/skills/{name}`
+the engine's `/v1/skills` lists name + description only; `/v1/skills/{name}`
 404s — there is no body API — so the panel reads the markdown straight off
 the bind-mounted pack (`SKILLS_DIR`, the host `solarisbay/skills` dir mounted
 read-only for reads). This is the shipped *standard set*: everyone reads,
@@ -9,8 +9,8 @@ frontmatter block (name/description/version) and a markdown body.
 
 Admin edits write the raw SKILL.md back through a read-write mount of the
 same pack (the skills dir is host-owned, so the chat pod — rootless,
-container-root → the host user — can replace files there). Hermes reads a
-skill *body* live; a frontmatter change (name/description) needs a Hermes
+container-root → the host user — can replace files there). The engine reads a
+skill *body* live; a frontmatter change (name/description) needs an engine
 restart to re-register, which the caller surfaces.
 
 A skill id is its directory name (filesystem-safe, stable). We never accept
@@ -194,7 +194,7 @@ def write_skill(
     create arbitrary files).
 
     `frontmatter_changed` is True when name/description/version differs from
-    the old file — the signal that Hermes needs a restart to re-register the
+    the old file — the signal that the engine needs a restart to re-register the
     skill (a body-only edit is picked up live). The write is atomic (temp in
     the same dir + os.replace) so a reader never sees a half-written file.
     """

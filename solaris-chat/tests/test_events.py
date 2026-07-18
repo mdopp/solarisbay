@@ -124,7 +124,7 @@ async def test_bus_has_subscriber_tracks_open_clients():
 
 def _app(tmp_path, bus, db=None):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=db or _db(tmp_path),

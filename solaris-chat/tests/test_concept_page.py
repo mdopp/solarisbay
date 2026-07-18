@@ -241,7 +241,7 @@ def test_card_spec_none_for_uncarded_domain():
 
 async def test_concept_api_aggregates_entity(aiohttp_client, tmp_path):
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -276,7 +276,7 @@ async def test_concept_api_aggregates_entity(aiohttp_client, tmp_path):
 
 async def test_concept_api_unknown_id_degrades(aiohttp_client, tmp_path):
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -296,7 +296,7 @@ async def test_concept_api_adds_live_ha_card(aiohttp_client, tmp_path, monkeypat
 
     monkeypatch.setattr("solaris_chat.server.fetch_card", _fake_fetch)
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -319,7 +319,7 @@ async def test_anchors_resolve_links_known_entity(aiohttp_client, tmp_path):
     # #506: anchors that match an OKF entity (by name/alias) resolve to its id
     # so the chip can link to #/c/<id>; unknown anchors are absent (stay chips).
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -339,7 +339,7 @@ async def test_anchors_resolve_links_known_entity(aiohttp_client, tmp_path):
 async def test_anchors_resolve_per_resident(aiohttp_client, tmp_path):
     # lena's "Anna" never resolves to mdopp's entity (resolver is owner-scoped).
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -358,7 +358,7 @@ async def test_anchors_resolve_handles_bare_wikilink_token(aiohttp_client, tmp_p
     # #504: a [[X]] target arrives without a #/@ prefix and is resolved whole
     # by the same endpoint; an unknown bare token is absent (renders plain text).
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -376,7 +376,7 @@ async def test_anchors_resolve_handles_bare_wikilink_token(aiohttp_client, tmp_p
 
 async def test_anchors_resolve_degrades_when_db_missing(aiohttp_client, tmp_path):
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "nope.db"),
@@ -396,7 +396,7 @@ async def test_anchors_aliases_lists_okf_names_and_aliases(aiohttp_client, tmp_p
     # #694: the auto-linkify index exposes each OKF entity's canonical name and
     # its aliases, both pointing at the entity id its concept page resolves under.
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -417,7 +417,7 @@ async def test_anchors_aliases_lists_okf_names_and_aliases(aiohttp_client, tmp_p
 async def test_anchors_aliases_per_resident(aiohttp_client, tmp_path):
     # lena's index never surfaces mdopp's "Anna" (linkable_aliases is owner-scoped).
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -444,7 +444,7 @@ async def test_anchors_aliases_includes_ha_names_and_ids(
 
     monkeypatch.setattr("solaris_chat.server.fetch_entity_names", _fake_names)
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -475,7 +475,7 @@ async def test_anchors_aliases_cached_across_calls(
 
     monkeypatch.setattr("solaris_chat.server.fetch_entity_names", _fake_names)
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -494,7 +494,7 @@ async def test_anchors_aliases_cached_across_calls(
 
 async def test_concept_shell_serves_spa(aiohttp_client, tmp_path):
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -533,7 +533,7 @@ async def test_portal_energy_aggregates(aiohttp_client, tmp_path, monkeypatch):
 
     monkeypatch.setattr("solaris_chat.server.fetch_energy", _fake_energy)
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -551,7 +551,7 @@ async def test_portal_energy_aggregates(aiohttp_client, tmp_path, monkeypatch):
 
 async def test_portal_energy_503_without_ha(aiohttp_client, tmp_path):
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),
@@ -564,7 +564,7 @@ async def test_portal_energy_503_without_ha(aiohttp_client, tmp_path):
 
 async def test_portal_shell_serves_spa(aiohttp_client, tmp_path):
     app = build_app(
-        hermes=object(),
+        engine=object(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=_db(tmp_path),

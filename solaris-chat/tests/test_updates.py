@@ -244,7 +244,7 @@ async def test_poll_falls_back_to_mcp_token_when_read_absent(tmp_path):
 
 def _app(tmp_path):
     return build_app(
-        hermes=_FakeEngine(),
+        engine=_FakeEngine(),
         remote_user_header="Remote-User",
         default_uid="household",
         solaris_db_path=str(tmp_path / "solaris.db"),
