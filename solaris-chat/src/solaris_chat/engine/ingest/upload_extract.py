@@ -21,6 +21,7 @@ old title-only behaviour rather than crashing the upload handler or the ingest.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -38,6 +39,18 @@ _MAX_TEXT_CHARS = 50_000
 _TRUNCATION_MARKER = "\n\n[… gekürzt …]"
 _OCR_LANGS = "deu+eng"
 _TIMEOUT_S = 120
+# --psm 1 = automatic page segmentation WITH orientation detection: real-world
+# uploads (scans, letters) are often rotated 90/180°, and without OSD tesseract
+# reads a rotated page as mojibake. Needs the `osd` traineddata (in the image).
+_OCR_PSM = ("--psm", "1")
+# A handful of very common DE/EN words. A born-digital PDF with a broken font or
+# rotation passes the length check but is mojibake (pdftotext gives `ap obıa'mmm`
+# for `www.ergo.de`); such text contains almost none of these, so its absence is
+# the signal to fall back to OCR rather than poison the note with junk.
+_COMMON_WORDS = frozenset(
+    "der die das und ist ein eine für von mit den dem auf sich nicht auch sie "
+    "wir bei zur zum sehr the and for you with this that are was".split()
+)
 
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"})
 
@@ -67,6 +80,18 @@ def _cap(text: str) -> str:
     return text[:_MAX_TEXT_CHARS] + _TRUNCATION_MARKER
 
 
+def _is_readable(text: str) -> bool:
+    """True when `text` looks like real prose rather than mojibake.
+
+    A broken font encoding / rotated text layer yields long garbage that clears
+    the length threshold; requiring a few common DE/EN words separates it from a
+    correct extraction, so a garbled PDF routes to OCR instead of being kept."""
+    words = re.findall(r"[a-zA-ZäöüÄÖÜß]{2,}", text.lower())
+    if len(words) < 20:
+        return False
+    return sum(1 for w in words if w in _COMMON_WORDS) >= 5
+
+
 def _ocr_pdf(path: Path) -> str:
     """Rasterize the first pages of a scanned PDF and OCR each with tesseract."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -87,7 +112,8 @@ def _ocr_pdf(path: Path) -> str:
         )
         pages = sorted(Path(tmp).glob("page*.png"))
         parts = [
-            _run(["tesseract", str(img), "stdout", "-l", _OCR_LANGS]) for img in pages
+            _run(["tesseract", str(img), "stdout", "-l", _OCR_LANGS, *_OCR_PSM])
+            for img in pages
         ]
     return "\n".join(p.strip() for p in parts if p.strip())
 
@@ -103,11 +129,16 @@ def extract_text(path: Path) -> str:
         text = _run(
             ["pdftotext", "-layout", "-f", "1", "-l", str(_MAX_PAGES), str(path), "-"]
         )
-        if len(text.strip()) >= _MIN_PDF_TEXT_CHARS:
+        # A born-digital text layer is used only when it's both long enough AND
+        # readable — a broken-font/rotated PDF clears the length bar with junk, so
+        # it (and any scan) routes to OCR.
+        if len(text.strip()) >= _MIN_PDF_TEXT_CHARS and _is_readable(text):
             return _cap(text)
         return _cap(_ocr_pdf(path))
     if ext in _IMAGE_EXTS:
-        return _cap(_run(["tesseract", str(path), "stdout", "-l", _OCR_LANGS]))
+        return _cap(
+            _run(["tesseract", str(path), "stdout", "-l", _OCR_LANGS, *_OCR_PSM])
+        )
     return ""
 
 

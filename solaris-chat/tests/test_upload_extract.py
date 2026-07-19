@@ -28,17 +28,61 @@ def _fake_run(stdout: str, calls: list[list[str]]):
     return run
 
 
+_READABLE_DE = (
+    "Sehr geehrte Frau Dopp, mit der Rechtsschutzversicherung ist der Beitrag "
+    "für das Jahr fällig. Bei Fragen wenden Sie sich an uns. "
+) * 3
+
+
 def test_born_digital_pdf_uses_pdftotext_no_ocr(tmp_path, monkeypatch):
     calls: list[list[str]] = []
-    monkeypatch.setattr(subprocess, "run", _fake_run("X" * 300, calls))
+    monkeypatch.setattr(subprocess, "run", _fake_run(_READABLE_DE, calls))
     pdf = tmp_path / "doc.pdf"
     pdf.write_bytes(b"%PDF-1.4")
 
     text = extract_text(pdf)
 
-    assert text == "X" * 300
+    assert text == _READABLE_DE
     assert calls[0][0] == "pdftotext"
     assert all(c[0] != "pdftoppm" and c[0] != "tesseract" for c in calls)
+
+
+def test_garbled_text_layer_falls_back_to_ocr(tmp_path, monkeypatch):
+    # A broken font / rotated PDF: pdftotext returns long mojibake (clears the
+    # length bar) with no real words — must route to OCR, not be kept as-is.
+    calls: list[list[str]] = []
+    (tmp_path / "page-01.png").write_bytes(b"img")
+
+    def run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        if cmd[0] == "pdftotext":
+            return types.SimpleNamespace(
+                stdout="ap obıa mmm yuog JIpaıyıun yeusoju J40pjassnd " * 20,
+                returncode=0,
+            )
+        return types.SimpleNamespace(stdout="ERGO Versicherung", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(
+        upload_extract.tempfile, "TemporaryDirectory", lambda: _NoopTmp(str(tmp_path))
+    )
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+
+    text = extract_text(pdf)
+
+    tools = [c[0] for c in calls]
+    assert "pdftoppm" in tools and "tesseract" in tools
+    assert "ERGO Versicherung" in text
+    # OCR runs with orientation detection (--psm 1) for rotated scans.
+    ocr = next(c for c in calls if c[0] == "tesseract")
+    assert "--psm" in ocr and "1" in ocr
+
+
+def test_is_readable_separates_prose_from_mojibake():
+    assert upload_extract._is_readable(_READABLE_DE) is True
+    assert upload_extract._is_readable("ap obıa mmm yuog JIpaıyıun " * 20) is False
+    assert upload_extract._is_readable("nur drei kurze wörter") is False
 
 
 def test_scanned_pdf_falls_back_to_ocr(tmp_path, monkeypatch):
