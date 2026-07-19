@@ -116,6 +116,26 @@ def known_persons_for(db_path: str, owner_uid: str, prefix: str = "") -> list[st
     return _known_values(db_path, owner_uid, KIND_PERSON, prefix)
 
 
+def counted_values(db_path: str, owner_uid: str, kind: str) -> dict[str, int]:
+    """The resident's `#tag`/`@person` values with their mention counts (#699).
+
+    Counts DISTINCT (session, message) occurrences per value — the message-level
+    frequency the Notizen Statistik ranks by. Empty when the DB/table is missing.
+    """
+    if not Path(db_path).exists():
+        return {}
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT value, COUNT(DISTINCT session_id || ':' || message_ref) AS n"
+                " FROM mentions WHERE owner_uid = ? AND kind = ? GROUP BY value",
+                (owner_uid, kind),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {r["value"]: r["n"] for r in rows}
+
+
 def _known_values(db_path: str, owner_uid: str, kind: str, prefix: str) -> list[str]:
     if not Path(db_path).exists():
         return []
