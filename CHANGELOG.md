@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.1](https://github.com/mdopp/solarisbay/compare/v0.30.0...v0.30.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* **chat:** clear FK children when pruning empty note shells ([#897](https://github.com/mdopp/solarisbay/issues/897)) ([865c0d2](https://github.com/mdopp/solarisbay/commit/865c0d287c6c1cacfc443469d3211408573febef))
+
 ## [0.30.0](https://github.com/mdopp/solarisbay/compare/v0.29.0...v0.30.0) (2026-07-19)
 
 
