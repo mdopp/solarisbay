@@ -592,6 +592,10 @@ class JellyfinMusicIngest:
             resident=owner,
             resource=f"jellyfin://artist/{slug}",
             facts=enrich,
+            # Externally re-ingestable from Jellyfin (ADR 0002), like songs: the
+            # band lives as its entity + genre/bio facts, not a per-artist
+            # markdown/embedding. Its bio survives as a `bio` fact.
+            projection_only=True,
         )
         if not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
             stats.bands_written += 1
@@ -635,6 +639,10 @@ class JellyfinMusicIngest:
             external_id=f"album/{slug}",
             resident=owner,
             relationships=rels,
+            # Externally re-ingestable from Jellyfin (ADR 0002), like songs: a
+            # track container that lives as its entity + `by` fact, not a
+            # per-album markdown/embedding.
+            projection_only=True,
         )
         if not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
             stats.albums_written += 1

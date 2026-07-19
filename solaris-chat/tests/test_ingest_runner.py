@@ -309,11 +309,12 @@ async def test_run_ingest_jellyfin_runs_when_configured(env, monkeypatch):
             jellyfin_password="p",
         )
     )
-    # The mocked track produced a projection-only song (ADR 0002/0005 — no
-    # per-song markdown) plus its artist band, which keeps a concept + markdown.
-    assert _counts(db_path)["concepts"] >= 1
-    assert list((notes_dir / "okf" / "bands").glob("*.md"))
+    # The mocked track produced projection-only song/album/band entities (ADR
+    # 0002 — no per-item markdown), with their facts in the DB.
+    assert _counts(db_path)["entities"] >= 1
     assert not (notes_dir / "okf" / "songs").exists()
+    assert not (notes_dir / "okf" / "albums").exists()
+    assert not (notes_dir / "okf" / "bands").exists()
 
 
 async def test_run_ingest_jellyfin_skipped_when_unconfigured(env, monkeypatch):

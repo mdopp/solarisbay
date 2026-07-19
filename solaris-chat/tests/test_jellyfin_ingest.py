@@ -159,16 +159,23 @@ def test_run_authenticates_before_ingesting(env):
 # --- artist -> band / track -> song mapping ----------------------------------
 
 
-def test_artist_maps_to_band_concept(env):
+def test_artist_maps_to_projection_only_band(env):
     writer, db_path, tmp_path = env
     stats = _run(FakeJellyfinMusicClient([_artist()]), writer)
     assert stats.items == 1 and stats.bands_written == 1
     conn = projection.open_conn(db_path)
     band = conn.execute("SELECT * FROM entities WHERE type = 'band'").fetchone()
     assert band["canonical_name"] == "Queen"
+    # Projection-only (ADR 0002): the band lives as an entity, not a markdown +
+    # concepts row.
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM concepts WHERE ref_id = ?", (band["id"],)
+        ).fetchone()[0]
+        == 0
+    )
     conn.close()
-    band_path = tmp_path / "notes" / "okf" / "bands" / "queen.md"
-    assert band_path.is_file()
+    assert not (tmp_path / "notes" / "okf" / "bands").exists()
 
 
 def test_artist_writes_genre_and_bio_facts(env):
@@ -187,11 +194,11 @@ def test_artist_writes_genre_and_bio_facts(env):
         )
     }
     conn.close()
+    # genre/bio live as facts (the band is projection-only — no markdown), so
+    # artist_info('Queen') surfaces them from the DB, not a file.
     assert facts["genre"] == "Rock, Pop"
     assert facts["bio"] == "British rock band formed in 1970."
-    band_text = (tmp_path / "notes" / "okf" / "bands" / "queen.md").read_text()
-    assert "genre: Rock, Pop" in band_text
-    assert "bio: British rock band formed in 1970." in band_text
+    assert not (tmp_path / "notes" / "okf" / "bands").exists()
 
 
 def test_artist_enrichment_survives_prior_bare_track_write(env):
@@ -299,15 +306,10 @@ def test_private_library_writes_under_owner_path(env):
     scopes = {r[0] for r in conn.execute("SELECT DISTINCT resident_uid FROM entities")}
     assert scopes == {"cdopp"}
     conn.close()
-    # cdopp's materialized concepts (album/artist — songs are projection-only)
-    # live under her private path, not the shared okf/ root.
-    assert list(
-        (tmp_path / "notes" / "users" / "cdopp" / "okf" / "albums").glob("*.md")
-    )
-    assert not (tmp_path / "notes" / "okf" / "albums").exists()
-    # Songs never materialize markdown at all (projection-only).
-    assert not (tmp_path / "notes" / "users" / "cdopp" / "okf" / "songs").exists()
-    assert not (tmp_path / "notes" / "okf" / "songs").exists()
+    # Every Jellyfin type is projection-only now — ownership is the entity's
+    # resident_uid (asserted above), not a file location; nothing materializes
+    # markdown at all.
+    assert not list((tmp_path / "notes").rglob("*.md"))
 
 
 def test_library_name_case_insensitive_owner_match(env):
@@ -341,11 +343,9 @@ def test_shared_and_private_libraries_split_by_owner(env):
     )
     assert rows == {"Shared": "household", "Private": "cdopp"}
     conn.close()
-    # Songs are projection-only; the materialized markdown split is on albums.
-    assert (tmp_path / "notes" / "okf" / "albums").exists()
-    assert (tmp_path / "notes" / "users" / "cdopp" / "okf" / "albums").exists()
-    assert not (tmp_path / "notes" / "okf" / "songs").exists()
-    assert not (tmp_path / "notes" / "users" / "cdopp" / "okf" / "songs").exists()
+    # The owner split is on the entities' resident_uid (asserted above); every
+    # Jellyfin type is projection-only, so nothing materializes markdown.
+    assert not list((tmp_path / "notes").rglob("*.md"))
 
 
 def test_band_in_both_libraries_stays_shared(env):
@@ -399,15 +399,14 @@ def test_track_writes_album_entity_and_join_facts(env):
     srcs = {r[0] for r in conn.execute("SELECT DISTINCT source FROM facts")}
     conn.close()
     assert srcs == {"jellyfin"}
-    assert (
-        tmp_path / "notes" / "okf" / "albums" / "queen-a-night-at-the-opera.md"
-    ).is_file()
+    # The album is projection-only — entity + facts, no markdown.
+    assert not (tmp_path / "notes" / "okf" / "albums").exists()
 
 
-def test_album_and_artist_keep_markdown_and_embedding_song_does_not(env):
-    # ADR 0005: the RAG surface for the library is album/artist, so those keep a
-    # markdown file AND an embedding enqueue; the song (projection-only) gets
-    # neither. Prove the enqueue granularity via a spy queue.
+def test_no_jellyfin_type_materializes_markdown_or_embedding(env):
+    # ADR 0002: songs, albums AND bands are all projection-only now (their facts
+    # already carry the music knowledge), so none gets a markdown file or an
+    # embedding enqueue. Prove the enqueue granularity via a spy queue.
     _, db_path, tmp_path = env
 
     class _SpyQueue:
@@ -429,14 +428,13 @@ def test_album_and_artist_keep_markdown_and_embedding_song_does_not(env):
         r["type"]: r["id"] for r in conn.execute("SELECT id, type FROM entities")
     }
     conn.close()
-    # Album + artist(band) were enqueued for embedding; the song was NOT.
-    assert ids_by_type["album"] in spy.calls
-    assert ids_by_type["band"] in spy.calls
+    # Nothing was enqueued for embedding — no per-item RAG surface.
+    assert spy.calls == []
+    assert ids_by_type["album"] not in spy.calls
+    assert ids_by_type["band"] not in spy.calls
     assert ids_by_type["song"] not in spy.calls
-    # And only the RAG-worthy nodes materialized markdown (no songs/ dir).
-    assert (tmp_path / "notes" / "okf" / "albums").is_dir()
-    assert (tmp_path / "notes" / "okf" / "bands").is_dir()
-    assert not (tmp_path / "notes" / "okf" / "songs").exists()
+    # And nothing materialized markdown anywhere in the vault.
+    assert not list((tmp_path / "notes").rglob("*.md"))
 
 
 def test_album_dedups_across_tracks_and_reingest(env):

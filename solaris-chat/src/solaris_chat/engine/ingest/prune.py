@@ -1,18 +1,19 @@
 """One-shot prune of legacy per-item OKF artifacts (#878, ADR 0002/B7).
 
-Before #877 made externally-sourced Jellyfin `song`s projection-only, each song
-also materialized an OKF markdown file, a `concepts` link row, and an
-`okf_vectors` embedding. Those stale artifacts must go so a pruned song is
-identical to a freshly projected one — entity + `on_album`/`by` facts only. The
-same holds for Immich photos once they became projection-only events (a photo is
-externally re-ingestable, so no per-photo markdown belongs in the vault); the
-photo prune below mirrors the song one against the events-table projection.
+Before #877 made externally-sourced Jellyfin items projection-only, each song —
+and now each album and band too — materialized an OKF markdown file, a `concepts`
+link row, and an `okf_vectors` embedding. Those stale artifacts must go so a
+pruned item is identical to a freshly projected one — entity + facts (`by`,
+`on_album`, `genre`, `bio`) only. The same holds for Immich photos once they
+became projection-only events (a photo is externally re-ingestable, so no
+per-photo markdown belongs in the vault); the photo prune mirrors the music one
+against the events-table projection.
 
-Idempotent: a projection-only song has no `concepts` row, so the join finds
-only pre-switch songs; after one pass a re-run matches nothing. Per-resident
-safe: it keys off `(source="jellyfin", type="song")` and deletes exactly the
-matched concept's own file/FTS/rows — never another resident's data, never
-album/artist (they keep their lean markdown + embedding).
+Idempotent: a projection-only item has no `concepts` row, so the join finds only
+pre-switch items; after one pass a re-run matches nothing. Per-resident safe: it
+keys off `(source="jellyfin", type=…)` / `(source="immich", kind="photo")` and
+deletes exactly the matched concept's own file/FTS/rows — never another
+resident's data, never a non-music entity.
 
 Rides `run_ingest` (the single boot + nightly ingest call site), next to the
 embedding drain — no new thread/loop/knob.
@@ -28,63 +29,64 @@ from solaris_chat.logging import log
 from ..knowledge import okf, projection
 
 _SOURCE = "jellyfin"
-_TYPE = "song"
+# Every Jellyfin type is projection-only now (entity + facts, no markdown); each
+# owns its whole OKF domain dir, so the dir sweep below is safe per domain.
+_MUSIC_DOMAINS = (("song", "songs"), ("album", "albums"), ("band", "bands"))
 _PHOTO_SOURCE = "immich"
 _PHOTO_KIND = "photo"
 
 
-def prune_legacy_song_artifacts(db_path: str, notes_dir: str) -> int:
-    """Delete every legacy per-song OKF artifact; return the count pruned.
+def prune_legacy_music_artifacts(db_path: str, notes_dir: str) -> int:
+    """Delete every legacy per-song/album/band OKF artifact; return count pruned.
 
-    Keeps the song entity + its facts; removes the markdown file, its FTS row,
-    the `concepts` link row, and the `okf_vectors` embedding. Never raises."""
+    Keeps each entity + its facts; removes the markdown file, its FTS row, the
+    `concepts` link row, and the `okf_vectors` embedding. Never raises."""
     try:
         root = Path(notes_dir)
         conn = projection.open_conn(db_path)
         notes_index.ensure_schema(conn)
-        pruned = 0
+        pruned = swept = 0
         try:
-            # 1. Concept-linked legacy songs: drop the file + FTS row + concepts
-            #    link row + okf_vectors embedding, keeping the entity + facts.
-            stale = projection.legacy_projection_only_concepts(
-                conn, source=_SOURCE, type=_TYPE
-            )
-            for row in stale:
-                path = (root / row["okf_path"]).resolve()
-                path.unlink(missing_ok=True)
-                notes_index._delete_row(conn, row["okf_path"])
-                projection.delete_concept_artifacts(
-                    conn,
-                    concept_id=row["concept_id"],
-                    embedding_id=row["embedding_id"],
-                )
-                pruned += 1
-            # 2. Orphaned song stubs (#878 follow-up): songs are projection-only
-            #    now, so NO markdown belongs under `okf/songs/**`. The concept-
-            #    keyed pass above misses files whose concept row was already
-            #    dropped or whose stored okf_path never matched the file on disk
-            #    (historical stubs re-slugged over time) — on a real library that
-            #    left ~12k stubs behind. Sweep the song domain dir(s) directly so
-            #    a pruned vault matches the projection-only contract; drop each
-            #    file + its FTS row. Idempotent: after one pass the dir is empty.
-            swept = 0
-            song_dirs = [root / "okf" / "songs", *root.glob("users/*/okf/songs")]
-            for songs_dir in song_dirs:
-                if not songs_dir.is_dir():
-                    continue
-                for md in songs_dir.rglob("*.md"):
-                    rel = str(md.relative_to(root))
-                    md.unlink(missing_ok=True)
-                    notes_index._delete_row(conn, rel)
-                    swept += 1
+            for etype, domain in _MUSIC_DOMAINS:
+                # 1. Concept-linked legacy items: drop the file + FTS row +
+                #    concepts link row + okf_vectors embedding, keep entity+facts.
+                for row in projection.legacy_projection_only_concepts(
+                    conn, source=_SOURCE, type=etype
+                ):
+                    (root / row["okf_path"]).resolve().unlink(missing_ok=True)
+                    notes_index._delete_row(conn, row["okf_path"])
+                    projection.delete_concept_artifacts(
+                        conn,
+                        concept_id=row["concept_id"],
+                        embedding_id=row["embedding_id"],
+                    )
+                    pruned += 1
+                # 2. Orphaned stubs (#878): the type is projection-only now, so NO
+                #    markdown belongs under its domain dir. The concept-keyed pass
+                #    misses files whose concept row was already dropped or whose
+                #    stored okf_path never matched the file on disk (re-slugged over
+                #    time) — on the real library that left ~12k song stubs behind.
+                #    Sweep the domain dir(s) directly; idempotent (dir ends empty).
+                domain_dirs = [
+                    root / "okf" / domain,
+                    *root.glob(f"users/*/okf/{domain}"),
+                ]
+                for ddir in domain_dirs:
+                    if not ddir.is_dir():
+                        continue
+                    for md in ddir.rglob("*.md"):
+                        rel = str(md.relative_to(root))
+                        md.unlink(missing_ok=True)
+                        notes_index._delete_row(conn, rel)
+                        swept += 1
             conn.commit()
         finally:
             conn.close()
         if pruned or swept:
-            log.info("engine.prune.legacy_songs", pruned=pruned, swept=swept)
+            log.info("engine.prune.legacy_music", pruned=pruned, swept=swept)
         return pruned + swept
     except Exception as e:  # noqa: BLE001 — the prune must never crash the ingest.
-        log.error("engine.prune.legacy_songs_failed", error=str(e))
+        log.error("engine.prune.legacy_music_failed", error=str(e))
         return 0
 
 
