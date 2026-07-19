@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.1](https://github.com/mdopp/solarisbay/compare/v0.28.0...v0.28.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* **chat:** prune sweeps orphaned song markdown files ([c958fa9](https://github.com/mdopp/solarisbay/commit/c958fa9a263f28ed4555b965d0b49f84854746b2))
+* **chat:** prune sweeps orphaned song markdown, not just concept-linked ([fd9d247](https://github.com/mdopp/solarisbay/commit/fd9d2472ebeaeaf2c32cffc194960c33a314cfd7))
+
 ## [0.28.0](https://github.com/mdopp/solarisbay/compare/v0.27.0...v0.28.0) (2026-07-19)
 
 
