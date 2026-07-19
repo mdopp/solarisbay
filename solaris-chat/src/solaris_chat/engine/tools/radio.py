@@ -159,10 +159,16 @@ def _read_pref(
 
 
 def _write_pref(notes_dir: str, uid: str, name: str, fields: dict[str, str]) -> None:
-    """Write a resident's preference note as sanitized frontmatter."""
+    """Write a resident's preference note as sanitized frontmatter. A pref with
+    no real values isn't persisted — that would leave a bare `---\\n---\\n` shell
+    (e.g. resolving a default device before one is set); drop any stale stub."""
+    sanitized = {k: _sanitize_field(v) for k, v in fields.items()}
     path = _pref_path(notes_dir, uid, name)
+    if not any(v.strip() for v in sanitized.values()):
+        path.unlink(missing_ok=True)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = "".join(f"{k}: {_sanitize_field(v)}\n" for k, v in fields.items())
+    body = "".join(f"{k}: {v}\n" for k, v in sanitized.items())
     path.write_text(f"---\n{body}---\n", encoding="utf-8")
 
 

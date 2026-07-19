@@ -190,6 +190,12 @@ class ImmichIngest:
             timestamp=asset.when,
             event_ts=asset.when,
             event_kind="photo",
+            # A photo is externally re-ingestable from Immich (ADR 0002), so it
+            # lives as its events-table row + face/place edges only — no per-photo
+            # markdown/embedding. That would be ~1 stub per asset (tens of
+            # thousands), swamping the vault; the faces/places are the RAG-worthy
+            # nodes, the photo event itself is not.
+            projection_only=True,
             # Immich's content checksum rides the body so a changed asset (new
             # faces, re-geotag) moves the content_hash and re-ingests.
             body=f"Immich asset {asset.id} (checksum {asset.checksum}).",

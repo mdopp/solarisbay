@@ -5541,18 +5541,21 @@
           .catch(function () { card.textContent = "Konnte die Notizen nicht laden."; });
       }
 
-      // The knowledge kinds shown as Card-1 doorways: [label, emoji, browse-`by`].
-      // A tap opens the EXISTING Durchstöbern grouping for that kind (browse only
-      // groups topic/person/journal/okf — places/albums/events share the `okf`
-      // grouping, which lists those domains).
-      var NOTES_KINDS = [
-        ["people", "Personen", "👤", "person"],
-        ["places", "Orte", "📍", "okf"],
-        ["albums", "Alben", "🎵", "okf"],
-        ["events", "Events", "📅", "okf"],
-        ["topics", "Themen", "#", "topic"],
-        ["journal", "Journal", "📓", "journal"],
-      ];
+      // Friendly [label, emoji] per OKF domain for Card-1 doorways. The domains
+      // themselves are data-driven (data.kinds, from concepts.okf_path folders on
+      // the box) — this map only prettifies the known ones; an unknown domain falls
+      // back to its raw name and a generic icon. A tap browses that one domain via
+      // the existing `by=folder` grouping filtered to `okf/<domain>`.
+      var NOTES_KIND_META = {
+        events: ["Ereignisse", "📅"],
+        albums: ["Alben", "🎵"],
+        bands: ["Künstler", "🎤"],
+        notes: ["Notizen", "📝"],
+        people: ["Personen", "👤"],
+        places: ["Orte", "📍"],
+        topics: ["Themen", "#"],
+        journal: ["Journal", "📓"],
+      };
 
       // The Notizen page redesign (Phase I): a focused, guiding surface. It opens
       // to Card 1 "Dein Gedächtnis" (kind doorways + a transparency explainer +
@@ -5586,29 +5589,38 @@
           "Tippe eine Kachel an, um dort zu stöbern.";
         mem.appendChild(memLead);
 
-        // Kinds as clickable doorways; counts come from the DB (data.kinds).
+        // Doorways are data-driven: one per NON-EMPTY OKF domain (data.kinds is a
+        // {domain: count} map from the DB), most-populated first. Zero-count kinds
+        // are simply absent from the map, so they never render.
         var kinds = data.kinds || {};
         var doors = document.createElement("div");
         doors.className = "notes-doorways";
-        NOTES_KINDS.forEach(function (k) {
-          var b = document.createElement("button");
-          b.type = "button";
-          b.className = "notes-door";
-          var em = document.createElement("span");
-          em.className = "nd-emoji";
-          em.textContent = k[2];
-          var num = document.createElement("span");
-          num.className = "nd-count";
-          num.textContent = kinds[k[0]] == null ? "—" : String(kinds[k[0]]);
-          var lab = document.createElement("span");
-          lab.className = "nd-label";
-          lab.textContent = k[1];
-          b.appendChild(em);
-          b.appendChild(num);
-          b.appendChild(lab);
-          b.addEventListener("click", function () { openNotesBrowseView(k[3], k[1]); });
-          doors.appendChild(b);
-        });
+        Object.keys(kinds)
+          .filter(function (d) { return kinds[d] > 0; })
+          .sort(function (a, b) { return kinds[b] - kinds[a]; })
+          .forEach(function (domain) {
+            var meta = NOTES_KIND_META[domain] || [domain, "🗂️"];
+            var label = meta[0];
+            var b = document.createElement("button");
+            b.type = "button";
+            b.className = "notes-door";
+            var em = document.createElement("span");
+            em.className = "nd-emoji";
+            em.textContent = meta[1];
+            var num = document.createElement("span");
+            num.className = "nd-count";
+            num.textContent = Number(kinds[domain]).toLocaleString("de-DE");
+            var lab = document.createElement("span");
+            lab.className = "nd-label";
+            lab.textContent = label;
+            b.appendChild(em);
+            b.appendChild(num);
+            b.appendChild(lab);
+            b.addEventListener("click", function () {
+              openNotesBrowseView("folder", label, "okf/" + domain);
+            });
+            doors.appendChild(b);
+          });
         mem.appendChild(doors);
 
         // "So entsteht dein Wissen" — the transparency the maintainer asked for:
@@ -5793,7 +5805,7 @@
 
       // A doorway opens a standalone browse view for one kind — a focused page
       // (back → the notes overview) that reuses the existing grouped browse.
-      function openNotesBrowseView(by, label) {
+      function openNotesBrowseView(by, label, only) {
         clearLog();
         var card = document.createElement("div");
         card.className = "msg info concept-card start-page";
@@ -5815,7 +5827,7 @@
         var browse = document.createElement("div");
         browse.className = "notes-browse";
         card.appendChild(browse);
-        loadNotesBrowse(browse, by);
+        loadNotesBrowse(browse, by, only);
       }
 
       // ---- Google-Takeout import (#869 P4b) --------------------------------
@@ -6196,17 +6208,25 @@
           .catch(function () {});
       }
 
-      function loadNotesBrowse(container, by) {
+      function loadNotesBrowse(container, by, only) {
         container.textContent = "Lade…";
         fetch("/api/portal/notes/browse?by=" + encodeURIComponent(by))
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) {
             container.textContent = "";
-            if (!j || !j.ok || !j.groups.length) {
+            // A doorway passes `only` (e.g. "okf/events") to scope the `folder`
+            // browse to that domain — its folder and any nested subfolder.
+            var groups = j && j.ok ? j.groups : [];
+            if (only) {
+              groups = groups.filter(function (g) {
+                return g.group === only || g.group.indexOf(only + "/") === 0;
+              });
+            }
+            if (!j || !j.ok || !groups.length) {
               container.textContent = "Nichts vorhanden.";
               return;
             }
-            j.groups.forEach(function (g) {
+            groups.forEach(function (g) {
               container.appendChild(conceptSectionTitle(g.group));
               var list = document.createElement("div");
               list.className = "notes-list";

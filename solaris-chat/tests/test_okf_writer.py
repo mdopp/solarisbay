@@ -300,6 +300,43 @@ def test_projection_only_reingest_unchanged_is_skipped(env):
     conn.close()
 
 
+def test_projection_only_event_keeps_projection_no_markdown(env):
+    # A projection-only EVENT (an Immich photo) skips its OKF markdown, embedding,
+    # and concepts row like a projection-only entity — but step-3 event projection
+    # still runs, so the events-table row + event_entities edge survive (the photo
+    # stays queryable by date/who/where without a per-photo stub).
+    writer, db_path, tmp_path = env
+    writer.write_concept(_person(), ingesting_uid="mdopp")  # edge target
+    rec = ConceptRecord(
+        type="event",
+        title="Seaside",
+        source="immich",
+        external_id="asset/a1",
+        resource="immich://asset/a1",
+        event_ts="2026-06-01T09:00:00",
+        event_kind="photo",
+        relationships=[Relationship("depicted", "people/anna")],
+        projection_only=True,
+    )
+    res = writer.write_concept(rec, ingesting_uid="mdopp")
+    assert res.skipped is False
+    assert res.ref_kind == "event"
+    assert res.okf_path == "" and res.embedded is False
+    conn = projection.open_conn(db_path)
+    # The event + its edge are projected; no per-photo concepts row / embedding.
+    assert projection.row_count(conn, "events") == 1
+    assert projection.row_count(conn, "event_entities") == 1
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM concepts WHERE ref_kind = 'event'"
+        ).fetchone()[0]
+        == 0
+    )
+    conn.close()
+    # No photo markdown materialized under okf/events/.
+    assert not [p for p in (tmp_path / "notes").rglob("*.md") if "events" in p.parts]
+
+
 # --- idempotency -------------------------------------------------------------
 
 
