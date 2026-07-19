@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.29.0](https://github.com/mdopp/solarisbay/compare/v0.28.4...v0.29.0) (2026-07-19)
+
+
+### Features
+
+* **chat:** focused guided Notizen page — Card 1 overview + explainer (Phase I) ([9cc118e](https://github.com/mdopp/solarisbay/commit/9cc118ede3dc00690fe71b98fb8e343cec49bd21))
+* **chat:** focused guided Notizen page — Card 1 overview + explainer (Phase I) ([aa5179c](https://github.com/mdopp/solarisbay/commit/aa5179c6834d08f1f2aa07709aecbfc733902a7c))
+
 ## [0.28.4](https://github.com/mdopp/solarisbay/compare/v0.28.3...v0.28.4) (2026-07-19)
 
 
