@@ -15,6 +15,7 @@ and a restart spanning the slot fires it late instead of skipping the day.
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -74,6 +75,17 @@ _BIBLIOTHEKAR_STALE_DAYS = 3
 # pass consolidates per nightly run. Bounded so a vault that accumulated many
 # stray variants heals over a few nights rather than in one long walk.
 _JOURNAL_DEDUP_MAX = 50
+
+# Music-wishlist enrichment (#859): the import tool (solaris-import-google) drops
+# a `type: music-wishlist` note per resident listing albums it wants to acquire
+# (it only knows the DIGITAL library, so a "buy" item may still be owned on
+# CD/vinyl, already wanted, or gettable from a resident-fan). This code pass
+# cross-references the OKF library and annotates each `- **Album**` bullet in
+# place with three flags the import UI can later surface.
+_MUSIC_WISHLIST_ARTIST_RE = re.compile(r"^###\s+(.+?)\s*$")
+_MUSIC_WISHLIST_ALBUM_RE = re.compile(r"^(\s*[-*]\s+)\*\*(.+?)\*\*(.*)$")
+# The marker sub-bullet a prior run left, so a re-run is a no-op on that album.
+_MUSIC_WISHLIST_MARK = "okf-checked:"
 
 BIBLIOTHEKAR_PROMPT = (
     "[system: nightly librarian run — unattended, no resident present]\n"
@@ -581,6 +593,146 @@ class CronRunner:
         with log_path.open("a", encoding="utf-8") as f:
             f.write(f"- {stamp} {line}\n")
 
+    def _library_albums(self, caller_uid: str) -> set[tuple[str, str]]:
+        """The `(artist_lower, album_lower)` pairs already in the OKF music
+        library the caller may see (#859).
+
+        A digital-library album surfaces as `song` concepts carrying a `by →
+        [[bands/<slug>]]` edge and an `album:` frontmatter line; the projection
+        keeps the `by` fact but the `album` lives only in the OKF file. So this
+        joins each caller/household song to its band (via the `by` value → the
+        band's `okf_path` → `canonical_name`) and reads the album from the song's
+        OKF file frontmatter. Per-owner scope (#576): only songs owned by the
+        caller or `household`."""
+        notes_root = (
+            Path(self._ingest_settings.notes_dir) if self._ingest_settings else None
+        )
+        conn = projection.open_conn(self._db_path)
+        try:
+            rows = projection.fetch_all(
+                conn,
+                "SELECT b.canonical_name AS artist, c.okf_path AS song_path"
+                " FROM entities s"
+                " JOIN facts f ON f.subject_entity_id = s.id AND f.predicate = 'by'"
+                " JOIN concepts bc ON bc.ref_kind = 'entity'"
+                "   AND bc.okf_path LIKE '%okf/' || f.value || '.md'"
+                " JOIN entities b ON b.id = bc.ref_id AND b.type = 'band'"
+                " JOIN concepts c ON c.ref_kind = 'entity' AND c.ref_id = s.id"
+                " WHERE s.type = 'song' AND s.resident_uid IN (?, ?)"
+                "   AND b.resident_uid IN (?, ?)",
+                (
+                    caller_uid,
+                    projection.SHARED_UID,
+                    caller_uid,
+                    projection.SHARED_UID,
+                ),
+            )
+        finally:
+            conn.close()
+        owned: set[tuple[str, str]] = set()
+        if notes_root is None:
+            return owned
+        for row in rows:
+            album = self._okf_album(notes_root, row["song_path"])
+            if album:
+                owned.add((row["artist"].strip().lower(), album.strip().lower()))
+        return owned
+
+    @staticmethod
+    def _okf_album(notes_root: Path, song_okf_path: str) -> str:
+        """The `album:` frontmatter value of an OKF song file, "" when absent."""
+        try:
+            text = (notes_root / song_okf_path).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            return ""
+        m = re.search(r"(?mi)^album:\s*(.+?)\s*$", text)
+        return m.group(1).strip().strip("'\"") if m else ""
+
+    def _enrich_music_wishlists(self, notes_dir: str) -> int:
+        """Annotate `type: music-wishlist` notes from the OKF library (#859).
+
+        The import tool (solaris-import-google) drops one note per resident whose
+        body is `### <Artist>` / `- **<Album>**` bullets. Only the digital library
+        is known to it, so each album is cross-referenced here against the OKF
+        library and each bullet gets three flags written back INTO THE SAME note:
+
+        - `owned_physical` — a matching album is already in the OKF/Jellyfin
+          library, so it need not be bought (a rip/duplicate at most). This is the
+          one signal the OKF cleanly derives today.
+        - `wishlist` / `source` — no OKF schema carries "already-wanted" or
+          "where-to-acquire" yet, so these are emitted empty (a graceful no-op the
+          import UI can fill later) rather than inventing a schema (#859 note).
+
+        Idempotent: a bullet already carrying the `okf-checked:` marker is skipped,
+        so a nightly re-run re-touches nothing. Returns the number of albums
+        annotated this run."""
+        root = Path(notes_dir)
+        annotated = 0
+        albums_by_caller: dict[str, set[tuple[str, str]]] = {}
+        for path in notes_search.iter_vault_md(root):
+            try:
+                rel = str(path.relative_to(root))
+            except ValueError:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if "type: music-wishlist" not in text:
+                continue
+            caller = notes_search.owner_of(rel, text) or notes_search.SHARED_UID
+            if caller not in albums_by_caller:
+                albums_by_caller[caller] = self._library_albums(caller)
+            owned = albums_by_caller[caller]
+            new_text, count = self._annotate_wishlist(text, owned)
+            if count:
+                path.write_text(new_text, encoding="utf-8")
+                annotated += count
+                self._journal_log_append(
+                    root, f"music-wishlist: {rel} enriched {count} album(s) from OKF"
+                )
+        return annotated
+
+    @staticmethod
+    def _annotate_wishlist(text: str, owned: set[tuple[str, str]]) -> tuple[str, int]:
+        """Rewrite each un-checked `- **Album**` bullet with OKF flags (#859).
+
+        Tracks the current `### <Artist>` heading while walking the body; for each
+        album bullet, appends indented flag sub-bullets right after it. Returns the
+        rewritten text and the count of albums newly annotated."""
+        lines = text.splitlines()
+        out: list[str] = []
+        artist = ""
+        count = 0
+        for i, line in enumerate(lines):
+            out.append(line)
+            m_artist = _MUSIC_WISHLIST_ARTIST_RE.match(line)
+            if m_artist:
+                artist = m_artist.group(1).strip()
+                continue
+            m_album = _MUSIC_WISHLIST_ALBUM_RE.match(line)
+            if not m_album or not artist:
+                continue
+            indent = m_album.group(1)
+            album = m_album.group(2).strip()
+            # Already annotated on a prior run → leave it (idempotent).
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+            if _MUSIC_WISHLIST_MARK in nxt:
+                continue
+            sub = indent[: len(indent) - len(indent.lstrip())] + "  - "
+            owned_physical = (artist.lower(), album.lower()) in owned
+            out.append(f"{sub}{_MUSIC_WISHLIST_MARK} true")
+            out.append(f"{sub}owned_physical: {'true' if owned_physical else 'false'}")
+            out.append(f"{sub}wishlist:")
+            out.append(f"{sub}source:")
+            count += 1
+        if count == 0:
+            return text, 0
+        trailing = "\n" if text.endswith("\n") else ""
+        return "\n".join(out) + trailing, count
+
     async def _bibliothekar(self) -> None:
         """The nightly vault curation (#653): one librarian turn per ownership
         scope over a bounded candidate set, editing vault files through the
@@ -606,6 +758,12 @@ class CronRunner:
                 log.info("engine.night.journal_dedup", stubs=stubs)
         except Exception as e:  # noqa: BLE001 — a bad file must not abort the run.
             log.error("engine.night.journal_dedup_failed", error=str(e))
+        try:
+            enriched = await asyncio.to_thread(self._enrich_music_wishlists, notes_dir)
+            if enriched:
+                log.info("engine.night.music_wishlist", albums=enriched)
+        except Exception as e:  # noqa: BLE001 — a bad note must not abort the run.
+            log.error("engine.night.music_wishlist_failed", error=str(e))
         for scope in self._bibliothekar_scopes(notes_dir):
             try:
                 candidates = self._bibliothekar_candidates(notes_dir, scope, since)

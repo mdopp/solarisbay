@@ -11,6 +11,7 @@ from solaris_chat.context import build_context_window
 from solaris_chat.engine.crons import CronRunner
 from solaris_chat.engine.ha_watch import HaStateWatcher
 from solaris_chat.engine.native_watch import NativeWatchStore
+from solaris_chat.engine.importers.jobs import JobRunner
 from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.profiles import build_engine_clients
@@ -137,6 +138,13 @@ async def _run() -> None:
         librarian=librarian,
     )
     crons.start()
+
+    # Durable import jobs (#864): re-attach any import still `running` when the
+    # server last died. Owner-scoped to the household default uid — mirrors the
+    # timer/scheduler boot re-arm; a job with no registered runner is marked
+    # `interrupted` rather than lost. Importer kinds are wired in #868.
+    import_jobs = JobRunner(settings.solaris_db_path)
+    import_jobs.resume(settings.default_uid)
 
     # Populate the OKF store on boot (#517). Run in a dedicated worker thread
     # with its own event loop, NOT as a task on the chat server's loop: the
