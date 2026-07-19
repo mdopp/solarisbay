@@ -205,6 +205,38 @@ def test_prune_leaves_album_and_artist_untouched(legacy_env):
         conn.close()
 
 
+def test_prune_sweeps_orphaned_song_markdown(legacy_env):
+    """A song .md under okf/songs/ with NO concepts row (a historical stub whose
+    concept was already dropped, or whose stored okf_path never matched the file)
+    is swept — songs are projection-only, so no song markdown may remain. On the
+    real library the concept-keyed pass alone left ~12k such stubs behind."""
+    db_path, notes_dir, *_ = legacy_env
+    orphan = notes_dir / "okf" / "songs" / "orphan-stub.md"
+    orphan.write_text("---\ntype: song\ntitle: Orphan\n---\n", encoding="utf-8")
+    conn = sqlite3.connect(db_path)
+    notes_index.ensure_schema(conn)
+    notes_index.index_note(conn, notes_dir, "okf/songs/orphan-stub.md")
+    conn.commit()
+    conn.close()
+
+    # 1 concept-linked (helter-skelter) + 1 swept orphan (no concept row).
+    total = prune_legacy_song_artifacts(db_path, str(notes_dir))
+
+    assert total == 2
+    assert not orphan.exists()
+    assert not list((notes_dir / "okf" / "songs").glob("*.md"))  # dir emptied
+    conn = sqlite3.connect(db_path)
+    try:
+        assert notes_index.search(conn, "orphan") == []  # FTS row swept too
+        # album/artist markdown untouched by the sweep.
+        assert (notes_dir / "okf" / "albums" / "the-beatles-the-beatles.md").exists()
+    finally:
+        conn.close()
+
+    # Idempotent: the emptied dir yields nothing on a second pass.
+    assert prune_legacy_song_artifacts(db_path, str(notes_dir)) == 0
+
+
 def test_prune_is_idempotent(legacy_env):
     db_path, notes_dir, *_ = legacy_env
 

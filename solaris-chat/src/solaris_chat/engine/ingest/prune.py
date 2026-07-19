@@ -36,26 +36,48 @@ def prune_legacy_song_artifacts(db_path: str, notes_dir: str) -> int:
     try:
         root = Path(notes_dir)
         conn = projection.open_conn(db_path)
+        notes_index.ensure_schema(conn)
+        pruned = 0
         try:
+            # 1. Concept-linked legacy songs: drop the file + FTS row + concepts
+            #    link row + okf_vectors embedding, keeping the entity + facts.
             stale = projection.legacy_projection_only_concepts(
                 conn, source=_SOURCE, type=_TYPE
             )
             for row in stale:
                 path = (root / row["okf_path"]).resolve()
                 path.unlink(missing_ok=True)
-                notes_index.ensure_schema(conn)
                 notes_index._delete_row(conn, row["okf_path"])
                 projection.delete_concept_artifacts(
                     conn,
                     concept_id=row["concept_id"],
                     embedding_id=row["embedding_id"],
                 )
+                pruned += 1
+            # 2. Orphaned song stubs (#878 follow-up): songs are projection-only
+            #    now, so NO markdown belongs under `okf/songs/**`. The concept-
+            #    keyed pass above misses files whose concept row was already
+            #    dropped or whose stored okf_path never matched the file on disk
+            #    (historical stubs re-slugged over time) — on a real library that
+            #    left ~12k stubs behind. Sweep the song domain dir(s) directly so
+            #    a pruned vault matches the projection-only contract; drop each
+            #    file + its FTS row. Idempotent: after one pass the dir is empty.
+            swept = 0
+            song_dirs = [root / "okf" / "songs", *root.glob("users/*/okf/songs")]
+            for songs_dir in song_dirs:
+                if not songs_dir.is_dir():
+                    continue
+                for md in songs_dir.rglob("*.md"):
+                    rel = str(md.relative_to(root))
+                    md.unlink(missing_ok=True)
+                    notes_index._delete_row(conn, rel)
+                    swept += 1
             conn.commit()
         finally:
             conn.close()
-        if stale:
-            log.info("engine.prune.legacy_songs", pruned=len(stale))
-        return len(stale)
+        if pruned or swept:
+            log.info("engine.prune.legacy_songs", pruned=pruned, swept=swept)
+        return pruned + swept
     except Exception as e:  # noqa: BLE001 — the prune must never crash the ingest.
         log.error("engine.prune.legacy_songs_failed", error=str(e))
         return 0
