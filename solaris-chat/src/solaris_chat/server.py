@@ -52,6 +52,7 @@ from solaris_chat.engine import (
     updates,
 )
 from solaris_chat.engine import sb_companion as sb_companion_module
+from solaris_chat.engine.importers.google_takeout import orchestrator as import_flow
 from solaris_chat.engine.client import (
     EngineClient,
     EngineError,
@@ -820,6 +821,12 @@ _MAX_IMAGES = 4
 _UPLOAD_MIME_EXT = {"image/jpeg": ".jpg", "application/pdf": ".pdf"}
 _UPLOAD_MAX_BYTES = 25 * 1024 * 1024
 _UPLOAD_MAX_FILES = 20
+# A Google-Takeout `.zip` is an archive, not a vault file: it is stored under the
+# resident's uploads dir and handed to the durable import job (never processed
+# inline), so it gets its own far-larger cap (a full export is hundreds of MB).
+_ARCHIVE_MIME = {"application/zip", "application/x-zip-compressed"}
+_ARCHIVE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+_ARCHIVE_SUBDIR = "imports"
 # Room for `_UPLOAD_MAX_FILES` max-size parts plus multipart framing, so a legit
 # series upload isn't rejected by aiohttp's whole-body `client_max_size` before
 # the handler's own per-file guard runs.
@@ -1151,6 +1158,15 @@ def build_app(
     ha_watcher: Any = None,
     native_watch: Any = None,
     sb_companion: Any = None,
+    import_jobs: Any = None,
+    caldav_url: str = "",
+    caldav_username: str = "",
+    caldav_password: str = "",
+    carddav_url: str = "",
+    carddav_username: str = "",
+    carddav_password: str = "",
+    music_dir: str = "/opt/data/music",
+    import_data_dir: str = "/data/imports",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -1890,6 +1906,12 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "unknown_action"}, status=404
             )
+        # Stamp the caller's verified uid onto the body so a per-resident handler
+        # (the import callbacks, #869) scopes to the acting resident rather than a
+        # client-supplied value. Overwrites any body-provided `uid`.
+        body["uid"] = resolve_uid(
+            request, remote_user_header, default_uid, solaris_db_path
+        )
         # An admin-only action must not fire for a non-admin caller — checked
         # before the confirm-gate so a resident can't self-supply confirmed=true
         # to reach a privileged handler (#788/#789 SB-MCP deploy/exec).
@@ -3796,21 +3818,258 @@ def build_app(
         ok = device_token_store.revoke(solaris_db_path, owner, token_id)
         return web.json_response({"ok": ok}, status=200 if ok else 404)
 
+    def _import_llm_classifier():
+        """A sync ``folder -> label`` backed by the household LLM for the classify
+        step (fail-open to ""). Runs inside `asyncio.to_thread`, so `asyncio.run`
+        is safe (a worker thread has no running loop) — mirroring the music
+        importer's classifier bridge."""
+        client = OllamaChat(ollama_url)
+
+        async def _ask(folder: str) -> str:
+            msgs = [
+                {"role": "system", "content": import_flow._CLASSIFY_SYS},
+                {"role": "user", "content": f"Ordner: {folder}"},
+            ]
+            out = None
+            async for kind, payload in client.stream(
+                current_household_model(),
+                msgs,
+                tools=None,
+                think=False,
+                options={"num_predict": 8, "temperature": 0.0},
+            ):
+                if kind == "done":
+                    out = payload
+            return out.content.strip() if out is not None else ""
+
+        def classify(folder: str) -> str:
+            try:
+                return asyncio.run(_ask(folder))
+            except (OllamaError, OSError, RuntimeError, ValueError):
+                return ""
+
+        return classify
+
+    def _import_job_cfg(owner: str) -> dict[str, Any]:
+        """The per-run config the durable `import` job needs to drive each importer
+        (the write targets it must reach). Owner-scoped."""
+        return {
+            "owner_uid": owner,
+            "db_path": solaris_db_path,
+            "notes_dir": notes_dir,
+            "ollama_url": ollama_url,
+            "model": current_household_model(),
+            "caldav_url": caldav_url,
+            "caldav_username": caldav_username,
+            "caldav_password": caldav_password,
+            "carddav_url": carddav_url,
+            "carddav_username": carddav_username,
+            "carddav_password": carddav_password,
+            "music_dir": music_dir,
+            "data_dir": import_data_dir,
+        }
+
+    def _publish_import_card(uid: str, session_id: str, card: dict[str, Any]) -> None:
+        """Push a live card update to an open chat (SessionBus mirror + event bus),
+        the same fan-out `inject_message` uses for an action card."""
+        if event_bus is not None:
+            event_bus.publish(
+                uid,
+                "chat",
+                {"session_id": session_id, "preview": card["title"], "card": card},
+            )
+        if bus is not None:
+            bus.publish(session_id, uid, {"kind": "card", "event": {"card": card}})
+
+    async def _stream_import_progress(
+        uid: str, session_id: str, jid: str, categories: list[str]
+    ) -> None:
+        """Poll the durable job and mirror its progress into the plan card, then
+        inject a final result summary card (Posteingang note already written by the
+        job). Runs as a background task so the callback returns immediately."""
+        last: str = ""
+        for _ in range(3600):  # ~1h ceiling at 1s cadence — a job is long but bounded
+            snap = import_jobs.get(jid, uid)
+            if snap is None:
+                return
+            prog = snap.get("progress") or {}
+            marker = f"{prog.get('stage')}:{prog.get('pct')}"
+            if marker != last and snap["status"] == "running":
+                last = marker
+                _publish_import_card(
+                    uid,
+                    session_id,
+                    {
+                        "kind": "action",
+                        "title": "Import läuft …",
+                        "body": prog.get("message", "…"),
+                        "buttons": [],
+                    },
+                )
+            if snap["status"] in ("done", "failed", "interrupted"):
+                break
+            await asyncio.sleep(1)
+        snap = import_jobs.get(jid, uid) or {}
+        if snap.get("status") == "done" and snap.get("result"):
+            card = import_flow.build_result_card(snap["result"])
+            per = snap["result"].get("per_category", {})
+            text = card["body"]
+        else:
+            card = {
+                "kind": "action",
+                "title": "Import fehlgeschlagen",
+                "body": snap.get("error")
+                or "Der Import konnte nicht abgeschlossen werden.",
+                "buttons": [],
+            }
+            text = card["body"]
+            per = {}
+        if event_bus is not None:
+            await inject(
+                solaris_db_path, event_bus, notifier, session_id, uid, text, card=card
+            )
+        log.info("import.done", uid=uid, job=jid, per_category=per)
+
+    async def _handle_takeout_archive(
+        request: web.Request, uid: str, part: Any, base: Path
+    ) -> web.Response:
+        """Store an uploaded Takeout `.zip`, classify it, and inject a plan card.
+
+        The archive is stored under `<owner>/imports/` and NOT processed inline:
+        classify inspects its manifest (mechanical structure + LLM for an ambiguous
+        folder), and the plan action-card (findings + choices) is injected into the
+        resident's household chat. Nothing is imported until they press Importieren
+        (the callback enqueues the durable job). Idempotent: the archive is named
+        by its content hash, so a re-upload reuses the same stored file."""
+        if import_jobs is None:
+            return web.json_response(
+                {"ok": False, "error": "import unavailable"}, status=503
+            )
+        data = bytearray()
+        while True:
+            chunk = await part.read_chunk()
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > _ARCHIVE_MAX_BYTES:
+                return web.json_response(
+                    {"ok": False, "error": "archive too large"}, status=413
+                )
+        if not data:
+            return web.json_response({"ok": False, "error": "empty file"}, status=400)
+        zip_bytes = bytes(data)
+        archive_hash = import_flow.content_hash(zip_bytes)
+        import_dir = base / _ARCHIVE_SUBDIR
+        import_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = import_dir / f"takeout-{archive_hash}.zip"
+        archive_path.write_bytes(zip_bytes)  # idempotent: hash-named, re-upload no-ops
+        try:
+            classification = await asyncio.to_thread(
+                import_flow.classify_archive,
+                zip_bytes,
+                llm=_import_llm_classifier(),
+            )
+        except Exception as exc:  # noqa: BLE001 — a malformed zip is a 400, not a 500
+            log.warn("import.classify_failed", uid=uid, error=str(exc))
+            return web.json_response(
+                {"ok": False, "error": "unreadable archive"}, status=400
+            )
+        if not classification["claims"]:
+            return web.json_response(
+                {"ok": False, "error": "no importable data in archive"}, status=400
+            )
+        archive_id = str(archive_path.relative_to(Path(notes_dir).resolve()))
+        card = import_flow.build_plan_card(classification, archive_id)
+        if event_bus is not None:
+            session_id = store.ensure_household_session(solaris_db_path, uid)
+            await inject(
+                solaris_db_path,
+                event_bus,
+                notifier,
+                session_id,
+                uid,
+                "Ich habe dein Google-Takeout-Archiv erhalten.",
+                card=card,
+            )
+            if bus is not None:
+                bus.publish(session_id, uid, {"kind": "card", "event": {"card": card}})
+        log.info(
+            "import.uploaded",
+            uid=uid,
+            hash=archive_hash,
+            claims=[c["category"] for c in classification["claims"]],
+        )
+        return web.json_response(
+            {
+                "ok": True,
+                "kind": "import",
+                "archive_id": archive_id,
+                "classification": classification,
+                "card": card,
+            }
+        )
+
+    async def _import_confirm(body: dict[str, Any]) -> dict[str, Any]:
+        """Action-card callback: enqueue the durable import job for the selected
+        categories and start streaming progress into the card (#869)."""
+        if import_jobs is None or event_bus is None:
+            return {"ok": False, "reason": "import_unavailable"}
+        params = body.get("params") or {}
+        uid = body.get("uid") or default_uid  # stamped by action_callback
+        archive_id = params.get("archive_id")
+        categories = [
+            c
+            for c in (params.get("categories") or [])
+            if c in import_flow._CATEGORY_RUNNERS
+        ]
+        if not isinstance(archive_id, str) or not categories:
+            return {"ok": False, "reason": "bad_params"}
+        archive_path = _notes_resolve_owned(notes_dir, archive_id, uid)
+        if archive_path is None:
+            return {"ok": False, "reason": "archive_not_found"}
+        payload = {
+            **_import_job_cfg(uid),
+            "archive_path": str(archive_path),
+            "categories": categories,
+            "hash": params.get("hash", ""),
+        }
+        job_id = import_jobs.start(uid, "import", payload)
+        session_id = store.ensure_household_session(solaris_db_path, uid)
+        asyncio.ensure_future(
+            _stream_import_progress(uid, session_id, job_id, categories)
+        )
+        return {"ok": True, "jobId": job_id, "categories": categories}
+
+    async def _import_cancel(body: dict[str, Any]) -> dict[str, Any]:
+        """Action-card callback: dismiss the plan without importing (#869)."""
+        return {"ok": True, "detail": "abgebrochen"}
+
+    # The import plan-card buttons (#869). Confirm WRITES (calendar/contacts into
+    # Radicale, notes into the vault, wishlist facts onto album entities), so it is
+    # confirm-gated via the same mechanism the destructive Wartung cards use.
+    action_cards.register(import_flow.CONFIRM_ACTION, _import_confirm, destructive=True)
+    action_cards.register(import_flow.CANCEL_ACTION, _import_cancel)
+
     async def napi_upload(request: web.Request) -> web.Response:
-        """Store a camera capture / PDF from the companion app into the vault (#826).
+        """Store a camera capture / PDF / Takeout `.zip` into the vault (#826/#869).
 
-        Only reached via `native(...)` on `/napi/`: device-token-only, fail-closed
-        (401 without a valid `sol_device_` bearer), uid resolved from the token.
+        Reachable from BOTH surfaces on the same handler (no parallel endpoint,
+        ADR 0007): `/napi/upload` (device-token, fail-closed via `native(...)`)
+        and `/api/upload` (an interactive browser session, uid from `Remote-User`).
+        The uid is resolved by `_interactive_uid`, which honours whichever proved
+        the caller; a request that proves neither is 401.
 
-        `multipart/form-data` with N `file` parts (a single shot or a series) plus
-        an optional user-chosen `filename` (sanitized server-side) and `kind`. Each
-        file is written into the resident's notes vault under `<owner>/uploads/`
-        (household → shared `uploads/`), and a small markdown note that embeds it is
-        written beside it — so it is `notes_search`-visible (search indexes markdown,
-        not raw binaries) and shows up in the PWA. Owner-scoped to the token's uid,
-        matching how the vault is scoped. Fails cleanly: 415 unsupported type, 413
-        too large, 400 bad request."""
-        uid = request["native_uid"]
+        `multipart/form-data` with N `file` parts. An image/PDF part is written into
+        the resident's notes vault under `<owner>/uploads/` with an embedding note
+        (`notes_search`-visible). A Google-Takeout `.zip` part is instead stored
+        under `<owner>/imports/` and handed to the interactive import flow (#869):
+        it is classified, a plan action-card is injected into the resident's chat,
+        and nothing is imported until they confirm — the archive is never processed
+        inline. Owner-scoped. Fails cleanly: 415 unsupported type, 413 too large,
+        400 bad request."""
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
         if not request.content_type.startswith("multipart/"):
             return web.json_response(
                 {"ok": False, "error": "expected multipart/form-data"}, status=400
@@ -3843,6 +4102,9 @@ def build_app(
                 await part.read()  # drain an unexpected part
                 continue
             mime = (part.headers.get("Content-Type") or "").split(";")[0].strip()
+            part_name = part.filename or ""
+            if mime in _ARCHIVE_MIME or part_name.lower().endswith(".zip"):
+                return await _handle_takeout_archive(request, uid, part, base)
             if mime not in _UPLOAD_MIME_EXT:
                 return web.json_response(
                     {"ok": False, "error": f"unsupported type: {mime or 'unknown'}"},
@@ -4519,8 +4781,13 @@ def build_app(
 
     # Raise the whole-body cap above aiohttp's 1 MB default so a native camera
     # upload / PDF series (#826) reaches its handler; the per-file (413) and
-    # per-request-count (400) guards there are the real limits.
-    app = web.Application(middlewares=[csp], client_max_size=_UPLOAD_REQUEST_MAX_BYTES)
+    # per-request-count (400) guards there are the real limits. A Takeout `.zip`
+    # (#869) is far larger, so the cap is the archive limit — the upload handler's
+    # own per-type guard rejects an oversized non-archive part.
+    app = web.Application(
+        middlewares=[csp],
+        client_max_size=_ARCHIVE_MAX_BYTES + 8 * 1024 * 1024,
+    )
     app.router.add_get("/", index)
     app.router.add_get("/sw.js", service_worker)
     app.router.add_get("/.well-known/assetlinks.json", assetlinks)
@@ -4624,6 +4891,11 @@ def build_app(
     )
     app.router.add_post("/napi/ha/call", native(ha_call))
     app.router.add_post("/napi/upload", native(napi_upload))
+    # Browser-session upload (#869): the same handler, reachable from an
+    # interactive Authelia session (uid from `Remote-User`) so a resident can drop
+    # a Takeout `.zip` from the web app. No `native(...)` wrapper — the device-token
+    # gate is only for the proxy-bypassed `/napi/` prefix.
+    app.router.add_post("/api/upload", napi_upload)
     # ServiceBay BFF reads (#811): re-serve SB's companion reads under Solaris's
     # own /napi so the app never talks to ServiceBay directly (ADR 0010).
     app.router.add_get("/napi/servicebay/{key}", native(servicebay_read))
@@ -4929,6 +5201,15 @@ async def serve(
     android_cert_fingerprints: tuple[str, ...] = (),
     ha_watcher: Any = None,
     native_watch: Any = None,
+    import_jobs: Any = None,
+    caldav_url: str = "",
+    caldav_username: str = "",
+    caldav_password: str = "",
+    carddav_url: str = "",
+    carddav_username: str = "",
+    carddav_password: str = "",
+    music_dir: str = "/opt/data/music",
+    import_data_dir: str = "/data/imports",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -4978,6 +5259,15 @@ async def serve(
         ha_watcher=ha_watcher,
         native_watch=native_watch,
         sb_companion=sb_companion,
+        import_jobs=import_jobs,
+        caldav_url=caldav_url,
+        caldav_username=caldav_username,
+        caldav_password=caldav_password,
+        carddav_url=carddav_url,
+        carddav_username=carddav_username,
+        carddav_password=carddav_password,
+        music_dir=music_dir,
+        import_data_dir=import_data_dir,
     )
     runner = web.AppRunner(app)
     await runner.setup()

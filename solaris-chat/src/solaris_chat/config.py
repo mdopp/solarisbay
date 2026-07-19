@@ -167,6 +167,11 @@ class Settings:
     carddav_url: str
     carddav_username: str
     carddav_password: str
+    # Where the interactive Takeout import (#869) reads library ownership from
+    # (`music_dir`) and stores its scratch state / stored archives (`import_data_dir`,
+    # also the ytmusicapi album cache). Defaults match the stack's data mounts.
+    music_dir: str
+    import_data_dir: str
     jellyfin_url: str
     jellyfin_cast_url: str
     jellyfin_username: str
@@ -339,6 +344,8 @@ class Settings:
             carddav_url=os.environ.get("CARDDAV_URL", "").strip(),
             carddav_username=os.environ.get("CARDDAV_USERNAME", "").strip(),
             carddav_password=os.environ.get("CARDDAV_PASSWORD", "").strip(),
+            music_dir=os.environ.get("MUSIC_DIR", "/opt/data/music").strip(),
+            import_data_dir=os.environ.get("IMPORT_DATA_DIR", "/data/imports").strip(),
             # The household Jellyfin server the music-ingest adapter reads
             # (read-only, #564 slice 1) to map the music catalog into OKF
             # band/song concepts. Reuses the existing JELLYFIN_* stack vars

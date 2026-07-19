@@ -36,6 +36,7 @@ from solaris_chat.logging import log
 # to. Imported for the registered-kind lookup.
 from .google_takeout import REGISTRY as IMPORTER_REGISTRY
 from .google_takeout.importers.music import _music_runner_factory
+from .google_takeout.orchestrator import import_runner_factory
 
 
 _PROGRESS_KEYS = ("pct", "message", "stage", "done", "total")
@@ -63,6 +64,12 @@ def runner(kind: str):
 # module (it owns the album-fact write path); register it here so `start`/`resume`
 # dispatch it like any other durable job kind.
 runner("music")(_music_runner_factory)
+
+# The interactive Takeout import kind (#869): one job runs every selected category
+# (calendar/contacts/keep/music) through its existing importer, streaming progress
+# into the plan card and landing a Posteingang summary. Its factory-builder lives
+# in the orchestrator (it owns the classify→plan→process flow).
+runner("import")(import_runner_factory)
 
 
 def registered_kind(kind: str) -> bool:
