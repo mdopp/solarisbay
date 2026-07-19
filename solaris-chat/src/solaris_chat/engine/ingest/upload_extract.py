@@ -1,0 +1,178 @@
+"""Upload text extraction.
+
+An uploaded PDF/image lands in `users/<uid>/uploads/` beside a companion `.md`
+whose body was, until now, just a title + an Obsidian `![[…]]` embed — no real
+text. That companion is what the Obsidian ingest projects into an OKF `note`
+concept and what FTS + the nightly Bibliothekar librarian read; with no body,
+the upload was invisible to search and never keyworded.
+
+This module extracts the document's text and writes it INTO the companion body
+so the very next ingest cycle indexes it and the librarian keywords it:
+
+  - `.pdf`: `pdftotext -layout` first (born-digital PDFs). If that yields too
+    little text (a scan / no text layer), rasterize with `pdftoppm` and OCR each
+    page with `tesseract`.
+  - image: `tesseract` directly.
+
+Every subprocess is bounded (timeout) and wrapped: extraction NEVER raises — on
+any failure it logs and returns an empty string, so a bad upload degrades to the
+old title-only behaviour rather than crashing the upload handler or the ingest.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import tempfile
+from pathlib import Path
+
+from solaris_chat.logging import log
+
+# First N pages only — a huge scan must not turn one upload into a minutes-long
+# OCR job on the ingest thread.
+_MAX_PAGES = 20
+# Born-digital heuristic: pdftotext on a scanned PDF returns near-nothing, so a
+# short result means "no text layer → fall back to OCR".
+_MIN_PDF_TEXT_CHARS = 200
+# Cap the companion body so one huge document can't bloat the vault / FTS.
+_MAX_TEXT_CHARS = 50_000
+_TRUNCATION_MARKER = "\n\n[… gekürzt …]"
+_OCR_LANGS = "deu+eng"
+_TIMEOUT_S = 120
+
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"})
+
+# Marker in a companion body meaning "already extracted" — idempotency guard so a
+# re-ingest doesn't re-OCR and re-append.
+EXTRACTED_MARKER = "<!-- extracted -->"
+
+
+def _run(cmd: list[str]) -> str:
+    """Run `cmd`, return its stdout, or "" on any failure (never raises)."""
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT_S,
+        )
+    except Exception as e:  # noqa: BLE001 — extraction must never crash the caller.
+        log.error("ingest.upload_extract.subprocess_failed", cmd=cmd[0], error=str(e))
+        return ""
+    return result.stdout or ""
+
+
+def _cap(text: str) -> str:
+    if len(text) <= _MAX_TEXT_CHARS:
+        return text
+    return text[:_MAX_TEXT_CHARS] + _TRUNCATION_MARKER
+
+
+def _ocr_pdf(path: Path) -> str:
+    """Rasterize the first pages of a scanned PDF and OCR each with tesseract."""
+    with tempfile.TemporaryDirectory() as tmp:
+        prefix = str(Path(tmp) / "page")
+        _run(
+            [
+                "pdftoppm",
+                "-png",
+                "-r",
+                "200",
+                "-f",
+                "1",
+                "-l",
+                str(_MAX_PAGES),
+                str(path),
+                prefix,
+            ]
+        )
+        pages = sorted(Path(tmp).glob("page*.png"))
+        parts = [
+            _run(["tesseract", str(img), "stdout", "-l", _OCR_LANGS]) for img in pages
+        ]
+    return "\n".join(p.strip() for p in parts if p.strip())
+
+
+def extract_text(path: Path) -> str:
+    """The upload's extracted text, capped, or "" (never raises).
+
+    `.pdf`: pdftotext first, OCR fallback when the text layer is empty/scanned.
+    image: tesseract. Anything else: "".
+    """
+    ext = path.suffix.lower()
+    if ext == ".pdf":
+        text = _run(
+            ["pdftotext", "-layout", "-f", "1", "-l", str(_MAX_PAGES), str(path), "-"]
+        )
+        if len(text.strip()) >= _MIN_PDF_TEXT_CHARS:
+            return _cap(text)
+        return _cap(_ocr_pdf(path))
+    if ext in _IMAGE_EXTS:
+        return _cap(_run(["tesseract", str(path), "stdout", "-l", _OCR_LANGS]))
+    return ""
+
+
+def _sibling_media(companion_md: Path) -> Path | None:
+    """The upload's raw file: the companion's stem with a non-`.md` extension."""
+    for sibling in companion_md.parent.glob(f"{companion_md.stem}.*"):
+        if sibling.suffix.lower() != ".md":
+            return sibling
+    return None
+
+
+def extract_into_companion(companion_md: Path) -> bool:
+    """Extract the sibling upload's text into `companion_md`. Never raises.
+
+    Returns True when the companion was updated, False when it was already
+    extracted (idempotent), the media file is missing, or nothing was extracted.
+    """
+    try:
+        content = companion_md.read_text(encoding="utf-8")
+    except OSError as e:
+        log.error(
+            "ingest.upload_extract.read_failed", path=str(companion_md), error=str(e)
+        )
+        return False
+    if EXTRACTED_MARKER in content:
+        return False
+    media = _sibling_media(companion_md)
+    if media is None:
+        return False
+    text = extract_text(media)
+    if not text.strip():
+        return False
+    try:
+        companion_md.write_text(
+            f"{content}\n\n{EXTRACTED_MARKER}\n## Inhalt (extrahiert)\n\n{text}\n",
+            encoding="utf-8",
+        )
+    except OSError as e:
+        log.error(
+            "ingest.upload_extract.write_failed", path=str(companion_md), error=str(e)
+        )
+        return False
+    return True
+
+
+def ingest_uploads(notes_dir: str) -> int:
+    """Extract text into every upload companion missing it. Never raises.
+
+    Globs the per-resident and shared upload folders, runs
+    `extract_into_companion` on each, and returns the count updated this pass.
+    """
+    root = Path(notes_dir)
+    companions = sorted(
+        {*root.glob("users/*/uploads/*.md"), *root.glob("uploads/*.md")}
+    )
+    updated = 0
+    for companion in companions:
+        try:
+            if extract_into_companion(companion):
+                updated += 1
+        except Exception as e:  # noqa: BLE001 — one bad file must not stop the pass.
+            log.error(
+                "ingest.upload_extract.companion_failed",
+                path=str(companion),
+                error=str(e),
+            )
+    log.info("ingest.upload_extract", companions=len(companions), updated=updated)
+    return updated

@@ -6315,9 +6315,31 @@
         var body = document.createElement("div");
         body.className = "md";
         body.innerHTML = renderReply(stripFrontmatter(note.content || ""));
+        // Turn an Obsidian embed of the uploaded original (`![[file.pdf]]`, any
+        // non-`.md` target) into a real download link — the `![[..]]` syntax is
+        // not a usable link in the web UI, but `/api/uploads/<file>` is.
+        linkifyUploadEmbeds(body);
         linkifyWikiLinks(body);
         renderMermaidIn(body);
         card.appendChild(body);
+      }
+
+      // Replace `![[file.ext]]` embeds of a non-`.md` upload with a clickable
+      // anchor to the owner-scoped download route, opened in a new tab.
+      function linkifyUploadEmbeds(rootEl) {
+        if (!rootEl || rootEl.innerHTML.indexOf("![[") === -1) return;
+        rootEl.innerHTML = rootEl.innerHTML.replace(
+          /!\[\[([^\[\]|]+?)\]\]/g,
+          function (whole, file) {
+            var name = file.trim();
+            if (/\.md$/i.test(name)) return whole;
+            var href = "/api/uploads/" + encodeURIComponent(name);
+            return (
+              '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' +
+              "📎 Original öffnen</a>"
+            );
+          }
+        );
       }
 
       // Inline editor (#698): a monospace textarea over the full source (incl.

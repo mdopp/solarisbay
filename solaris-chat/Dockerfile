@@ -5,6 +5,10 @@ WORKDIR /app
 COPY pyproject.toml README.md /app/
 COPY src /app/src
 
+# Upload text extraction: pdftotext/pdftoppm (poppler) for born-digital PDFs,
+# tesseract (deu+eng) for scanned PDFs and images.
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-deu tesseract-ocr-eng && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir /app
 
 # The Solaris release version, injected at build time (the git tag/ref, see

@@ -61,6 +61,7 @@ from solaris_chat.engine.client import (
     current_uid,
 )
 from solaris_chat.engine import vram
+from solaris_chat.engine.ingest.upload_extract import extract_into_companion
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.notify import emit_chat, inject
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
@@ -4181,6 +4182,14 @@ def build_app(
             dest.write_bytes(bytes(data))
             rel_file = str(dest.relative_to(Path(notes_dir).resolve()))
             note_rel = _write_upload_note(notes_dir, uid, dest, mime)
+            # Extract the document's text into the companion body off the request
+            # path: pdftotext/OCR is slow, so run it in a thread and don't
+            # await it — the HTTP response returns immediately; the nightly ingest
+            # re-runs it idempotently if this one is lost to a restart.
+            companion = Path(notes_dir).resolve() / note_rel
+            asyncio.get_event_loop().run_in_executor(
+                None, extract_into_companion, companion
+            )
             results.append({"ok": True, "id": rel_file, "url": f"/notes/{rel_file}"})
             log.info(
                 "napi.upload.stored", uid=uid, file=rel_file, note=note_rel, mime=mime
@@ -4190,6 +4199,27 @@ def build_app(
         if len(results) == 1:
             return web.json_response(results[0])
         return web.json_response({"ok": True, "files": results})
+
+    async def upload_download(request: web.Request) -> web.StreamResponse:
+        """Serve the caller's own uploaded original for the `📎 Original öffnen`
+        link. Owner-scoped: only the current resident's `uploads/` folder,
+        with a path-jail so `..` / a cross-resident target is rejected."""
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        base = (
+            Path(notes_dir)
+            if uid == notes_search.SHARED_UID
+            else Path(notes_dir) / "users" / uid
+        )
+        uploads_dir = (base / _UPLOAD_SUBDIR).resolve()
+        resolved = (uploads_dir / request.match_info["path"]).resolve()
+        if (
+            not str(resolved).startswith(str(uploads_dir) + os.sep)
+            or not resolved.is_file()
+        ):
+            return web.json_response({"ok": False, "error": "not found"}, status=404)
+        return web.FileResponse(resolved)
 
     async def pair_device_page(request: web.Request) -> web.Response:
         """Authelia-gated confirm page for pairing a native Android client (#751).
@@ -4942,6 +4972,9 @@ def build_app(
     # a Takeout `.zip` from the web app. No `native(...)` wrapper — the device-token
     # gate is only for the proxy-bypassed `/napi/` prefix.
     app.router.add_post("/api/upload", napi_upload)
+    # Serve the caller's own uploaded originals for the note `📎 Original öffnen`
+    # link — owner-scoped, path-jailed.
+    app.router.add_get("/api/uploads/{path:.*}", upload_download)
     # Import job status (#869 P4b): the Notizen import section polls this to show
     # live progress + re-attach to a running import after a reload (owner-scoped).
     app.router.add_get("/api/import/status", import_status)
