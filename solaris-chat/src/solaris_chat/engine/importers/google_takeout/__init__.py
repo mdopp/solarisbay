@@ -88,3 +88,33 @@ class _GoogleTakeoutStub:
 
 
 register("google_takeout", _GoogleTakeoutStub())
+
+
+def _register_kinds() -> None:
+    """Register the per-datatype importer kinds.
+
+    Imported at the bottom (after ``register``/``ImportPlan`` are defined) so the
+    submodule's ``from .. import ImportPlan`` resolves without a circular import.
+    A submodule that can't import its heavy optional dep is skipped rather than
+    crashing engine import.
+    """
+    try:
+        from .importers.calendar import CalendarImporter
+    except ImportError:  # icalendar missing — kind simply unavailable.
+        pass
+    else:
+        register("calendar", CalendarImporter())
+
+    try:
+        from .importers.contacts import ContactsImporter
+    except ImportError:  # vobject missing — kind simply unavailable.
+        pass
+    else:
+        register("contacts", ContactsImporter())
+
+    from .importers.keep import KeepImporter
+
+    register("keep", KeepImporter())
+
+
+_register_kinds()

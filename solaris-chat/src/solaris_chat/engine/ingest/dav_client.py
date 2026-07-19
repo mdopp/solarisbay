@@ -20,7 +20,18 @@ from typing import Protocol
 from urllib.parse import urljoin
 from xml.etree import ElementTree as ET
 
+import re
+
 import aiohttp
+
+# Characters unsafe in a DAV resource path segment; the UID becomes the filename.
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _dav_name(uid: str) -> str:
+    """A filesystem/URL-safe, non-empty resource name from a calendar UID."""
+    cleaned = _UNSAFE_NAME.sub("-", (uid or "").strip()).strip("-.")
+    return cleaned or "item"
 
 
 @dataclass(frozen=True)
@@ -267,12 +278,14 @@ def _propfind_members(xml: str, base_url: str) -> list[tuple[str, str]]:
 
 
 class HttpDavClient:
-    """Read-only CalDAV/CardDAV reader over aiohttp (PROPFIND + GET only).
+    """CalDAV/CardDAV client over aiohttp — read-only for ingest (PROPFIND +
+    GET), with a single write path (`put_item`) for importing calendar objects.
 
     Either half is inert when its URL is unset — `iter_events` yields nothing
     without `caldav_url`, `iter_contacts` nothing without `carddav_url` — so an
-    operator can enable only calendar or only contacts. NEVER issues PUT /
-    DELETE / PROPPATCH; the source is treated as strictly read-only.
+    operator can enable only calendar or only contacts. The ingest iterators
+    never mutate the source; only `put_item` (used by the Takeout calendar
+    importer) issues a PUT.
     """
 
     def __init__(
@@ -311,6 +324,38 @@ class HttpDavClient:
             contact = parse_vcard(body, resource=resource, etag=etag)
             if contact is not None:
                 yield contact
+
+    async def put_item(
+        self,
+        collection_url: str,
+        uid: str,
+        body: str,
+        *,
+        suffix: str = ".ics",
+        content_type: str = "text/calendar; charset=utf-8",
+    ) -> str:
+        """PUT one object into a CalDAV/CardDAV collection (RFC 4791 §5.3.2).
+
+        The resource href is ``<collection_url>/<uid><suffix>``; the UID-derived
+        name makes a re-PUT of the same item overwrite rather than duplicate.
+        Defaults write a calendar object (``.ics`` / ``text/calendar``); the
+        contacts importer passes ``suffix=".vcf"`` / ``content_type="text/vcard"``
+        for a CardDAV card. Auth follows the target: CardDAV credentials for a
+        ``.vcf`` write, CalDAV otherwise. Returns the resource URL written.
+        """
+        resource_url = urljoin(
+            collection_url if collection_url.endswith("/") else collection_url + "/",
+            f"{_dav_name(uid)}{suffix}",
+        )
+        auth = self._carddav_auth if suffix == ".vcf" else self._caldav_auth
+        async with aiohttp.ClientSession(timeout=self._timeout, auth=auth) as session:
+            async with session.put(
+                resource_url,
+                data=body.encode("utf-8"),
+                headers={"Content-Type": content_type},
+            ) as resp:
+                resp.raise_for_status()
+        return resource_url
 
     async def _iter_resources(
         self, url: str, auth: aiohttp.BasicAuth | None, suffix: str

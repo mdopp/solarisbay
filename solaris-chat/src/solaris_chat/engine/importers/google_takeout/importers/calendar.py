@@ -1,14 +1,18 @@
 """Import Google Calendar ``.ics`` exports into the acting user's Radicale
-calendar collection.
+calendar collection over CalDAV.
 
 Google exports one ``.ics`` per calendar (``Takeout/Calendar/<Name>.ics``), each
 a single ``VCALENDAR`` holding many ``VEVENT``s plus the ``VTIMEZONE``s they
 reference. Radicale's storage wants one item file per calendar object, each a
 self-contained ``VCALENDAR``. So we split by ``UID`` (keeping recurrence
 overrides that share a UID together) and wrap each group in its own VCALENDAR
-carrying the source's timezones.
+carrying the source's timezones, then ``PUT`` each group to the owner's Radicale
+collection over CalDAV (RFC 4791/4918) rather than writing Radicale's on-disk
+storage — a plain authenticated write that avoids the Radicale userns-uid caveat
+(servicebay#2344/#2345). The written events are projected to OKF on the next
+nightly ``DavIngest`` run (``source="caldav"``); no new ingest code is added.
 
-Idempotent: the item filename is derived from the UID, so re-importing the same
+Idempotent: the resource href is derived from the UID, so re-importing the same
 export overwrites rather than duplicating.
 """
 
@@ -20,7 +24,8 @@ from pathlib import Path
 
 from icalendar import Calendar
 
-from .. import radicale_store
+from ....ingest.dav_client import HttpDavClient
+from .. import ImportPlan, radicale_store
 
 _PRODID = "-//solaris-import-google//Calendar//EN"
 _NS = uuid.UUID("6f1a1c2e-9b1e-4b7a-9c2d-000000000001")
@@ -104,9 +109,71 @@ def do_import(radicale_data: Path, user: str, filename: str, ics_bytes: bytes) -
     }
 
 
+async def import_to_dav(
+    client: HttpDavClient, collection_url: str, filename: str, ics_bytes: bytes
+) -> dict:
+    """PUT each event group to a Radicale CalDAV collection over HTTP.
+
+    ``collection_url`` is the owner's calendar collection URL (e.g.
+    ``https://…/dav/<user>/<calendar>/``); each UID-group is wrapped in its own
+    VCALENDAR and PUT as ``<uid>.ics``. Returns the same report shape as
+    ``do_import`` so the two write paths are interchangeable.
+    """
+    groups, timezones, total = _parse(ics_bytes)
+    name = _calendar_name(filename)
+    written = 0
+    for uid, comps in groups.items():
+        await client.put_item(collection_url, uid, _build_item(comps, timezones))
+        written += 1
+    return {
+        "type": "calendar",
+        "calendar_name": name,
+        "objects": total,
+        "written": written,
+        "target": collection_url,
+    }
+
+
 def _calendar_name(filename: str) -> str:
     base = (filename or "Kalender").rsplit("/", 1)[-1]
     for suffix in (".ical", ".ics"):
         if base.lower().endswith(suffix):
             base = base[: -len(suffix)]
     return base.strip() or "Kalender"
+
+
+class CalendarImporter:
+    """Registrable ``calendar`` importer kind.
+
+    Parses a Takeout ``.ics`` (``plan``) and PUTs each event to the owner's
+    Radicale CalDAV collection (``run``); ``DavIngest`` projects them to OKF on
+    the next nightly run. The heavy detect/plan/run job wiring (upload manifest,
+    progress) lands with the durable runner; ``run`` here carries out the CalDAV
+    write given a client + collection URL supplied in the plan.
+    """
+
+    kind = "calendar"
+
+    def detect(self, manifest) -> list[dict]:
+        return [{"kind": self.kind, "type": "calendar"}]
+
+    def plan(self, archive, selections) -> ImportPlan:
+        ics_bytes = archive["ics_bytes"]
+        filename = archive.get("filename", "")
+        return ImportPlan(
+            kind=self.kind,
+            writes=[{"filename": filename, "ics_bytes": ics_bytes}],
+            summary=preview(filename, ics_bytes),
+        )
+
+    async def run(self, plan: ImportPlan, progress) -> list[dict]:
+        client: HttpDavClient = progress["client"]
+        collection_url: str = progress["collection_url"]
+        reports = []
+        for write in plan.writes:
+            reports.append(
+                await import_to_dav(
+                    client, collection_url, write["filename"], write["ics_bytes"]
+                )
+            )
+        return reports

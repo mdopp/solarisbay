@@ -21,6 +21,8 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import ImportPlan
+
 _NS = uuid.UUID("6f1a1c2e-9b1e-4b7a-9c2d-000000000003")
 _FS_UNSAFE = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 _JSON_META = {"Labels.txt"}  # non-note files to ignore
@@ -202,3 +204,31 @@ def do_import(target: Path, files: list[tuple[str, bytes]]) -> dict:
         "attachments_missing": len(missing_attachments),
         "target": str(target),
     }
+
+
+class KeepImporter:
+    """Registrable ``keep`` importer kind.
+
+    Converts each Takeout Keep note to Obsidian Markdown (``plan``) and writes
+    the ``.md`` (+ copied attachments) into the owner's vault subtree
+    (``run``) — the injected ``target`` ``Path``, not a DAV collection. The
+    written notes are projected to OKF concepts on the next nightly
+    ``ObsidianIngest`` run; no new ingest code is added.
+    """
+
+    kind = "keep"
+
+    def detect(self, manifest) -> list[dict]:
+        return [{"kind": self.kind, "type": "keep"}]
+
+    def plan(self, archive, selections) -> ImportPlan:
+        files: list[tuple[str, bytes]] = archive["files"]
+        return ImportPlan(
+            kind=self.kind,
+            writes=[{"files": files}],
+            summary=preview(files),
+        )
+
+    def run(self, plan: ImportPlan, progress) -> list[dict]:
+        target: Path = progress["target"]
+        return [do_import(target, write["files"]) for write in plan.writes]
