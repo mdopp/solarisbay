@@ -18,6 +18,12 @@ This adds ONE token-lean `music_query` tool over that store:
     edge to the songs, return clean `canonical_name` titles (never the hash
     slug), capped + a total.
   - `op="list_artists"`: the type='band' entities, optional name prefix.
+  - `op="wishlist"`: "was anschaffen" — the acquire-list computed as a QUERY over
+    album facts (ADR 0003/0004, #879), never a materialized note: `(wishlist OR
+    used_to_love) AND NOT owned_physical AND NOT digitally-present`. Digital
+    presence is the album-exists-via-Jellyfin signal — an `on_album` edge from a
+    Jellyfin song (no separate `has_digital` fact). The producing facts land in
+    P2b/P2c/P3 (#880/#881/#868), so this returns empty until they do.
 
 Every query is per-owner scoped: `resident_uid IN (caller, 'household')` (caller
 from `uid_getter`; an unknown/voice caller is `household`, so it sees only the
@@ -63,6 +69,7 @@ class LyricsClient(Protocol):
 
 _SONG_CAP = 50
 _ARTIST_CAP = 50
+_ALBUM_CAP = 50
 
 # Cast play_media is intermittently flaky (#573 — structurally identical devices,
 # one casts, the other returns play_failed), so retry a failing play a bounded
@@ -108,11 +115,37 @@ def _band_value(okf_path: str) -> str:
     return rel
 
 
+def _album_value(okf_path: str) -> str:
+    """The `on_album`-fact value (`albums/<slug>`) an album's okf_path projects to.
+
+    An album lives at `okf/albums/<slug>.md` (shared) or
+    `users/<uid>/okf/albums/<slug>.md` (private); a song's `on_album` edge stores
+    the `okf/`-relative `albums/<slug>` (no owner prefix, no `.md`) — same shape
+    as `_band_value` for the `by` edge (#876)."""
+    return _band_value(okf_path)
+
+
 def _audio_id(resource: str) -> str:
     """The Jellyfin audio id from a song's `resource` fact
     (`jellyfin://audio/<id>` → `<id>`); empty when not a jellyfin audio URI."""
     prefix = "jellyfin://audio/"
     return resource[len(prefix) :] if resource.startswith(prefix) else ""
+
+
+def _album_is_digital(conn, album_value: str, caller: str) -> bool:
+    """Whether the album is digitally present — the ADR-0003 album-exists signal.
+
+    True iff a Jellyfin-projected song links to it via `on_album → albums/<slug>`
+    (`album_value`). Scoped to the caller (resident_uid IN (caller, household)) so
+    another resident's digital copy never suppresses this caller's wishlist. No
+    separate `has_digital` fact exists — presence of the on_album edge IS it."""
+    row = conn.execute(
+        "SELECT 1 FROM facts f JOIN entities e ON e.id = f.subject_entity_id"
+        " WHERE f.predicate = 'on_album' AND f.value = ?"
+        " AND e.type = 'song' AND e.resident_uid IN (?, ?) LIMIT 1",
+        (album_value, caller, projection.SHARED_UID),
+    ).fetchone()
+    return row is not None
 
 
 def _song_audio_id(conn, song_id: str, caller: str) -> str:
@@ -388,9 +421,51 @@ def build_music_query_tools(
         finally:
             conn.close()
 
+    async def wishlist(limit: int) -> str:
+        # "Was anschaffen": albums to acquire = (wishlist OR used_to_love) AND NOT
+        # digitally present AND NOT owned_physical (ADR 0004). Digital presence is
+        # the album-exists-via-Jellyfin signal (ADR 0003): an album is digitally
+        # present iff a Jellyfin-projected song links to it via `on_album →
+        # albums/<slug>` — no redundant `has_digital` fact is written. Per-owner
+        # scoped (resident_uid IN (caller, household)) so one resident's wishlist
+        # never leaks another's.
+        caller = _caller()
+        conn = projection.open_conn(db_path)
+        try:
+            albums = conn.execute(
+                "SELECT id, canonical_name FROM entities"
+                " WHERE type = 'album' AND resident_uid IN (?, ?)"
+                " ORDER BY canonical_name",
+                (caller, projection.SHARED_UID),
+            ).fetchall()
+            acquire: list[str] = []
+            for album in albums:
+                preds = {
+                    f["predicate"]
+                    for f in projection.entity_facts(conn, album["id"], caller)
+                }
+                wanted = "wishlist" in preds or "used_to_love" in preds
+                if not wanted or "owned_physical" in preds:
+                    continue
+                okf_path = projection.entity_okf_path(conn, album["id"])
+                if okf_path is not None and _album_is_digital(
+                    conn, _album_value(okf_path), caller
+                ):
+                    continue
+                acquire.append(album["canonical_name"])
+            return json.dumps(
+                {"total": len(acquire), "albums": acquire[:limit]},
+                ensure_ascii=False,
+            )
+        finally:
+            conn.close()
+
     async def music_query(args: dict[str, Any]) -> str:
         op = str(args.get("op") or "").strip()
         limit = args.get("limit")
+        if op == "wishlist":
+            cap = int(limit) if isinstance(limit, int) and limit > 0 else _ALBUM_CAP
+            return await wishlist(min(cap, _ALBUM_CAP))
         if op == "songs_by_artist":
             cap = int(limit) if isinstance(limit, int) and limit > 0 else _SONG_CAP
             return await songs_by_artist(
@@ -410,7 +485,7 @@ def build_music_query_tools(
         return json.dumps(
             {
                 "error": "op must be songs_by_artist, list_artists,"
-                " artist_info or song_lyrics"
+                " artist_info, song_lyrics or wishlist"
             },
             ensure_ascii=False,
         )
@@ -694,7 +769,9 @@ def build_music_query_tools(
                 " habe ich. op='list_artists' (optional prefix): welche Künstler"
                 " habe ich. op='artist_info' (artist): Genre, Kurzbio, Songanzahl."
                 " op='song_lyrics' (title, optional artist): der Liedtext, live aus"
-                " der Bibliothek. Exakter Treffer gewinnt, sonst unscharf."
+                " der Bibliothek. op='wishlist': welche Alben soll ich mir noch"
+                " anschaffen (gewollt/früher geliebt, aber weder digital noch"
+                " physisch da). Exakter Treffer gewinnt, sonst unscharf."
             ),
             parameters={
                 "type": "object",
@@ -706,6 +783,7 @@ def build_music_query_tools(
                             "list_artists",
                             "artist_info",
                             "song_lyrics",
+                            "wishlist",
                         ],
                     },
                     "artist": {"type": "string"},

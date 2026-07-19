@@ -215,7 +215,9 @@ def test_artist_enrichment_survives_prior_bare_track_write(env):
     assert facts == {"genre", "bio"}
 
 
-def test_track_maps_to_song_with_metadata_and_by_edge(env):
+def test_track_maps_to_projection_only_song_with_by_edge(env):
+    # A song is projection-only (ADR 0002/0005): an entity + facts, NO per-song
+    # OKF markdown. Its `by`/`on_album`/`resource` live as facts, not a file.
     writer, db_path, tmp_path = env
     stats = _run(FakeJellyfinMusicClient([_track()]), writer)
     assert stats.songs_written == 1
@@ -224,14 +226,26 @@ def test_track_maps_to_song_with_metadata_and_by_edge(env):
     conn = projection.open_conn(db_path)
     song = conn.execute("SELECT * FROM entities WHERE type = 'song'").fetchone()
     assert song["canonical_name"] == "Bohemian Rhapsody"
-    edge = conn.execute("SELECT * FROM facts WHERE predicate = 'by'").fetchone()
-    assert edge is not None
+    facts = {
+        r["predicate"]: r["value"]
+        for r in conn.execute(
+            "SELECT predicate, value FROM facts WHERE subject_entity_id = ?",
+            (song["id"],),
+        )
+    }
     conn.close()
-    song_text = next((tmp_path / "notes" / "okf" / "songs").glob("*.md")).read_text()
-    assert "resource: jellyfin://audio/t1" in song_text
-    assert "artist: Queen" in song_text
-    assert "genre: Rock" in song_text
-    assert "year: '1975'" in song_text or "year: 1975" in song_text
+    assert facts["by"] == "bands/queen"
+    assert facts["on_album"].startswith("albums/")
+    assert facts["resource"] == "jellyfin://audio/t1"
+    # No per-song markdown and no `concepts` link row for the song.
+    assert not (tmp_path / "notes" / "okf" / "songs").exists()
+    conn = projection.open_conn(db_path)
+    song_concepts = conn.execute(
+        "SELECT COUNT(*) FROM concepts c JOIN entities e ON c.ref_id = e.id"
+        " WHERE e.type = 'song'"
+    ).fetchone()[0]
+    conn.close()
+    assert song_concepts == 0
 
 
 def test_track_without_artist_writes_song_without_band(env):
@@ -285,8 +299,14 @@ def test_private_library_writes_under_owner_path(env):
     scopes = {r[0] for r in conn.execute("SELECT DISTINCT resident_uid FROM entities")}
     assert scopes == {"cdopp"}
     conn.close()
-    # cdopp's concepts live under her private path, not the shared okf/ root.
-    assert list((tmp_path / "notes" / "users" / "cdopp" / "okf" / "songs").glob("*.md"))
+    # cdopp's materialized concepts (album/artist — songs are projection-only)
+    # live under her private path, not the shared okf/ root.
+    assert list(
+        (tmp_path / "notes" / "users" / "cdopp" / "okf" / "albums").glob("*.md")
+    )
+    assert not (tmp_path / "notes" / "okf" / "albums").exists()
+    # Songs never materialize markdown at all (projection-only).
+    assert not (tmp_path / "notes" / "users" / "cdopp" / "okf" / "songs").exists()
     assert not (tmp_path / "notes" / "okf" / "songs").exists()
 
 
@@ -321,8 +341,11 @@ def test_shared_and_private_libraries_split_by_owner(env):
     )
     assert rows == {"Shared": "household", "Private": "cdopp"}
     conn.close()
-    assert (tmp_path / "notes" / "okf" / "songs").exists()
-    assert (tmp_path / "notes" / "users" / "cdopp" / "okf" / "songs").exists()
+    # Songs are projection-only; the materialized markdown split is on albums.
+    assert (tmp_path / "notes" / "okf" / "albums").exists()
+    assert (tmp_path / "notes" / "users" / "cdopp" / "okf" / "albums").exists()
+    assert not (tmp_path / "notes" / "okf" / "songs").exists()
+    assert not (tmp_path / "notes" / "users" / "cdopp" / "okf" / "songs").exists()
 
 
 def test_band_in_both_libraries_stays_shared(env):
@@ -343,6 +366,164 @@ def test_band_in_both_libraries_stays_shared(env):
     ).fetchone()
     assert band["resident_uid"] == "household"
     conn.close()
+
+
+# --- album as a first-class entity (#876) ------------------------------------
+
+
+def test_track_writes_album_entity_and_join_facts(env):
+    # A track projects an `album` entity plus the two join facts: song→on_album→
+    # album and album→by→artist (the band node, reused, not a parallel artist).
+    writer, db_path, tmp_path = env
+    stats = _run(FakeJellyfinMusicClient([_track()]), writer)
+    assert stats.albums_written == 1
+    conn = projection.open_conn(db_path)
+    album = conn.execute("SELECT * FROM entities WHERE type = 'album'").fetchone()
+    assert album is not None
+    # canonical_name carries the artist so the dedup key is (artist, album).
+    assert album["canonical_name"] == "Queen – A Night at the Opera"
+    song = conn.execute("SELECT id FROM entities WHERE type = 'song'").fetchone()
+    on_album = conn.execute(
+        "SELECT value FROM facts WHERE predicate = 'on_album' AND subject_entity_id = ?",
+        (song["id"],),
+    ).fetchone()
+    assert on_album is not None and on_album["value"].startswith("albums/")
+    album_by = conn.execute(
+        "SELECT value FROM facts WHERE predicate = 'by' AND subject_entity_id = ?",
+        (album["id"],),
+    ).fetchone()
+    assert album_by is not None and album_by["value"] == "bands/queen"
+    conn.close()
+    # source=jellyfin on every projected fact.
+    conn = projection.open_conn(db_path)
+    srcs = {r[0] for r in conn.execute("SELECT DISTINCT source FROM facts")}
+    conn.close()
+    assert srcs == {"jellyfin"}
+    assert (
+        tmp_path / "notes" / "okf" / "albums" / "queen-a-night-at-the-opera.md"
+    ).is_file()
+
+
+def test_album_and_artist_keep_markdown_and_embedding_song_does_not(env):
+    # ADR 0005: the RAG surface for the library is album/artist, so those keep a
+    # markdown file AND an embedding enqueue; the song (projection-only) gets
+    # neither. Prove the enqueue granularity via a spy queue.
+    _, db_path, tmp_path = env
+
+    class _SpyQueue:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def enqueue(self, *, concept_id, embedding_id, text):
+            self.calls.append(concept_id)
+            return embedding_id
+
+    spy = _SpyQueue()
+    writer = OkfWriter(
+        db_path=db_path, notes_dir=str(tmp_path / "notes"), embedding_queue=spy
+    )
+    _run(FakeJellyfinMusicClient([_track()]), writer)
+
+    conn = projection.open_conn(db_path)
+    ids_by_type = {
+        r["type"]: r["id"] for r in conn.execute("SELECT id, type FROM entities")
+    }
+    conn.close()
+    # Album + artist(band) were enqueued for embedding; the song was NOT.
+    assert ids_by_type["album"] in spy.calls
+    assert ids_by_type["band"] in spy.calls
+    assert ids_by_type["song"] not in spy.calls
+    # And only the RAG-worthy nodes materialized markdown (no songs/ dir).
+    assert (tmp_path / "notes" / "okf" / "albums").is_dir()
+    assert (tmp_path / "notes" / "okf" / "bands").is_dir()
+    assert not (tmp_path / "notes" / "okf" / "songs").exists()
+
+
+def test_album_dedups_across_tracks_and_reingest(env):
+    # Two tracks from the same album -> ONE album node; re-ingesting the same
+    # catalog creates NO duplicate album (dedup on artist+title).
+    writer, db_path, _ = env
+    t1 = _track(id="t1", name="One", changed="c1")
+    t2 = _track(id="t2", name="Two", changed="c2")
+    stats = _run(FakeJellyfinMusicClient([t1, t2]), writer)
+    assert stats.albums_written == 1
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'album'").fetchone()[0]
+        == 1
+    )
+    conn.close()
+    # Re-ingest: no new album node.
+    _run(FakeJellyfinMusicClient([t1, t2]), writer)
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'album'").fetchone()[0]
+        == 1
+    )
+    conn.close()
+
+
+def test_same_album_title_different_artists_are_distinct(env):
+    # Two artists with an identically titled album must NOT merge into one node.
+    writer, db_path, _ = env
+    a = _track(id="a1", name="X", artist="Queen", album="Greatest Hits")
+    b = _track(id="b1", name="Y", artist="Abba", album="Greatest Hits")
+    _run(FakeJellyfinMusicClient([a, b]), writer)
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'album'").fetchone()[0]
+        == 2
+    )
+    conn.close()
+
+
+def test_track_without_album_writes_no_album(env):
+    writer, db_path, _ = env
+    _run(FakeJellyfinMusicClient([_track(album="")]), writer)
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'album'").fetchone()[0]
+        == 0
+    )
+    conn.close()
+
+
+def test_album_in_both_libraries_stays_shared(env):
+    # Like bands: an album appearing in a shared AND a private library stays
+    # household (shared albums stay shared).
+    writer, db_path, _ = env
+    client = FakeJellyfinMusicClient(
+        libraries=[("lib-s", "Music"), ("lib-c", "Music (cdopp)")],
+        by_library={
+            "lib-s": [_track(id="s1", name="Shared Hit", artist="Queen")],
+            "lib-c": [_track(id="c1", name="Private Take", artist="Queen")],
+        },
+    )
+    _run(client, writer, library_owners={"Music (cdopp)": "cdopp"})
+    conn = projection.open_conn(db_path)
+    album = conn.execute(
+        "SELECT resident_uid FROM entities WHERE type = 'album'"
+    ).fetchone()
+    assert album["resident_uid"] == "household"
+    conn.close()
+
+
+def test_private_library_album_scoped_to_owner(env):
+    writer, db_path, _ = env
+    client = FakeJellyfinMusicClient(
+        libraries=[("lib-c", "Music (cdopp)")],
+        by_library={"lib-c": [_track(id="t1", name="Geheim", artist="Adele")]},
+    )
+    _run(client, writer, library_owners={"Music (cdopp)": "cdopp"})
+    conn = projection.open_conn(db_path)
+    scopes = {
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT resident_uid FROM entities WHERE type = 'album'"
+        )
+    }
+    conn.close()
+    assert scopes == {"cdopp"}
 
 
 # --- idempotent --------------------------------------------------------------
@@ -555,15 +736,16 @@ def test_empty_slug_name_is_captured_via_item_id(env):
     stats = _run(FakeJellyfinMusicClient([bad, ok]), writer, library_owners=None)
     assert stats.items == 2 and stats.skipped == 0 and stats.songs_written == 2
     conn = projection.open_conn(db_path)
-    assert (
-        conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'song'").fetchone()[0]
-        == 2
-    )
+    # The empty-name track is captured under an id-based fallback slug at the
+    # _write_song throw site (the `item-<id>-<id>` form), not lost to a
+    # ValueError; both songs become projection rows (no per-song markdown).
+    rows = {
+        r["canonical_name"]: r["source"]
+        for r in conn.execute("SELECT canonical_name, source FROM entities")
+    }
     conn.close()
-    # The empty-name track is reachable under an id-based fallback slug at the
-    # _write_song throw site (the `item-<id>-<id>` form), not lost to a ValueError.
-    song_files = {p.name for p in (tmp_path / "notes" / "okf" / "songs").glob("*.md")}
-    assert "item-bad-bad.md" in song_files
+    assert rows["王芳"] == "jellyfin" and rows["Good Song"] == "jellyfin"
+    assert not (tmp_path / "notes" / "okf" / "songs").exists()
 
 
 def test_empty_slug_artist_band_and_by_edge_share_id_slug(env):

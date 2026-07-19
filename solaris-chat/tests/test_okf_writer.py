@@ -235,6 +235,71 @@ def test_projection_rows_and_concept_link(env):
     conn.close()
 
 
+# --- projection-only policy (ADR 0002/0005) ----------------------------------
+
+
+def test_projection_only_writes_no_markdown_no_embedding(env):
+    # An externally re-ingestable per-item concept (projection_only=True) lives
+    # ONLY as an entity + facts + ingest_log: no OKF markdown file, no embedding
+    # enqueue, and no cross-layer `concepts` link row.
+    writer, db_path, tmp_path = env
+    rec = ConceptRecord(
+        type="song",
+        title="Bohemian Rhapsody",
+        source="jellyfin",
+        external_id="audio/t1",
+        resource="jellyfin://audio/t1",
+        relationships=[Relationship("on_album", "albums/queen-a-night-at-the-opera")],
+        projection_only=True,
+    )
+    res = writer.write_concept(rec, ingesting_uid="household")
+    assert res.skipped is False
+    assert res.embedded is False
+    assert res.okf_path == ""
+    conn = projection.open_conn(db_path)
+    # The entity + its on_album fact + the idempotency marker are projected.
+    assert projection.row_count(conn, "entities") == 1
+    fact = conn.execute("SELECT * FROM facts WHERE predicate = 'on_album'").fetchone()
+    assert fact is not None and fact["value"] == "albums/queen-a-night-at-the-opera"
+    assert projection.row_count(conn, "ingest_log") == 1
+    # No concepts link row (it would point at a file/embedding that don't exist).
+    assert projection.row_count(conn, "concepts") == 0
+    conn.close()
+    # No markdown materialized anywhere under the vault.
+    assert not list((tmp_path / "notes").rglob("*.md"))
+    # No embedding was enqueued.
+    queue_file = tmp_path / "okf_embedding_queue.jsonl"
+    assert not queue_file.exists() or not queue_file.read_text().strip()
+
+
+def test_projection_only_reingest_unchanged_is_skipped(env):
+    # Idempotency still holds via the ingest_log marker even with no concepts row.
+    writer, db_path, _ = env
+    rec = ConceptRecord(
+        type="song",
+        title="Song",
+        source="jellyfin",
+        external_id="audio/t1",
+        projection_only=True,
+    )
+    first = writer.write_concept(rec, ingesting_uid="household")
+    second = writer.write_concept(
+        ConceptRecord(
+            type="song",
+            title="Song",
+            source="jellyfin",
+            external_id="audio/t1",
+            projection_only=True,
+        ),
+        ingesting_uid="household",
+    )
+    assert first.skipped is False and second.skipped is True
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 1
+    assert projection.row_count(conn, "ingest_log") == 1
+    conn.close()
+
+
 # --- idempotency -------------------------------------------------------------
 
 
