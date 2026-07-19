@@ -512,6 +512,28 @@ def legacy_projection_only_events(
     return [dict(r) for r in rows]
 
 
+def delete_note_by_okf_path(conn: sqlite3.Connection, okf_path: str) -> None:
+    """Fully delete the note projected at `okf_path`: its `concepts` row, the
+    `okf_vectors` embedding, and (for an entity-backed note) the entity + its
+    facts. A raw file with no projection (e.g. a radio preference) has no row —
+    then this is a no-op and the caller's file unlink is the whole delete."""
+    row = conn.execute(
+        "SELECT id AS cid, ref_id, ref_kind, embedding_id FROM concepts"
+        " WHERE okf_path = ?",
+        (okf_path,),
+    ).fetchone()
+    if row is None:
+        return
+    if row["embedding_id"]:
+        conn.execute(
+            "DELETE FROM okf_vectors WHERE embedding_id = ?", (row["embedding_id"],)
+        )
+    conn.execute("DELETE FROM concepts WHERE id = ?", (row["cid"],))
+    if row["ref_kind"] == "entity":
+        conn.execute("DELETE FROM facts WHERE subject_entity_id = ?", (row["ref_id"],))
+        conn.execute("DELETE FROM entities WHERE id = ?", (row["ref_id"],))
+
+
 def rekey_event(conn: sqlite3.Connection, *, old_id: str, new_id: str) -> None:
     """Re-point an event row + its `event_entities` from old_id to new_id.
 

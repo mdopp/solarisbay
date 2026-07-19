@@ -34,6 +34,9 @@ _SOURCE = "jellyfin"
 _MUSIC_DOMAINS = (("song", "songs"), ("album", "albums"), ("band", "bands"))
 _PHOTO_SOURCE = "immich"
 _PHOTO_KIND = "photo"
+# Where empty note/journal/preference shells accumulate (never the externally
+# sourced music/photo domains — those are handled above and carry no prose).
+_NOTE_SHELL_DIRS = ("okf/notes", "journal", "preferences")
 
 
 def prune_legacy_music_artifacts(db_path: str, notes_dir: str) -> int:
@@ -138,4 +141,46 @@ def prune_legacy_photo_artifacts(db_path: str, notes_dir: str) -> int:
         return pruned
     except Exception as e:  # noqa: BLE001 — the prune must never crash the ingest.
         log.error("engine.prune.legacy_photos_failed", error=str(e))
+        return 0
+
+
+def prune_empty_note_shells(db_path: str, notes_dir: str) -> int:
+    """Delete empty note/journal/preference shells; return the count pruned.
+
+    A shell is a markdown file that is only frontmatter, headings, and `—`
+    placeholders (an untouched daily-chronicle template, a title-only agent
+    "Internal log: …", a bare preference stub) — noise, not knowledge. Removes
+    the file, its FTS row, and any projection (concepts / embedding / note
+    entity + facts). The note writer now rejects these at the source; this
+    cleans up the ones already on disk. Idempotent. Never raises."""
+    try:
+        root = Path(notes_dir)
+        conn = projection.open_conn(db_path)
+        notes_index.ensure_schema(conn)
+        pruned = 0
+        try:
+            bases: list[Path] = []
+            for d in _NOTE_SHELL_DIRS:
+                bases.append(root / d)
+                bases.extend(root.glob(f"users/*/{d}"))
+            for base in bases:
+                if not base.is_dir():
+                    continue
+                for md in base.rglob("*.md"):
+                    text = md.read_text(encoding="utf-8", errors="ignore")
+                    if not okf.is_empty_note_shell(text):
+                        continue
+                    rel = str(md.relative_to(root))
+                    md.unlink(missing_ok=True)
+                    notes_index._delete_row(conn, rel)
+                    projection.delete_note_by_okf_path(conn, rel)
+                    pruned += 1
+            conn.commit()
+        finally:
+            conn.close()
+        if pruned:
+            log.info("engine.prune.empty_notes", pruned=pruned)
+        return pruned
+    except Exception as e:  # noqa: BLE001 — the prune must never crash the ingest.
+        log.error("engine.prune.empty_notes_failed", error=str(e))
         return 0

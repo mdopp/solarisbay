@@ -21,7 +21,7 @@ import numpy as np
 
 from solaris_chat import notes_index, notes_search
 from solaris_chat.engine.fuzzy import fuzzy_score, tokens
-from solaris_chat.engine.knowledge import projection
+from solaris_chat.engine.knowledge import okf, projection
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.tools import Tool
 from solaris_chat.logging import log
@@ -356,8 +356,14 @@ def build_notes_tools(
     async def write(args: dict[str, Any]) -> str:
         rel = str(args.get("path") or "").strip().lstrip("/")
         content = str(args.get("content") or "")
-        if not rel.endswith(".md") or not content.strip():
-            return '{"error": "path must end in .md and content must be non-empty"}'
+        if not rel.endswith(".md"):
+            return '{"error": "path must end in .md"}'
+        # Reject empty shells (#<n>): a note that is only frontmatter, headings,
+        # and `—` placeholders (an untouched daily-chronicle template, or a
+        # title-only agent "Internal log: …") is noise, not knowledge. An append
+        # of nothing-new is likewise a no-op error.
+        if okf.is_empty_note_shell(content):
+            return '{"error": "note has no real content (only frontmatter/headings/placeholders) — nothing written"}'
         # Private-by-default (#576): a real resident's writes ALWAYS land inside
         # their own `users/<owner>/` subtree — a model-supplied `users/<other>/x`
         # or a `../<other>/x` traversal must never reach another resident's space.

@@ -21,6 +21,35 @@ _REL_ARROW = "→"
 _SHARED_RESIDENT = "household"
 
 
+_PLACEHOLDER_CHARS = frozenset("-–—*_ \t")
+
+
+def is_empty_note_shell(content: str) -> bool:
+    """True when `content` carries no real prose — only frontmatter, markdown
+    headings, and empty-section placeholders (`—`, `-`, `***`).
+
+    The daily-chronicle template leaves untouched sections as `—`, and agent
+    cron sessions sometimes write title-only "Internal log: …" notes; both are
+    empty shells, not knowledge. This predicate guards the note writer against
+    creating them and drives the one-shot prune that deletes the existing ones."""
+    text = content.strip()
+    if not text:
+        return True
+    # Drop a leading YAML frontmatter block, then judge the body.
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            text = parts[2].strip()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):  # blank or a heading (scaffolding)
+            continue
+        if set(line) <= _PLACEHOLDER_CHARS:  # dashes / rules / bullets only
+            continue
+        return False  # a real content line
+    return True
+
+
 def deterministic_id(rel_path: str) -> str:
     """A stable 32-hex id derived from the (deterministic) OKF path.
 
