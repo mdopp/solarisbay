@@ -33,9 +33,9 @@ from typing import Any
 from solaris_chat.logging import log
 
 # The importer registry vendored in #863 — the set of kinds a job may dispatch
-# to. Imported for the registered-kind lookup; kinds are wired to runners in
-# #868.
+# to. Imported for the registered-kind lookup.
 from .google_takeout import REGISTRY as IMPORTER_REGISTRY
+from .google_takeout.importers.music import _music_runner_factory
 
 
 _PROGRESS_KEYS = ("pct", "message", "stage", "done", "total")
@@ -57,6 +57,12 @@ def runner(kind: str):
         return fn
 
     return deco
+
+
+# The YouTube-Music import kind (#868): its factory-builder lives in the importer
+# module (it owns the album-fact write path); register it here so `start`/`resume`
+# dispatch it like any other durable job kind.
+runner("music")(_music_runner_factory)
 
 
 def registered_kind(kind: str) -> bool:
