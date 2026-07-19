@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.0](https://github.com/mdopp/solarisbay/compare/v0.29.0...v0.30.0) (2026-07-19)
+
+
+### Features
+
+* **chat:** prune vault noise — projection-only photos/albums/bands + empty-shell guard + data-driven Notizen doorways ([#895](https://github.com/mdopp/solarisbay/issues/895)) ([b2c4311](https://github.com/mdopp/solarisbay/commit/b2c4311cbe4a4f7be04f9ddb2729f22128c2873f))
+
 ## [0.29.0](https://github.com/mdopp/solarisbay/compare/v0.28.4...v0.29.0) (2026-07-19)
 
 
