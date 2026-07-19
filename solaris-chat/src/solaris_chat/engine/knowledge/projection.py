@@ -458,6 +458,40 @@ def events_between(
     return [dict(r) for r in rows]
 
 
+# --- P1c prune (ADR 0002/B7): drop legacy per-song OKF artifacts ---------------
+
+
+def legacy_projection_only_concepts(
+    conn: sqlite3.Connection, *, source: str, type: str
+) -> list[dict[str, Any]]:
+    """The pre-P1b per-item artifacts for a now-projection-only (source, type).
+
+    A projection-only concept (#877) carries NO `concepts` link row, so a `song`
+    entity that still has one is a stale pre-switch artifact. Returns one row per
+    such concept — its entity id, `concepts.id`, `okf_path`, and `embedding_id` —
+    for the caller to delete file + FTS + rows. After the caller's delete pass the
+    join finds nothing, so a second run is a no-op (idempotent)."""
+    rows = conn.execute(
+        "SELECT c.id AS concept_id, c.ref_id AS entity_id, c.okf_path AS okf_path,"
+        " c.embedding_id AS embedding_id"
+        " FROM concepts c JOIN entities e ON e.id = c.ref_id"
+        " WHERE c.ref_kind = 'entity' AND e.type = ? AND e.source = ?",
+        (type, source),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_concept_artifacts(
+    conn: sqlite3.Connection, *, concept_id: str, embedding_id: str | None
+) -> None:
+    """Delete the `concepts` link row + its `okf_vectors` embedding, keeping the
+    entity + its facts (so a pruned concept matches a fresh projection-only one).
+    The caller unlinks the markdown file + FTS row and commits."""
+    if embedding_id:
+        conn.execute("DELETE FROM okf_vectors WHERE embedding_id = ?", (embedding_id,))
+    conn.execute("DELETE FROM concepts WHERE id = ?", (concept_id,))
+
+
 def open_conn(db_path: str) -> sqlite3.Connection:
     return _conn(db_path)
 
