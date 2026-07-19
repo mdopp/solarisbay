@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.4](https://github.com/mdopp/solarisbay/compare/v0.28.3...v0.28.4) (2026-07-19)
+
+
+### Performance Improvements
+
+* **chat:** serve Notizen overview + stats from solaris.db, not vault scans ([d020208](https://github.com/mdopp/solarisbay/commit/d02020861b391b551d7239e983cb39b9ca309b88))
+* **chat:** serve Notizen overview + stats from solaris.db, not vault scans ([32ad57c](https://github.com/mdopp/solarisbay/commit/32ad57c7644dc97af73d3b6ae670dd5e5251616e))
+
 ## [0.28.3](https://github.com/mdopp/solarisbay/compare/v0.28.2...v0.28.3) (2026-07-19)
 
 
