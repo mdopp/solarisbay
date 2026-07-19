@@ -101,8 +101,16 @@ def _register_kinds() -> None:
     try:
         from .importers.calendar import CalendarImporter
     except ImportError:  # icalendar missing — kind simply unavailable.
-        return
-    register("calendar", CalendarImporter())
+        pass
+    else:
+        register("calendar", CalendarImporter())
+
+    try:
+        from .importers.contacts import ContactsImporter
+    except ImportError:  # vobject missing — kind simply unavailable.
+        pass
+    else:
+        register("contacts", ContactsImporter())
 
 
 _register_kinds()

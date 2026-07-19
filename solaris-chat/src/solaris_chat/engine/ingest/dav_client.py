@@ -325,24 +325,34 @@ class HttpDavClient:
             if contact is not None:
                 yield contact
 
-    async def put_item(self, collection_url: str, uid: str, ics_text: str) -> str:
-        """PUT one calendar object into a CalDAV collection (RFC 4791 §5.3.2).
+    async def put_item(
+        self,
+        collection_url: str,
+        uid: str,
+        body: str,
+        *,
+        suffix: str = ".ics",
+        content_type: str = "text/calendar; charset=utf-8",
+    ) -> str:
+        """PUT one object into a CalDAV/CardDAV collection (RFC 4791 §5.3.2).
 
-        The resource href is ``<collection_url>/<uid>.ics``; the UID-derived name
-        makes a re-PUT of the same event overwrite rather than duplicate. Returns
-        the resource URL that was written.
+        The resource href is ``<collection_url>/<uid><suffix>``; the UID-derived
+        name makes a re-PUT of the same item overwrite rather than duplicate.
+        Defaults write a calendar object (``.ics`` / ``text/calendar``); the
+        contacts importer passes ``suffix=".vcf"`` / ``content_type="text/vcard"``
+        for a CardDAV card. Auth follows the target: CardDAV credentials for a
+        ``.vcf`` write, CalDAV otherwise. Returns the resource URL written.
         """
         resource_url = urljoin(
             collection_url if collection_url.endswith("/") else collection_url + "/",
-            f"{_dav_name(uid)}.ics",
+            f"{_dav_name(uid)}{suffix}",
         )
-        async with aiohttp.ClientSession(
-            timeout=self._timeout, auth=self._caldav_auth
-        ) as session:
+        auth = self._carddav_auth if suffix == ".vcf" else self._caldav_auth
+        async with aiohttp.ClientSession(timeout=self._timeout, auth=auth) as session:
             async with session.put(
                 resource_url,
-                data=ics_text.encode("utf-8"),
-                headers={"Content-Type": "text/calendar; charset=utf-8"},
+                data=body.encode("utf-8"),
+                headers={"Content-Type": content_type},
             ) as resp:
                 resp.raise_for_status()
         return resource_url
