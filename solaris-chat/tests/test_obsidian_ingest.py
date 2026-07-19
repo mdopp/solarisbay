@@ -292,6 +292,173 @@ def test_one_failing_note_skips_and_the_rest_still_ingest(env):
     ).is_file()
 
 
+# --- physical-collection note -> album facts (#880) --------------------------
+
+
+def _physical(**fm) -> VaultNote:
+    """A physical-media note: type in frontmatter, artist/album/medium/... in the
+    injected `frontmatter` map, and the sleeve photo `![[...]]` in the body."""
+    base = dict(artist="Portishead", album="Dummy", medium="vinyl")
+    base.update(fm)
+    relpath = base.pop("relpath", "collection/portishead-dummy.md")
+    body = base.pop("body", "![[sleeves/portishead-dummy.jpg]]\n\nMy old LP.")
+    return VaultNote(
+        relpath=relpath,
+        folder="collection",
+        title=base.pop("title", "Portishead – Dummy (LP)"),
+        body=body,
+        note_type="physical-media",
+        frontmatter=base,
+    )
+
+
+def _album_facts(db_path, name, caller="household"):
+    conn = projection.open_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id FROM entities WHERE type = 'album' AND canonical_name = ?",
+            (name,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            (f["predicate"], f["value"], f["source"])
+            for f in conn.execute(
+                "SELECT predicate, value, source FROM facts"
+                " WHERE subject_entity_id = ?",
+                (row["id"],),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+
+def test_physical_media_note_creates_album_if_absent_with_owned_physical_fact(env):
+    writer, db_path, tmp_path = env
+    reader = FakeObsidianReader(
+        [_physical(medium="vinyl", used_to_love="true", digitize="todo")]
+    )
+    stats = _run(reader, writer, db_path)
+    assert stats.written == 1
+    # The album entity was created (Jellyfin never saw it) with note-sourced facts.
+    facts = _album_facts(db_path, "Portishead – Dummy")
+    assert ("owned_physical", "vinyl", "note") in facts
+    assert ("used_to_love", "", "note") in facts
+    assert ("digitize", "todo", "note") in facts
+    # No digital presence: no Jellyfin song links to it -> the core digitize case.
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) AS n FROM facts WHERE predicate = 'on_album'"
+        ).fetchone()["n"]
+        == 0
+    )
+    conn.close()
+    # The note keeps its own markdown + the sleeve photo (the only image, ADR 0005);
+    # no album markdown is written from the note side.
+    note_md = (
+        tmp_path
+        / "notes"
+        / "users"
+        / "mdopp"
+        / "okf"
+        / "notes"
+        / "portishead-dummy-lp.md"
+    )
+    assert note_md.is_file()
+    assert "![[sleeves/portishead-dummy.jpg]]" in note_md.read_text()
+    assert not (tmp_path / "notes" / "users" / "mdopp" / "okf" / "albums").exists()
+
+
+def test_physical_media_note_attaches_to_existing_album_without_clobbering(env):
+    writer, db_path, _ = env
+    # A Jellyfin album already exists (same "Artist – Album" canonical_name/slug)
+    # with a `by` edge (source=jellyfin). The note must attach owned_physical to
+    # the SAME entity and leave the Jellyfin fact intact (source-scoped replace).
+    conn = projection.open_conn(db_path)
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES ('al-1', 'album', 'Portishead – Dummy',"
+        " 'mdopp', 'jellyfin', 'h')"
+    )
+    conn.execute(
+        "INSERT INTO concepts (id, ref_id, ref_kind, okf_path, content_hash)"
+        " VALUES ('c-al-1', 'al-1', 'entity',"
+        " 'users/mdopp/okf/albums/portishead-dummy.md', 'h')"
+    )
+    conn.execute(
+        "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate, value,"
+        " source) VALUES ('f-by', 'al-1', 'mdopp', 'by', 'bands/portishead',"
+        " 'jellyfin')"
+    )
+    conn.commit()
+    conn.close()
+    # A vault-root note is written under the ingesting resident (mdopp) -> it
+    # resolves to that resident's existing album (same canonical_name/slug).
+    reader = FakeObsidianReader([_physical(relpath="collection/dummy.md", medium="cd")])
+    _run(reader, writer, db_path)
+    # Same entity (no dup album), Jellyfin `by` edge preserved, note fact added.
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) AS n FROM entities WHERE type = 'album'"
+        ).fetchone()["n"]
+        == 1
+    )
+    conn.close()
+    facts = _album_facts(db_path, "Portishead – Dummy")
+    assert ("by", "bands/portishead", "jellyfin") in facts
+    assert ("owned_physical", "cd", "note") in facts
+
+
+def test_physical_media_note_reingest_unchanged_is_idempotent(env):
+    writer, db_path, _ = env
+    _run(FakeObsidianReader([_physical()]), writer, db_path)
+    facts_before = _album_facts(db_path, "Portishead – Dummy")
+    stats = _run(FakeObsidianReader([_physical()]), writer, db_path)
+    assert stats.written == 0 and stats.skipped == 1
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) AS n FROM entities WHERE type = 'album'"
+        ).fetchone()["n"]
+        == 1
+    )
+    conn.close()
+    assert _album_facts(db_path, "Portishead – Dummy") == facts_before
+
+
+def test_physical_media_note_suppressed_from_wishlist(env):
+    writer, db_path, _ = env
+    # used_to_love makes it wishlist-worthy, but owned_physical must suppress it.
+    reader = FakeObsidianReader([_physical(used_to_love="true", medium="vinyl")])
+    _run(reader, writer, db_path)
+    from solaris_chat.engine.tools.music_query import build_music_query_tools
+
+    # The note is vault-root (household-unowned) -> written under the ingesting
+    # resident (mdopp); query as that caller.
+    tools = build_music_query_tools(db_path, lambda: "mdopp")
+    music_query = next(t.handler for t in tools if t.name == "music_query")
+    import asyncio
+    import json
+
+    out = json.loads(asyncio.run(music_query({"op": "wishlist"})))
+    assert out["total"] == 0  # owned_physical -> "have it, don't buy"
+
+
+def test_physical_media_note_incomplete_is_skipped(env):
+    writer, db_path, _ = env
+    # No album -> can't attach to an album entity; skip, don't crash the run.
+    reader = FakeObsidianReader(
+        [_physical(relpath="collection/x.md", album="", medium="vinyl")]
+    )
+    stats = _run(reader, writer, db_path)
+    assert stats.written == 0 and stats.skipped == 1
+    conn = projection.open_conn(db_path)
+    assert projection.row_count(conn, "entities") == 0
+    conn.close()
+
+
 # --- VaultObsidianReader (real tmp vault, read-only) -------------------------
 
 

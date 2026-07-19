@@ -35,6 +35,13 @@ from .obsidian_reader import ObsidianReader, VaultNote
 
 
 _SOURCE = "obsidian"
+# A physical-collection note's facts are attributed to the resident, not to the
+# vault reader, so they merge with a Jellyfin `by` edge on the same album entity
+# (ADR 0003) and the wishlist query counts an `owned_physical` album as "have it
+# physically → don't buy" (#880, ADR 0002/0005).
+_NOTE_FACT_SOURCE = "note"
+_PHYSICAL_MEDIA_TYPE = "physical-media"
+_PHYSICAL_MEDIA = frozenset({"cd", "vinyl", "cassette"})
 
 # A hand-written note's top-level folder hints at its OKF type when the note
 # carries no explicit `type` frontmatter.
@@ -93,6 +100,9 @@ class ObsidianIngest:
         return stats
 
     def _ingest_note(self, note: VaultNote, stats: ObsidianIngestStats) -> None:
+        if note.note_type == _PHYSICAL_MEDIA_TYPE:
+            self._ingest_physical_media(note, stats)
+            return
         concept_type = note.note_type or _FOLDER_TYPE.get(note.folder, "note")
         if not is_known_type(concept_type):
             # An explicit frontmatter type the OKF model has no domain for (e.g.
@@ -124,6 +134,84 @@ class ObsidianIngest:
             stats.skipped += 1
         else:
             stats.written += 1
+
+    def _ingest_physical_media(
+        self, note: VaultNote, stats: ObsidianIngestStats
+    ) -> None:
+        """A physical-collection note (records/LPs/cassettes owned in the real
+        world, #880): self-originated markdown = source of truth with the user's
+        own sleeve photo the only image (ADR 0002/0005). It converges on the
+        matching **album entity** (P1a's "Artist – Album" canonical_name / slug),
+        creating it if Jellyfin never saw it (an owned-physical album with no
+        digital presence — the core digitize case), and contributes source-tagged
+        `owned_physical`/(`used_to_love`)/`digitize` facts (source=note, ADR 0003)
+        to it. The album carries only facts here — no album markdown/embedding —
+        so it never collides with Jellyfin's lean album file; the note keeps its
+        own markdown + embedding (the RAG surface, sleeve photo intact).
+        """
+        fm = note.frontmatter
+        artist = fm.get("artist", "").strip()
+        album = fm.get("album", "").strip()
+        medium = fm.get("medium", "").strip().casefold()
+        if not artist or not album or medium not in _PHYSICAL_MEDIA:
+            # An incomplete note (no artist/album, or an unknown medium) can't
+            # attach to an album entity — skip it, don't crash the run.
+            log.info(
+                "engine.ingest.physical_media_skipped",
+                relpath=note.relpath,
+                medium=medium,
+            )
+            stats.skipped += 1
+            return
+        resident = notes_search.resident_for_path(note.relpath) or ""
+        # The note itself: self-originated `note` concept, markdown = truth +
+        # embedding, the sleeve photo (`![[...]]` in the body) the only image.
+        note_rec = ConceptRecord(
+            type="note",
+            title=note.title,
+            source=_SOURCE,
+            external_id=note.relpath,
+            resident=resident,
+            timestamp=note.timestamp,
+            tags=note.tags,
+            body=note.body,
+        )
+        note_written = not self._writer.write_concept(
+            note_rec, ingesting_uid=self._uid
+        ).skipped
+        # The album entity: resolve/create by (artist, album) via P1a's
+        # canonical_name + slug so it merges with the Jellyfin album, and attach
+        # note-sourced facts. Projection-only from the note side (no album
+        # markdown/embedding — Jellyfin owns those); source-scoped fact-replace
+        # keeps a Jellyfin `by` edge intact.
+        artist_slug = safe_slug(artist)
+        album_slug = safe_slug(album)
+        facts: list[tuple[str, str]] = [("owned_physical", medium)]
+        if _truthy(fm.get("used_to_love", "")):
+            facts.append(("used_to_love", ""))
+        digitize = fm.get("digitize", "").strip().casefold()
+        if digitize in ("todo", "done"):
+            facts.append(("digitize", digitize))
+        source = fm.get("source", "").strip()
+        if source:
+            facts.append(("source", source))
+        album_rec = ConceptRecord(
+            type="album",
+            title=f"{artist} – {album}",
+            slug=f"{artist_slug}-{album_slug}",
+            source=_NOTE_FACT_SOURCE,
+            external_id=f"physical-media:{note.relpath}",
+            resident=resident,
+            facts=facts,
+            projection_only=True,
+        )
+        album_written = not self._writer.write_concept(
+            album_rec, ingesting_uid=self._uid
+        ).skipped
+        if note_written or album_written:
+            stats.written += 1
+        else:
+            stats.skipped += 1
 
     def _relationships(self, note: VaultNote) -> tuple[list[Relationship], str]:
         """Convert `[[wikilinks]]` that resolve to an already-written OKF concept
@@ -157,6 +245,10 @@ class ObsidianIngest:
             if projection.entity_id_for_okf_path(conn, candidate) is not None:
                 return candidate
         return None
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().casefold() in ("true", "yes", "1")
 
 
 def _safe_slug_or_none(text: str) -> str | None:

@@ -47,6 +47,10 @@ class VaultNote:
     timestamp: str = ""
     tags: list[str] = field(default_factory=list)
     wikilinks: list[str] = field(default_factory=list)
+    # The full flat scalar frontmatter map, so an adapter can read a note-type's
+    # own keys (a physical-media note's artist/album/medium, #880) without adding
+    # a VaultNote field per type.
+    frontmatter: dict[str, str] = field(default_factory=dict)
 
 
 class ObsidianReader(Protocol):
@@ -108,6 +112,7 @@ class VaultObsidianReader:
             timestamp=front.get("timestamp", ""),
             tags=_list_value(front.get("tags", "")),
             wikilinks=list(dict.fromkeys(_WIKILINK.findall(body))),
+            frontmatter=front,
         )
 
 

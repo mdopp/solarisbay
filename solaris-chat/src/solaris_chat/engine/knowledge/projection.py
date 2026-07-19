@@ -175,8 +175,16 @@ def replace_facts(
 
     Facts are authored in OKF and projected here (§4/§5); a re-ingest replaces
     the subject's rows so the projection can't drift from the file.
+
+    Scoped to `source`: one real-world thing is a single entity that carries
+    facts from several sources (ADR 0003 — a Jellyfin `by` edge and a note's
+    `owned_physical` on the same album), so a write only replaces its OWN
+    source's facts and never clobbers another source's (#880).
     """
-    conn.execute("DELETE FROM facts WHERE subject_entity_id = ?", (subject_entity_id,))
+    conn.execute(
+        "DELETE FROM facts WHERE subject_entity_id = ? AND source = ?",
+        (subject_entity_id, source),
+    )
     for predicate, value, confidence in facts:
         conn.execute(
             "INSERT INTO facts"
