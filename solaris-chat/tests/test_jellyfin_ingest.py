@@ -345,6 +345,129 @@ def test_band_in_both_libraries_stays_shared(env):
     conn.close()
 
 
+# --- album as a first-class entity (#876) ------------------------------------
+
+
+def test_track_writes_album_entity_and_join_facts(env):
+    # A track projects an `album` entity plus the two join facts: song→on_album→
+    # album and album→by→artist (the band node, reused, not a parallel artist).
+    writer, db_path, tmp_path = env
+    stats = _run(FakeJellyfinMusicClient([_track()]), writer)
+    assert stats.albums_written == 1
+    conn = projection.open_conn(db_path)
+    album = conn.execute("SELECT * FROM entities WHERE type = 'album'").fetchone()
+    assert album is not None
+    # canonical_name carries the artist so the dedup key is (artist, album).
+    assert album["canonical_name"] == "Queen – A Night at the Opera"
+    song = conn.execute("SELECT id FROM entities WHERE type = 'song'").fetchone()
+    on_album = conn.execute(
+        "SELECT value FROM facts WHERE predicate = 'on_album' AND subject_entity_id = ?",
+        (song["id"],),
+    ).fetchone()
+    assert on_album is not None and on_album["value"].startswith("albums/")
+    album_by = conn.execute(
+        "SELECT value FROM facts WHERE predicate = 'by' AND subject_entity_id = ?",
+        (album["id"],),
+    ).fetchone()
+    assert album_by is not None and album_by["value"] == "bands/queen"
+    conn.close()
+    # source=jellyfin on every projected fact.
+    conn = projection.open_conn(db_path)
+    srcs = {r[0] for r in conn.execute("SELECT DISTINCT source FROM facts")}
+    conn.close()
+    assert srcs == {"jellyfin"}
+    assert (
+        tmp_path / "notes" / "okf" / "albums" / "queen-a-night-at-the-opera.md"
+    ).is_file()
+
+
+def test_album_dedups_across_tracks_and_reingest(env):
+    # Two tracks from the same album -> ONE album node; re-ingesting the same
+    # catalog creates NO duplicate album (dedup on artist+title).
+    writer, db_path, _ = env
+    t1 = _track(id="t1", name="One", changed="c1")
+    t2 = _track(id="t2", name="Two", changed="c2")
+    stats = _run(FakeJellyfinMusicClient([t1, t2]), writer)
+    assert stats.albums_written == 1
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'album'").fetchone()[0]
+        == 1
+    )
+    conn.close()
+    # Re-ingest: no new album node.
+    _run(FakeJellyfinMusicClient([t1, t2]), writer)
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'album'").fetchone()[0]
+        == 1
+    )
+    conn.close()
+
+
+def test_same_album_title_different_artists_are_distinct(env):
+    # Two artists with an identically titled album must NOT merge into one node.
+    writer, db_path, _ = env
+    a = _track(id="a1", name="X", artist="Queen", album="Greatest Hits")
+    b = _track(id="b1", name="Y", artist="Abba", album="Greatest Hits")
+    _run(FakeJellyfinMusicClient([a, b]), writer)
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'album'").fetchone()[0]
+        == 2
+    )
+    conn.close()
+
+
+def test_track_without_album_writes_no_album(env):
+    writer, db_path, _ = env
+    _run(FakeJellyfinMusicClient([_track(album="")]), writer)
+    conn = projection.open_conn(db_path)
+    assert (
+        conn.execute("SELECT COUNT(*) FROM entities WHERE type = 'album'").fetchone()[0]
+        == 0
+    )
+    conn.close()
+
+
+def test_album_in_both_libraries_stays_shared(env):
+    # Like bands: an album appearing in a shared AND a private library stays
+    # household (shared albums stay shared).
+    writer, db_path, _ = env
+    client = FakeJellyfinMusicClient(
+        libraries=[("lib-s", "Music"), ("lib-c", "Music (cdopp)")],
+        by_library={
+            "lib-s": [_track(id="s1", name="Shared Hit", artist="Queen")],
+            "lib-c": [_track(id="c1", name="Private Take", artist="Queen")],
+        },
+    )
+    _run(client, writer, library_owners={"Music (cdopp)": "cdopp"})
+    conn = projection.open_conn(db_path)
+    album = conn.execute(
+        "SELECT resident_uid FROM entities WHERE type = 'album'"
+    ).fetchone()
+    assert album["resident_uid"] == "household"
+    conn.close()
+
+
+def test_private_library_album_scoped_to_owner(env):
+    writer, db_path, _ = env
+    client = FakeJellyfinMusicClient(
+        libraries=[("lib-c", "Music (cdopp)")],
+        by_library={"lib-c": [_track(id="t1", name="Geheim", artist="Adele")]},
+    )
+    _run(client, writer, library_owners={"Music (cdopp)": "cdopp"})
+    conn = projection.open_conn(db_path)
+    scopes = {
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT resident_uid FROM entities WHERE type = 'album'"
+        )
+    }
+    conn.close()
+    assert scopes == {"cdopp"}
+
+
 # --- idempotent --------------------------------------------------------------
 
 

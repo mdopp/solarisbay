@@ -5,9 +5,12 @@ via the shared #447 writer:
 
   - **band** — one per Jellyfin MusicArtist (and per AlbumArtist string seen on a
     track), the artist the songs link to;
+  - **album** — one per (artist, album) seen on a track (#876), deduped by
+    artist+title, with a `by → [[bands/…]]` edge reusing the existing band node
+    as its artist — the join node physical/wishlist/nostalgia facts attach to;
   - **song** — one per Audio track: `title`, `artist`, `genre`, `year`,
     `resource` = `jellyfin://audio/<id>`, plus a `by → [[bands/…]]` relationship
-    to its artist.
+    to its artist and an `on_album → [[albums/…]]` edge to its album.
 
 So "welche Musik von <artist> habe ich" resolves from the central knowledge
 store and music becomes a research source. Films/audiobooks + playback are out
@@ -430,6 +433,7 @@ class RestJellyfinMusicClient:
 class JellyfinIngestStats:
     items: int = 0
     bands_written: int = 0
+    albums_written: int = 0
     songs_written: int = 0
     skipped: int = 0
     # High-water sync cursor (max item `changed`) for the next incremental run.
@@ -485,6 +489,11 @@ class JellyfinMusicIngest:
         # Bands seen in a SHARED library: a band there stays household even if it
         # also appears in a private library (shared artists stay shared).
         self._shared_bands: set[str] = set()
+        # Albums written this run, so a track doesn't re-write its album per track.
+        self._seen_albums: set[str] = set()
+        # Albums seen in a SHARED library: like bands, a shared album stays
+        # household even if a private library also holds a track from it.
+        self._shared_albums: set[str] = set()
 
     def _owner_for(self, library_name: str) -> str:
         return self._library_owners.get(library_name.casefold(), _SHARED)
@@ -530,11 +539,19 @@ class JellyfinMusicIngest:
             self._write_band(item.name, item.id, owner, stats, facts=_band_facts(item))
         elif item.kind == "Audio":
             rels: list[Relationship] = []
+            band_slug = ""
             if item.artist:
                 # Fall back to this track's id only when the artist name has no
                 # own slug, so the band concept and the `by` edge share a slug.
-                slug = self._write_band(item.artist, item.id, owner, stats)
-                rels.append(Relationship("by", f"bands/{slug}"))
+                band_slug = self._write_band(item.artist, item.id, owner, stats)
+                rels.append(Relationship("by", f"bands/{band_slug}"))
+            if item.album:
+                # The album is a first-class entity the song links to; reuse the
+                # existing band node as its artist (no parallel artist node).
+                album_slug = self._write_album(
+                    item.album, item.artist, band_slug, item.id, owner, stats
+                )
+                rels.append(Relationship("on_album", f"albums/{album_slug}"))
             self._write_song(item, owner, rels, stats)
 
     def _write_band(
@@ -575,6 +592,49 @@ class JellyfinMusicIngest:
         )
         if not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
             stats.bands_written += 1
+        return slug
+
+    def _write_album(
+        self,
+        album: str,
+        artist: str,
+        band_slug: str,
+        item_id: str,
+        owner: str,
+        stats: JellyfinIngestStats,
+    ) -> str:
+        # Slug encodes artist+title so the OKF path (and dedup) is by (artist,
+        # album): two artists with the same album title never collide, and a
+        # re-ingest reuses the same node. Fall back to the track id when either
+        # part slugifies empty (#583), like _write_song does.
+        artist_part = _slug_or_id(artist, item_id) if artist else ""
+        album_part = _slug_or_id(album, item_id)
+        slug = f"{artist_part}-{album_part}" if artist_part else album_part
+        # Shared wins: once an album is shared it never gets re-scoped to a user
+        # (mirrors the band rule, so an album tracks its artist's scope).
+        if owner == _SHARED:
+            self._shared_albums.add(slug)
+        elif slug in self._shared_albums:
+            owner = _SHARED
+        if slug in self._seen_albums:
+            return slug
+        self._seen_albums.add(slug)
+        rels = [Relationship("by", f"bands/{band_slug}")] if band_slug else []
+        rec = ConceptRecord(
+            type="album",
+            # canonical_name carries the artist so the per-resident dedup key is
+            # (artist, album). No bare-title alias: two artists sharing an album
+            # title (e.g. "Greatest Hits") must stay two distinct nodes, and an
+            # alias-table match on the bare title would wrongly merge them.
+            title=f"{artist} – {album}" if artist else album,
+            slug=slug,
+            source=_SOURCE,
+            external_id=f"album/{slug}",
+            resident=owner,
+            relationships=rels,
+        )
+        if not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
+            stats.albums_written += 1
         return slug
 
     def _write_song(

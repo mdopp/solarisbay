@@ -21,6 +21,7 @@ _DOMAIN_BY_TYPE = {
     "place": "places",
     "book": "books",
     "song": "songs",
+    "album": "albums",
     "band": "bands",
     "trip": "trips",
     "note": "notes",
