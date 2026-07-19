@@ -46,6 +46,18 @@ def is_event_type(concept_type: str) -> bool:
     return concept_type in _EVENT_TYPES
 
 
+def fact_triple(
+    fact: tuple[str, str] | tuple[str, str, float | None],
+) -> tuple[str, str, float | None]:
+    """Normalize a `ConceptRecord.facts` entry to `(predicate, value, confidence)`.
+
+    A 2-tuple (the common case) carries no confidence → None; a 3-tuple supplies
+    it (#881, ADR 0003)."""
+    if len(fact) == 3:
+        return fact[0], fact[1], fact[2]
+    return fact[0], fact[1], None
+
+
 @dataclass(frozen=True)
 class Relationship:
     """One `## Relationships` line: ``- <rel> → [[<path>]]`` (§3).
@@ -86,8 +98,13 @@ class ConceptRecord:
     relationships: list[Relationship] = field(default_factory=list)
     # Free-text attribute facts (predicate, value) projected to `facts` and
     # rendered into frontmatter — for non-link facts a `## Relationships` link
-    # can't carry (a band's genre / bio).
-    facts: list[tuple[str, str]] = field(default_factory=list)
+    # can't carry (a band's genre / bio). A fact may carry an optional third
+    # element, a confidence in [0,1] (ADR 0003 provenance & trust — a chat-derived
+    # `used_to_love` is softer than an external edge, #881); omitting it means
+    # None (a fact stated as certain).
+    facts: list[tuple[str, str] | tuple[str, str, float | None]] = field(
+        default_factory=list
+    )
     # event-only: ISO timestamp + kind for the `events` row.
     event_ts: str = ""
     event_kind: str = ""

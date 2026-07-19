@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from solaris_chat import compaction, notes_search
-from solaris_chat.engine import store
+from solaris_chat.engine import music_affinity, store
 from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.ingest.runner import _run_obsidian
 from solaris_chat.engine.knowledge import (
@@ -721,6 +721,12 @@ class CronRunner:
             if len(slice_msgs) < _STENOGRAPH_MIN_TURNS:
                 skipped += 1
                 continue
+            # Music affinity ("das war früher mein Lieblingsalbum X von Y") →
+            # a `used_to_love` fact on the album entity (source=stenograph, #881,
+            # B9). Deterministic (not the LLM turn below) so the queryable signal
+            # lands reliably on the right album; the LLM turn still stores general
+            # durable facts via fact_store.
+            self._music_affinities(slice_msgs, row["owner_uid"])
             transcript = _render_transcript(slice_msgs)
             prompt = compaction.STENOGRAPH_PREFIX + transcript
             session_id = await self._deep.create_session(
@@ -743,6 +749,41 @@ class CronRunner:
         # Advance the watermark only after the whole loop completes, so a crash
         # mid-run re-distils the same day rather than dropping sessions.
         _mark_run(self._db_path, _STENOGRAPH_WATERMARK, now_utc)
+
+    def _music_affinities(
+        self, slice_msgs: list[tuple[str, str]], owner_uid: str
+    ) -> None:
+        """Route a day's chat-derived music affinities to `used_to_love` album
+        facts (#881). No-op without ingest settings (no writer target) or when the
+        slice carries no affinity. Never raises — one bad slice must not abort the
+        Stenograph (mirrors the LLM-turn isolation above)."""
+        if self._ingest_settings is None:
+            return
+        affinities = music_affinity.extract_affinities(slice_msgs)
+        if not affinities:
+            return
+        try:
+            writer = OkfWriter(
+                db_path=self._ingest_settings.solaris_db_path,
+                notes_dir=self._ingest_settings.notes_dir,
+                embedding_queue=PendingEmbeddingQueue(
+                    self._ingest_settings.solaris_db_path
+                ),
+            )
+            written = music_affinity.route_affinities(
+                writer,
+                self._ingest_settings.solaris_db_path,
+                owner_uid,
+                affinities,
+            )
+            log.info(
+                "engine.stenograph.music_affinity",
+                owner=owner_uid,
+                affinities=len(affinities),
+                written=written,
+            )
+        except Exception as e:  # noqa: BLE001 — one slice must not kill the run.
+            log.error("engine.stenograph.music_affinity_failed", error=str(e))
 
     async def _compact_stale(self) -> None:
         """The nightly chat-compactor: extract-then-compact stale, long chats

@@ -23,7 +23,7 @@ from solaris_chat import notes_index
 
 from . import okf, projection
 from .embedding import EmbeddingQueue, NullEmbeddingQueue
-from .records import ConceptRecord, WriteResult, is_event_type
+from .records import ConceptRecord, WriteResult, fact_triple, is_event_type
 
 # `<...>/okf/events/<year>/<leaf>` → its pre-#830 flat form `<...>/okf/events/<leaf>`.
 _SHARDED_EVENT_RE = re.compile(r"((?:.*/)?okf/events)/\d{4}/([^/]+\.md)$")
@@ -179,7 +179,7 @@ class OkfWriter:
             aliases=record.aliases,
         )
         facts = [(r.rel, r.path, None) for r in record.relationships]
-        facts += [(predicate, value, None) for predicate, value in record.facts]
+        facts += [fact_triple(f) for f in record.facts]
         projection.replace_facts(
             conn,
             subject_entity_id=entity_id,

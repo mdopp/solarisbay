@@ -435,6 +435,68 @@ async def test_stenograph_first_run_baselines_to_last_24h(db):
     assert crons._last_run(db, "stenograph-watermark")
 
 
+async def test_stenograph_routes_music_affinity_per_session(db, monkeypatch, tmp_path):
+    # A resident's chat with a past-music-love statement → the deterministic
+    # music-affinity pass runs per session under that owner, before the LLM turn
+    # (#881). Routing itself is covered in test_music_affinity; here we prove the
+    # Stenograph invokes it with the right owner + extracted affinities.
+    _seed_session(db, "anna-chat", "anna", last_activity="2026-07-06 20:00:00")
+    _seed_msg(
+        db,
+        "anna-chat",
+        1,
+        "user",
+        "Dummy von Portishead war früher mein Lieblingsalbum.",
+        "2026-07-06 19:00:00",
+    )
+    _seed_msg(db, "anna-chat", 2, "assistant", "schön!", "2026-07-06 19:00:01")
+    _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
+
+    captured = []
+
+    def fake_route(writer, db_path, owner_uid, affinities):
+        captured.append((owner_uid, [(a.artist, a.album) for a in affinities]))
+        return len(affinities)
+
+    monkeypatch.setattr(crons, "OkfWriter", lambda **kw: object())
+    monkeypatch.setattr(crons, "PendingEmbeddingQueue", lambda p: object())
+    monkeypatch.setattr(crons.music_affinity, "route_affinities", fake_route)
+
+    class _Settings:
+        solaris_db_path = db
+        notes_dir = str(tmp_path)
+
+    runner = crons.CronRunner(
+        db_path=db,
+        deep=_FakeDeep(),
+        skills_dir="",
+        context_window=32768,
+        ingest_settings=_Settings(),
+    )
+    await runner._stenograph()
+    assert captured == [("anna", [("Portishead", "Dummy")])]
+
+
+async def test_stenograph_music_affinity_noop_without_ingest_settings(db):
+    # No ingest settings (no writer target) → the affinity pass is a no-op and the
+    # existing LLM extraction turn is unaffected.
+    _seed_session(db, "anna-chat", "anna", last_activity="2026-07-06 20:00:00")
+    _seed_msg(
+        db,
+        "anna-chat",
+        1,
+        "user",
+        "Dummy von Portishead war früher mein Lieblingsalbum.",
+        "2026-07-06 19:00:00",
+    )
+    _seed_msg(db, "anna-chat", 2, "assistant", "schön!", "2026-07-06 19:00:01")
+    _baseline(db, "stenograph-watermark", "2026-07-06 00:00:00")
+    deep = _FakeDeep()
+    await _runner(db, deep)._stenograph()
+    # The LLM extraction turn still ran (no crash from the missing writer target).
+    assert len(deep.turns) == 1
+
+
 def test_render_transcript_head_truncates_to_cap(monkeypatch):
     monkeypatch.setattr(crons, "_STENOGRAPH_SLICE_CHARS", 40)
     msgs = [
