@@ -116,7 +116,7 @@ Alles provenienz-neutral und bleibt.
 | **P2 — #859 richtig + physische Sammlung** | `owned_physical/wishlist/used_to_love/source` als Fakten; Wunschliste = Query/Sicht; physische-Sammlung-Notiz (Foto+digitalisieren+used_to_love) → Album-Entity; Chat-Infos→Fakten/Notiz (B9). | → 0.29.0 |
 | **P3 — Musik-Import-Job** (S7/#868) | YT-Music-Job erzeugt Album-Entities+Fakten (kein Per-Song-Markdown), Einkaufsliste als Query. | → 0.30.0 |
 | **P4 — Interaktiver Flow** (S8/#869) | Upload `.zip`/Browser → LLM-Klassifikation → Action-Card → Posteingang. | → 0.30.0 |
-| **P5 — Standalone retiren** (S9/#870) | Tool headless/entfernt, sobald P0–P4 live. | → 0.31.0 |
+| **P5 — Standalone retiren** (S9/#870) | `mdopp/solaris-import-google` (import.dopp.cloud) ist superseded: Kalender/Kontakte/Keep/YouTube-Music-Import läuft vollständig in-engine (P0–P4). Standalone kann auf der Box gestoppt/undeployed werden — das ist eine verify-phase-Aktion auf der Box, keine Repo-Änderung. Vendored Core (#863) ist übernommen. | ✅ gebaut (#870) — Box-Undeploy beim Release-Verify |
 
 **Warum P0 zuerst:** liefert den soliden, provenienz-neutralen Unterbau jetzt, ohne
 das bald-tote Notiz-Modell auszuliefern — und entkoppelt den Release von der größeren
