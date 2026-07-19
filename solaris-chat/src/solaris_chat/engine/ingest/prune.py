@@ -152,7 +152,11 @@ def prune_empty_note_shells(db_path: str, notes_dir: str) -> int:
     "Internal log: …", a bare preference stub) — noise, not knowledge. Removes
     the file, its FTS row, and any projection (concepts / embedding / note
     entity + facts). The note writer now rejects these at the source; this
-    cleans up the ones already on disk. Idempotent. Never raises."""
+    cleans up the ones already on disk.
+
+    Two passes: (1) on-disk shells under the note dirs; (2) orphan note concepts
+    whose file is already gone (a partial prior prune). Commits per item so one
+    bad row can't roll back the whole batch. Idempotent. Never raises."""
     try:
         root = Path(notes_dir)
         conn = projection.open_conn(db_path)
@@ -174,8 +178,17 @@ def prune_empty_note_shells(db_path: str, notes_dir: str) -> int:
                     md.unlink(missing_ok=True)
                     notes_index._delete_row(conn, rel)
                     projection.delete_note_by_okf_path(conn, rel)
+                    conn.commit()
                     pruned += 1
-            conn.commit()
+            # Pass 2: note concepts whose file no longer exists (an earlier
+            # partial prune unlinked the file but rolled its rows back).
+            for rel in projection.note_concept_paths(conn):
+                if (root / rel).exists():
+                    continue
+                notes_index._delete_row(conn, rel)
+                projection.delete_note_by_okf_path(conn, rel)
+                conn.commit()
+                pruned += 1
         finally:
             conn.close()
         if pruned:

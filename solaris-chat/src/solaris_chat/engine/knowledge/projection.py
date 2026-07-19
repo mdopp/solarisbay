@@ -512,11 +512,35 @@ def legacy_projection_only_events(
     return [dict(r) for r in rows]
 
 
+_NOTE_PATH_LIKE = (
+    "okf/notes/%",
+    "%/okf/notes/%",
+    "journal/%",
+    "%/journal/%",
+)
+
+
+def note_concept_paths(conn: sqlite3.Connection) -> list[str]:
+    """Every note/journal-domain entity concept's `okf_path`. The empty-shell
+    prune uses this to find orphan rows whose file is already gone (a partial
+    prior prune) and delete them."""
+    clause = " OR ".join("okf_path LIKE ?" for _ in _NOTE_PATH_LIKE)
+    rows = conn.execute(
+        f"SELECT okf_path FROM concepts WHERE ref_kind = 'entity' AND ({clause})",  # noqa: S608
+        _NOTE_PATH_LIKE,
+    ).fetchall()
+    return [r["okf_path"] for r in rows]
+
+
 def delete_note_by_okf_path(conn: sqlite3.Connection, okf_path: str) -> None:
     """Fully delete the note projected at `okf_path`: its `concepts` row, the
-    `okf_vectors` embedding, and (for an entity-backed note) the entity + its
-    facts. A raw file with no projection (e.g. a radio preference) has no row —
-    then this is a no-op and the caller's file unlink is the whole delete."""
+    `okf_vectors` embedding, and (for an entity-backed note) the entity plus
+    every child FK row (facts, aliases, event edges). A raw file with no
+    projection (e.g. a radio preference) has no row — then this is a no-op and
+    the caller's file unlink is the whole delete.
+
+    With `PRAGMA foreign_keys = ON` the entity's children must go first, or the
+    final DELETE raises `FOREIGN KEY constraint failed`."""
     row = conn.execute(
         "SELECT id AS cid, ref_id, ref_kind, embedding_id FROM concepts"
         " WHERE okf_path = ?",
@@ -530,8 +554,11 @@ def delete_note_by_okf_path(conn: sqlite3.Connection, okf_path: str) -> None:
         )
     conn.execute("DELETE FROM concepts WHERE id = ?", (row["cid"],))
     if row["ref_kind"] == "entity":
-        conn.execute("DELETE FROM facts WHERE subject_entity_id = ?", (row["ref_id"],))
-        conn.execute("DELETE FROM entities WHERE id = ?", (row["ref_id"],))
+        eid = row["ref_id"]
+        conn.execute("DELETE FROM facts WHERE subject_entity_id = ?", (eid,))
+        conn.execute("DELETE FROM entity_aliases WHERE entity_id = ?", (eid,))
+        conn.execute("DELETE FROM event_entities WHERE entity_id = ?", (eid,))
+        conn.execute("DELETE FROM entities WHERE id = ?", (eid,))
 
 
 def rekey_event(conn: sqlite3.Connection, *, old_id: str, new_id: str) -> None:

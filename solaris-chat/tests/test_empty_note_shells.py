@@ -75,15 +75,29 @@ async def test_note_write_allows_real_note(tmp_path):
     assert list(tmp_path.rglob("*.md"))
 
 
+# FK-carrying schema (mirrors the real migrations): a note entity always has an
+# entity_aliases child, so deleting it with PRAGMA foreign_keys=ON must clear the
+# children first — the bug this guards against.
 _SCHEMA = """
 CREATE TABLE entities (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, canonical_name TEXT NOT NULL,
   resident_uid TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL,
   updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE entity_aliases (
+  entity_id TEXT NOT NULL, alias TEXT NOT NULL, PRIMARY KEY (entity_id, alias),
+  FOREIGN KEY (entity_id) REFERENCES entities (id));
 CREATE TABLE facts (
   id TEXT PRIMARY KEY, subject_entity_id TEXT, resident_uid TEXT NOT NULL,
   predicate TEXT NOT NULL, value TEXT NOT NULL, confidence REAL,
-  source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')));
+  source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (subject_entity_id) REFERENCES entities (id));
+CREATE TABLE events (
+  id TEXT PRIMARY KEY, ts TEXT NOT NULL, resident_uid TEXT NOT NULL,
+  kind TEXT NOT NULL, source TEXT NOT NULL);
+CREATE TABLE event_entities (
+  event_id TEXT NOT NULL, entity_id TEXT NOT NULL, role TEXT NOT NULL,
+  PRIMARY KEY (event_id, entity_id, role),
+  FOREIGN KEY (entity_id) REFERENCES entities (id));
 CREATE TABLE concepts (
   id TEXT PRIMARY KEY, ref_id TEXT NOT NULL,
   ref_kind TEXT NOT NULL CHECK (ref_kind IN ('entity', 'event')),
@@ -112,18 +126,34 @@ def test_prune_empty_note_shells_deletes_shells_keeps_real(tmp_path):
         "---\ntype: note\n---\n\nEcht wichtiger Inhalt hier.", encoding="utf-8"
     )
 
+    # A second empty note whose FILE is already gone (a prior partial prune) —
+    # its projection rows must still be swept (pass 2).
+    orphan_rel = "okf/notes/familienchronik-2024-05-23.md"
+
     conn = sqlite3.connect(db_path)
     conn.executescript(_SCHEMA)
-    # The empty note carries a full projection (entity + fact + concept + vector)
-    # that must be deleted along with the file.
+    # The empty note carries a FULL projection (entity + alias + fact + event edge
+    # + concept + vector) that must all be deleted along with the file — the alias
+    # is the FK child that broke the naive delete on the box.
     conn.execute(
         "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
         " content_hash) VALUES ('n1', 'note', 'Internal log', 'household',"
         " 'obsidian', 'h')"
     )
     conn.execute(
+        "INSERT INTO entity_aliases (entity_id, alias) VALUES ('n1', 'Internal log')"
+    )
+    conn.execute(
         "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate, value,"
         " source) VALUES ('fx', 'n1', 'household', 'about', 'x', 'obsidian')"
+    )
+    conn.execute(
+        "INSERT INTO events (id, ts, resident_uid, kind, source)"
+        " VALUES ('ev1', '2024-01-01', 'household', 'photo', 'immich')"
+    )
+    conn.execute(
+        "INSERT INTO event_entities (event_id, entity_id, role)"
+        " VALUES ('ev1', 'n1', 'mentioned')"
     )
     conn.execute(
         "INSERT INTO concepts (id, ref_id, ref_kind, okf_path, embedding_id,"
@@ -134,6 +164,18 @@ def test_prune_empty_note_shells_deletes_shells_keeps_real(tmp_path):
         "INSERT INTO okf_vectors (embedding_id, concept_id, model, dim, vector)"
         " VALUES ('e1', 'n1', 'm', 1, X'00')"
     )
+    # The orphan: a concept row whose file was already unlinked.
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES ('n2', 'note', 'Chronik', 'household', 'obsidian', 'h')"
+    )
+    conn.execute(
+        "INSERT INTO entity_aliases (entity_id, alias) VALUES ('n2', 'Chronik')"
+    )
+    conn.execute(
+        "INSERT INTO concepts (id, ref_id, ref_kind, okf_path, embedding_id,"
+        f" content_hash) VALUES ('c2', 'n2', 'entity', '{orphan_rel}', NULL, 'h')"
+    )
     notes_index.ensure_schema(conn)
     notes_index.index_note(conn, notes_dir, "okf/notes/internal-log.md")
     conn.commit()
@@ -141,12 +183,12 @@ def test_prune_empty_note_shells_deletes_shells_keeps_real(tmp_path):
 
     pruned = prune_empty_note_shells(db_path, str(notes_dir))
 
-    assert pruned == 2  # empty journal + empty note
+    assert pruned == 3  # empty journal + empty note (pass 1) + orphan row (pass 2)
     assert not empty_j.exists() and not empty_n.exists()
     assert real_j.exists() and real_n.exists()
     conn = sqlite3.connect(db_path)
     try:
-        for table in ("concepts", "okf_vectors", "entities", "facts"):
+        for table in ("concepts", "okf_vectors", "entities", "facts", "event_entities"):
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0  # noqa: S608
         assert notes_index.search(conn, "identification") == []  # FTS swept
     finally:
