@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/mdopp/solarisbay/compare/v0.30.1...v0.31.0) (2026-07-19)
+
+
+### Features
+
+* **chat:** extract text from uploads and link the original ([#899](https://github.com/mdopp/solarisbay/issues/899)) ([b741b83](https://github.com/mdopp/solarisbay/commit/b741b831a45a3a2de469f4780e6b92e5339aa06f))
+
 ## [0.30.1](https://github.com/mdopp/solarisbay/compare/v0.30.0...v0.30.1) (2026-07-19)
 
 
