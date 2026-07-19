@@ -26,8 +26,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute(
-        "CREATE INDEX IF NOT EXISTS concepts_ref_idx "
-        "ON concepts (ref_id, ref_kind)"
+        "CREATE INDEX IF NOT EXISTS concepts_ref_idx ON concepts (ref_id, ref_kind)"
     )
 
 
