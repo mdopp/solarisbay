@@ -21,6 +21,13 @@ dependencies = [
   "numpy>=1.26",
   # Web Push (VAPID) for timer/reminder phone notifications (#713); no FCM.
   "pywebpush>=1.14",
+  # Google-Takeout import core (epic #860, vendored from solaris-import-google):
+  # icalendar parses Calendar .ics, vobject parses Contacts .vcf, mutagen reads
+  # music-library tags, ytmusicapi resolves albums for the music shopping list.
+  "icalendar>=6.1",
+  "vobject>=0.9.9",
+  "mutagen>=1.47",
+  "ytmusicapi>=1.8.2",
 ]
 
 [project.optional-dependencies]
