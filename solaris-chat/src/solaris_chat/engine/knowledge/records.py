@@ -91,6 +91,11 @@ class ConceptRecord:
     # event-only: ISO timestamp + kind for the `events` row.
     event_ts: str = ""
     event_kind: str = ""
+    # Provenance policy (ADR 0002/0005): an externally re-ingestable per-item
+    # concept (a Jellyfin song) lives ONLY as a projection row + facts — no OKF
+    # markdown, no whole-concept embedding. The RAG-worthy album/artist nodes
+    # keep both. Set by the adapter that owns the source's provenance.
+    projection_only: bool = False
 
 
 @dataclass(frozen=True)

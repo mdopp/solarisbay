@@ -92,11 +92,21 @@ class OkfWriter:
                 conn.commit()
                 return existing
 
-            # 2. write/update the OKF concept file (source of truth), then keep
-            # the FTS index in step with it (#830) — incremental, content-hash
-            # gated inside index_note so an unchanged note is a no-op.
-            self._write_okf_file(rel_path, text)
-            notes_index.index_note(conn, self._notes_root, rel_path)
+            # Provenance policy (ADR 0002/0005): an externally re-ingestable
+            # per-item concept (a Jellyfin song) is projection-only — it skips
+            # the OKF markdown (step 2), the whole-concept embedding + concepts
+            # link row (step 4), and lives purely as an entity + facts + the
+            # ingest_log idempotency marker. Album/artist stay full so their
+            # RAG embedding survives. Events always materialize.
+            projection_only = record.projection_only and not is_event
+
+            if not projection_only:
+                # 2. write/update the OKF concept file (source of truth), then
+                # keep the FTS index in step with it (#830) — incremental,
+                # content-hash gated inside index_note so an unchanged note is a
+                # no-op.
+                self._write_okf_file(rel_path, text)
+                notes_index.index_note(conn, self._notes_root, rel_path)
 
             # 3. update the .db projection.
             if is_event:
@@ -104,28 +114,31 @@ class OkfWriter:
             else:
                 self._project_entity(conn, record, ref_id, resident, new_hash)
 
-            # 4. embedding — only reached because the hash changed.
-            embed_id = (
-                projection.concept_embedding_id(
-                    conn, self._concept_id(conn, ref_id, ref_kind)
+            if projection_only:
+                concept_id = ""
+            else:
+                # 4. embedding — only reached because the hash changed.
+                embed_id = (
+                    projection.concept_embedding_id(
+                        conn, self._concept_id(conn, ref_id, ref_kind)
+                    )
+                    or uuid.uuid4().hex
                 )
-                or uuid.uuid4().hex
-            )
-            embed_text = "\n".join(
-                p for p in (record.title, record.description, record.body) if p
-            )
-            self._embeddings.enqueue(
-                concept_id=ref_id, embedding_id=embed_id, text=embed_text
-            )
+                embed_text = "\n".join(
+                    p for p in (record.title, record.description, record.body) if p
+                )
+                self._embeddings.enqueue(
+                    concept_id=ref_id, embedding_id=embed_id, text=embed_text
+                )
 
-            concept_id = projection.upsert_concept(
-                conn,
-                ref_id=ref_id,
-                ref_kind=ref_kind,
-                okf_path=rel_path,
-                content_hash=new_hash,
-                embedding_id=embed_id,
-            )
+                concept_id = projection.upsert_concept(
+                    conn,
+                    ref_id=ref_id,
+                    ref_kind=ref_kind,
+                    okf_path=rel_path,
+                    content_hash=new_hash,
+                    embedding_id=embed_id,
+                )
 
             # 5. ingest_log (idempotency marker).
             projection.record_ingest(
@@ -142,10 +155,10 @@ class OkfWriter:
             concept_id=concept_id,
             ref_id=ref_id,
             ref_kind=ref_kind,
-            okf_path=rel_path,
+            okf_path="" if projection_only else rel_path,
             content_hash=new_hash,
             skipped=False,
-            embedded=True,
+            embedded=not projection_only,
         )
 
     # --- helpers --------------------------------------------------------------

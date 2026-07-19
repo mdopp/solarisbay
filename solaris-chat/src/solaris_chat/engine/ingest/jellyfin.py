@@ -8,9 +8,12 @@ via the shared #447 writer:
   - **album** — one per (artist, album) seen on a track (#876), deduped by
     artist+title, with a `by → [[bands/…]]` edge reusing the existing band node
     as its artist — the join node physical/wishlist/nostalgia facts attach to;
-  - **song** — one per Audio track: `title`, `artist`, `genre`, `year`,
-    `resource` = `jellyfin://audio/<id>`, plus a `by → [[bands/…]]` relationship
-    to its artist and an `on_album → [[albums/…]]` edge to its album.
+  - **song** — one per Audio track, **projection-only** (ADR 0002/0005): a row
+    in the `entities`/`facts` projection with `title`, `resource` =
+    `jellyfin://audio/<id>`, a `by → [[bands/…]]` fact to its artist and an
+    `on_album → [[albums/…]]` fact to its album — but NO per-song OKF markdown
+    and NO per-song embedding (Jellyfin is the source of truth; the RAG-worthy
+    nodes are album/artist).
 
 So "welche Musik von <artist> habe ich" resolves from the central knowledge
 store and music becomes a research source. Films/audiobooks + playback are out
@@ -680,6 +683,10 @@ class JellyfinMusicIngest:
             # without re-reading the OKF file or leaking the id elsewhere.
             facts=[("resource", uri)],
             relationships=rels,
+            # Externally re-ingestable per-item concept (ADR 0002/0005): a song
+            # lives ONLY as a projection row + on_album/by facts — no per-song
+            # OKF markdown, no per-song embedding. Album/artist keep both.
+            projection_only=True,
         )
         if self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
             stats.skipped += 1
