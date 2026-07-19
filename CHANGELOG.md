@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.3](https://github.com/mdopp/solarisbay/compare/v0.28.2...v0.28.3) (2026-07-19)
+
+
+### Performance Improvements
+
+* **chat:** index concepts(ref_id, ref_kind) ([f207fb4](https://github.com/mdopp/solarisbay/commit/f207fb4a0b6ae3b4ebd1cafbbc7893319b0f0477))
+* **chat:** index concepts(ref_id, ref_kind) — the write path's last full scan ([a6c2e8a](https://github.com/mdopp/solarisbay/commit/a6c2e8a1a561dcc32d6faa0dee5ed9c6fad4d274))
+
 ## [0.28.2](https://github.com/mdopp/solarisbay/compare/v0.28.1...v0.28.2) (2026-07-19)
 
 
