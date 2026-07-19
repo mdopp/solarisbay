@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.28.0](https://github.com/mdopp/solarisbay/compare/v0.27.0...v0.28.0) (2026-07-19)
+
+
+### Features
+
+* **chat:** externally-sourced songs are projection-only; keep lean album/artist markdown for RAG ([43e974e](https://github.com/mdopp/solarisbay/commit/43e974e7d53ad494fee529af667dbfed05a54895)), closes [#877](https://github.com/mdopp/solarisbay/issues/877)
+* **chat:** Google-Takeout import UX — Notizen section + chat .zip flow ([e6286de](https://github.com/mdopp/solarisbay/commit/e6286defbf658c1edefb5e3726f8dcc0b426454a)), closes [#869](https://github.com/mdopp/solarisbay/issues/869)
+* **chat:** interactive Google-Takeout import flow (music job + upload UX) — closes epic [#860](https://github.com/mdopp/solarisbay/issues/860) ([0317a35](https://github.com/mdopp/solarisbay/commit/0317a35207844be6fc960b2f24a38e7d5583e97d))
+* **chat:** interactive Takeout import flow (upload → classify → card → job) ([0e2c8fe](https://github.com/mdopp/solarisbay/commit/0e2c8fe18d0817ab0a7f8ad521bd91071248961d))
+* **chat:** make album a first-class knowledge entity with song/artist join facts ([b7c658c](https://github.com/mdopp/solarisbay/commit/b7c658cad65c70585a260003817a3bc0d159711d)), closes [#876](https://github.com/mdopp/solarisbay/issues/876)
+* **chat:** music wishlist as a fact-query over album entities (replaces [#859](https://github.com/mdopp/solarisbay/issues/859) note) ([9a3672a](https://github.com/mdopp/solarisbay/commit/9a3672a259330a3d2707824f462a7f6cd9d10c6d)), closes [#879](https://github.com/mdopp/solarisbay/issues/879)
+* **chat:** music/OKF substrate — album entity + source-tagged facts ([#873](https://github.com/mdopp/solarisbay/issues/873) P1+P2) ([8b8b7d0](https://github.com/mdopp/solarisbay/commit/8b8b7d00e5f764481960ef1bb4ac79c98c60455c))
+* **chat:** physical-collection notes contribute owned_physical facts to album entities ([7485552](https://github.com/mdopp/solarisbay/commit/74855521ddd213dd7dc1146c08a51378ba006e9a)), closes [#880](https://github.com/mdopp/solarisbay/issues/880)
+* **chat:** prune legacy per-song OKF markdown + embeddings to projection-only ([4612dfb](https://github.com/mdopp/solarisbay/commit/4612dfb50713d98d8d5358577fad40aa5e5e0cab)), closes [#878](https://github.com/mdopp/solarisbay/issues/878)
+* **chat:** stenograph writes used_to_love music facts from conversations ([6c1f554](https://github.com/mdopp/solarisbay/commit/6c1f55495cfb635f5c37eb7d74eec17e54de7deb)), closes [#881](https://github.com/mdopp/solarisbay/issues/881)
+* **chat:** YouTube-Music import job writes wishlist facts to album entities ([3760abf](https://github.com/mdopp/solarisbay/commit/3760abf7711d25a6d38d3cf741fadba19ce41192)), closes [#868](https://github.com/mdopp/solarisbay/issues/868)
+* **engine:** calendar Takeout importer PUTs to Radicale via CalDAV ([8f3920d](https://github.com/mdopp/solarisbay/commit/8f3920d5fb5ad8b4812789b8a4ac79c3b9d16a15)), closes [#865](https://github.com/mdopp/solarisbay/issues/865)
+* **engine:** contacts Takeout importer PUTs to Radicale via CardDAV ([4e03fb4](https://github.com/mdopp/solarisbay/commit/4e03fb4aee602f87b9ae7aa8865a4b0296650192)), closes [#866](https://github.com/mdopp/solarisbay/issues/866)
+* **engine:** Google-Takeout calendar/contacts/keep importers + retire [#859](https://github.com/mdopp/solarisbay/issues/859) note-enrichment ([19d2e3e](https://github.com/mdopp/solarisbay/commit/19d2e3e6634bec522936ea5f4c39c59c05f17497))
+* **engine:** keep Takeout importer writes Obsidian Markdown to the vault ([a761db7](https://github.com/mdopp/solarisbay/commit/a761db7263a2f9ee76f64e894cd03de287d91177)), closes [#867](https://github.com/mdopp/solarisbay/issues/867)
+* import capability foundation (S1-S3) + notes-search skill fix ([547d844](https://github.com/mdopp/solarisbay/commit/547d844d3cbf58587fd944c2d5e95ad3f6a69c45))
+* **solarisbay:** add durable engine_import_jobs store and runner ([c5c862d](https://github.com/mdopp/solarisbay/commit/c5c862d805bea51331f75680299e229f305c7fcf)), closes [#864](https://github.com/mdopp/solarisbay/issues/864)
+* **solarisbay:** enrich music-wishlist notes from OKF in the night run ([20c0a6a](https://github.com/mdopp/solarisbay/commit/20c0a6a65b3378c72abc1466ac6cf6e809b276ef)), closes [#859](https://github.com/mdopp/solarisbay/issues/859)
+* **solarisbay:** vendor Google-Takeout import core into the engine ([1605e7c](https://github.com/mdopp/solarisbay/commit/1605e7c98b606a53a8454ca0e03f45d7bf1b2911)), closes [#863](https://github.com/mdopp/solarisbay/issues/863)
+
+
+### Bug Fixes
+
+* **skill:** point notes-search at the notes_search tool ([273c58f](https://github.com/mdopp/solarisbay/commit/273c58f91a494792233ef1a73fa957e79a785db7)), closes [#862](https://github.com/mdopp/solarisbay/issues/862)
+
 ## [0.27.0](https://github.com/mdopp/solarisbay/compare/v0.26.0...v0.27.0) (2026-07-17)
 
 
