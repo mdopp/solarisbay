@@ -2,6 +2,7 @@ import io
 import json
 import zipfile
 
+from solaris_chat.engine.importers import google_takeout as gt
 from solaris_chat.engine.importers.google_takeout.importers import keep
 
 TEXT = json.dumps(
@@ -93,3 +94,20 @@ def test_missing_attachment_reported(tmp_path):
     target = _target(tmp_path, "keepu3")
     rep = keep.do_import(target, [("n.json", note)])
     assert rep["attachments_missing"] == 1
+
+
+def test_keep_kind_registered_and_run_writes_to_vault(tmp_path):
+    imp = gt.get("keep")
+    assert imp is not None
+    assert isinstance(imp, gt.Importer)  # satisfies the runtime-checkable protocol
+    files = [("a.json", TEXT), ("b.json", LIST), ("c.json", TRASH)]
+    plan = imp.plan({"files": files}, None)
+    assert plan.kind == "keep"
+    assert plan.summary["notes"] == 2
+    target = _target(tmp_path, "keepkind")
+    reports = imp.run(plan, {"target": target})
+    assert reports[0]["written"] == 2
+    assert reports[0]["target"] == str(target)
+    joined = "\n".join(p.read_text() for p in target.glob("*.md"))
+    assert "source: google-keep" in joined
+    assert 'tags: ["Haushalt"]' in joined

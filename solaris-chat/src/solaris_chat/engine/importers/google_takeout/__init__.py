@@ -112,5 +112,9 @@ def _register_kinds() -> None:
     else:
         register("contacts", ContactsImporter())
 
+    from .importers.keep import KeepImporter
+
+    register("keep", KeepImporter())
+
 
 _register_kinds()
