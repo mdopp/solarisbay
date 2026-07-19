@@ -822,6 +822,8 @@ def _seed_projection(tmp_path):
     conn = sqlite3.connect(db)
     conn.executescript(_PROJECTION_DDL)
     month = datetime.now(timezone.utc).strftime("%Y-%m")
+    _now = datetime.now(timezone.utc)
+    prev_month = f"{_now.year if _now.month > 1 else _now.year - 1:04d}-{(_now.month - 1) or 12:02d}"
     conn.executemany(
         "INSERT INTO entities"
         " (id, type, canonical_name, resident_uid, source, content_hash, updated)"
@@ -868,6 +870,24 @@ def _seed_projection(tmp_path):
                 "journal/2026/2026-07-02.md",
                 "h5",
                 f"{month}-01 08:30",
+            ),
+            # Two albums in a PRIOR month: they populate the `albums` doorway kind
+            # (updated-agnostic) without touching this month's growth-series count.
+            (
+                "c-album-a",
+                "e-album-a",
+                "album",
+                "okf/albums/kind-of-blue.md",
+                "h6",
+                f"{prev_month}-01 08:40",
+            ),
+            (
+                "c-album-b",
+                "e-album-b",
+                "album",
+                "okf/albums/blue-train.md",
+                "h7",
+                f"{prev_month}-01 08:45",
             ),
         ],
     )
@@ -941,8 +961,9 @@ async def test_overview_from_db_scopes_to_caller(aiohttp_client, tmp_path):
 
 
 async def test_overview_kinds_counts_from_db(aiohttp_client, tmp_path):
-    # Card-1 doorways (#notes-redesign P1): counts per knowledge kind from the DB —
-    # entity kinds from entities.type, topics/journal from concepts.okf_path folders.
+    # Card-1 doorways (#notes-redesign P1): data-driven {domain: count} from the
+    # concepts.okf_path 2nd-level folder — only domains that actually exist, and
+    # only with count>0. Non-okf paths (journal/…) are not doorways.
     client = await aiohttp_client(_db_app(tmp_path))
     j = await (
         await client.get("/api/portal/notes", headers={"Remote-User": "household"})
@@ -950,11 +971,9 @@ async def test_overview_kinds_counts_from_db(aiohttp_client, tmp_path):
     assert j["ok"]
     assert j["kinds"] == {
         "people": 1,
-        "places": 1,
-        "albums": 0,
         "events": 1,
         "topics": 1,
-        "journal": 1,
+        "albums": 2,
     }
 
 

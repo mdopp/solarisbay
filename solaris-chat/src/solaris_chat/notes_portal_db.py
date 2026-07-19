@@ -92,38 +92,23 @@ def _top(counts: dict[str, int], top_n: int) -> list[dict[str, Any]]:
     return [{"value": k, "count": v} for k, v in ranked[:top_n]]
 
 
-# Card-1 "doorway" kinds → their DB count source. Entity kinds count `entities`
-# rows by `type` (owner ∪ shared by `resident_uid`); topics/journal count
-# `concepts` by the `okf_path` folder they live under (path-scoped).
-_ENTITY_KINDS = {
-    "people": "person",
-    "places": "place",
-    "albums": "album",
-    "events": "event",
-}
-_CONCEPT_KIND_PREFIX = {"topics": "okf/topics/", "journal": "journal/"}
-
-
 def _kind_counts(conn: sqlite3.Connection, uid: str) -> dict[str, int]:
-    """Counts per knowledge kind for Card 1's doorways (owner ∪ shared).
+    """Counts per OKF domain for Card 1's doorways (owner ∪ shared).
 
-    Entity kinds (people/places/albums/events) from `entities.type`; topics and
-    journal from the `concepts.okf_path` folder — all indexed, no vault walk."""
-    kinds: dict[str, int] = {}
-    type_rows = conn.execute(
-        "SELECT type, COUNT(*) AS n FROM entities"
-        " WHERE resident_uid IN (?, ?) GROUP BY type",
-        (uid, notes_search.SHARED_UID),
-    ).fetchall()
-    by_type = {r["type"]: r["n"] for r in type_rows}
-    for kind, etype in _ENTITY_KINDS.items():
-        kinds[kind] = by_type.get(etype, 0)
+    Data-driven: a domain is the 2nd-level folder of an `okf/<domain>/…` concept
+    path (`events`/`albums`/`bands`/`notes`/people/places/… — whatever actually
+    exists), counted straight from `concepts.okf_path`. One indexed GROUP BY, no
+    vault walk. Only domains with a count are returned, so a doorway is only shown
+    for knowledge that exists."""
     oscope, oparams = _scope_clause("okf_path", uid)
-    for kind, prefix in _CONCEPT_KIND_PREFIX.items():
-        kinds[kind] = conn.execute(
-            f"SELECT COUNT(*) AS n FROM concepts WHERE {oscope} AND okf_path LIKE ?",  # noqa: S608
-            [*oparams, f"{prefix}%"],
-        ).fetchone()["n"]
+    rows = conn.execute(
+        f"SELECT okf_path FROM concepts WHERE {oscope} AND okf_path LIKE 'okf/%/%'",  # noqa: S608
+        oparams,
+    ).fetchall()
+    kinds: dict[str, int] = {}
+    for r in rows:
+        domain = r["okf_path"].replace("\\", "/").split("/", 2)[1]
+        kinds[domain] = kinds.get(domain, 0) + 1
     return kinds
 
 
