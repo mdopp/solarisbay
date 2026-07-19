@@ -126,10 +126,10 @@ approval (from the SSE `servicebay` event) and hands off to that authed web acti
   for that uid (backgrounded). Payload `{title, body, data:{kind:"chat"|"reminder"|"card_state"|"servicebay", …}}`;
   service worker `/sw.js` shows it and deep-links on click.
 
-> Note: device-token `/napi/push/subscribe` twins were added in v0.26.0 for a
+> Note: device-token `/napi/push/subscribe` twins were briefly added in v0.26.0 for a
 > UnifiedPush experiment that the architecture has since rejected (native app uses SSE,
-> not Web Push). They are **not** part of the native contract and are candidates for
-> removal — do not build against them.
+> not Web Push). They were **not** part of the native contract and have since been
+> **removed** — there is no `/napi/push/*`.
 
 ## 5. Android app-domain binding (TWA)
 

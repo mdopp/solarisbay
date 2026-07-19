@@ -15,7 +15,7 @@ import sqlite3
 
 import pytest
 
-from solaris_chat import device_token_store, push_store
+from solaris_chat import push_store
 from solaris_chat.engine.notify import EventBus, Notifier
 from solaris_chat.engine.scheduler import TimerScheduler
 from solaris_chat.engine.sb_events import SbApprovalEventBridge
@@ -36,35 +36,11 @@ CREATE TABLE push_subscriptions (
 CREATE INDEX push_subscriptions_owner_idx ON push_subscriptions (owner_uid);
 """
 
-# The device-token table migration 0021 creates (for the /napi device-token gate).
-_DEVICE_TOKENS_SCHEMA = """
-CREATE TABLE device_tokens (
-  id         TEXT PRIMARY KEY,
-  owner_uid  TEXT NOT NULL,
-  token_hash TEXT NOT NULL UNIQUE,
-  label      TEXT,
-  created    TEXT NOT NULL DEFAULT (datetime('now')),
-  last_used  TEXT,
-  revoked    INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX device_tokens_hash_idx ON device_tokens (token_hash);
-CREATE INDEX device_tokens_owner_idx ON device_tokens (owner_uid);
-"""
-
 
 def _db(tmp_path) -> str:
     path = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(path)
     conn.executescript(_SCHEMA)
-    conn.commit()
-    conn.close()
-    return path
-
-
-def _db_with_device_tokens(tmp_path) -> str:
-    path = _db(tmp_path)
-    conn = sqlite3.connect(path)
-    conn.executescript(_DEVICE_TOKENS_SCHEMA)
     conn.commit()
     conn.close()
     return path
@@ -164,72 +140,6 @@ async def test_unsubscribe_only_removes_own_endpoint(aiohttp_client, tmp_path):
     )
     assert r.status == 200
     assert len(push_store.list_for_uid(db, "lena")) == 1
-
-
-# ---- /napi/push/* (device-token, fail-closed, owner-scoped, #843) ---------
-
-
-async def test_napi_subscribe_without_token_is_401(aiohttp_client, tmp_path):
-    db = _db_with_device_tokens(tmp_path)
-    client = await aiohttp_client(_app(tmp_path, db))
-    body = {"endpoint": "https://up/1", "keys": {"p256dh": "p", "auth": "a"}}
-    # No `sol_device_` bearer, and a Remote-User header must NOT authenticate.
-    r = await client.post(
-        "/napi/push/subscribe", json=body, headers={"Remote-User": "mdopp"}
-    )
-    assert r.status == 401
-    assert push_store.list_for_uid(db, "mdopp") == []
-
-
-async def test_napi_subscribe_stores_owner_scoped(aiohttp_client, tmp_path):
-    db = _db_with_device_tokens(tmp_path)
-    _, token = device_token_store.create(db, "mdopp")
-    client = await aiohttp_client(_app(tmp_path, db))
-    body = {"endpoint": "https://up/1", "keys": {"p256dh": "p", "auth": "a"}}
-    r = await client.post(
-        "/napi/push/subscribe",
-        json=body,
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert r.status == 200
-    subs = push_store.list_for_uid(db, "mdopp")
-    assert subs[0]["owner_uid"] == "mdopp" and subs[0]["endpoint"] == "https://up/1"
-    assert push_store.list_for_uid(db, "lena") == []
-
-
-async def test_napi_unsubscribe_removes_owner_scoped(aiohttp_client, tmp_path):
-    db = _db_with_device_tokens(tmp_path)
-    _, token = device_token_store.create(db, "mdopp")
-    push_store.upsert(db, "mdopp", "https://up/1", "p", "a")
-    client = await aiohttp_client(_app(tmp_path, db))
-    r = await client.post(
-        "/napi/push/unsubscribe",
-        json={"endpoint": "https://up/1"},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert r.status == 200
-    assert push_store.list_for_uid(db, "mdopp") == []
-
-
-async def test_napi_and_api_subscribe_share_one_store(aiohttp_client, tmp_path):
-    db = _db_with_device_tokens(tmp_path)
-    _, token = device_token_store.create(db, "mdopp")
-    client = await aiohttp_client(_app(tmp_path, db))
-    # /napi (device token) and /api (Remote-User) write the SAME push_store row set.
-    await client.post(
-        "/napi/push/subscribe",
-        json={"endpoint": "https://up/napi", "keys": {"p256dh": "p", "auth": "a"}},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    await client.post(
-        "/api/push/subscribe",
-        json={"endpoint": "https://up/api", "keys": {"p256dh": "p", "auth": "a"}},
-        headers={"Remote-User": "mdopp"},
-    )
-    assert sorted(s["endpoint"] for s in push_store.list_for_uid(db, "mdopp")) == [
-        "https://up/api",
-        "https://up/napi",
-    ]
 
 
 async def test_whoami_returns_vapid_public_key(aiohttp_client, tmp_path):
