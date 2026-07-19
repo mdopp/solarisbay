@@ -646,12 +646,54 @@
     .energy-tile .et-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: var(--ink); }
     .energy-tile .et-value .et-unit { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 4px; }
     .energy-tile .et-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-    /* Notizen portal (#696): search box, note rows, compact frontmatter block. */
-    .notes-search {
-      width: 100%; box-sizing: border-box; margin: 12px 0 4px;
-      padding: 10px 12px; border-radius: 10px; font: inherit;
-      background: var(--panel-solid); color: var(--ink); border: 1px solid var(--line);
+    /* Notizen portal (#696): note rows, compact frontmatter block. */
+    /* Notizen redesign (Phase I): a prominent "Dein Gedächtnis" card with kind
+       doorways + a transparency explainer + compact curation, a collapsed "Mehr",
+       and an Insights placeholder. Reuses the app's glass tone. */
+    .notes-card {
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--panel); padding: 16px; margin: 12px 0;
     }
+    .notes-card-title { font-size: 17px; font-weight: 700; color: var(--ink); }
+    .notes-card-lead { color: var(--muted); font-size: 14px; margin: 4px 0 12px; line-height: 1.5; }
+    .notes-doorways {
+      display: grid; gap: 10px; margin: 4px 0 14px;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    }
+    .notes-door {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+      padding: 12px 14px; border-radius: 12px; cursor: pointer; text-align: left;
+      border: 1px solid var(--line); background: rgba(127,127,127,0.05);
+      color: var(--ink); font: inherit; transition: border-color .15s, background .15s;
+    }
+    .notes-door:hover { border-color: var(--accent); background: var(--panel-solid); }
+    .notes-door .nd-emoji { font-size: 20px; line-height: 1; }
+    .notes-door .nd-count { font-size: 24px; font-weight: 700; line-height: 1.1; }
+    .notes-door .nd-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .notes-explainer {
+      margin: 4px 0 14px; padding: 12px 14px; border-radius: 10px;
+      background: var(--panel-solid); border: 1px solid var(--line);
+    }
+    .notes-explainer-head { font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+    .notes-explainer p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+    .notes-curation { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
+    .notes-curation-line {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      font-size: 14px; color: var(--ink);
+    }
+    .notes-curation-line > span { flex: 1 1 auto; min-width: 0; color: var(--muted); }
+    .notes-spark { margin-top: 12px; }
+    .notes-more-toggle {
+      display: block; width: 100%; box-sizing: border-box; margin: 14px 0 4px;
+      padding: 10px 12px; border-radius: 10px; cursor: pointer; font: inherit;
+      color: var(--muted); background: rgba(127,127,127,0.05); border: 1px solid var(--line);
+    }
+    .notes-more-toggle:hover { border-color: var(--accent); color: var(--accent); }
+    .notes-insights {
+      border: 1px dashed var(--line); border-radius: var(--radius);
+      background: rgba(127,127,127,0.03); padding: 16px; margin: 14px 0;
+    }
+    .notes-insights-note { color: var(--muted); font-size: 14px; margin: 4px 0 0; font-style: italic; }
     .notes-list { display: flex; flex-direction: column; }
     .note-row {
       display: block; padding: 9px 10px; border-radius: 8px;
@@ -5499,6 +5541,24 @@
           .catch(function () { card.textContent = "Konnte die Notizen nicht laden."; });
       }
 
+      // The knowledge kinds shown as Card-1 doorways: [label, emoji, browse-`by`].
+      // A tap opens the EXISTING Durchstöbern grouping for that kind (browse only
+      // groups topic/person/journal/okf — places/albums/events share the `okf`
+      // grouping, which lists those domains).
+      var NOTES_KINDS = [
+        ["people", "Personen", "👤", "person"],
+        ["places", "Orte", "📍", "okf"],
+        ["albums", "Alben", "🎵", "okf"],
+        ["events", "Events", "📅", "okf"],
+        ["topics", "Themen", "#", "topic"],
+        ["journal", "Journal", "📓", "journal"],
+      ];
+
+      // The Notizen page redesign (Phase I): a focused, guiding surface. It opens
+      // to Card 1 "Dein Gedächtnis" (kind doorways + a transparency explainer +
+      // compact curation), then a short recent list, a collapsed "Mehr" for the
+      // heavy stats, and an empty Insights placeholder a later phase fills. The
+      // chat is the search interface, so there is no on-page search box.
       function renderNotesPage(card, data) {
         card.textContent = "";
         card.classList.add("start-page");
@@ -5510,160 +5570,252 @@
         head.appendChild(title);
         card.appendChild(head);
 
-        // Überblick: total notes / fact files / inbox / last Bibliothekar run.
-        var c = data.counts || {};
-        var tiles = document.createElement("div");
-        tiles.className = "energy-tiles";
-        [
-          ["Notizen", c.notes, data.truncated],
-          ["Fakten", c.facts],
-          ["Posteingang", c.inbox],
-        ].forEach(function (t) {
-          var tile = document.createElement("div");
-          tile.className = "energy-tile";
-          var val = document.createElement("div");
-          val.className = "et-value";
-          // #705: the vault walk is bounded; a truncated scan shows "≥N".
-          val.textContent =
-            t[1] == null ? "—" : (t[2] ? "≥" : "") + String(t[1]);
-          var lab = document.createElement("div");
-          lab.className = "et-label";
-          lab.textContent = t[0];
-          tile.appendChild(val);
-          tile.appendChild(lab);
-          tiles.appendChild(tile);
-        });
-        card.appendChild(tiles);
+        // ---- Card 1: "Dein Gedächtnis" (always first, prominent) ----
+        var mem = document.createElement("div");
+        mem.className = "notes-card notes-memory";
+        card.appendChild(mem);
 
-        // Posteingang (#697): unkonsolidierte Fakten kuratieren — je Eintrag
-        // → Thema / → Person / Archivieren, plus "Jetzt kuratieren" (Bibliothekar).
-        card.appendChild(conceptSectionTitle("Posteingang"));
-        var curateBtn = document.createElement("button");
-        curateBtn.type = "button";
-        curateBtn.className = "anchor-chip";
-        curateBtn.textContent = "Jetzt kuratieren";
-        card.appendChild(curateBtn);
-        var inbox = document.createElement("div");
-        inbox.className = "notes-list";
-        card.appendChild(inbox);
-        loadNotesInbox(inbox);
-        curateBtn.addEventListener("click", function () {
-          curateBtn.disabled = true;
-          curateBtn.textContent = "Kuratiere…";
-          fetch("/api/portal/notes/curate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: "{}",
-          })
-            .then(function (r) { return r.json().catch(function () { return null; }); })
-            .then(function (j) {
-              curateBtn.disabled = false;
-              curateBtn.textContent = "Jetzt kuratieren";
-              if (j && j.ok) loadNotesInbox(inbox);
+        var memHead = document.createElement("div");
+        memHead.className = "notes-card-title";
+        memHead.textContent = "Dein Gedächtnis";
+        mem.appendChild(memHead);
+        var memLead = document.createElement("p");
+        memLead.className = "notes-card-lead";
+        memLead.textContent =
+          "Alles, woran sich Solaris für euch erinnert — nach Art geordnet. " +
+          "Tippe eine Kachel an, um dort zu stöbern.";
+        mem.appendChild(memLead);
+
+        // Kinds as clickable doorways; counts come from the DB (data.kinds).
+        var kinds = data.kinds || {};
+        var doors = document.createElement("div");
+        doors.className = "notes-doorways";
+        NOTES_KINDS.forEach(function (k) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "notes-door";
+          var em = document.createElement("span");
+          em.className = "nd-emoji";
+          em.textContent = k[2];
+          var num = document.createElement("span");
+          num.className = "nd-count";
+          num.textContent = kinds[k[0]] == null ? "—" : String(kinds[k[0]]);
+          var lab = document.createElement("span");
+          lab.className = "nd-label";
+          lab.textContent = k[1];
+          b.appendChild(em);
+          b.appendChild(num);
+          b.appendChild(lab);
+          b.addEventListener("click", function () { openNotesBrowseView(k[3], k[1]); });
+          doors.appendChild(b);
+        });
+        mem.appendChild(doors);
+
+        // "So entsteht dein Wissen" — the transparency the maintainer asked for:
+        // what triggers knowledge to be saved.
+        var expl = document.createElement("div");
+        expl.className = "notes-explainer";
+        var explHead = document.createElement("div");
+        explHead.className = "notes-explainer-head";
+        explHead.textContent = "So entsteht dein Wissen";
+        expl.appendChild(explHead);
+        var explBody = document.createElement("p");
+        explBody.textContent =
+          "Du sprichst mit Solaris — nachts merkt sich der Stenograph die Fakten " +
+          "aus euren Gesprächen. Fotos, Musik, Kalender und Kontakte fließen über " +
+          "den Import dazu. Der Bibliothekar räumt das alles nachts auf und webt es " +
+          "zu einem einzigen Wissensgraph zusammen.";
+        expl.appendChild(explBody);
+        mem.appendChild(expl);
+
+        // Kuratier-Basis (compact): a one-line inbox teaser that expands on demand,
+        // plus the compact Google-Takeout import entry — not an always-open list.
+        var curation = document.createElement("div");
+        curation.className = "notes-curation";
+        mem.appendChild(curation);
+
+        var inboxN = (data.counts || {}).inbox;
+        var inboxLine = document.createElement("div");
+        inboxLine.className = "notes-curation-line";
+        var inboxText = document.createElement("span");
+        inboxText.textContent =
+          (inboxN == null ? "—" : String(inboxN)) +
+          " lose Fakten warten auf Zuordnung";
+        var inboxToggle = document.createElement("button");
+        inboxToggle.type = "button";
+        inboxToggle.className = "anchor-chip";
+        inboxToggle.textContent = "kuratieren";
+        inboxLine.appendChild(inboxText);
+        inboxLine.appendChild(inboxToggle);
+        curation.appendChild(inboxLine);
+
+        var inboxPanel = document.createElement("div");
+        inboxPanel.className = "notes-inbox-panel";
+        inboxPanel.hidden = true;
+        curation.appendChild(inboxPanel);
+        var inboxLoaded = false;
+        inboxToggle.addEventListener("click", function () {
+          inboxPanel.hidden = !inboxPanel.hidden;
+          inboxToggle.classList.toggle("resolved", !inboxPanel.hidden);
+          if (inboxPanel.hidden || inboxLoaded) return;
+          inboxLoaded = true;
+          var curateBtn = document.createElement("button");
+          curateBtn.type = "button";
+          curateBtn.className = "anchor-chip";
+          curateBtn.textContent = "Jetzt kuratieren";
+          inboxPanel.appendChild(curateBtn);
+          var inbox = document.createElement("div");
+          inbox.className = "notes-list";
+          inboxPanel.appendChild(inbox);
+          loadNotesInbox(inbox);
+          curateBtn.addEventListener("click", function () {
+            curateBtn.disabled = true;
+            curateBtn.textContent = "Kuratiere…";
+            fetch("/api/portal/notes/curate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: "{}",
             })
-            .catch(function () {
-              curateBtn.disabled = false;
-              curateBtn.textContent = "Jetzt kuratieren";
-            });
-        });
-
-        // Google-Daten importieren (#869 P4b): drop a Takeout .zip here → the
-        // server classifies it and injects a plan card into the chat; live
-        // progress + result stream back and are mirrored in the status panel.
-        renderImportSection(card);
-
-        // Bibliothekar: die letzten okf/log.md-Läufe lesbar.
-        if (data.librarian && data.librarian.length) {
-          card.appendChild(conceptSectionTitle("Bibliothekar"));
-          var libList = document.createElement("div");
-          libList.className = "notes-list";
-          data.librarian.slice().reverse().forEach(function (ln) {
-            var row = document.createElement("div");
-            row.className = "note-row";
-            row.textContent = ln;
-            libList.appendChild(row);
-          });
-          card.appendChild(libList);
-        }
-
-        // Suche über die vereinheitlichte notes_search.
-        var search = document.createElement("input");
-        search.type = "search";
-        search.className = "notes-search";
-        search.placeholder = "Notizen durchsuchen…";
-        card.appendChild(search);
-        var results = document.createElement("div");
-        results.className = "notes-list";
-        card.appendChild(results);
-        var searchTimer = null;
-        search.addEventListener("input", function () {
-          if (searchTimer) clearTimeout(searchTimer);
-          var q = search.value.trim();
-          searchTimer = setTimeout(function () {
-            if (!q) { results.textContent = ""; return; }
-            fetch("/api/portal/notes/search?q=" + encodeURIComponent(q))
-              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (r) { return r.json().catch(function () { return null; }); })
               .then(function (j) {
-                results.textContent = "";
-                if (!j || !j.ok || !j.hits.length) {
-                  results.textContent = "Nichts gefunden.";
-                  return;
-                }
-                j.hits.forEach(function (h) {
-                  results.appendChild(noteRow(h.path, h.title || h.path));
-                });
+                curateBtn.disabled = false;
+                curateBtn.textContent = "Jetzt kuratieren";
+                if (j && j.ok) loadNotesInbox(inbox);
               })
-              .catch(function () { results.textContent = "Suche fehlgeschlagen."; });
-          }, 250);
-        });
-
-        // Durchstöbern: chips that swap the list below to a grouped browse.
-        card.appendChild(conceptSectionTitle("Durchstöbern"));
-        var chips = document.createElement("div");
-        chips.className = "anchor-chips";
-        card.appendChild(chips);
-        var browse = document.createElement("div");
-        browse.className = "notes-browse";
-        card.appendChild(browse);
-        [
-          ["#Themen", "topic"],
-          ["@Personen", "person"],
-          ["Journal", "journal"],
-          ["OKF", "okf"],
-          ["Ordner", "folder"],
-        ].forEach(function (b) {
-          var chip = document.createElement("button");
-          chip.type = "button";
-          chip.className = "anchor-chip";
-          chip.textContent = b[0];
-          chip.addEventListener("click", function () {
-            Array.prototype.forEach.call(chips.children, function (el) {
-              el.classList.toggle("resolved", el === chip);
-            });
-            loadNotesBrowse(browse, b[1]);
+              .catch(function () {
+                curateBtn.disabled = false;
+                curateBtn.textContent = "Jetzt kuratieren";
+              });
           });
-          chips.appendChild(chip);
         });
 
-        // Statistik (#699): frequent tags/persons, category breakdown, monthly
-        // growth, and the most-linked entities — one owner-scoped scan.
-        card.appendChild(conceptSectionTitle("Statistik"));
-        var stats = document.createElement("div");
-        stats.className = "notes-stats";
-        stats.textContent = "Lade…";
-        card.appendChild(stats);
-        loadNotesStats(stats);
+        // Google-Takeout import kept, but compact: a one-line teaser that expands
+        // the existing drop+status section on demand.
+        var importLine = document.createElement("div");
+        importLine.className = "notes-curation-line";
+        var importText = document.createElement("span");
+        importText.textContent = "Google-Daten (Takeout) importieren";
+        var importToggle = document.createElement("button");
+        importToggle.type = "button";
+        importToggle.className = "anchor-chip";
+        importToggle.textContent = "importieren";
+        importLine.appendChild(importText);
+        importLine.appendChild(importToggle);
+        curation.appendChild(importLine);
+        var importPanel = document.createElement("div");
+        importPanel.className = "notes-import-panel";
+        importPanel.hidden = true;
+        curation.appendChild(importPanel);
+        var importLoaded = false;
+        importToggle.addEventListener("click", function () {
+          importPanel.hidden = !importPanel.hidden;
+          importToggle.classList.toggle("resolved", !importPanel.hidden);
+          if (importPanel.hidden || importLoaded) return;
+          importLoaded = true;
+          renderImportSection(importPanel);
+        });
 
-        // Recently modified.
+        // A small growth sparkline (reuses the stats endpoint's month series).
+        var spark = document.createElement("div");
+        spark.className = "notes-spark";
+        mem.appendChild(spark);
+        fetch("/api/portal/notes/stats")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (j && j.ok && j.months && j.months.length) {
+              spark.appendChild(growthChart(j.months));
+            }
+          })
+          .catch(function () {});
+
+        // ---- Zuletzt bearbeitet (short recent list, 5 items) ----
         if (data.recent && data.recent.length) {
-          card.appendChild(conceptSectionTitle("Zuletzt geändert"));
+          card.appendChild(conceptSectionTitle("Zuletzt bearbeitet"));
           var recent = document.createElement("div");
           recent.className = "notes-list";
-          data.recent.forEach(function (r) {
+          data.recent.slice(0, 5).forEach(function (r) {
             recent.appendChild(noteRow(r.path, r.title || r.path));
           });
           card.appendChild(recent);
         }
+
+        // ---- "Mehr anzeigen": the heavy Statistik + Bibliothekar log, collapsed
+        // and lazy-loaded (loadNotesStats only runs on first expand). ----
+        var moreToggle = document.createElement("button");
+        moreToggle.type = "button";
+        moreToggle.className = "notes-more-toggle";
+        moreToggle.textContent = "Mehr anzeigen";
+        card.appendChild(moreToggle);
+        var morePanel = document.createElement("div");
+        morePanel.className = "notes-more-panel";
+        morePanel.hidden = true;
+        card.appendChild(morePanel);
+        var moreLoaded = false;
+        moreToggle.addEventListener("click", function () {
+          morePanel.hidden = !morePanel.hidden;
+          moreToggle.textContent = morePanel.hidden ? "Mehr anzeigen" : "Weniger anzeigen";
+          if (morePanel.hidden || moreLoaded) return;
+          moreLoaded = true;
+          morePanel.appendChild(conceptSectionTitle("Statistik"));
+          var stats = document.createElement("div");
+          stats.className = "notes-stats";
+          stats.textContent = "Lade…";
+          morePanel.appendChild(stats);
+          loadNotesStats(stats);
+          if (data.librarian && data.librarian.length) {
+            morePanel.appendChild(conceptSectionTitle("Bibliothekar"));
+            var libList = document.createElement("div");
+            libList.className = "notes-list";
+            data.librarian.slice().reverse().forEach(function (ln) {
+              var row = document.createElement("div");
+              row.className = "note-row";
+              row.textContent = ln;
+              libList.appendChild(row);
+            });
+            morePanel.appendChild(libList);
+          }
+        });
+
+        // ---- Insights placeholder (Phase III fills this) ----
+        var insights = document.createElement("div");
+        insights.id = "notes-insights";
+        insights.className = "notes-insights";
+        var insHead = document.createElement("div");
+        insHead.className = "notes-card-title";
+        insHead.textContent = "Insights";
+        var insNote = document.createElement("p");
+        insNote.className = "notes-insights-note";
+        insNote.textContent = "Solaris bereitet Insights vor…";
+        insights.appendChild(insHead);
+        insights.appendChild(insNote);
+        card.appendChild(insights);
+      }
+
+      // A doorway opens a standalone browse view for one kind — a focused page
+      // (back → the notes overview) that reuses the existing grouped browse.
+      function openNotesBrowseView(by, label) {
+        clearLog();
+        var card = document.createElement("div");
+        card.className = "msg info concept-card start-page";
+        log.appendChild(card);
+        card.scrollIntoView({ block: "start" });
+        var head = document.createElement("div");
+        head.className = "concept-head";
+        var back = document.createElement("button");
+        back.type = "button";
+        back.className = "anchor-chip note-back";
+        back.textContent = "← Notizen";
+        back.addEventListener("click", function () { openPortal("notes"); });
+        head.appendChild(back);
+        var title = document.createElement("span");
+        title.className = "concept-title";
+        title.textContent = label;
+        head.appendChild(title);
+        card.appendChild(head);
+        var browse = document.createElement("div");
+        browse.className = "notes-browse";
+        card.appendChild(browse);
+        loadNotesBrowse(browse, by);
       }
 
       // ---- Google-Takeout import (#869 P4b) --------------------------------

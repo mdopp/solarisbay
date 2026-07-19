@@ -829,6 +829,7 @@ def _seed_projection(tmp_path):
         [
             ("e-anna", "person", "Anna", "household", "okf", "h1", f"{month}-01 10:00"),
             ("e-fest", "event", "Fest", "household", "okf", "h2", f"{month}-01 11:00"),
+            ("e-park", "place", "Park", "household", "okf", "h3", f"{month}-01 12:00"),
         ],
     )
     conn.executemany(
@@ -851,6 +852,22 @@ def _seed_projection(tmp_path):
                 "okf/events/2026-07-01-fest.md",
                 "h2",
                 f"{month}-05 09:00",
+            ),
+            (
+                "c-garten",
+                "t-garten",
+                "topic",
+                "okf/topics/garten.md",
+                "h4",
+                f"{month}-01 08:00",
+            ),
+            (
+                "c-tag",
+                "j-tag",
+                "journal",
+                "journal/2026/2026-07-02.md",
+                "h5",
+                f"{month}-01 08:30",
             ),
         ],
     )
@@ -908,10 +925,10 @@ async def test_overview_from_db_no_vault_walk(aiohttp_client, tmp_path, monkeypa
     assert j["counts"]["facts"] == 1
     # recent comes from concepts.updated (newest first): the event's file leads.
     assert j["recent"][0]["path"] == "okf/events/2026-07-01-fest.md"
-    assert {r["path"] for r in j["recent"]} == {
+    assert {
         "okf/events/2026-07-01-fest.md",
         "okf/people/anna.md",
-    }
+    }.issubset({r["path"] for r in j["recent"]})
 
 
 async def test_overview_from_db_scopes_to_caller(aiohttp_client, tmp_path):
@@ -921,6 +938,24 @@ async def test_overview_from_db_scopes_to_caller(aiohttp_client, tmp_path):
     ).json()
     # Anna sees her own private note in the count (5), household saw only 4.
     assert j["counts"]["notes"] == 5
+
+
+async def test_overview_kinds_counts_from_db(aiohttp_client, tmp_path):
+    # Card-1 doorways (#notes-redesign P1): counts per knowledge kind from the DB —
+    # entity kinds from entities.type, topics/journal from concepts.okf_path folders.
+    client = await aiohttp_client(_db_app(tmp_path))
+    j = await (
+        await client.get("/api/portal/notes", headers={"Remote-User": "household"})
+    ).json()
+    assert j["ok"]
+    assert j["kinds"] == {
+        "people": 1,
+        "places": 1,
+        "albums": 0,
+        "events": 1,
+        "topics": 1,
+        "journal": 1,
+    }
 
 
 async def test_stats_from_db_no_vault_walk(aiohttp_client, tmp_path, monkeypatch):
@@ -948,7 +983,7 @@ async def test_stats_from_db_no_vault_walk(aiohttp_client, tmp_path, monkeypatch
     # A dense 12-month growth series from concepts.updated.
     assert len(j["months"]) == 12
     key = datetime.now(timezone.utc).strftime("%Y-%m")
-    assert any(m["month"] == key and m["count"] == 2 for m in j["months"])
+    assert any(m["month"] == key and m["count"] == 4 for m in j["months"])
     # Most-linked from event_entities edge counts.
     linked = {link_["value"]: link_["count"] for link_ in j["linked"]}
     assert linked.get("Anna") == 1

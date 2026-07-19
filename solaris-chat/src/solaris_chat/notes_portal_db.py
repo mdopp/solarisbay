@@ -92,6 +92,41 @@ def _top(counts: dict[str, int], top_n: int) -> list[dict[str, Any]]:
     return [{"value": k, "count": v} for k, v in ranked[:top_n]]
 
 
+# Card-1 "doorway" kinds → their DB count source. Entity kinds count `entities`
+# rows by `type` (owner ∪ shared by `resident_uid`); topics/journal count
+# `concepts` by the `okf_path` folder they live under (path-scoped).
+_ENTITY_KINDS = {
+    "people": "person",
+    "places": "place",
+    "albums": "album",
+    "events": "event",
+}
+_CONCEPT_KIND_PREFIX = {"topics": "okf/topics/", "journal": "journal/"}
+
+
+def _kind_counts(conn: sqlite3.Connection, uid: str) -> dict[str, int]:
+    """Counts per knowledge kind for Card 1's doorways (owner ∪ shared).
+
+    Entity kinds (people/places/albums/events) from `entities.type`; topics and
+    journal from the `concepts.okf_path` folder — all indexed, no vault walk."""
+    kinds: dict[str, int] = {}
+    type_rows = conn.execute(
+        "SELECT type, COUNT(*) AS n FROM entities"
+        " WHERE resident_uid IN (?, ?) GROUP BY type",
+        (uid, notes_search.SHARED_UID),
+    ).fetchall()
+    by_type = {r["type"]: r["n"] for r in type_rows}
+    for kind, etype in _ENTITY_KINDS.items():
+        kinds[kind] = by_type.get(etype, 0)
+    oscope, oparams = _scope_clause("okf_path", uid)
+    for kind, prefix in _CONCEPT_KIND_PREFIX.items():
+        kinds[kind] = conn.execute(
+            f"SELECT COUNT(*) AS n FROM concepts WHERE {oscope} AND okf_path LIKE ?",  # noqa: S608
+            [*oparams, f"{prefix}%"],
+        ).fetchone()["n"]
+    return kinds
+
+
 def overview(
     db_path: str,
     uid: str,
@@ -102,8 +137,9 @@ def overview(
     """The `/api/portal/notes` overview from `solaris.db`, or None to fall back.
 
     `notes`/`facts` counts come from `fts_notes_meta` (path-scoped COUNTs), `recent`
-    from the most-recently-`updated` `concepts` joined to their `okf_path` — no vault
-    walk. `inbox`/`librarian` are the caller's bounded/cheap reads passed in."""
+    from the most-recently-`updated` `concepts` joined to their `okf_path`, and
+    `kinds` per-knowledge-kind counts for Card 1's doorways — no vault walk.
+    `inbox`/`librarian` are the caller's bounded/cheap reads passed in."""
     conn = _connect(db_path)
     if conn is None:
         return None
@@ -124,6 +160,7 @@ def overview(
             f" WHERE {oscope} ORDER BY updated DESC LIMIT 10",  # noqa: S608
             oparams,
         ).fetchall()
+        kinds = _kind_counts(conn, uid)
     finally:
         conn.close()
     recent = [
@@ -135,6 +172,7 @@ def overview(
         "truncated": False,
         "librarian": librarian,
         "recent": recent,
+        "kinds": kinds,
     }
 
 
