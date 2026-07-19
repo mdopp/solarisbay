@@ -4044,6 +4044,17 @@ def build_app(
         """Action-card callback: dismiss the plan without importing (#869)."""
         return {"ok": True, "detail": "abgebrochen"}
 
+    async def import_status(request: web.Request) -> web.Response:
+        """The caller's latest import job — live status/progress for the Notizen
+        "Google-Daten importieren" section so a long import stays visible and a
+        reload re-attaches (#869 P4b). Read-only, owner-scoped via `latest_for`."""
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        if import_jobs is None:
+            return web.json_response({"ok": True, "job": None})
+        return web.json_response({"ok": True, "job": import_jobs.latest_for(uid)})
+
     # The import plan-card buttons (#869). Confirm WRITES (calendar/contacts into
     # Radicale, notes into the vault, wishlist facts onto album entities), so it is
     # confirm-gated via the same mechanism the destructive Wartung cards use.
@@ -4896,6 +4907,9 @@ def build_app(
     # a Takeout `.zip` from the web app. No `native(...)` wrapper — the device-token
     # gate is only for the proxy-bypassed `/napi/` prefix.
     app.router.add_post("/api/upload", napi_upload)
+    # Import job status (#869 P4b): the Notizen import section polls this to show
+    # live progress + re-attach to a running import after a reload (owner-scoped).
+    app.router.add_get("/api/import/status", import_status)
     # ServiceBay BFF reads (#811): re-serve SB's companion reads under Solaris's
     # own /napi so the app never talks to ServiceBay directly (ADR 0010).
     app.router.add_get("/napi/servicebay/{key}", native(servicebay_read))
