@@ -460,6 +460,153 @@ async def test_bad_op(tmp_path):
     assert "error" in out
 
 
+# ---- wishlist (#879): "was anschaffen" as a QUERY over album facts ----------
+#
+# The acquire-list = (wishlist OR used_to_love) AND NOT owned_physical AND NOT
+# digitally-present. Digital presence is the album-exists-via-Jellyfin signal:
+# an `on_album → albums/<slug>` edge from a Jellyfin song (ADR 0003) — no
+# separate has_digital fact. The producers land in P2b/P2c/P3, so seeded here.
+
+
+def _album(conn, ent_id, name, slug, owner, *, okf_prefix="okf", facts=()):
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES (?, 'album', ?, ?, 'note', 'h')",
+        (ent_id, name, owner),
+    )
+    conn.execute(
+        "INSERT INTO concepts (id, ref_id, ref_kind, okf_path, content_hash)"
+        " VALUES (?, ?, 'entity', ?, 'h')",
+        (f"c-{ent_id}", ent_id, f"{okf_prefix}/albums/{slug}.md"),
+    )
+    for i, (predicate, value, source) in enumerate(facts):
+        conn.execute(
+            "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate,"
+            " value, source) VALUES (?, ?, ?, ?, ?, ?)",
+            (f"alf-{ent_id}-{i}", ent_id, owner, predicate, value, source),
+        )
+
+
+def _song_on_album(conn, ent_id, title, album_slug, owner):
+    """A Jellyfin-projected song with an `on_album → albums/<slug>` edge — the
+    digital-presence signal for its album (no separate has_digital fact)."""
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES (?, 'song', ?, ?, 'jellyfin', 'h')",
+        (ent_id, title, owner),
+    )
+    conn.execute(
+        "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate, value,"
+        " source) VALUES (?, ?, ?, 'on_album', ?, 'jellyfin')",
+        (f"oa-{ent_id}", ent_id, owner, f"albums/{album_slug}"),
+    )
+
+
+async def test_wishlist_includes_wanted_and_used_to_love(tmp_path):
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    _album(
+        conn,
+        "al-a",
+        "Artist A – Wanted",
+        "artist-a-wanted",
+        "household",
+        facts=[("wishlist", "", "import")],
+    )
+    _album(
+        conn,
+        "al-b",
+        "Artist B – Nostalgia",
+        "artist-b-nostalgia",
+        "household",
+        facts=[("used_to_love", "", "stenograph")],
+    )
+    conn.commit()
+    conn.close()
+    out = await _call(db, "mdopp", {"op": "wishlist"})
+    assert out["total"] == 2
+    assert set(out["albums"]) == {"Artist A – Wanted", "Artist B – Nostalgia"}
+
+
+async def test_wishlist_owned_physical_suppresses(tmp_path):
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    _album(
+        conn,
+        "al-own",
+        "Artist C – Owned",
+        "artist-c-owned",
+        "household",
+        facts=[("used_to_love", "", "note"), ("owned_physical", "vinyl", "note")],
+    )
+    conn.commit()
+    conn.close()
+    out = await _call(db, "mdopp", {"op": "wishlist"})
+    assert out["total"] == 0
+    assert out["albums"] == []
+
+
+async def test_wishlist_digital_presence_suppresses(tmp_path):
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    # Wanted, but a Jellyfin song links to it via on_album -> digitally present.
+    _album(
+        conn,
+        "al-dig",
+        "Artist D – Digital",
+        "artist-d-digital",
+        "household",
+        facts=[("wishlist", "", "import")],
+    )
+    _song_on_album(conn, "s-dig", "Track 1", "artist-d-digital", "household")
+    conn.commit()
+    conn.close()
+    out = await _call(db, "mdopp", {"op": "wishlist"})
+    assert out["total"] == 0
+
+
+async def test_wishlist_no_facts_album_excluded(tmp_path):
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    # A plain Jellyfin album with no wishlist/used_to_love fact is not on the list.
+    _album(conn, "al-plain", "Artist E – Plain", "artist-e-plain", "household")
+    conn.commit()
+    conn.close()
+    out = await _call(db, "mdopp", {"op": "wishlist"})
+    assert out["total"] == 0
+
+
+async def test_wishlist_per_resident_scoped(tmp_path):
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    # cdopp wants a private album; a household one is shared.
+    _album(
+        conn,
+        "al-priv",
+        "Artist F – Private",
+        "artist-f-private",
+        "cdopp",
+        okf_prefix="users/cdopp/okf",
+        facts=[("wishlist", "", "import")],
+    )
+    _album(
+        conn,
+        "al-shared",
+        "Artist G – Shared",
+        "artist-g-shared",
+        "household",
+        facts=[("wishlist", "", "import")],
+    )
+    conn.commit()
+    conn.close()
+    # mdopp sees only the shared one, never cdopp's private wishlist.
+    out_mdopp = await _call(db, "mdopp", {"op": "wishlist"})
+    assert out_mdopp["albums"] == ["Artist G – Shared"]
+    # cdopp sees their own private one plus the shared one.
+    out_cdopp = await _call(db, "cdopp", {"op": "wishlist"})
+    assert set(out_cdopp["albums"]) == {"Artist F – Private", "Artist G – Shared"}
+
+
 # ---- song_lyrics (#593): on-demand live lyrics ------------------------------
 
 

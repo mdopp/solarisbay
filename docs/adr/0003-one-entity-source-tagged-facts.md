@@ -29,6 +29,25 @@ artist ──has──▶ album ──contains──▶ song
 `album` and `artist` become first-class OKF entities. Every fact carries `source`
 (and confidence) so its origin is known.
 
+### Album fact-predicate conventions (what producers write)
+
+These are the documented predicates on an **`album` entity**. Each is a
+source-tagged fact (`predicate`, `value`, `source`) the query surface reads.
+
+| predicate | value | source | written by |
+|---|---|---|---|
+| `has_digital` | — (**never written**) | — | — (see below) |
+| `owned_physical` | `cd` \| `vinyl` \| `cassette` | `note` | P2b physical-collection note (#880) |
+| `wishlist` | `""` (presence flag) | `import` | P3 music-import job (#868) |
+| `used_to_love` | `""` (presence flag) | `stenograph` / `note` | P2c chat extraction (#881) / P2b note (#880) |
+| `source` | free text (where to acquire, e.g. `"Freund X"`) | `note` | P2b note (#880) |
+
+**No `has_digital` fact is written** — Jellyfin already gives the digital signal:
+an album is *digitally present* iff a Jellyfin-projected `song` links to it via an
+`on_album → albums/<slug>` edge (the album/song exists, #876/#877). Presence of
+that edge **is** `has_digital`; a redundant fact would just be a second copy to
+keep in sync (against ADR 0004). Producers therefore never assert `has_digital`.
+
 ## Value (why B3 is worth it)
 
 This is **not new machinery** — it reuses the OKF `entities`/`facts` model that
