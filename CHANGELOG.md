@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.2](https://github.com/mdopp/solarisbay/compare/v0.28.1...v0.28.2) (2026-07-19)
+
+
+### Performance Improvements
+
+* **chat:** index entity resolution to fix O(n^2) ingest ([56060b1](https://github.com/mdopp/solarisbay/commit/56060b1e4895f69f2b981ec9d668359444fb701b))
+* **chat:** index entity resolution to fix O(n^2) ingest ([44a571c](https://github.com/mdopp/solarisbay/commit/44a571c8dfce75ccf52edf58851d11570bc0e60a))
+
 ## [0.28.1](https://github.com/mdopp/solarisbay/compare/v0.28.0...v0.28.1) (2026-07-19)
 
 
