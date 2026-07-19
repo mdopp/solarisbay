@@ -1,6 +1,6 @@
 ---
 name: solaris-notes-search
-description: Read-only keyword + frontmatter retrieval over the household Obsidian vault. Use to find/recall a note, or show everything under a topic.
+description: Read-only keyword + frontmatter retrieval over the household Obsidian vault via the notes_search tool. Use to find/recall a note, or show everything under a topic.
 kind: skill
 scope: household
 command: /notes
@@ -13,7 +13,7 @@ license: MIT
 
 On-demand retrieval over the household's Obsidian notes vault (`/opt/data/notes`,
 Syncthing-synced) — the **read half** of the knowledge base. Keyword +
-frontmatter search via `ripgrep`; not semantic vector search. Read-only. Also
+frontmatter search via the `notes_search` tool. Read-only. Also
 runnable on demand as `/notes <query>`.
 
 ## When to use
@@ -33,20 +33,15 @@ conversation history (the engine's memory provider).
 
 1. **Derive search terms** from the request — key nouns/entities plus the
    German/English variant (the vault is bilingual).
-2. **Search with `ripgrep`** via the `terminal` tool, case-insensitive:
-   ```bash
-   rg -il "<term>" /opt/data/notes/
-   rg -i -n -C2 "<term>" /opt/data/notes/<hit>.md
-   ```
-   Also try the filename conventions (`book_*`, `album_*`, `fact_*`,
-   `journal/journal_*`, `authors/`, `people/`, `places/`).
+2. **Search with the `notes_search` tool**, passing the derived terms as the
+   `query`. It keyword-, name-, and meaning-searches the vault and returns the
+   ranked note paths — you never shell out to search the files yourself. For a
+   time-bounded request set `after`/`before` as ISO dates.
    - **Topic filter (required for a topic request).** Slugify the named topic
-     (lower-case, spaces → `-`, hierarchy joined by `/`) and match both tag forms:
-     ```bash
-     rg -il "#?topic/projekt/wintergarten\b" /opt/data/notes/
-     ```
-     The slug boundary matters: `projekt/wintergarten` must not pull in
-     `projekt/wintergartendach`. If unsure of the exact name, fall back to keywords.
+     (lower-case, spaces → `-`, hierarchy joined by `/`) and pass it as a
+     `#topic/<slug>` anchor in the `query` (e.g. `#topic/projekt/wintergarten`);
+     the tool boosts the notes tagged with that exact topic. If unsure of the
+     exact name, fall back to keywords.
 3. **Rank + pick** the 1–5 most relevant notes (prefer frontmatter/title hits over
    incidental body mentions). For a topic request, list the matching set.
 4. **Read the chosen notes** with `notes_read`.
