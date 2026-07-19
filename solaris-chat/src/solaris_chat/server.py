@@ -32,6 +32,7 @@ from solaris_chat import (
     device_token_store,
     favorites_store,
     mentions_store,
+    notes_portal_db,
     notes_search,
     personalities,
     push_store,
@@ -387,6 +388,24 @@ def _notes_last_librarian(notes_dir: str, lines: int = 8) -> list[str]:
     return [ln for ln in text.splitlines() if ln.strip()][-lines:]
 
 
+def _notes_overview_payload(notes_dir: str, db_path: str, uid: str) -> dict[str, Any]:
+    """The overview from `solaris.db` (perf: no vault walk), or the vault scan.
+
+    Serves note/fact counts + recent from the FTS index and OKF projection; the
+    inbox is the existing bounded fact scan and the librarian trail a bounded tail
+    read (both cheap). Falls back to the full `_notes_overview_scan` only when the
+    projection is missing (fresh install / unmigrated db), so nothing breaks."""
+    payload = notes_portal_db.overview(
+        db_path,
+        uid,
+        inbox_count=_notes_inbox_count(notes_dir, uid),
+        librarian=_notes_last_librarian(notes_dir),
+    )
+    if payload is None:
+        return _notes_overview_scan(notes_dir, uid)
+    return payload
+
+
 # ---- Notes portal V2 (#697): inbox curation workbench -------------------------
 # The inbox is the same signal the nightly Bibliothekar curates (#653): stale,
 # unconsolidated fact files, scoped to the caller ∪ shared pool. Assign folds a
@@ -739,6 +758,18 @@ def _notes_stats_scan(notes_dir: str, uid: str, top_n: int = 12) -> dict[str, An
         "months": series,
         "linked": _top(links),
     }
+
+
+def _notes_stats_payload(notes_dir: str, db_path: str, uid: str) -> dict[str, Any]:
+    """The Statistik payload from `solaris.db` (perf: no vault walk), or the scan.
+
+    Derives tags/persons (inline `mentions`), categories + growth (`concepts`),
+    and most-linked (`event_entities` edges) from indexed queries. Falls back to
+    the full `_notes_stats_scan` only when the projection is missing."""
+    payload = notes_portal_db.stats(db_path, uid)
+    if payload is None:
+        return _notes_stats_scan(notes_dir, uid)
+    return payload
 
 
 # Readable German labels for the common HA services a favorite can carry (#741),
@@ -3486,7 +3517,9 @@ def build_app(
         cached = _notes_overview_cache.get(uid)
         if cached and now - cached[0] < _NOTES_OVERVIEW_TTL:
             return web.json_response(cached[1])
-        payload = await asyncio.to_thread(_notes_overview_scan, notes_dir, uid)
+        payload = await asyncio.to_thread(
+            _notes_overview_payload, notes_dir, solaris_db_path, uid
+        )
         _notes_overview_cache[uid] = (now, payload)
         return web.json_response(payload)
 
@@ -3636,7 +3669,9 @@ def build_app(
         cached = _notes_stats_cache.get(uid)
         if cached and now - cached[0] < _NOTES_STATS_TTL:
             return web.json_response(cached[1])
-        payload = await asyncio.to_thread(_notes_stats_scan, notes_dir, uid)
+        payload = await asyncio.to_thread(
+            _notes_stats_payload, notes_dir, solaris_db_path, uid
+        )
         _notes_stats_cache[uid] = (now, payload)
         return web.json_response(payload)
 

@@ -12,8 +12,19 @@ from __future__ import annotations
 import time
 from datetime import datetime, timedelta, timezone
 
-from solaris_chat import notes_search
+import pytest
+
+from solaris_chat import notes_search, server
 from solaris_chat.server import STATIC_DIR, build_app
+
+
+@pytest.fixture(autouse=True)
+def _clear_notes_caches():
+    """The overview/stats TTL caches are module-level and keyed only by uid, so a
+    prior test's payload would leak into a later same-uid one — reset between."""
+    server._notes_overview_cache.clear()
+    server._notes_stats_cache.clear()
+    yield
 
 
 class _FakeEngine:
@@ -747,3 +758,207 @@ def test_notes_v2_inbox_ui_wired():
     assert '"/api/portal/notes/" + kind' in _HTML
     assert "Jetzt kuratieren" in _HTML
     assert "→ Thema" in _HTML and "→ Person" in _HTML and "Archivieren" in _HTML
+
+
+# --- DB-backed overview + stats (perf #830-follow-up): serve from solaris.db, no
+#     full-vault walk. The projection schema is owned by alembic (not importable
+#     from a chat test), so these seed the tables with the same DDL by hand.
+
+import sqlite3  # noqa: E402
+
+from solaris_chat import notes_index  # noqa: E402
+
+_PROJECTION_DDL = """
+CREATE TABLE entities (
+  id TEXT PRIMARY KEY, type TEXT NOT NULL, canonical_name TEXT NOT NULL,
+  resident_uid TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE entity_aliases (
+  entity_id TEXT NOT NULL, alias TEXT NOT NULL, PRIMARY KEY (entity_id, alias));
+CREATE TABLE facts (
+  id TEXT PRIMARY KEY, subject_entity_id TEXT, resident_uid TEXT NOT NULL,
+  predicate TEXT NOT NULL, value TEXT NOT NULL, confidence REAL,
+  source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE events (
+  id TEXT PRIMARY KEY, ts TEXT NOT NULL, resident_uid TEXT NOT NULL,
+  kind TEXT NOT NULL, source TEXT NOT NULL);
+CREATE TABLE event_entities (
+  event_id TEXT NOT NULL, entity_id TEXT NOT NULL, role TEXT NOT NULL,
+  PRIMARY KEY (event_id, entity_id, role));
+CREATE TABLE concepts (
+  id TEXT PRIMARY KEY, ref_id TEXT NOT NULL, ref_kind TEXT NOT NULL,
+  okf_path TEXT NOT NULL, embedding_id TEXT, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE mentions (
+  session_id TEXT NOT NULL, message_ref INTEGER NOT NULL, kind TEXT NOT NULL,
+  value TEXT NOT NULL, owner_uid TEXT NOT NULL,
+  PRIMARY KEY (session_id, message_ref, kind, value));
+"""
+
+
+def _seed_projection(tmp_path):
+    """A vault + a solaris.db projection over it: FTS rows for the notes, OKF
+    concepts/entities/events for recent/categories/growth/most-linked, and inline
+    mentions for tags/persons — so the DB-backed path has real data to serve."""
+    root = tmp_path / "notes"
+    (root / "okf" / "people").mkdir(parents=True)
+    (root / "okf" / "events").mkdir(parents=True)
+    (root / "facts").mkdir(parents=True)
+    (root / "users" / "anna").mkdir(parents=True)
+    (root / "shared.md").write_text("# Wintergarten\n", encoding="utf-8")
+    (root / "okf" / "people" / "anna.md").write_text(
+        "---\ntype: person\n---\n\n# Anna\n", encoding="utf-8"
+    )
+    (root / "okf" / "events" / "2026-07-01-fest.md").write_text(
+        "# Fest\n", encoding="utf-8"
+    )
+    (root / "facts" / "2026-07-01-alt.md").write_text("# alt\n", encoding="utf-8")
+    (root / "users" / "anna" / "geheim.md").write_text("# geheim\n", encoding="utf-8")
+
+    db = str(tmp_path / "solaris.db")
+    # FTS index over the vault (fts_notes / fts_notes_meta) — the note-count source.
+    notes_index.backfill(db, str(root))
+
+    conn = sqlite3.connect(db)
+    conn.executescript(_PROJECTION_DDL)
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    conn.executemany(
+        "INSERT INTO entities"
+        " (id, type, canonical_name, resident_uid, source, content_hash, updated)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("e-anna", "person", "Anna", "household", "okf", "h1", f"{month}-01 10:00"),
+            ("e-fest", "event", "Fest", "household", "okf", "h2", f"{month}-01 11:00"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO concepts"
+        " (id, ref_id, ref_kind, okf_path, content_hash, updated)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (
+                "c-anna",
+                "e-anna",
+                "entity",
+                "okf/people/anna.md",
+                "h1",
+                f"{month}-02 09:00",
+            ),
+            (
+                "c-fest",
+                "e-fest",
+                "event",
+                "okf/events/2026-07-01-fest.md",
+                "h2",
+                f"{month}-05 09:00",
+            ),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO events (id, ts, resident_uid, kind, source)"
+        " VALUES ('ev1', ?, 'household', 'gathering', 'okf')",
+        (f"{month}-01T11:00:00",),
+    )
+    conn.execute(
+        "INSERT INTO event_entities (event_id, entity_id, role)"
+        " VALUES ('ev1', 'e-anna', 'participant')"
+    )
+    conn.executemany(
+        "INSERT INTO mentions (session_id, message_ref, kind, value, owner_uid)"
+        " VALUES (?, ?, ?, ?, ?)",
+        [
+            ("s1", 0, "tag", "garten", "household"),
+            ("s1", 1, "tag", "garten", "household"),
+            ("s2", 0, "tag", "garten", "household"),
+            ("s1", 0, "tag", "urlaub", "household"),
+            ("s1", 0, "person", "anna", "household"),
+            ("s1", 0, "tag", "nuranna", "anna"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return root, db
+
+
+def _db_app(tmp_path):
+    root, db = _seed_projection(tmp_path)
+    return build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(root),
+    )
+
+
+async def test_overview_from_db_no_vault_walk(aiohttp_client, tmp_path, monkeypatch):
+    # A full-vault walk must NOT run: fail the test loudly if iter_vault_md is hit.
+    def _boom(*a, **k):
+        raise AssertionError("full-vault walk ran on the DB-backed overview")
+
+    app = _db_app(tmp_path)
+    monkeypatch.setattr(notes_search, "iter_vault_md", _boom)
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get("/api/portal/notes", headers={"Remote-User": "household"})
+    ).json()
+    assert j["ok"]
+    # 4 shared notes indexed (anna's private note excluded for the household caller).
+    assert j["counts"]["notes"] == 4
+    assert j["counts"]["facts"] == 1
+    # recent comes from concepts.updated (newest first): the event's file leads.
+    assert j["recent"][0]["path"] == "okf/events/2026-07-01-fest.md"
+    assert {r["path"] for r in j["recent"]} == {
+        "okf/events/2026-07-01-fest.md",
+        "okf/people/anna.md",
+    }
+
+
+async def test_overview_from_db_scopes_to_caller(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_db_app(tmp_path))
+    j = await (
+        await client.get("/api/portal/notes", headers={"Remote-User": "anna"})
+    ).json()
+    # Anna sees her own private note in the count (5), household saw only 4.
+    assert j["counts"]["notes"] == 5
+
+
+async def test_stats_from_db_no_vault_walk(aiohttp_client, tmp_path, monkeypatch):
+    def _boom(*a, **k):
+        raise AssertionError("full-vault walk ran on the DB-backed stats")
+
+    app = _db_app(tmp_path)
+    monkeypatch.setattr(notes_search, "iter_vault_md", _boom)
+    client = await aiohttp_client(app)
+    j = await (
+        await client.get(
+            "/api/portal/notes/stats", headers={"Remote-User": "household"}
+        )
+    ).json()
+    assert j["ok"]
+    tags = {t["value"]: t["count"] for t in j["tags"]}
+    assert tags.get("garten") == 3  # 3 distinct (session, message) mentions
+    assert tags.get("urlaub") == 1
+    assert "nuranna" not in tags  # anna-scoped, not the household caller's
+    persons = {p["value"]: p["count"] for p in j["persons"]}
+    assert persons.get("anna") == 1
+    # Categories from concepts.okf_path folders.
+    cats = {c["value"]: c["count"] for c in j["categories"]}
+    assert cats.get("okf/people") == 1 and cats.get("okf/events") == 1
+    # A dense 12-month growth series from concepts.updated.
+    assert len(j["months"]) == 12
+    key = datetime.now(timezone.utc).strftime("%Y-%m")
+    assert any(m["month"] == key and m["count"] == 2 for m in j["months"])
+    # Most-linked from event_entities edge counts.
+    linked = {link_["value"]: link_["count"] for link_ in j["linked"]}
+    assert linked.get("Anna") == 1
+
+
+async def test_overview_falls_back_without_projection(aiohttp_client, tmp_path):
+    # No solaris.db projection → the vault-scan path still serves the overview.
+    client = await aiohttp_client(_app(tmp_path))
+    j = await (
+        await client.get("/api/portal/notes", headers={"Remote-User": "household"})
+    ).json()
+    assert j["ok"]
+    assert j["counts"]["facts"] == 2
