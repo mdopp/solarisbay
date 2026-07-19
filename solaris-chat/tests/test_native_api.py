@@ -1111,3 +1111,62 @@ def test_ha_watch_unions_native_watch_into_pinned_owners(tmp_path):
     )
     watcher._refresh_pins()
     assert watcher._owners == {"light.buero": {"lena"}}
+
+
+# ---- /api/import/status — Notizen import section live status (#869 P4b) -----
+
+
+class _StubJobs:
+    """Minimal JobRunner stand-in — the status route only calls latest_for."""
+
+    def __init__(self, by_owner):
+        self._by_owner = by_owner
+
+    def latest_for(self, owner):
+        return self._by_owner.get(owner)
+
+
+def _import_app(tmp_path, db, jobs):
+    return build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        import_jobs=jobs,
+    )
+
+
+async def test_import_status_without_session_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_import_app(tmp_path, db, _StubJobs({})))
+    r = await client.get("/api/import/status")
+    assert r.status == 401
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+
+
+async def test_import_status_no_job_returns_null(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_import_app(tmp_path, db, _StubJobs({})))
+    r = await client.get("/api/import/status", headers={"Remote-User": "mdopp"})
+    assert r.status == 200
+    assert (await r.json()) == {"ok": True, "job": None}
+
+
+async def test_import_status_reflects_latest_job_owner_scoped(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    snap = {
+        "jobId": "abc123",
+        "status": "running",
+        "progress": {"stage": "keep", "pct": 40, "message": "Notizen 210/340…"},
+        "result": None,
+        "error": None,
+    }
+    jobs = _StubJobs({"mdopp": snap})
+    client = await aiohttp_client(_import_app(tmp_path, db, jobs))
+    # mdopp sees their running import.
+    r = await client.get("/api/import/status", headers={"Remote-User": "mdopp"})
+    assert (await r.json()) == {"ok": True, "job": snap}
+    # lena has no job → null (owner-scoped via latest_for).
+    r = await client.get("/api/import/status", headers={"Remote-User": "lena"})
+    assert (await r.json()) == {"ok": True, "job": None}

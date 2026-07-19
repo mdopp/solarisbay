@@ -116,5 +116,11 @@ def _register_kinds() -> None:
 
     register("keep", KeepImporter())
 
+    # ytmusicapi is imported lazily inside music_shopping, so the kind loads
+    # without it (the album-resolution phase is what actually needs it).
+    from .importers.music import MusicImporter
+
+    register("music", MusicImporter())
+
 
 _register_kinds()

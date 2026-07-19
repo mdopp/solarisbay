@@ -661,6 +661,31 @@
     .note-row:last-child { border-bottom: 0; }
     .note-row:hover { background: var(--bubble-sol); }
     .note-back { margin-right: 6px; }
+    /* Google-Takeout import (#869 P4b): a friendly explainer + drag-drop dropzone
+       in the Notizen page, plus a live status panel. Reuses the app's glass tone. */
+    .import-intro { color: var(--muted); font-size: 14px; margin: 6px 0 10px; line-height: 1.5; }
+    .import-drop {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      padding: 26px 16px; margin: 4px 0 10px; text-align: center; cursor: pointer;
+      border: 1.5px dashed var(--line); border-radius: var(--radius);
+      background: var(--panel); color: var(--muted); transition: border-color .15s, color .15s, background .15s;
+    }
+    .import-drop:hover, .import-drop.over { border-color: var(--accent); color: var(--accent); background: var(--panel-solid); }
+    .import-drop .id-title { font-weight: 600; color: var(--ink); font-size: 15px; }
+    .import-drop .id-hint { font-size: 13px; }
+    .import-drop.busy { pointer-events: none; opacity: 0.75; }
+    .import-status {
+      margin: 4px 0 10px; padding: 12px 14px; border-radius: var(--radius);
+      background: var(--panel-solid); border: 1px solid var(--line); font-size: 14px;
+    }
+    .import-status .is-title { font-weight: 600; margin-bottom: 4px; }
+    .import-status .is-body { color: var(--muted); }
+    .import-status.done .is-title { color: var(--accent); }
+    .import-status.failed .is-title { color: #dc2626; }
+    .import-bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 8px 0 2px; }
+    .import-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
+    .import-note { color: var(--muted); font-size: 13px; margin-top: 8px; }
+    .import-note a { color: var(--accent); }
     .note-frontmatter {
       display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
       margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px;
@@ -1481,7 +1506,7 @@
           <textarea id="input" rows="1" placeholder="type message or /help" autofocus></textarea>
           <button id="send" class="btn-primary" type="submit" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
           <button id="stop" class="composer-icon stop" type="button" title="Antwort stoppen" aria-label="Antwort stoppen" hidden><svg class="ic"><use href="#i-stop"></use></svg></button>
-          <input id="file-input" type="file" accept="image/*" hidden />
+          <input id="file-input" type="file" accept="image/*,.zip" hidden />
         </form>
       </div>
     </section>
@@ -4156,6 +4181,15 @@
           var f = fileInput.files && fileInput.files[0];
           fileInput.value = "";
           if (!f) return;
+          // A Takeout .zip routes to the interactive import (#869) — uploaded
+          // straight to /api/upload; the plan card comes back over the chat SSE.
+          // Images keep the crop-then-attach path.
+          if ((f.type === "application/zip" || /\.zip$/i.test(f.name || ""))) {
+            closeModal();
+            addText("system", "Dein Google-Takeout-Archiv wird analysiert… gleich erscheint hier dein Import-Plan.");
+            uploadTakeout(f, null, null);
+            return;
+          }
           var rd = new FileReader();
           rd.onload = function () { startCrop(String(rd.result)); };
           rd.readAsDataURL(f);
@@ -5533,6 +5567,11 @@
             });
         });
 
+        // Google-Daten importieren (#869 P4b): drop a Takeout .zip here → the
+        // server classifies it and injects a plan card into the chat; live
+        // progress + result stream back and are mirrored in the status panel.
+        renderImportSection(card);
+
         // Bibliothekar: die letzten okf/log.md-Läufe lesbar.
         if (data.librarian && data.librarian.length) {
           card.appendChild(conceptSectionTitle("Bibliothekar"));
@@ -5625,6 +5664,196 @@
           });
           card.appendChild(recent);
         }
+      }
+
+      // ---- Google-Takeout import (#869 P4b) --------------------------------
+      // The whole flow reuses the existing pipeline: the .zip is POSTed to
+      // /api/upload, the server classifies it and injects a plan action-card into
+      // the household chat (rendered by the SSE `card` handler), and the durable
+      // import job streams progress/result cards the same way. This Notizen
+      // section is the entry point + a calm status mirror; it never renders its
+      // own card primitives.
+      var importCategoryLabel = {
+        calendar: "Kalender", contacts: "Kontakte", keep: "Notizen", music: "YouTube-Music",
+      };
+
+      function renderImportSection(card) {
+        card.appendChild(conceptSectionTitle("Google-Daten importieren"));
+        var intro = document.createElement("p");
+        intro.className = "import-intro";
+        intro.textContent =
+          "Du hast bei Google einen Datenexport („Google Takeout“) angefordert? " +
+          "Lege die .zip hier ab — Solaris schaut hinein, zeigt dir im Chat, was drin ist " +
+          "(Kalender, Kontakte, Notizen, YouTube-Music), und importiert erst nach deiner Bestätigung. " +
+          "Alles landet zum Sichten im Posteingang.";
+        card.appendChild(intro);
+
+        var drop = document.createElement("div");
+        drop.className = "import-drop";
+        drop.setAttribute("role", "button");
+        drop.tabIndex = 0;
+        var dTitle = document.createElement("div");
+        dTitle.className = "id-title";
+        dTitle.textContent = "Takeout-Archiv (.zip) hier ablegen";
+        var dHint = document.createElement("div");
+        dHint.className = "id-hint";
+        dHint.textContent = "oder klicken, um eine Datei auszuwählen";
+        drop.appendChild(dTitle);
+        drop.appendChild(dHint);
+        card.appendChild(drop);
+
+        var fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = ".zip";
+        fileInput.hidden = true;
+        card.appendChild(fileInput);
+
+        var status = document.createElement("div");
+        status.className = "import-status";
+        status.hidden = true;
+        card.appendChild(status);
+
+        function pick() { if (!drop.classList.contains("busy")) fileInput.click(); }
+        drop.addEventListener("click", pick);
+        drop.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); }
+        });
+        fileInput.addEventListener("change", function () {
+          var f = fileInput.files && fileInput.files[0];
+          fileInput.value = "";
+          if (f) uploadTakeout(f, drop, status);
+        });
+        ["dragenter", "dragover"].forEach(function (ev) {
+          drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); });
+        });
+        ["dragleave", "dragend"].forEach(function (ev) {
+          drop.addEventListener(ev, function () { drop.classList.remove("over"); });
+        });
+        drop.addEventListener("drop", function (e) {
+          e.preventDefault();
+          drop.classList.remove("over");
+          var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+          if (f) uploadTakeout(f, drop, status);
+        });
+
+        // Re-attach on load: if a job is already running (or recently finished),
+        // show it — a reload mid-import lands back on a live status panel.
+        pollImportStatus(status);
+      }
+
+      function importSetStatus(el, cls, title, body) {
+        el.hidden = false;
+        el.className = "import-status" + (cls ? " " + cls : "");
+        el.textContent = "";
+        var t = document.createElement("div");
+        t.className = "is-title";
+        t.textContent = title;
+        el.appendChild(t);
+        if (body) {
+          var b = document.createElement("div");
+          b.className = "is-body";
+          b.textContent = body;
+          el.appendChild(b);
+        }
+        return el;
+      }
+
+      // POST the .zip to the shared upload endpoint; the server classifies it and
+      // injects the plan card into the chat. Shared by the dropzone and the chat
+      // .zip attach path — `statusEl` may be null (chat path has no panel).
+      function uploadTakeout(file, dropEl, statusEl) {
+        if (dropEl) dropEl.classList.add("busy");
+        if (statusEl) importSetStatus(statusEl, "", "Deine Google-Daten werden analysiert…",
+          "Einen Moment — Solaris schaut in " + file.name + " hinein.");
+        var fd = new FormData();
+        fd.append("file", file, file.name || "takeout.zip");
+        return fetch("/api/upload", { method: "POST", body: fd })
+          .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+          .then(function (res) {
+            if (dropEl) dropEl.classList.remove("busy");
+            var j = res.body || {};
+            if (!j.ok) {
+              var msg = j.error === "no importable data in archive"
+                ? "In diesem Archiv habe ich keine importierbaren Google-Daten gefunden."
+                : j.error === "archive too large" ? "Das Archiv ist zu groß."
+                : j.error === "unreadable archive" ? "Das Archiv konnte nicht gelesen werden."
+                : "Der Upload ist fehlgeschlagen.";
+              if (statusEl) importSetStatus(statusEl, "failed", "Upload fehlgeschlagen", msg);
+              return;
+            }
+            if (statusEl) {
+              var claims = (j.classification && j.classification.claims) || [];
+              var found = claims.map(function (c) {
+                return (importCategoryLabel[c.category] || c.category) + " (" + c.count + ")";
+              }).join(", ");
+              var el = importSetStatus(statusEl, "",
+                "Gefunden — im Chat wartet dein Import-Plan",
+                found ? "Gefunden: " + found + "." : "");
+              var note = document.createElement("div");
+              note.className = "import-note";
+              var a = document.createElement("a");
+              a.href = "#";
+              a.textContent = "Zum Chat wechseln, um zu bestätigen →";
+              a.addEventListener("click", function (e) { e.preventDefault(); showView("chat"); });
+              note.appendChild(a);
+              el.appendChild(note);
+            }
+            // The confirm + live progress happen via the chat card; mirror the
+            // job's live status here too so the section stays informative.
+            pollImportStatus(statusEl);
+          })
+          .catch(function () {
+            if (dropEl) dropEl.classList.remove("busy");
+            if (statusEl) importSetStatus(statusEl, "failed", "Upload fehlgeschlagen",
+              "Netzwerkfehler — bitte erneut versuchen.");
+          });
+      }
+
+      // Poll the durable job's status for the calm live mirror + reload-resume.
+      // Keeps polling while a job is running; renders result/failed once and stops.
+      var importPollTimer = null;
+      function pollImportStatus(statusEl) {
+        if (!statusEl) return;
+        if (importPollTimer) { clearTimeout(importPollTimer); importPollTimer = null; }
+        function tick() {
+          fetch("/api/import/status")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              var job = j && j.ok && j.job;
+              if (!job) return; // nothing to show — leave whatever's there
+              if (!document.body.contains(statusEl)) return; // page navigated away
+              var prog = job.progress || {};
+              if (job.status === "running") {
+                var el = importSetStatus(statusEl, "", "Import läuft …",
+                  prog.message || "Deine Google-Daten werden importiert…");
+                if (prog.pct != null) {
+                  var bar = document.createElement("div");
+                  bar.className = "import-bar";
+                  var fill = document.createElement("span");
+                  fill.style.width = Math.max(0, Math.min(100, prog.pct)) + "%";
+                  bar.appendChild(fill);
+                  el.appendChild(bar);
+                }
+                importPollTimer = setTimeout(tick, 1000);
+              } else if (job.status === "done") {
+                var per = (job.result && job.result.per_category) || {};
+                var parts = [];
+                if (per.calendar != null) parts.push(per.calendar + " Termine");
+                if (per.contacts != null) parts.push(per.contacts + " Kontakte");
+                if (per.keep != null) parts.push(per.keep + " Notizen");
+                if (per.music != null) parts.push(per.music + " Wunsch-Alben ergänzt");
+                var summary = parts.length
+                  ? "Fertig: " + parts.join(", ") + " — im Posteingang zum Sichten."
+                  : "Import abgeschlossen.";
+                importSetStatus(statusEl, "done", "Import abgeschlossen", summary);
+              } else if (job.status === "failed" || job.status === "interrupted") {
+                importSetStatus(statusEl, "failed", "Import fehlgeschlagen",
+                  job.error || "Der Import konnte nicht abgeschlossen werden.");
+              }
+            })
+            .catch(function () {});
+        }
+        tick();
       }
 
       function loadNotesStats(container) {

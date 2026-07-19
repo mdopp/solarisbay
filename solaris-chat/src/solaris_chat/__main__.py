@@ -210,6 +210,15 @@ async def _run() -> None:
         android_cert_fingerprints=settings.android_cert_fingerprints,
         ha_watcher=ha_watcher,
         native_watch=native_watch,
+        import_jobs=import_jobs,
+        caldav_url=settings.caldav_url,
+        caldav_username=settings.caldav_username,
+        caldav_password=settings.caldav_password,
+        carddav_url=settings.carddav_url,
+        carddav_username=settings.carddav_username,
+        carddav_password=settings.carddav_password,
+        music_dir=settings.music_dir,
+        import_data_dir=settings.import_data_dir,
     )
 
 
