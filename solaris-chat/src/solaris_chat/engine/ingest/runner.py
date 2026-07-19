@@ -38,6 +38,7 @@ from .prune import (
     prune_legacy_music_artifacts,
     prune_legacy_photo_artifacts,
 )
+from .upload_extract import ingest_uploads
 
 # Boot races pod startup: a source may be briefly unreachable (#531). Probe it a
 # few times with backoff before running its adapter, but never block boot — cap
@@ -54,6 +55,9 @@ async def run_ingest(settings: Settings) -> None:
     )
     uid = settings.default_uid
 
+    # Extract upload text into the companion `.md` bodies BEFORE the obsidian pass
+    # so this same cycle projects + indexes the newly written text (#…).
+    ingest_uploads(settings.notes_dir)
     _run_obsidian(settings, writer, uid)
     _run_exports(settings, writer)
     await _run_immich(settings, writer, uid)
