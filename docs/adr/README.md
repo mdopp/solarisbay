@@ -1,0 +1,25 @@
+# Architecture Decision Records
+
+An **ADR** captures one architectural decision: its context, the decision itself,
+and the consequences we accept by taking it. They are append-only history — when a
+decision changes, we add a new ADR that supersedes the old one rather than editing
+it away. They exist so the *why* survives longer than the person who decided it.
+
+These ADRs pin the rules for **where knowledge lives, why, and how we avoid holding
+the same thing twice** — the substrate under the Google-Takeout import (epic #860),
+the music/OKF substrate rework (#873), and everything that feeds the household
+knowledge graph.
+
+| ADR | Decision | One line |
+|---|---|---|
+| [0001](0001-import-transport-vs-semantics.md) | Import = transport (ServiceBay) vs semantics (Solaris) | ServiceBay moves bytes onto the box; Solaris turns bytes into knowledge. No second transport. |
+| [0002](0002-provenance-decides-substrate.md) | Provenance decides the substrate | Externally re-ingestable → SQLite only; self-originated → markdown note is truth. |
+| [0003](0003-one-entity-source-tagged-facts.md) | One entity, source-tagged facts | One album/artist = one node; every source contributes only `source`-tagged facts. |
+| [0004](0004-derived-lists-are-queries.md) | Derived lists are queries | Wishlist / shopping / "just rip" is a live query over facts, never a stored list. |
+| [0005](0005-lean-rag-no-cover-art.md) | Lean RAG, no cover art | Embeddings at album/artist granularity; no album cover images, only your own sleeve photo. |
+| [0006](0006-import-as-capability-plugins.md) | Import is a capability, sources are plugins | `Importer` protocol + registry; Takeout is the first source; the LLM classifies. |
+| [0007](0007-frontend-no-new-surface.md) | Frontend: no new surface | No new tab; reuse action-cards + the one Posteingang inbox. |
+
+See [`../data-flow.md`](../data-flow.md) for the human-facing overview: the
+consolidated requirements, the capability map (which data source flows to which
+store, over which capability, and what already exists), and the phased build plan.
