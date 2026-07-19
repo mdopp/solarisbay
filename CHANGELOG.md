@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.1](https://github.com/mdopp/solarisbay/compare/v0.31.0...v0.31.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* **chat:** OCR orientation and garbled-text-layer fallback for uploads ([#901](https://github.com/mdopp/solarisbay/issues/901)) ([aa0709b](https://github.com/mdopp/solarisbay/commit/aa0709bd4db8d686cb4a58d28e480b09fe10a64a))
+
 ## [0.31.0](https://github.com/mdopp/solarisbay/compare/v0.30.1...v0.31.0) (2026-07-19)
 
 
