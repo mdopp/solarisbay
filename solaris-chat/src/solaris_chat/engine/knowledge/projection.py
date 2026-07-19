@@ -489,6 +489,41 @@ def legacy_projection_only_concepts(
     return [dict(r) for r in rows]
 
 
+def legacy_projection_only_events(
+    conn: sqlite3.Connection, *, source: str, kind: str
+) -> list[dict[str, Any]]:
+    """The pre-projection-only per-item artifacts for a now-projection-only
+    (source, event kind) — the event mirror of `legacy_projection_only_concepts`.
+
+    An Immich photo is a projection-only event now, so it carries NO `concepts`
+    link row; a `(source, kind)` event that still has one is a stale pre-switch
+    artifact. Returns one row per such concept — its `concepts.id`, event id,
+    `okf_path`, `embedding_id` — for the caller to delete file + FTS + rows,
+    keeping the events-table row + `event_entities`. Keys on `kind` so a
+    non-photo event that keeps its markdown (a trip, a journal) is never matched.
+    After the delete pass the join finds nothing (idempotent)."""
+    rows = conn.execute(
+        "SELECT c.id AS concept_id, c.ref_id AS event_id, c.okf_path AS okf_path,"
+        " c.embedding_id AS embedding_id"
+        " FROM concepts c JOIN events e ON e.id = c.ref_id"
+        " WHERE c.ref_kind = 'event' AND e.kind = ? AND e.source = ?",
+        (kind, source),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def rekey_event(conn: sqlite3.Connection, *, old_id: str, new_id: str) -> None:
+    """Re-point an event row + its `event_entities` from old_id to new_id.
+
+    The photo prune uses this to align a legacy random-id photo event with the
+    deterministic id the projection-only write path now derives from the OKF
+    path, so a later re-ingest updates the row instead of minting a duplicate."""
+    conn.execute("UPDATE events SET id = ? WHERE id = ?", (new_id, old_id))
+    conn.execute(
+        "UPDATE event_entities SET event_id = ? WHERE event_id = ?", (new_id, old_id)
+    )
+
+
 def delete_concept_artifacts(
     conn: sqlite3.Connection, *, concept_id: str, embedding_id: str | None
 ) -> None:

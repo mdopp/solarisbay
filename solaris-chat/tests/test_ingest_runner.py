@@ -113,7 +113,7 @@ def _counts(db_path):
     try:
         return {
             t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-            for t in ("entities", "ingest_log", "concepts", "facts")
+            for t in ("entities", "ingest_log", "concepts", "facts", "events")
         }
     finally:
         conn.close()
@@ -201,9 +201,10 @@ async def test_run_ingest_immich_runs_when_configured(env, monkeypatch):
             immich_api_key="k",
         )
     )
-    # The mocked asset produced an OKF event concept + projection rows.
-    assert _counts(db_path)["concepts"] >= 1
-    assert list((notes_dir / "okf").rglob("*.md"))
+    # The mocked asset is a projection-only photo event (ADR 0002 — no per-photo
+    # markdown/concept): it lands as an events-table row, not an OKF file.
+    assert _counts(db_path)["events"] >= 1
+    assert not list((notes_dir / "okf").rglob("*.md"))
 
 
 class _CursorImmich:
@@ -453,7 +454,7 @@ async def test_immich_runs_after_health_retries(env, monkeypatch):
     )
     assert session.gets == 3  # two refusals, then a 200.
     assert _RanImmich.built
-    assert _counts(db_path)["concepts"] >= 1
+    assert _counts(db_path)["events"] >= 1  # projection-only photo event
 
 
 async def test_immich_skipped_cleanly_when_health_never_answers(env, monkeypatch):

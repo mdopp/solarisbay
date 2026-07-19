@@ -113,27 +113,33 @@ def _run(client, writer, *, uid="mdopp", updated_after=""):
 # --- asset -> event / person / place mapping ---------------------------------
 
 
-def test_asset_maps_to_event_with_media_and_resource(env):
-    writer, db_path, _ = env
+def test_asset_maps_to_projection_only_event(env):
+    writer, db_path, tmp_path = env
     client = FakeImmichClient([_asset()])
     stats = _run(client, writer)
     assert stats.assets == 1 and stats.events_written == 1
     conn = projection.open_conn(db_path)
+    # The photo lives as its events-table row (the temporal knowledge) ...
     event = conn.execute("SELECT * FROM events").fetchone()
     assert event["kind"] == "photo" and event["ts"] == "2026-05-30T10:00:00"
-    concept = conn.execute(
-        "SELECT okf_path FROM concepts WHERE ref_kind = 'event'"
-    ).fetchone()
-    # Private asset (not shared) -> mdopp-owned, routed under the user path (#576),
-    # year-sharded under okf/events/<year>/ (#830b).
+    assert event["source"] == "immich"
+    # ... and is projection-only (ADR 0002): no per-photo concepts row / embedding.
     assert (
-        concept["okf_path"]
-        == "users/mdopp/okf/events/2026/2026-05-30-img-0001-jpg-a1.md"
+        conn.execute(
+            "SELECT COUNT(*) FROM concepts WHERE ref_kind = 'event'"
+        ).fetchone()[0]
+        == 0
+    )
+    # ingest_log still marks it ingested (idempotency), keyed on the asset id.
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM ingest_log WHERE external_id = 'asset/a1'"
+        ).fetchone()[0]
+        == 1
     )
     conn.close()
-    text = next((env[2] / "notes").glob("users/mdopp/okf/events/2026/*.md")).read_text()
-    assert "resource: immich://asset/a1" in text
-    assert "media:" in text and "- immich://asset/a1" in text
+    # No per-photo markdown swamps the vault — Immich itself holds the photo.
+    assert not list((tmp_path / "notes").glob("users/mdopp/okf/events/**/*.md"))
 
 
 def test_named_face_creates_person_and_depicted_edge(env):

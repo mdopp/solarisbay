@@ -64,9 +64,23 @@ class OkfWriter:
 
         conn = projection.open_conn(self._db_path)
         try:
+            # OKF path first — it's independent of the ref id, so a
+            # projection-only event can key its id off it below.
+            rel_path = okf.okf_path(record)
+
             # 1. resolve/create the ref id (entity dedup; events are per-ingest).
             if is_event:
-                ref_id = self._existing_event_id(conn, record) or uuid.uuid4().hex
+                # A projection-only event (an Immich photo) has no `concepts` row
+                # to dedup against, so key its id deterministically off the stable
+                # OKF path — the same asset re-ingests to the same event row
+                # instead of a fresh random id (which would duplicate the event
+                # and churn its content_hash). Full events keep the concepts-path
+                # dedup + a random id.
+                ref_id = self._existing_event_id(conn, record) or (
+                    okf.deterministic_id(rel_path)
+                    if record.projection_only
+                    else uuid.uuid4().hex
+                )
             else:
                 ref_id = (
                     projection.resolve_entity(
@@ -80,7 +94,6 @@ class OkfWriter:
                 )
 
             # OKF file text + its content_hash (the re-ingest skip key).
-            rel_path = okf.okf_path(record)
             text = okf.render(record, entity_id=ref_id)
             new_hash = okf.content_hash(text)
 
@@ -93,12 +106,15 @@ class OkfWriter:
                 return existing
 
             # Provenance policy (ADR 0002/0005): an externally re-ingestable
-            # per-item concept (a Jellyfin song) is projection-only — it skips
-            # the OKF markdown (step 2), the whole-concept embedding + concepts
-            # link row (step 4), and lives purely as an entity + facts + the
-            # ingest_log idempotency marker. Album/artist stay full so their
-            # RAG embedding survives. Events always materialize.
-            projection_only = record.projection_only and not is_event
+            # per-item concept is projection-only — it skips the OKF markdown
+            # (step 2), the whole-concept embedding + concepts link row (step 4),
+            # and lives purely as its .db projection + facts + the ingest_log
+            # idempotency marker. This holds for entities (a Jellyfin song) and
+            # events (an Immich photo) alike: step 3 below always projects, so a
+            # projection-only photo keeps its events-table row + event_entities —
+            # only the per-item markdown/embedding go. Album/artist (and non-photo
+            # events like a trip) stay full so their RAG embedding survives.
+            projection_only = record.projection_only
 
             if not projection_only:
                 # 2. write/update the OKF concept file (source of truth), then

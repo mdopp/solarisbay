@@ -21,6 +21,16 @@ _REL_ARROW = "→"
 _SHARED_RESIDENT = "household"
 
 
+def deterministic_id(rel_path: str) -> str:
+    """A stable 32-hex id derived from the (deterministic) OKF path.
+
+    A projection-only event (an Immich photo) has no `concepts` row to dedup
+    against, so it keys its id off this instead of a random uuid — the same asset
+    re-ingests to the same event id, so the event isn't duplicated and its
+    content_hash (which carries the id) doesn't churn."""
+    return hashlib.sha256(rel_path.encode("utf-8")).hexdigest()[:32]
+
+
 def okf_path(record: ConceptRecord) -> str:
     """`okf/<domain>/<slug>.md` — events are date-prefixed and year-sharded (§2).
 

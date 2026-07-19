@@ -33,7 +33,7 @@ from .immich_client import RestImmichClient
 from .jellyfin import JellyfinMusicIngest, RestJellyfinMusicClient
 from .obsidian import ObsidianIngest
 from .obsidian_reader import VaultObsidianReader
-from .prune import prune_legacy_song_artifacts
+from .prune import prune_legacy_photo_artifacts, prune_legacy_song_artifacts
 
 # Boot races pod startup: a source may be briefly unreachable (#531). Probe it a
 # few times with backoff before running its adapter, but never block boot — cap
@@ -57,10 +57,12 @@ async def run_ingest(settings: Settings) -> None:
     await _run_jellyfin(settings, writer, uid)
     await _run_imap(settings, writer)
 
-    # One-shot prune (#878, ADR 0002/B7): drop the pre-#877 per-song OKF markdown
-    # + concepts + okf_vectors rows so a legacy song matches a projection-only
-    # one (entity + facts only). Idempotent — after one pass it finds nothing.
+    # One-shot prune (#878, ADR 0002/B7): drop the pre-switch per-item OKF
+    # markdown + concepts + okf_vectors rows so a legacy song/photo matches a
+    # projection-only one (its .db projection + facts only). Both idempotent —
+    # after one pass each finds nothing.
     prune_legacy_song_artifacts(settings.solaris_db_path, settings.notes_dir)
+    prune_legacy_photo_artifacts(settings.solaris_db_path, settings.notes_dir)
 
     # Drain the embedding queue the adapters just filled into okf_vectors. Rides
     # this ingest thread (never the voice hot path — nomic-embed-text is a VRAM
