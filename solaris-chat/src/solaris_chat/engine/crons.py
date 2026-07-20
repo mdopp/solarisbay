@@ -505,22 +505,24 @@ class CronRunner:
         await self._run_in_worker(_reingest_step)
         # Providers → phone book: now that the re-ingest has (re)built the org
         # entities + their contact facts, project them into the residents'
-        # Radicale address books (#doc-graph). No-op when radicale_data is unset.
+        # Radicale address books (#doc-graph). No-op when the sync URL/creds are unset.
         try:
-            await asyncio.to_thread(
-                document_contacts_sync.sync_contacts,
+            await document_contacts_sync.sync_contacts(
                 settings.solaris_db_path,
-                settings.radicale_data,
+                settings.contacts_sync_url,
+                settings.sync_dav_username,
+                settings.sync_dav_password,
             )
         except Exception as e:  # noqa: BLE001 — one bad step must not kill the run.
             log.error("engine.night.contacts_sync_failed", error=str(e))
         # Document deadlines → the "Solaris Fristen" calendar (#doc-graph), where
         # the calendar app raises the reminder — the passive, non-push channel.
         try:
-            await asyncio.to_thread(
-                document_deadlines_sync.sync_deadlines,
+            await document_deadlines_sync.sync_deadlines(
                 settings.solaris_db_path,
-                settings.radicale_data,
+                settings.deadlines_sync_url,
+                settings.sync_dav_username,
+                settings.sync_dav_password,
             )
         except Exception as e:  # noqa: BLE001 — one bad step must not kill the run.
             log.error("engine.night.deadlines_sync_failed", error=str(e))

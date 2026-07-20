@@ -2,26 +2,24 @@
 
 A document carries dated facts — a `cancellation_deadline`, a `hu_date`, a
 contract `end_date`. Rather than push notifications, we write each as an all-day
-event with an advance alarm into the owner's Radicale calendar, where the
-calendar app itself reminds them (the passive, non-intrusive channel the plan
-chose). Events land in a dedicated "Solaris Fristen" calendar so they're a
-toggleable layer over the personal calendar.
+event with an advance alarm into a shared "Solaris Fristen" calendar, where the
+calendar app itself reminds the household (the passive, non-intrusive channel the
+plan chose) and the layer is toggleable.
 
-Filesystem write like the contact sync + the Google-import (Radicale is
-`owner_only`). The event UID is derived from `(entity_id, predicate)`, so a
-re-sync overwrites in place instead of duplicating. Non-ISO / unparseable dates
-are skipped. Disabled (no-op) when `radicale_data` is unset.
+**Authenticated CalDAV PUT** as the dedicated `solaris` DAV account, not a
+filesystem mount: Radicale's `owner_only` scopes it to its own calendar. The
+event UID is derived from `(entity_id, predicate)`, so a re-sync overwrites in
+place. Non-ISO / unparseable dates are skipped. Disabled (no-op) when the
+collection URL / credentials are unset.
 """
 
 from __future__ import annotations
 
 from datetime import date, timedelta
-from pathlib import Path
 
 from icalendar import Alarm, Calendar, Event
 
-from solaris_chat import notes_search
-from solaris_chat.engine.importers.google_takeout import radicale_store
+from solaris_chat.engine.ingest.dav_client import HttpDavClient
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.logging import log
 
@@ -36,7 +34,6 @@ _DEADLINE_LABELS = {
     "due_date": "Fällig",
     "end_date": "Vertragsende",
 }
-_COLLECTION = "solaris-fristen"
 _UID_PREFIX = "solaris-deadline-"
 # Days before the date the calendar app raises its alarm.
 _LEAD_DAYS = 14
@@ -82,52 +79,53 @@ def _facts(conn, entity_id: str) -> dict[str, str]:
     return out
 
 
-def sync_deadlines(db_path: str, radicale_data: str) -> dict[str, int]:
-    """Write an all-day alarmed event for every document deadline into the
-    owner's "Solaris Fristen" calendar. Returns `{written, skipped}`. Never
-    raises — a sync failure must not abort the night run."""
-    if not radicale_data:
-        return {"written": 0, "skipped": 0}
-    data = Path(radicale_data)
-    written = skipped = 0
+async def sync_deadlines(
+    db_path: str, collection_url: str, username: str, password: str
+) -> dict[str, int]:
+    """PUT an all-day alarmed event for every document deadline into the Solaris
+    Fristen calendar. Returns `{written, skipped, failed}`. Never raises."""
+    if not (collection_url and username and password):
+        return {"written": 0, "skipped": 0, "failed": 0}
+    client = HttpDavClient(caldav_username=username, caldav_password=password)
+    written = skipped = failed = 0
     conn = projection.open_conn(db_path)
     try:
         docs = conn.execute(
-            "SELECT id, canonical_name, resident_uid FROM entities"
-            " WHERE type = 'document' ORDER BY resident_uid"
+            "SELECT id, canonical_name FROM entities WHERE type = 'document'"
         ).fetchall()
-        with radicale_store.storage_lock(data):
-            for doc in docs:
-                user = doc["resident_uid"]
-                if not user or user == notes_search.SHARED_UID:
+        events: list[tuple[str, str]] = []  # (uid, ics)
+        for doc in docs:
+            facts = _facts(conn, doc["id"])
+            desc = " · ".join(
+                x
+                for x in (facts.get("provider", ""), facts.get("policy_number", ""))
+                if x
+            )
+            for pred, label in _DEADLINE_LABELS.items():
+                raw = facts.get(pred, "")
+                if not raw:
                     continue
-                facts = _facts(conn, doc["id"])
-                provider = facts.get("provider", "")
-                policy = facts.get("policy_number", "")
-                coll = None
-                for pred, label in _DEADLINE_LABELS.items():
-                    day = _parse_iso(facts.get(pred, ""))
-                    if day is None:
-                        if facts.get(pred):
-                            skipped += 1
-                        continue
-                    if coll is None:
-                        coll = radicale_store.ensure_collection(
-                            data,
-                            user,
-                            _COLLECTION,
-                            tag="VCALENDAR",
-                            displayname="Solaris Fristen",
-                        )
-                    uid = f"{_UID_PREFIX}{doc['id']}-{pred}"
-                    summary = f"{label}: {doc['canonical_name']}"
-                    desc = " · ".join(x for x in (provider, policy) if x)
-                    ics = _build_event(uid, summary, desc, day)
-                    radicale_store.write_item(coll, uid, ics, "ics")
-                    written += 1
-    except Exception as e:  # noqa: BLE001 — sync must never crash the night run.
-        log.error("engine.deadlines_sync.failed", error=str(e))
+                day = _parse_iso(raw)
+                if day is None:
+                    skipped += 1
+                    continue
+                uid = f"{_UID_PREFIX}{doc['id']}-{pred}"
+                summary = f"{label}: {doc['canonical_name']}"
+                events.append((uid, _build_event(uid, summary, desc, day)))
     finally:
         conn.close()
-    log.info("engine.deadlines_sync", written=written, skipped=skipped)
-    return {"written": written, "skipped": skipped}
+    for uid, ics in events:
+        try:
+            await client.put_item(
+                collection_url,
+                uid,
+                ics,
+                suffix=".ics",
+                content_type="text/calendar; charset=utf-8",
+            )
+            written += 1
+        except Exception as e:  # noqa: BLE001 — one bad event must not stop the sync.
+            log.error("engine.deadlines_sync.event_failed", uid=uid, error=str(e))
+            failed += 1
+    log.info("engine.deadlines_sync", written=written, skipped=skipped, failed=failed)
+    return {"written": written, "skipped": skipped, "failed": failed}

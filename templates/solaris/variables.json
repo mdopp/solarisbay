@@ -231,6 +231,26 @@
     "noAutoGenerate": true,
     "description": "Optional: CardDAV password or app token (READ-ONLY access is enough). Pair with CARDDAV_URL to enable contacts ingestion."
   },
+  "SYNC_DAV_USERNAME": {
+    "type": "text",
+    "description": "Optional: the dedicated `solaris` DAV account (its own LLDAP user) used to WRITE synced provider contacts + deadlines. Pair with SYNC_DAV_PASSWORD + CONTACTS_SYNC_URL/DEADLINES_SYNC_URL. Radicale owner_only scopes it to its own collections.",
+    "default": ""
+  },
+  "SYNC_DAV_PASSWORD": {
+    "type": "secret",
+    "noAutoGenerate": true,
+    "description": "Optional: password for the SYNC_DAV_USERNAME account. Needs WRITE access to its own collections only."
+  },
+  "CONTACTS_SYNC_URL": {
+    "type": "text",
+    "description": "Optional: the CardDAV collection URL the `solaris` account writes provider contacts into (e.g. https://caldav.<domain>/solaris/anbieter/). Blank to disable the contact sync (#doc-graph).",
+    "default": ""
+  },
+  "DEADLINES_SYNC_URL": {
+    "type": "text",
+    "description": "Optional: the CalDAV collection URL the `solaris` account writes document deadlines into (e.g. https://caldav.<domain>/solaris/fristen/). Blank to disable the deadline sync (#doc-graph).",
+    "default": ""
+  },
   "SERVICEBAY_MCP_URL": {
     "type": "text",
     "description": "ServiceBay MCP control surface URL. The admin persona's servicebay_admin toolbox connects here (token minted from the acting admin's Authelia session, scopes read+lifecycle+mutate). Reached via host loopback.",

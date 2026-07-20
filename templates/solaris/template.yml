@@ -263,11 +263,19 @@ spec:
       value: "{{CARDDAV_USERNAME}}"
     - name: CARDDAV_PASSWORD
       value: "{{CARDDAV_PASSWORD}}"
-    # Radicale's on-disk storage, mounted below — the WRITE target that syncs
-    # document providers into the residents' address books as vCards (#doc-graph).
-    # Empty ⇒ contact sync disabled. The value is the in-container mount path.
-    - name: RADICALE_DATA
-      value: "/radicale"
+    # The dedicated `solaris` DAV account + its two collection URLs — the WRITE
+    # targets that sync document providers into a "Solaris Anbieter" address book
+    # and deadlines into a "Solaris Fristen" calendar (#doc-graph). Authenticated
+    # CardDAV/CalDAV PUT (owner_only scopes this account to its own collections) —
+    # NOT a filesystem mount, NOT a resident's credentials. Empty URL ⇒ disabled.
+    - name: SYNC_DAV_USERNAME
+      value: "{{SYNC_DAV_USERNAME}}"
+    - name: SYNC_DAV_PASSWORD
+      value: "{{SYNC_DAV_PASSWORD}}"
+    - name: CONTACTS_SYNC_URL
+      value: "{{CONTACTS_SYNC_URL}}"
+    - name: DEADLINES_SYNC_URL
+      value: "{{DEADLINES_SYNC_URL}}"
     # The household Jellyfin server the music-ingest adapter reads (read-only,
     # #564) to map the music catalog into OKF band/song concepts. Reuses the
     # existing JELLYFIN_* stack vars (username/password, not an API key). An
@@ -319,10 +327,6 @@ spec:
       name: solaris-data
     - mountPath: /opt/data/notes
       name: syncthing-notes
-    # Radicale's storage tree — the contact-sync writes vCards here (#doc-graph);
-    # matches RADICALE_DATA above. Same host path the Google-import writes to.
-    - mountPath: /radicale
-      name: radicale-data
 
   # gatekeeper — Solaris-published Wyoming bridge for wyoming-satellite
   # hardware (the Voice PE speaker rides HA's Assist pipeline instead, which
@@ -487,12 +491,6 @@ spec:
   - name: solaris-data
     hostPath:
       path: {{DATA_DIR}}/solarisbay
-      type: DirectoryOrCreate
-  # Radicale's storage tree — the contact-sync (#doc-graph) drops provider vCards
-  # into the residents' address books here, exactly as the Google-import does.
-  - name: radicale-data
-    hostPath:
-      path: {{DATA_DIR}}/radicale/data
       type: DirectoryOrCreate
 
 # Post-deploy: ./post-deploy.py
