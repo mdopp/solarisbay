@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.4](https://github.com/mdopp/solarisbay/compare/v0.32.3...v0.32.4) (2026-07-20)
+
+
+### Bug Fixes
+
+* **chat:** run document extraction on gemma4:12b, one doc per turn ([#911](https://github.com/mdopp/solarisbay/issues/911)) ([86c8fda](https://github.com/mdopp/solarisbay/commit/86c8fda1307f1270e70a351794577ba850c4bd59))
+
 ## [0.32.3](https://github.com/mdopp/solarisbay/compare/v0.32.2...v0.32.3) (2026-07-20)
 
 
