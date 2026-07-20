@@ -34,6 +34,7 @@ from solaris_chat.engine.tools.ha import build_ha_tools
 from solaris_chat.engine.tools.mcp_tools import CombinedToolbox, McpToolbox
 from solaris_chat.engine.tools.media import build_media_tools
 from solaris_chat.engine.tools.music_query import build_music_query_tools
+from solaris_chat.engine.tools.documents import build_document_tools
 from solaris_chat.engine.tools.notes import build_notes_tools
 from solaris_chat.engine.tools.onboarding_approval import (
     build_onboarding_approval_tools,
@@ -333,6 +334,7 @@ def build_engine_clients(
     # every write to the scope's subtree, so default-deny holds by construction.
     librarian_tools: list[Tool] = (
         build_notes_tools(notes_dir, _current_uid, db_path=db_path, ollama=ollama)
+        + build_document_tools(notes_dir, _current_uid)
         if notes_dir
         else []
     )
