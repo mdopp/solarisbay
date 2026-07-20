@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.0](https://github.com/mdopp/solarisbay/compare/v0.32.4...v0.33.0) (2026-07-20)
+
+
+### Features
+
+* **chat:** document dedup by source, finance fields, mobile card layout ([#913](https://github.com/mdopp/solarisbay/issues/913)) ([3196d56](https://github.com/mdopp/solarisbay/commit/3196d56e49fadfb021d75b1d015155cbc796a61e))
+
 ## [0.32.4](https://github.com/mdopp/solarisbay/compare/v0.32.3...v0.32.4) (2026-07-20)
 
 
