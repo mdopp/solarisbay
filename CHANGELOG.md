@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.0](https://github.com/mdopp/solarisbay/compare/v0.33.1...v0.34.0) (2026-07-20)
+
+
+### Features
+
+* **chat:** vision document extraction + mobile document cards ([#917](https://github.com/mdopp/solarisbay/issues/917)) ([7a980cd](https://github.com/mdopp/solarisbay/commit/7a980cdc108ec462138341b0a97570cb9ea0c90a))
+
 ## [0.33.1](https://github.com/mdopp/solarisbay/compare/v0.33.0...v0.33.1) (2026-07-20)
 
 
