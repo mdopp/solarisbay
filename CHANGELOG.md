@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.3](https://github.com/mdopp/solarisbay/compare/v0.32.2...v0.32.3) (2026-07-20)
+
+
+### Bug Fixes
+
+* **chat:** few-shot extractor prompt to fill document fields ([#909](https://github.com/mdopp/solarisbay/issues/909)) ([fec2361](https://github.com/mdopp/solarisbay/commit/fec23619cc9cbe9ac641224c1468c6b5291d5aeb))
+
 ## [0.32.2](https://github.com/mdopp/solarisbay/compare/v0.32.1...v0.32.2) (2026-07-20)
 
 
