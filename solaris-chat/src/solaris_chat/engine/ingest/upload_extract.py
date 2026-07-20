@@ -21,12 +21,19 @@ old title-only behaviour rather than crashing the upload handler or the ingest.
 
 from __future__ import annotations
 
+import base64
 import re
 import subprocess
 import tempfile
 from pathlib import Path
 
 from solaris_chat.logging import log
+
+# Page images fed to the vision extractor: enough pages to cover a typical
+# insurance/contract letter, rendered at a resolution the VLM can read table
+# cells from without ballooning the turn.
+_MAX_VISION_PAGES = 4
+_VISION_DPI = "150"
 
 # First N pages only — a huge scan must not turn one upload into a minutes-long
 # OCR job on the ingest thread.
@@ -148,6 +155,47 @@ def _sibling_media(companion_md: Path) -> Path | None:
         if sibling.suffix.lower() != ".md":
             return sibling
     return None
+
+
+def companion_images(notes_dir: str, companion_rel: str) -> list[str]:
+    """Base64 PNG page images of a companion's source upload, for the vision
+    extractor to read tables/layout directly (Tesseract garbles table columns);
+    the OCR text stays as a supplement. Empty on any failure — extraction then
+    degrades to OCR-text-only. Never raises."""
+    try:
+        media = _sibling_media(Path(notes_dir) / companion_rel)
+        return _page_images(media) if media is not None else []
+    except Exception as e:  # noqa: BLE001 — vision is best-effort.
+        log.error("ingest.upload_extract.images_failed", error=str(e))
+        return []
+
+
+def _page_images(path: Path) -> list[str]:
+    ext = path.suffix.lower()
+    if ext == ".pdf":
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = str(Path(tmp) / "pg")
+            _run(
+                [
+                    "pdftoppm",
+                    "-png",
+                    "-r",
+                    _VISION_DPI,
+                    "-f",
+                    "1",
+                    "-l",
+                    str(_MAX_VISION_PAGES),
+                    str(path),
+                    prefix,
+                ]
+            )
+            return [
+                base64.b64encode(p.read_bytes()).decode()
+                for p in sorted(Path(tmp).glob("pg*.png"))[:_MAX_VISION_PAGES]
+            ]
+    if ext in _IMAGE_EXTS:
+        return [base64.b64encode(path.read_bytes()).decode()]
+    return []
 
 
 def extract_into_companion(companion_md: Path) -> bool:
