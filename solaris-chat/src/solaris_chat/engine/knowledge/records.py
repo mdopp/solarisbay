@@ -116,6 +116,10 @@ class ConceptRecord:
     # markdown, no whole-concept embedding. The RAG-worthy album/artist nodes
     # keep both. Set by the adapter that owns the source's provenance.
     projection_only: bool = False
+    # Pin entity identity to this stable key (a document's source upload path)
+    # instead of the canonical name, so same-titled documents don't collide
+    # (#doc). Empty → normal canonical-name dedup.
+    identity_key: str = ""
 
 
 @dataclass(frozen=True)

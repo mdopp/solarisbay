@@ -47,6 +47,9 @@ _FIELDS: dict[str, str] = {
     "policyholder": "Versicherungsnehmer/Inhaber",
     "insurance_type": "Art (Haftpflicht/Hausrat/KFZ/…)",
     "premium_per_year": "Beitrag pro Jahr",
+    "balance": "Guthaben/Saldo/Kontostand",
+    "contract_sum": "Vertrags-/Bauspar-/Versicherungssumme",
+    "interest_rate": "Zinssatz",
     "coverage": "Deckung/Leistung",
     "start_date": "Beginn (YYYY-MM-DD)",
     "end_date": "Ende (YYYY-MM-DD)",
@@ -86,8 +89,11 @@ def build_document_tools(notes_dir: str, uid_getter) -> list[Tool]:
             )
 
         # 1. Write the typed document note (frontmatter = the provided fields).
+        # Name it after the SOURCE upload, not the title — so two uploads that get
+        # the same title don't overwrite each other (#doc dedup).
         base = root if uid == notes_search.SHARED_UID else root / "users" / uid
-        doc_rel = f"okf/documents/{safe_slug(title)}.md"
+        src_stem = src.rsplit("/", 1)[-1].removesuffix(".md") or safe_slug(title)
+        doc_rel = f"okf/documents/{safe_slug(src_stem)}.md"
         doc_path = (base / doc_rel).resolve()
         if not str(doc_path).startswith(str(root) + "/"):
             return json.dumps({"ok": False, "error": "path outside vault"})

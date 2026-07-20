@@ -46,7 +46,8 @@ async def test_document_extract_writes_note_and_marks_companion(tmp_path):
         )
     )
     assert out["ok"] is True
-    doc = tmp_path / "users" / "mdopp" / "okf" / "documents" / "ergo-rechtsschutz.md"
+    # Note named after the SOURCE upload (ergo.md), not the title — dedup (#doc).
+    doc = tmp_path / "users" / "mdopp" / "okf" / "documents" / "ergo.md"
     assert doc.is_file()
     text = doc.read_text()
     assert "type: document" in text
