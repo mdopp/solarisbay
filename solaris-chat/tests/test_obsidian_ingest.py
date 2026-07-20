@@ -413,6 +413,73 @@ def test_document_note_projects_typed_facts_at_extraction_confidence(env):
     assert "type: document" in doc_md.read_text()
 
 
+def _org_facts(db_path, name):
+    conn = projection.open_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id FROM entities WHERE type = 'organization' AND canonical_name = ?",
+            (name,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            (f["predicate"], f["value"], f["confidence"])
+            for f in conn.execute(
+                "SELECT predicate, value, confidence FROM facts"
+                " WHERE subject_entity_id = ?",
+                (row["id"],),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+
+def test_document_provider_becomes_organization_with_contact_facts(env):
+    # The provider converges on an `organization` entity (the phone-book contact)
+    # carrying the document's contact fields as facts (#doc-graph).
+    writer, db_path, _ = env
+    note = _document(
+        provider_phone="05404 5209",
+        provider_email="dirk.mutert@ergo.de",
+        contact_person="Dirk Mutert",
+    )
+    _run(FakeObsidianReader([note]), writer, db_path)
+    facts = _org_facts(db_path, "ERGO")
+    assert ("phone", "05404 5209", 0.6) in facts
+    assert ("email", "dirk.mutert@ergo.de", 0.6) in facts
+    assert ("contact_person", "Dirk Mutert", 0.6) in facts
+
+
+def test_two_documents_same_provider_share_one_org(env):
+    # Two ERGO documents converge on ONE organization; each contributes its own
+    # contact facts under a per-document source, so neither clobbers the other.
+    writer, db_path, _ = env
+    a = _document(
+        relpath="users/mdopp/okf/documents/a.md",
+        title="ERGO KFZ",
+        source_document="users/mdopp/uploads/a.md",
+        provider_phone="05404 5209",
+    )
+    b = _document(
+        relpath="users/mdopp/okf/documents/b.md",
+        title="ERGO Haftpflicht",
+        source_document="users/mdopp/uploads/b.md",
+        provider_email="service@ergo.de",
+    )
+    _run(FakeObsidianReader([a, b]), writer, db_path)
+    conn = projection.open_conn(db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM entities WHERE type = 'organization'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 1
+    facts = _org_facts(db_path, "ERGO")
+    assert ("phone", "05404 5209", 0.6) in facts
+    assert ("email", "service@ergo.de", 0.6) in facts
+
+
 def test_document_dedup_by_source_not_title(env):
     # Two uploads that got the SAME title but come from DIFFERENT source docs must
     # stay two entities (no collision / data loss) — identity is source_document.

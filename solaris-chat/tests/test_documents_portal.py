@@ -108,8 +108,58 @@ def test_category_view_excludes_other_residents(tmp_path):
     assert titles == {"ERGO Rechtsschutz"}
 
 
+def _org(conn, eid, name, resident, facts):
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES (?, 'organization', ?, ?, 'documents', 'h')",
+        (eid, name, resident),
+    )
+    for i, (pred, val, conf, src) in enumerate(facts):
+        conn.execute(
+            "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate,"
+            " value, confidence, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (f"{eid}-c{i}", eid, resident, pred, val, conf, src),
+        )
+
+
+def test_contacts_groups_documents_and_contact_facts(tmp_path):
+    db = _seed(tmp_path)
+    conn = sqlite3.connect(db)
+    _org(
+        conn,
+        "o-ergo",
+        "ERGO",
+        "household",
+        [
+            ("phone", "05404 5209", 0.6, "documents:a"),
+            ("email", "service@ergo.de", 0.6, "documents:b"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    rows = documents_portal_db.contacts(db, "mdopp")
+    ergo = next(r for r in rows if r["name"] == "ERGO")
+    # Contact facts from both documents surface on the shared org.
+    assert ergo["contact"]["phone"]["value"] == "05404 5209"
+    assert ergo["contact"]["email"]["value"] == "service@ergo.de"
+    # The ERGO document (its `provider` fact names the org) groups under it.
+    assert [d["title"] for d in ergo["documents"]] == ["ERGO Rechtsschutz"]
+
+
+def test_contacts_excludes_other_residents(tmp_path):
+    # A private org (another resident's) must not appear in the caller's book.
+    db = _seed(tmp_path)
+    conn = sqlite3.connect(db)
+    _org(conn, "o-priv", "Dr. Privat", "lena", [("phone", "0", 0.6, "documents:x")])
+    conn.commit()
+    conn.close()
+    names = {r["name"] for r in documents_portal_db.contacts(db, "mdopp")}
+    assert "Dr. Privat" not in names
+
+
 def test_missing_projection_returns_none(tmp_path):
     assert documents_portal_db.categories(str(tmp_path / "nope.db"), "mdopp") is None
+    assert documents_portal_db.contacts(str(tmp_path / "nope.db"), "mdopp") is None
 
 
 # --- correction endpoint -----------------------------------------------------

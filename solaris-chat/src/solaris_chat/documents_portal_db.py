@@ -74,6 +74,75 @@ def categories(db_path: str, uid: str) -> dict[str, int] | None:
     return {r["category"]: r["n"] for r in rows}
 
 
+_CONTACT_PREDICATES = ("phone", "email", "address", "contact_person")
+
+
+def contacts(db_path: str, uid: str) -> list[dict[str, Any]] | None:
+    """The phone-book: every `organization` (a document's provider) in scope with
+    its contact facts and the documents grouped under it (#doc-graph).
+
+    Documents join to their org by name — the document's `provider` fact equals
+    the org's `canonical_name` (see `_ingest_provider_org`). Contact facts follow
+    the same highest-confidence-per-predicate rule as `category_view`, so a
+    corrected phone number wins over the agent-extracted one."""
+    conn = _connect(db_path)
+    if conn is None:
+        return None
+    scope, params = _scope(uid)
+    try:
+        orgs = conn.execute(
+            "SELECT DISTINCT e.id AS id, e.canonical_name AS name"
+            f" FROM entities e WHERE e.type = 'organization' AND {scope}"  # noqa: S608
+            " ORDER BY e.canonical_name",
+            params,
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for org in orgs:
+            contact: dict[str, dict[str, Any]] = {}
+            for f in conn.execute(
+                "SELECT predicate, value, confidence FROM facts"
+                " WHERE subject_entity_id = ? ORDER BY confidence DESC",
+                (org["id"],),
+            ).fetchall():
+                if (
+                    f["predicate"] in _CONTACT_PREDICATES
+                    and f["predicate"] not in contact
+                ):
+                    contact[f["predicate"]] = {
+                        "value": f["value"],
+                        "confidence": f["confidence"],
+                    }
+            # The org's documents: any `document` whose `provider` names it.
+            docs = conn.execute(
+                "SELECT DISTINCT e.id AS id, e.canonical_name AS title,"
+                " (SELECT value FROM facts WHERE subject_entity_id = e.id"
+                "  AND predicate = 'category' LIMIT 1) AS category"
+                " FROM entities e JOIN facts f ON f.subject_entity_id = e.id"
+                f" WHERE e.type = 'document' AND f.predicate = 'provider'"  # noqa: S608
+                f" AND f.value = ? AND {scope}"
+                " ORDER BY e.canonical_name",
+                [org["name"], *params],
+            ).fetchall()
+            out.append(
+                {
+                    "entity_id": org["id"],
+                    "name": org["name"],
+                    "contact": contact,
+                    "documents": [
+                        {
+                            "entity_id": d["id"],
+                            "title": d["title"],
+                            "category": d["category"],
+                        }
+                        for d in docs
+                    ],
+                }
+            )
+    finally:
+        conn.close()
+    return out
+
+
 def category_view(db_path: str, uid: str, category: str) -> list[dict[str, Any]] | None:
     """The table rows for one category: per document, its title + fact map.
 
