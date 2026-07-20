@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.1](https://github.com/mdopp/solarisbay/compare/v0.33.0...v0.33.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **chat:** document-extractor observability + fewer model swaps ([#915](https://github.com/mdopp/solarisbay/issues/915)) ([ddb1068](https://github.com/mdopp/solarisbay/commit/ddb10683664d136b1f7cfc44defc2e9bd1188988))
+
 ## [0.33.0](https://github.com/mdopp/solarisbay/compare/v0.32.4...v0.33.0) (2026-07-20)
 
 
