@@ -92,13 +92,19 @@ class VaultObsidianReader:
     def _is_machine_subtree(self, relpath: str) -> bool:
         """Our own OKF output / fact-capture dir — at the vault root and under a
         per-user path (`users/<uid>/okf|facts/...`, #576). A hand-written note
-        directly under `users/<uid>/` is still ingested (path-scoped private)."""
+        directly under `users/<uid>/` is still ingested (path-scoped private).
+
+        Exception: `okf/documents/**` are self-authored `document` notes the
+        extractor writes (#doc). Obsidian is their projector, so they must be
+        read — obsidian skips its own PROJECTION output, but these are source."""
         parts = relpath.split("/")
         if len(parts) > 1 and parts[0] in self._SKIP_DIRS:
-            return True
-        if len(parts) > 3 and parts[0] == "users" and parts[2] in self._SKIP_DIRS:
-            return True
-        return False
+            okf_sub = parts[1] if parts[0] == "okf" else None
+        elif len(parts) > 3 and parts[0] == "users" and parts[2] in self._SKIP_DIRS:
+            okf_sub = parts[3] if parts[2] == "okf" else None
+        else:
+            return False
+        return okf_sub != "documents"
 
     def _parse(self, relpath: str, text: str) -> VaultNote:
         front, body = _split_frontmatter(text)
