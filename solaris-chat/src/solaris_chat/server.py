@@ -3789,7 +3789,9 @@ def build_app(
         )
         return web.json_response({"ok": True, "category": category, "rows": rows or []})
 
-    def _document_confirm_fact(uid: str, entity_id: str, predicate: str, value: str) -> bool:
+    def _document_confirm_fact(
+        uid: str, entity_id: str, predicate: str, value: str
+    ) -> bool:
         """Write a human-confirmed document fact (confidence 1.0) under source
         `documents:confirmed` — coexists with and outranks the agent-extracted
         0.6 fact (ADR 0003), and survives the source-scoped re-ingest. Owner-
