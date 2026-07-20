@@ -90,6 +90,43 @@ BIBLIOTHEKAR_PROMPT = (
     "Kandidaten dieser Nacht:\n"
 )
 
+# The nightly document extractor (#doc): reads each newly-OCR'd upload companion
+# (carries the extracted marker but not yet the classified one) and writes a
+# typed `document` note. Marker-gated idempotency — no watermark needed.
+_DOC_EXTRACTED_MARKER = "<!-- extracted -->"
+_DOC_CLASSIFIED_MARKER = "<!-- classified -->"
+
+DOCUMENT_EXTRACTOR_PROMPT = (
+    "[system: nightly document extractor — unattended, no resident present]\n"
+    "Du extrahierst aus hochgeladenen Dokumenten strukturierte Daten. Für JEDE\n"
+    "Kandidaten-Companion unten (eine Upload-Notiz mit einem Abschnitt\n"
+    "'## Inhalt (extrahiert)'):\n"
+    "1. Lies sie mit notes_read.\n"
+    "2. Klassifiziere in GENAU EINE Kategorie: insurance, contract, employment,\n"
+    "   pension, health_insurance, bank, tax, vehicle, property, warranty,\n"
+    "   membership, id_document, legal, family, appliance, other.\n"
+    "3. Schreibe mit note_write EINE typisierte Notiz nach\n"
+    "   okf/documents/<kurzer-slug>.md mit einem einzigen YAML-Frontmatter-Block\n"
+    "   (KEIN zweites '---'). Pflicht-Keys:\n"
+    "     type: document\n"
+    "     title: <kurzer sprechender Titel, z.B. 'ERGO Rechtsschutz'>\n"
+    "     category: <eine Kategorie von oben>\n"
+    "     source_document: <exakter Pfad der Companion>\n"
+    "   Dazu die zutreffenden Fach-Felder als flache 'key: value'-Zeilen, z.B.:\n"
+    "     provider, policy_number, policyholder, insurance_type,\n"
+    "     premium_per_year, coverage, start_date, end_date, renewal_date,\n"
+    "     cancellation_deadline, cancellation_notice_period, employer, salary,\n"
+    "     amount, due_date, expiry_date, hu_date, member_number.\n"
+    "   Nimm NUR Felder auf, die wirklich im Text stehen — nichts erfinden.\n"
+    "4. Datumsangaben IMMER als ISO 'YYYY-MM-DD' normalisieren ('15.12.2026' →\n"
+    "   '2026-12-15'). Relative/unklare Fristen weglassen.\n"
+    "5. Hänge danach IMMER die Zeile '" + _DOC_CLASSIFIED_MARKER + "' mit\n"
+    "   note_write (append) an die Companion an (auch wenn du nichts extrahieren\n"
+    "   konntest), damit sie nicht erneut verarbeitet wird.\n"
+    "Eine Datei = ein document. Antworte nur mit einer kurzen Zusammenfassung.\n"
+    "Kandidaten dieser Nacht:\n"
+)
+
 CHRONICLE_PROMPT = (
     "Write today's family chronicle / journal entry for today. "
     "This is the unattended daily run — no resident is present, so "
@@ -416,6 +453,13 @@ class CronRunner:
         # BETWEEN ingest and re-ingest; the re-ingest picks up the merged/stubbed
         # files and re-embeds via content_hash → #650 drain.
         await self._run_in_worker(_ingest_step)
+        # Extract structured data from newly-OCR'd uploads into typed `document`
+        # notes (#doc), then curate — both edit vault files that the re-ingest
+        # below projects. Same slot as the bibliothekar.
+        try:
+            await self._document_extractor()
+        except Exception as e:  # noqa: BLE001 — one bad scope must not kill the run.
+            log.error("engine.night.document_extractor_failed", error=str(e))
         try:
             await self._bibliothekar()
         except Exception as e:  # noqa: BLE001 — one bad scope must not kill the run.
@@ -638,6 +682,67 @@ class CronRunner:
         # Advance the watermark only after every scope, so a mid-run crash
         # re-curates the same candidates rather than dropping them.
         _mark_run(self._db_path, _BIBLIOTHEKAR_WATERMARK, now_utc)
+
+    def _document_extractor_candidates(self, notes_dir: str, scope: str) -> list[str]:
+        """Upload companions in this scope that were OCR'd (`<!-- extracted -->`)
+        but not yet classified (`<!-- classified -->`). Marker-gated, bounded per
+        run like the bibliothekar — no watermark, the classified marker is the
+        idempotency."""
+        root = Path(notes_dir)
+        uploads_dir = (
+            root / "uploads"
+            if scope == _CRON_UID_SHARED
+            else root / "users" / scope / "uploads"
+        )
+        out: list[str] = []
+        if uploads_dir.is_dir():
+            for path in sorted(uploads_dir.glob("*.md")):
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if _DOC_EXTRACTED_MARKER in text and _DOC_CLASSIFIED_MARKER not in text:
+                    out.append(str(path.relative_to(root)))
+        return out[:_BIBLIOTHEKAR_MAX_PATHS]
+
+    async def _document_extractor(self) -> None:
+        """Nightly document extraction (#doc): one librarian turn per ownership
+        scope over its newly-OCR'd upload companions. The turn classifies each
+        document and writes a typed `document` note (structured frontmatter) the
+        re-ingest then projects to a `document` entity + facts; it appends the
+        `<!-- classified -->` marker so the companion isn't re-processed. Uses the
+        restricted librarian client (no device tools) — right for sensitive
+        financial/health documents. Runs between ingest and re-ingest, alongside
+        the bibliothekar."""
+        if self._librarian is None or self._ingest_settings is None:
+            log.info("engine.night.document_extractor_skipped", reason="no_librarian")
+            return
+        notes_dir = self._ingest_settings.notes_dir
+        if not notes_dir:
+            return
+        for scope in self._bibliothekar_scopes(notes_dir):
+            try:
+                candidates = self._document_extractor_candidates(notes_dir, scope)
+                if not candidates:
+                    continue
+                prompt = DOCUMENT_EXTRACTOR_PROMPT + "\n".join(candidates)
+                session_id = await self._librarian.create_session(scope, ephemeral=True)
+                try:
+                    reply = await self._librarian.chat(session_id, prompt, None, "high")
+                    log.info(
+                        "engine.night.document_extractor_scope",
+                        scope=scope,
+                        candidates=len(candidates),
+                        reply_len=len(reply),
+                    )
+                finally:
+                    await self._librarian.delete_session(session_id, scope)
+            except Exception as e:  # noqa: BLE001 — one bad scope/file mustn't abort.
+                log.error(
+                    "engine.night.document_extractor_scope_failed",
+                    scope=scope,
+                    error=str(e),
+                )
 
     async def curate_scope(self, notes_dir: str, scope: str) -> dict[str, object]:
         """Run one on-demand librarian turn for a single scope (#697).

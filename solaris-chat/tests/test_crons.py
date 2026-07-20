@@ -631,6 +631,31 @@ def test_bibliothekar_candidates_capped(db, tmp_path):
     assert len(cands) == crons._BIBLIOTHEKAR_MAX_PATHS
 
 
+def test_document_extractor_candidates_marker_gated(db, tmp_path):
+    up = tmp_path / "uploads"
+    up.mkdir(parents=True)
+    (up / "extracted.md").write_text(
+        "# X\n\n<!-- extracted -->\n## Inhalt (extrahiert)\ntext", encoding="utf-8"
+    )
+    (up / "done.md").write_text(
+        "# Y\n\n<!-- extracted -->\n<!-- classified -->\n", encoding="utf-8"
+    )
+    (up / "raw.md").write_text("# Z\n\nnoch kein OCR\n", encoding="utf-8")
+    priv = tmp_path / "users" / "mdopp" / "uploads"
+    priv.mkdir(parents=True)
+    (priv / "p.md").write_text("<!-- extracted -->\n", encoding="utf-8")
+
+    runner = _runner(db, _FakeDeep())
+    # Shared scope sees only the shared uploads dir; only extracted-not-classified.
+    assert runner._document_extractor_candidates(str(tmp_path), "household") == [
+        "uploads/extracted.md"
+    ]
+    # A resident scope sees only that resident's uploads.
+    assert runner._document_extractor_candidates(str(tmp_path), "mdopp") == [
+        "users/mdopp/uploads/p.md"
+    ]
+
+
 async def test_bibliothekar_runs_one_librarian_turn_per_nonempty_scope(db, tmp_path):
     conn = sqlite3.connect(db)
     conn.executescript(_CONCEPTS_DDL)

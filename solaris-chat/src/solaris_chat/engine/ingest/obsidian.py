@@ -43,6 +43,30 @@ _NOTE_FACT_SOURCE = "note"
 _PHYSICAL_MEDIA_TYPE = "physical-media"
 _PHYSICAL_MEDIA = frozenset({"cd", "vinyl", "cassette"})
 
+# A life-document note the extraction agent writes from an uploaded file (#doc):
+# `type: document` + flat frontmatter fields become source-scoped facts at
+# extraction confidence, so a human correction (source `documents:confirmed`,
+# confidence 1.0) wins without being clobbered (ADR 0003).
+_DOCUMENT_TYPE = "document"
+_DOCUMENT_FACT_SOURCE = "documents"
+_DOCUMENT_CONFIDENCE = 0.6
+# Frontmatter keys that are note metadata, not extracted document fields.
+_DOCUMENT_RESERVED_FM = frozenset(
+    {
+        "type",
+        "title",
+        "tags",
+        "timestamp",
+        "id",
+        "resident",
+        "source",
+        "added_by",
+        "date",
+        "kind",
+        "description",
+    }
+)
+
 # A hand-written note's top-level folder hints at its OKF type when the note
 # carries no explicit `type` frontmatter.
 _FOLDER_TYPE = {
@@ -102,6 +126,9 @@ class ObsidianIngest:
     def _ingest_note(self, note: VaultNote, stats: ObsidianIngestStats) -> None:
         if note.note_type == _PHYSICAL_MEDIA_TYPE:
             self._ingest_physical_media(note, stats)
+            return
+        if note.note_type == _DOCUMENT_TYPE:
+            self._ingest_document(note, stats)
             return
         concept_type = note.note_type or _FOLDER_TYPE.get(note.folder, "note")
         if not is_known_type(concept_type):
@@ -212,6 +239,39 @@ class ObsidianIngest:
             stats.written += 1
         else:
             stats.skipped += 1
+
+    def _ingest_document(self, note: VaultNote, stats: ObsidianIngestStats) -> None:
+        """A `type: document` note (an insurance/contract/… the extraction agent
+        wrote from an uploaded file): every non-reserved flat frontmatter field
+        (`category`, `provider`, `policy_number`, `cancellation_deadline`,
+        `source_document`, …) becomes a source-scoped fact at extraction
+        confidence (0.6) on a `document` entity. The category view tables these;
+        a human correction under source `documents:confirmed` (confidence 1.0)
+        wins without being clobbered (ADR 0003). The note keeps its own markdown
+        + embedding (the RAG surface). Slug is pinned to the file stem so the
+        writer re-serializes the agent's file in place instead of forking a
+        canonical copy."""
+        facts = [
+            (key, str(val).strip(), _DOCUMENT_CONFIDENCE)
+            for key, val in note.frontmatter.items()
+            if key not in _DOCUMENT_RESERVED_FM and str(val).strip()
+        ]
+        rec = ConceptRecord(
+            type=_DOCUMENT_TYPE,
+            title=note.title,
+            slug=note.relpath.rsplit("/", 1)[-1].removesuffix(".md"),
+            source=_DOCUMENT_FACT_SOURCE,
+            external_id=note.relpath,
+            resident=notes_search.resident_for_path(note.relpath) or "",
+            timestamp=note.timestamp,
+            tags=note.tags,
+            body=note.body,
+            facts=facts,
+        )
+        if self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
+            stats.skipped += 1
+        else:
+            stats.written += 1
 
     def _relationships(self, note: VaultNote) -> tuple[list[Relationship], str]:
         """Convert `[[wikilinks]]` that resolve to an already-written OKF concept
