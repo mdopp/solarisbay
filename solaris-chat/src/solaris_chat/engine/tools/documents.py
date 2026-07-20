@@ -23,6 +23,8 @@ _CLASSIFIED_MARKER = "<!-- classified -->"
 _CATEGORIES = [
     "insurance",
     "contract",
+    "invoice",
+    "utility",
     "employment",
     "pension",
     "health_insurance",
