@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.0](https://github.com/mdopp/solarisbay/compare/v0.31.1...v0.32.0) (2026-07-20)
+
+
+### Features
+
+* **chat:** structured document extraction — typed facts, category tables, corrections ([#903](https://github.com/mdopp/solarisbay/issues/903)) ([502d62e](https://github.com/mdopp/solarisbay/commit/502d62e48a49d53a9d7136b117e59842d8f2805e))
+
 ## [0.31.1](https://github.com/mdopp/solarisbay/compare/v0.31.0...v0.31.1) (2026-07-19)
 
 
