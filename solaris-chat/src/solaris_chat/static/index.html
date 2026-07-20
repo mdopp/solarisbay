@@ -703,6 +703,27 @@
       display: block; color: var(--muted); font-size: 11px; font-weight: 600;
       text-transform: uppercase; letter-spacing: 0.03em;
     }
+    /* Phone-book (#doc-graph): one provider = one card, contact lines + the
+       documents grouped under it as chips. */
+    .contact-list { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+    .contact-card {
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--panel-solid); padding: 12px 14px;
+    }
+    .contact-name {
+      font-size: 16px; font-weight: 700; color: var(--ink); margin-bottom: 8px;
+    }
+    .contact-line {
+      display: flex; align-items: center; gap: 8px; padding: 3px 0;
+      font-size: 14px; color: var(--ink); flex-wrap: wrap;
+    }
+    .contact-ic { width: 1.3em; text-align: center; color: var(--muted); flex: 0 0 auto; }
+    .contact-line a { color: var(--accent, #4f8cff); text-decoration: none; }
+    .contact-docs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .contact-doc-chip {
+      font-size: 12.5px; padding: 3px 9px; border-radius: 999px;
+      background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+    }
     .notes-explainer {
       margin: 4px 0 14px; padding: 12px 14px; border-radius: 10px;
       background: var(--panel-solid); border: 1px solid var(--line);
@@ -5985,6 +6006,21 @@
 
             var doors = document.createElement("div");
             doors.className = "notes-doorways";
+            // A phone-book doorway first: every provider as a contact, with all
+            // its documents grouped (#doc-graph).
+            var kb = document.createElement("button");
+            kb.type = "button";
+            kb.className = "notes-door";
+            var kem = document.createElement("span");
+            kem.className = "nd-emoji";
+            kem.textContent = "📇";
+            var klab = document.createElement("span");
+            klab.className = "nd-label";
+            klab.textContent = "Kontakte";
+            kb.appendChild(kem);
+            kb.appendChild(klab);
+            kb.addEventListener("click", function () { renderContactsView(card); });
+            doors.appendChild(kb);
             names
               .sort(function (a, b) { return cats[b] - cats[a]; })
               .forEach(function (cat) {
@@ -6012,6 +6048,99 @@
             mem.appendChild(doors);
           })
           .catch(function () { card.textContent = "Konnte die Dokumente nicht laden."; });
+      }
+
+      // The phone-book: each provider organization as a card with its contact
+      // details and the documents grouped under it (#doc-graph).
+      var CONTACT_FIELD = {
+        contact_person: ["👤", null],
+        phone: ["☎", "tel:"],
+        email: ["✉", "mailto:"],
+        address: ["📍", null],
+      };
+      var CONTACT_ORDER = ["contact_person", "phone", "email", "address"];
+
+      function renderContactsView(card) {
+        card.textContent = "Lade…";
+        card.classList.add("start-page");
+        fetch("/api/portal/contacts")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            card.textContent = "";
+            var head = document.createElement("div");
+            head.className = "concept-head";
+            var back = document.createElement("button");
+            back.type = "button";
+            back.className = "anchor-chip note-back";
+            back.textContent = "← Dokumente";
+            back.addEventListener("click", function () { openPortal("documents"); });
+            head.appendChild(back);
+            var title = document.createElement("span");
+            title.className = "concept-title";
+            title.textContent = "Kontakte";
+            head.appendChild(title);
+            card.appendChild(head);
+
+            if (!j || !j.ok) { card.appendChild(errLine("Kontakte nicht verfügbar.")); return; }
+            var contacts = j.contacts || [];
+            if (!contacts.length) { card.appendChild(errLine("Noch keine Kontakte")); return; }
+            var list = document.createElement("div");
+            list.className = "contact-list";
+            contacts.forEach(function (c) { list.appendChild(buildContactCard(c)); });
+            card.appendChild(list);
+          })
+          .catch(function () { card.textContent = "Konnte die Kontakte nicht laden."; });
+      }
+
+      function buildContactCard(c) {
+        var box = document.createElement("div");
+        box.className = "contact-card";
+        var name = document.createElement("div");
+        name.className = "contact-name";
+        name.textContent = c.name || "—";
+        box.appendChild(name);
+        var contact = c.contact || {};
+        CONTACT_ORDER.forEach(function (k) {
+          if (!contact[k] || !contact[k].value) return;
+          var meta = CONTACT_FIELD[k];
+          var line = document.createElement("div");
+          line.className = "contact-line";
+          var ic = document.createElement("span");
+          ic.className = "contact-ic";
+          ic.textContent = meta[0];
+          line.appendChild(ic);
+          if (meta[1]) {
+            var a = document.createElement("a");
+            a.href = meta[1] + contact[k].value;
+            a.textContent = contact[k].value;
+            line.appendChild(a);
+          } else {
+            var span = document.createElement("span");
+            span.textContent = contact[k].value;
+            line.appendChild(span);
+          }
+          if (contact[k].confidence != null && contact[k].confidence < 1.0) {
+            var badge = document.createElement("span");
+            badge.className = "doc-badge";
+            badge.textContent = "unbestätigt";
+            line.appendChild(badge);
+          }
+          box.appendChild(line);
+        });
+        var docs = c.documents || [];
+        if (docs.length) {
+          var dl = document.createElement("div");
+          dl.className = "contact-docs";
+          docs.forEach(function (d) {
+            var meta = DOCUMENT_CATEGORY_META[d.category] || [d.category || "Dokument", "🗂️"];
+            var chip = document.createElement("span");
+            chip.className = "contact-doc-chip";
+            chip.textContent = (meta[1] || "🗂️") + " " + (d.title || "—");
+            dl.appendChild(chip);
+          });
+          box.appendChild(dl);
+        }
+        return box;
       }
 
       // source_document holds a vault-relative path like

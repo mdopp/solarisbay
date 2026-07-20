@@ -28,6 +28,10 @@ _DOMAIN_BY_TYPE = {
     # A life-document (insurance, contract, …) extracted from an upload: one
     # `document` type carrying a `category` fact, not a type per category (#doc).
     "document": "documents",
+    # A company/provider that issues documents (ERGO, LBS, the Schornsteinfeger):
+    # every document's `provider` converges here so all of a contact's documents
+    # sit together and the entity can sync to the phone book via CardDAV (#doc-graph).
+    "organization": "organizations",
 }
 
 # Types projected to the `events` table; everything else is an `entity` (§4).

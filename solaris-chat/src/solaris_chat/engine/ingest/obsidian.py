@@ -50,6 +50,16 @@ _PHYSICAL_MEDIA = frozenset({"cd", "vinyl", "cassette"})
 _DOCUMENT_TYPE = "document"
 _DOCUMENT_FACT_SOURCE = "documents"
 _DOCUMENT_CONFIDENCE = 0.6
+# A document's `provider` converges on a shared `organization` entity (the
+# contact / phone-book entry) all its documents hang off (#doc-graph); these
+# frontmatter fields become the org's contact facts.
+_ORGANIZATION_TYPE = "organization"
+_ORG_CONTACT_FIELDS = {
+    "provider_phone": "phone",
+    "provider_email": "email",
+    "provider_address": "address",
+    "contact_person": "contact_person",
+}
 # Frontmatter keys that are note metadata, not extracted document fields.
 _DOCUMENT_RESERVED_FM = frozenset(
     {
@@ -251,6 +261,7 @@ class ObsidianIngest:
         + embedding (the RAG surface). Slug is pinned to the file stem so the
         writer re-serializes the agent's file in place instead of forking a
         canonical copy."""
+        resident = notes_search.resident_for_path(note.relpath) or ""
         facts = [
             (key, str(val).strip(), _DOCUMENT_CONFIDENCE)
             for key, val in note.frontmatter.items()
@@ -262,7 +273,7 @@ class ObsidianIngest:
             slug=note.relpath.rsplit("/", 1)[-1].removesuffix(".md"),
             source=_DOCUMENT_FACT_SOURCE,
             external_id=note.relpath,
-            resident=notes_search.resident_for_path(note.relpath) or "",
+            resident=resident,
             timestamp=note.timestamp,
             tags=note.tags,
             body=note.body,
@@ -272,10 +283,45 @@ class ObsidianIngest:
             identity_key=note.frontmatter.get("source_document", "").strip()
             or note.relpath,
         )
-        if self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
-            stats.skipped += 1
-        else:
+        written = not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped
+        # The provider becomes/updates a shared organization contact all its
+        # documents group under (#doc-graph); the document keeps its `provider`
+        # fact, so the phone-book view joins docs to org by that name.
+        provider = note.frontmatter.get("provider", "").strip()
+        if provider:
+            self._ingest_provider_org(note, provider, resident)
+        if written:
             stats.written += 1
+        else:
+            stats.skipped += 1
+
+    def _ingest_provider_org(
+        self, note: VaultNote, provider: str, resident: str
+    ) -> None:
+        """Converge a document's `provider` onto a projection-only `organization`
+        entity (the phone-book contact, #doc-graph). Identity is the provider slug
+        so every ERGO document maps to the same org; contact facts are scoped to
+        THIS document's source so a second ERGO letter's phone doesn't clobber the
+        first's address (ADR 0003) — the org accumulates contact detail across all
+        its documents."""
+        doc_slug = note.relpath.rsplit("/", 1)[-1].removesuffix(".md")
+        contact_facts = [
+            (pred, str(note.frontmatter.get(key, "")).strip(), _DOCUMENT_CONFIDENCE)
+            for key, pred in _ORG_CONTACT_FIELDS.items()
+            if str(note.frontmatter.get(key, "")).strip()
+        ]
+        org_rec = ConceptRecord(
+            type=_ORGANIZATION_TYPE,
+            title=provider,
+            slug=safe_slug(provider),
+            source=f"{_DOCUMENT_FACT_SOURCE}:{doc_slug}",
+            external_id=f"organization:{doc_slug}",
+            resident=resident,
+            facts=contact_facts,
+            projection_only=True,
+            identity_key=f"organization:{safe_slug(provider)}",
+        )
+        self._writer.write_concept(org_rec, ingesting_uid=self._uid)
 
     def _relationships(self, note: VaultNote) -> tuple[list[Relationship], str]:
         """Convert `[[wikilinks]]` that resolve to an already-written OKF concept

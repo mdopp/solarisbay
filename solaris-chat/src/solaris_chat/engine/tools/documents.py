@@ -63,6 +63,11 @@ _FIELDS: dict[str, str] = {
     "expiry_date": "Ablauf (YYYY-MM-DD)",
     "hu_date": "HU/TÜV (YYYY-MM-DD)",
     "member_number": "Mitgliedsnummer",
+    # Contact fields — become a linked organization/person contact (#doc-graph).
+    "provider_phone": "Telefon des Anbieters",
+    "provider_email": "E-Mail des Anbieters",
+    "provider_address": "Anschrift des Anbieters",
+    "contact_person": "Ansprechpartner/Betreuer (Name)",
 }
 
 

@@ -33,7 +33,9 @@ from solaris_chat.logging import log
 # insurance/contract letter, rendered at a resolution the VLM can read table
 # cells from without ballooning the turn.
 _MAX_VISION_PAGES = 4
-_VISION_DPI = "150"
+# 300 dpi so the vision model can read small table cells (a Bausparkonto
+# Kontoauszug's amounts) that 150 dpi left too blurry.
+_VISION_DPI = "300"
 
 # First N pages only — a huge scan must not turn one upload into a minutes-long
 # OCR job on the ingest thread.

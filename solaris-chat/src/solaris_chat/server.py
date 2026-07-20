@@ -3789,6 +3789,15 @@ def build_app(
         )
         return web.json_response({"ok": True, "category": category, "rows": rows or []})
 
+    async def portal_contacts(request: web.Request) -> web.Response:
+        """The phone-book (#doc-graph): every provider organization with its
+        contact facts and the documents grouped under it, owner-scoped."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        rows = await asyncio.to_thread(
+            documents_portal_db.contacts, solaris_db_path, uid
+        )
+        return web.json_response({"ok": True, "contacts": rows or []})
+
     def _document_confirm_fact(
         uid: str, entity_id: str, predicate: str, value: str
     ) -> bool:
@@ -5003,6 +5012,7 @@ def build_app(
     app.router.add_post("/api/portal/notes/archive", portal_notes_archive)
     app.router.add_post("/api/portal/notes/curate", portal_notes_curate)
     app.router.add_get("/api/portal/documents", portal_documents)
+    app.router.add_get("/api/portal/contacts", portal_contacts)
     app.router.add_post("/api/portal/documents/correct", portal_documents_correct)
     app.router.add_get("/api/portal/documents/{category}", portal_documents_category)
     app.router.add_post("/api/favorites", favorites_create)
