@@ -167,6 +167,10 @@ class Settings:
     carddav_url: str
     carddav_username: str
     carddav_password: str
+    # Radicale's on-disk storage root (mounted from the radicale service), the
+    # WRITE target for syncing provider contacts into the phone book (#doc-graph).
+    # Empty ⇒ contact sync disabled (no mount / no radicale).
+    radicale_data: str
     # Where the interactive Takeout import (#869) reads library ownership from
     # (`music_dir`) and stores its scratch state / stored archives (`import_data_dir`,
     # also the ytmusicapi album cache). Defaults match the stack's data mounts.
@@ -344,6 +348,7 @@ class Settings:
             carddav_url=os.environ.get("CARDDAV_URL", "").strip(),
             carddav_username=os.environ.get("CARDDAV_USERNAME", "").strip(),
             carddav_password=os.environ.get("CARDDAV_PASSWORD", "").strip(),
+            radicale_data=os.environ.get("RADICALE_DATA", "").strip(),
             music_dir=os.environ.get("MUSIC_DIR", "/opt/data/music").strip(),
             import_data_dir=os.environ.get("IMPORT_DATA_DIR", "/data/imports").strip(),
             # The household Jellyfin server the music-ingest adapter reads

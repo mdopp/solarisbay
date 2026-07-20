@@ -263,6 +263,11 @@ spec:
       value: "{{CARDDAV_USERNAME}}"
     - name: CARDDAV_PASSWORD
       value: "{{CARDDAV_PASSWORD}}"
+    # Radicale's on-disk storage, mounted below — the WRITE target that syncs
+    # document providers into the residents' address books as vCards (#doc-graph).
+    # Empty ⇒ contact sync disabled. The value is the in-container mount path.
+    - name: RADICALE_DATA
+      value: "/radicale"
     # The household Jellyfin server the music-ingest adapter reads (read-only,
     # #564) to map the music catalog into OKF band/song concepts. Reuses the
     # existing JELLYFIN_* stack vars (username/password, not an API key). An
@@ -314,6 +319,10 @@ spec:
       name: solaris-data
     - mountPath: /opt/data/notes
       name: syncthing-notes
+    # Radicale's storage tree — the contact-sync writes vCards here (#doc-graph);
+    # matches RADICALE_DATA above. Same host path the Google-import writes to.
+    - mountPath: /radicale
+      name: radicale-data
 
   # gatekeeper — Solaris-published Wyoming bridge for wyoming-satellite
   # hardware (the Voice PE speaker rides HA's Assist pipeline instead, which
@@ -478,6 +487,12 @@ spec:
   - name: solaris-data
     hostPath:
       path: {{DATA_DIR}}/solarisbay
+      type: DirectoryOrCreate
+  # Radicale's storage tree — the contact-sync (#doc-graph) drops provider vCards
+  # into the residents' address books here, exactly as the Google-import does.
+  - name: radicale-data
+    hostPath:
+      path: {{DATA_DIR}}/radicale/data
       type: DirectoryOrCreate
 
 # Post-deploy: ./post-deploy.py

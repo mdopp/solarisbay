@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from solaris_chat import compaction, notes_search
-from solaris_chat.engine import music_affinity, store
+from solaris_chat.engine import document_contacts_sync, music_affinity, store
 from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.ingest.runner import _run_obsidian
 from solaris_chat.engine.ingest.upload_extract import companion_images
@@ -498,6 +498,17 @@ class CronRunner:
         except Exception as e:  # noqa: BLE001 — one bad scope must not kill the run.
             log.error("engine.night.document_extractor_failed", error=str(e))
         await self._run_in_worker(_reingest_step)
+        # Providers → phone book: now that the re-ingest has (re)built the org
+        # entities + their contact facts, project them into the residents'
+        # Radicale address books (#doc-graph). No-op when radicale_data is unset.
+        try:
+            await asyncio.to_thread(
+                document_contacts_sync.sync_contacts,
+                settings.solaris_db_path,
+                settings.radicale_data,
+            )
+        except Exception as e:  # noqa: BLE001 — one bad step must not kill the run.
+            log.error("engine.night.contacts_sync_failed", error=str(e))
 
     @staticmethod
     async def _run_in_worker(coro_factory) -> None:
