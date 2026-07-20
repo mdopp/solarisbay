@@ -415,11 +415,21 @@ class EngineClient:
         images: list[str] | None = None,
         reasoning_effort: str = "none",
         turn_uid: str = "",
+        model_override: str = "",
     ) -> str:
-        """One turn, non-streamed: drain the stream, return the final answer."""
+        """One turn, non-streamed: drain the stream, return the final answer.
+
+        `model_override` runs this turn on a specific model tag instead of the
+        profile's default (the document extractor uses a stronger model than the
+        librarian's default, #doc)."""
         answer = ""
         async for event in self.chat_stream(
-            session_id, text, images, reasoning_effort, turn_uid=turn_uid
+            session_id,
+            text,
+            images,
+            reasoning_effort,
+            turn_uid=turn_uid,
+            model_override=model_override,
         ):
             if event["type"] == "run.completed":
                 for msg in event["data"].get("messages", []):
@@ -435,6 +445,7 @@ class EngineClient:
         reasoning_effort: str = "none",
         suggest_answers: bool = False,
         turn_uid: str = "",
+        model_override: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         owner = store.session_owner(self._db_path, session_id)
         if owner is None:
@@ -452,6 +463,7 @@ class EngineClient:
                 reasoning_effort,
                 suggest_answers,
                 turn_uid=turn_uid,
+                model_override=model_override,
             ):
                 yield event
         except OllamaError as e:
@@ -474,6 +486,7 @@ class EngineClient:
         reasoning_effort: str,
         suggest_answers: bool = False,
         turn_uid: str = "",
+        model_override: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         store.append_message(
             self._db_path, session_id, "user", text, images=images or None
@@ -504,6 +517,7 @@ class EngineClient:
             persist=True,
             uid=turn_uid or owner,
             suggest_answers=suggest_answers,
+            model_override=model_override,
         ):
             self._mirror(session_id, owner, "mirror_event", event)
             yield event
@@ -720,6 +734,7 @@ class EngineClient:
         uid: str = "",
         pending_key: str | None | _Unset = _UNSET,
         suggest_answers: bool = False,
+        model_override: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         """The agent loop: stream, dispatch tools, feed results back, repeat.
 
@@ -827,7 +842,7 @@ class EngineClient:
         corrected = False
         final_content = ""
         final_thinking = ""
-        model = self._model()
+        model = model_override or self._model()
         for _ in range(_MAX_PASSES):
             result = None
             # Trim the verbose tool args/results of PRIOR turns before the model
