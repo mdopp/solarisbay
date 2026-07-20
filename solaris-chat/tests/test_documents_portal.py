@@ -52,6 +52,7 @@ def _seed(tmp_path):
         [
             ("category", "insurance", 0.6, "documents"),
             ("provider", "ERGO", 0.6, "documents"),
+            ("provider_key", "ergo", 0.6, "documents"),
             ("cancellation_deadline", "2026-12-15", 0.6, "documents"),
             # a human-confirmed correction of the deadline
             ("cancellation_deadline", "2026-11-30", 1.0, "documents:confirmed"),
@@ -131,6 +132,7 @@ def test_contacts_groups_documents_and_contact_facts(tmp_path):
         "ERGO",
         "household",
         [
+            ("provider_key", "ergo", 0.6, "documents:a"),
             ("phone", "05404 5209", 0.6, "documents:a"),
             ("email", "service@ergo.de", 0.6, "documents:b"),
         ],
@@ -142,7 +144,7 @@ def test_contacts_groups_documents_and_contact_facts(tmp_path):
     # Contact facts from both documents surface on the shared org.
     assert ergo["contact"]["phone"]["value"] == "05404 5209"
     assert ergo["contact"]["email"]["value"] == "service@ergo.de"
-    # The ERGO document (its `provider` fact names the org) groups under it.
+    # The ERGO document (shared provider_key) groups under it.
     assert [d["title"] for d in ergo["documents"]] == ["ERGO Rechtsschutz"]
 
 

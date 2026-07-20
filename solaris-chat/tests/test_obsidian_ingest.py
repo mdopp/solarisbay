@@ -480,6 +480,40 @@ def test_two_documents_same_provider_share_one_org(env):
     assert ("email", "service@ergo.de", 0.6) in facts
 
 
+def test_provider_name_variants_converge_on_one_org(env):
+    # Two documents whose provider differs only by legal form must map to ONE
+    # organization (the phone-book contact), not two.
+    from solaris_chat.engine.ingest import obsidian
+
+    assert (
+        obsidian._normalize_org_name("Hellmann Worldwide Logistics GmbH & Co. KG")
+        == obsidian._normalize_org_name("Hellmann Worldwide Logistics KG")
+        == "hellmann worldwide logistics"
+    )
+    writer, db_path, _ = env
+    a = _document(
+        relpath="users/mdopp/okf/documents/a.md",
+        title="Hellmann Urkunde 1",
+        source_document="users/mdopp/uploads/a.md",
+        provider="Hellmann Worldwide Logistics GmbH & Co. KG",
+    )
+    b = _document(
+        relpath="users/mdopp/okf/documents/b.md",
+        title="Hellmann Urkunde 2",
+        source_document="users/mdopp/uploads/b.md",
+        provider="Hellmann Worldwide Logistics KG",
+    )
+    _run(FakeObsidianReader([a, b]), writer, db_path)
+    conn = projection.open_conn(db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM entities WHERE type = 'organization'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 1  # both variants → one contact
+
+
 def test_document_dedup_by_source_not_title(env):
     # Two uploads that got the SAME title but come from DIFFERENT source docs must
     # stay two entities (no collision / data loss) — identity is source_document.

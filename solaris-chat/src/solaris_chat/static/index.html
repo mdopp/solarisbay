@@ -6212,7 +6212,8 @@
             var seen = {};
             rows.forEach(function (row) {
               Object.keys(row.facts || {}).forEach(function (p) {
-                if (p !== "category" && p !== "source_document") seen[p] = true;
+                if (p !== "category" && p !== "source_document" && p !== "provider_key")
+                  seen[p] = true;
               });
             });
             var cols = DOCUMENT_FIELD_ORDER.filter(function (p) { return seen[p]; });
