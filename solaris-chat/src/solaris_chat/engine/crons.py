@@ -24,7 +24,12 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from solaris_chat import compaction, notes_search
-from solaris_chat.engine import document_contacts_sync, music_affinity, store
+from solaris_chat.engine import (
+    document_contacts_sync,
+    document_deadlines_sync,
+    music_affinity,
+    store,
+)
 from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.ingest.runner import _run_obsidian
 from solaris_chat.engine.ingest.upload_extract import companion_images
@@ -509,6 +514,16 @@ class CronRunner:
             )
         except Exception as e:  # noqa: BLE001 — one bad step must not kill the run.
             log.error("engine.night.contacts_sync_failed", error=str(e))
+        # Document deadlines → the "Solaris Fristen" calendar (#doc-graph), where
+        # the calendar app raises the reminder — the passive, non-push channel.
+        try:
+            await asyncio.to_thread(
+                document_deadlines_sync.sync_deadlines,
+                settings.solaris_db_path,
+                settings.radicale_data,
+            )
+        except Exception as e:  # noqa: BLE001 — one bad step must not kill the run.
+            log.error("engine.night.deadlines_sync_failed", error=str(e))
 
     @staticmethod
     async def _run_in_worker(coro_factory) -> None:
