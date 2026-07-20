@@ -261,6 +261,40 @@ async def test_upload_download_requires_auth(aiohttp_client, tmp_path):
     assert r.status == 401
 
 
+def test_companion_images_pdf_returns_base64_pages(tmp_path, monkeypatch):
+    import base64
+
+    up = tmp_path / "users" / "mdopp" / "uploads"
+    up.mkdir(parents=True)
+    (up / "doc.pdf").write_bytes(b"%PDF-1.4")
+    (up / "doc.md").write_text("---\nkind: upload\n---\n", encoding="utf-8")
+    (tmp_path / "pg-1.png").write_bytes(b"\x89PNGpage1")  # pdftoppm "output"
+    monkeypatch.setattr(subprocess, "run", _fake_run("", []))
+    monkeypatch.setattr(
+        upload_extract.tempfile, "TemporaryDirectory", lambda: _NoopTmp(str(tmp_path))
+    )
+    imgs = upload_extract.companion_images(str(tmp_path), "users/mdopp/uploads/doc.md")
+    assert len(imgs) == 1 and base64.b64decode(imgs[0]) == b"\x89PNGpage1"
+
+
+def test_companion_images_image_returns_base64(tmp_path):
+    import base64
+
+    up = tmp_path / "uploads"
+    up.mkdir(parents=True)
+    (up / "scan.jpg").write_bytes(b"\xff\xd8\xffDATA")
+    (up / "scan.md").write_text("---\nkind: upload\n---\n", encoding="utf-8")
+    imgs = upload_extract.companion_images(str(tmp_path), "uploads/scan.md")
+    assert base64.b64decode(imgs[0]) == b"\xff\xd8\xffDATA"
+
+
+def test_companion_images_no_media_returns_empty(tmp_path):
+    d = tmp_path / "uploads"
+    d.mkdir(parents=True)
+    (d / "lonely.md").write_text("x", encoding="utf-8")
+    assert upload_extract.companion_images(str(tmp_path), "uploads/lonely.md") == []
+
+
 class _NoopTmp:
     """A TemporaryDirectory stand-in that yields a fixed path and never deletes."""
 

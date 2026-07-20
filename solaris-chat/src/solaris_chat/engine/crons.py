@@ -27,6 +27,7 @@ from solaris_chat import compaction, notes_search
 from solaris_chat.engine import music_affinity, store
 from solaris_chat.engine.ingest import run_ingest
 from solaris_chat.engine.ingest.runner import _run_obsidian
+from solaris_chat.engine.ingest.upload_extract import companion_images
 from solaris_chat.engine.knowledge import (
     PendingEmbeddingQueue,
     embed_worker,
@@ -98,9 +99,12 @@ _DOC_CLASSIFIED_MARKER = "<!-- classified -->"
 
 DOCUMENT_EXTRACTOR_PROMPT = (
     "[system: nightly document extractor — unattended, no resident present]\n"
-    "Du extrahierst strukturierte Daten aus Dokumenten. Für JEDE Kandidaten-\n"
-    "Companion unten (eine Upload-Notiz mit '## Inhalt (extrahiert)'):\n"
-    "1. Lies sie mit notes_read — der Abschnitt enthält den vollständigen Text.\n"
+    "Du extrahierst strukturierte Daten aus Dokumenten. Die SEITENBILDER des\n"
+    "Dokuments sind angehängt — lies sie DIREKT (Tabellen/Layout/Zahlen erkennst\n"
+    "du am Bild zuverlässiger als am OCR-Text). Für JEDE Kandidaten-Companion\n"
+    "unten (eine Upload-Notiz mit '## Inhalt (extrahiert)'):\n"
+    "1. Sieh dir die angehängten Seitenbilder an; der OCR-Text (per notes_read)\n"
+    "   ist eine Stütze für exakte Nummern, kann aber Tabellen verstümmeln.\n"
     "2. SUCHE im Text aktiv nach diesen Angaben und übergib ALLE gefundenen als\n"
     "   Argumente von document_extract (ein Feld NUR weglassen, wenn es wirklich\n"
     "   nicht im Text steht — nichts erfinden):\n"
@@ -744,12 +748,16 @@ class CronRunner:
         for scope, candidate in work:
             try:
                 prompt = DOCUMENT_EXTRACTOR_PROMPT + candidate
+                # Attach the document's page images so the vision model reads
+                # tables/layout directly (Tesseract garbles them); rasterizing is
+                # blocking, so keep it off the chat loop.
+                images = await asyncio.to_thread(companion_images, notes_dir, candidate)
                 session_id = await self._librarian.create_session(scope, ephemeral=True)
                 try:
                     reply = await self._librarian.chat(
                         session_id,
                         prompt,
-                        None,
+                        images,
                         "high",
                         model_override=self._extractor_model,
                     )
