@@ -24,6 +24,7 @@ only touches changed notes.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from ... import notes_search
@@ -60,6 +61,28 @@ _ORG_CONTACT_FIELDS = {
     "provider_address": "address",
     "contact_person": "contact_person",
 }
+# German/EN legal-form + connector tokens dropped when normalizing a provider
+# name to its identity key, so "Hellmann Worldwide Logistics GmbH & Co. KG" and
+# "Hellmann Worldwide Logistics KG" converge on ONE contact instead of two
+# (#doc-graph). OCR-mangled spellings still diverge — a correction fixes those.
+_ORG_LEGAL_TOKENS = frozenset(
+    "gmbh ag kg mbh co kgaa ggmbh ug ohg gbr se ev partg mbb und".split()
+)
+# The join key linking a document to its provider org: written on both the
+# document and the org so the phone-book groups by the normalized key, not the
+# exact (variant) display name.
+_PROVIDER_KEY = "provider_key"
+
+
+def _normalize_org_name(name: str) -> str:
+    """A provider's identity key: lowercased, punctuation dropped, legal-form
+    tokens (GmbH/AG/KG/…) removed, whitespace collapsed. Empty if nothing is
+    left (a bare 'GmbH') — the caller then falls back to the raw name."""
+    tokens = re.findall(r"[a-z0-9äöüß]+", name.casefold())
+    kept = [t for t in tokens if t not in _ORG_LEGAL_TOKENS]
+    return " ".join(kept)
+
+
 # Frontmatter keys that are note metadata, not extracted document fields.
 _DOCUMENT_RESERVED_FM = frozenset(
     {
@@ -283,29 +306,34 @@ class ObsidianIngest:
             identity_key=note.frontmatter.get("source_document", "").strip()
             or note.relpath,
         )
-        written = not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped
         # The provider becomes/updates a shared organization contact all its
-        # documents group under (#doc-graph); the document keeps its `provider`
-        # fact, so the phone-book view joins docs to org by that name.
+        # documents group under (#doc-graph). The document carries the normalized
+        # `provider_key` so the phone-book joins docs to org by that stable key,
+        # not the exact (variant) display name.
         provider = note.frontmatter.get("provider", "").strip()
+        provider_key = _normalize_org_name(provider) or provider.casefold()
         if provider:
-            self._ingest_provider_org(note, provider, resident)
+            facts.append((_PROVIDER_KEY, provider_key, _DOCUMENT_CONFIDENCE))
+        written = not self._writer.write_concept(rec, ingesting_uid=self._uid).skipped
+        if provider:
+            self._ingest_provider_org(note, provider, provider_key, resident)
         if written:
             stats.written += 1
         else:
             stats.skipped += 1
 
     def _ingest_provider_org(
-        self, note: VaultNote, provider: str, resident: str
+        self, note: VaultNote, provider: str, provider_key: str, resident: str
     ) -> None:
         """Converge a document's `provider` onto a projection-only `organization`
-        entity (the phone-book contact, #doc-graph). Identity is the provider slug
-        so every ERGO document maps to the same org; contact facts are scoped to
-        THIS document's source so a second ERGO letter's phone doesn't clobber the
-        first's address (ADR 0003) — the org accumulates contact detail across all
-        its documents."""
+        entity (the phone-book contact, #doc-graph). Identity is the NORMALIZED
+        provider key so name variants (`… GmbH & Co. KG` vs `… KG`) map to the
+        same org; contact facts are scoped to THIS document's source so a second
+        ERGO letter's phone doesn't clobber the first's address (ADR 0003) — the
+        org accumulates contact detail across all its documents."""
         doc_slug = note.relpath.rsplit("/", 1)[-1].removesuffix(".md")
-        contact_facts = [
+        facts = [(_PROVIDER_KEY, provider_key, _DOCUMENT_CONFIDENCE)]
+        facts += [
             (pred, str(note.frontmatter.get(key, "")).strip(), _DOCUMENT_CONFIDENCE)
             for key, pred in _ORG_CONTACT_FIELDS.items()
             if str(note.frontmatter.get(key, "")).strip()
@@ -313,13 +341,13 @@ class ObsidianIngest:
         org_rec = ConceptRecord(
             type=_ORGANIZATION_TYPE,
             title=provider,
-            slug=safe_slug(provider),
+            slug=safe_slug(provider_key or provider),
             source=f"{_DOCUMENT_FACT_SOURCE}:{doc_slug}",
             external_id=f"organization:{doc_slug}",
             resident=resident,
-            facts=contact_facts,
+            facts=facts,
             projection_only=True,
-            identity_key=f"organization:{safe_slug(provider)}",
+            identity_key=f"organization:{provider_key}",
         )
         self._writer.write_concept(org_rec, ingesting_uid=self._uid)
 

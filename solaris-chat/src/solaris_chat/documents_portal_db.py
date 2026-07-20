@@ -81,9 +81,10 @@ def contacts(db_path: str, uid: str) -> list[dict[str, Any]] | None:
     """The phone-book: every `organization` (a document's provider) in scope with
     its contact facts and the documents grouped under it (#doc-graph).
 
-    Documents join to their org by name — the document's `provider` fact equals
-    the org's `canonical_name` (see `_ingest_provider_org`). Contact facts follow
-    the same highest-confidence-per-predicate rule as `category_view`, so a
+    Documents join to their org by the normalized `provider_key` fact (written on
+    both the document and the org, see `_ingest_provider_org`), so provider name
+    variants (`… GmbH & Co. KG` vs `… KG`) group under one contact. Contact facts
+    follow the same highest-confidence-per-predicate rule as `category_view`, so a
     corrected phone number wins over the agent-extracted one."""
     conn = _connect(db_path)
     if conn is None:
@@ -99,11 +100,14 @@ def contacts(db_path: str, uid: str) -> list[dict[str, Any]] | None:
         out: list[dict[str, Any]] = []
         for org in orgs:
             contact: dict[str, dict[str, Any]] = {}
+            provider_key = ""
             for f in conn.execute(
                 "SELECT predicate, value, confidence FROM facts"
                 " WHERE subject_entity_id = ? ORDER BY confidence DESC",
                 (org["id"],),
             ).fetchall():
+                if f["predicate"] == "provider_key" and not provider_key:
+                    provider_key = f["value"]
                 if (
                     f["predicate"] in _CONTACT_PREDICATES
                     and f["predicate"] not in contact
@@ -112,16 +116,16 @@ def contacts(db_path: str, uid: str) -> list[dict[str, Any]] | None:
                         "value": f["value"],
                         "confidence": f["confidence"],
                     }
-            # The org's documents: any `document` whose `provider` names it.
+            # The org's documents: any `document` sharing its normalized provider_key.
             docs = conn.execute(
                 "SELECT DISTINCT e.id AS id, e.canonical_name AS title,"
                 " (SELECT value FROM facts WHERE subject_entity_id = e.id"
                 "  AND predicate = 'category' LIMIT 1) AS category"
                 " FROM entities e JOIN facts f ON f.subject_entity_id = e.id"
-                f" WHERE e.type = 'document' AND f.predicate = 'provider'"  # noqa: S608
+                f" WHERE e.type = 'document' AND f.predicate = 'provider_key'"  # noqa: S608
                 f" AND f.value = ? AND {scope}"
                 " ORDER BY e.canonical_name",
-                [org["name"], *params],
+                [provider_key, *params],
             ).fetchall()
             out.append(
                 {
