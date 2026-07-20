@@ -342,6 +342,7 @@ class CronRunner:
         jobs: tuple[CronJob, ...] | None = None,
         ingest_settings: Settings | None = None,
         librarian: EngineClient | None = None,
+        extractor_model: str = "gemma4:12b",
     ):
         self._db_path = db_path
         self._deep = deep
@@ -350,6 +351,10 @@ class CronRunner:
         self._jobs = jobs if jobs is not None else load_jobs(skills_dir)
         self._ingest_settings = ingest_settings
         self._librarian = librarian
+        # Document extraction runs on a stronger model than the bibliothekar's
+        # default (the 8B librarian couldn't fill fields) — a per-turn override on
+        # the same restricted librarian client (#doc).
+        self._extractor_model = extractor_model
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -706,14 +711,13 @@ class CronRunner:
         return out[:_BIBLIOTHEKAR_MAX_PATHS]
 
     async def _document_extractor(self) -> None:
-        """Nightly document extraction (#doc): one librarian turn per ownership
-        scope over its newly-OCR'd upload companions. The turn classifies each
-        document and writes a typed `document` note (structured frontmatter) the
-        re-ingest then projects to a `document` entity + facts; it appends the
-        `<!-- classified -->` marker so the companion isn't re-processed. Uses the
-        restricted librarian client (no device tools) — right for sensitive
-        financial/health documents. Runs between ingest and re-ingest, alongside
-        the bibliothekar."""
+        """Nightly document extraction (#doc): ONE librarian turn PER companion
+        (not per scope) — a small model drops documents when handed a batch, so
+        each doc gets a focused turn on a stronger model (`extractor_model`). The
+        turn classifies the document and calls `document_extract`, which writes
+        the typed note + marks the companion done; the re-ingest projects it to a
+        `document` entity + facts. Uses the restricted librarian client (no device
+        tools) — right for sensitive financial/health documents."""
         if self._librarian is None or self._ingest_settings is None:
             log.info("engine.night.document_extractor_skipped", reason="no_librarian")
             return
@@ -721,28 +725,35 @@ class CronRunner:
         if not notes_dir:
             return
         for scope in self._bibliothekar_scopes(notes_dir):
-            try:
-                candidates = self._document_extractor_candidates(notes_dir, scope)
-                if not candidates:
-                    continue
-                prompt = DOCUMENT_EXTRACTOR_PROMPT + "\n".join(candidates)
-                session_id = await self._librarian.create_session(scope, ephemeral=True)
+            for candidate in self._document_extractor_candidates(notes_dir, scope):
                 try:
-                    reply = await self._librarian.chat(session_id, prompt, None, "high")
-                    log.info(
-                        "engine.night.document_extractor_scope",
-                        scope=scope,
-                        candidates=len(candidates),
-                        reply_len=len(reply),
+                    prompt = DOCUMENT_EXTRACTOR_PROMPT + candidate
+                    session_id = await self._librarian.create_session(
+                        scope, ephemeral=True
                     )
-                finally:
-                    await self._librarian.delete_session(session_id, scope)
-            except Exception as e:  # noqa: BLE001 — one bad scope/file mustn't abort.
-                log.error(
-                    "engine.night.document_extractor_scope_failed",
-                    scope=scope,
-                    error=str(e),
-                )
+                    try:
+                        reply = await self._librarian.chat(
+                            session_id,
+                            prompt,
+                            None,
+                            "high",
+                            model_override=self._extractor_model,
+                        )
+                        log.info(
+                            "engine.night.document_extractor_doc",
+                            scope=scope,
+                            doc=candidate,
+                            reply_len=len(reply),
+                        )
+                    finally:
+                        await self._librarian.delete_session(session_id, scope)
+                except Exception as e:  # noqa: BLE001 — one bad doc mustn't abort.
+                    log.error(
+                        "engine.night.document_extractor_doc_failed",
+                        scope=scope,
+                        doc=candidate,
+                        error=str(e),
+                    )
 
     async def curate_scope(self, notes_dir: str, scope: str) -> dict[str, object]:
         """Run one on-demand librarian turn for a single scope (#697).
