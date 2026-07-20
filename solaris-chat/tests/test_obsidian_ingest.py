@@ -413,6 +413,31 @@ def test_document_note_projects_typed_facts_at_extraction_confidence(env):
     assert "type: document" in doc_md.read_text()
 
 
+def test_document_dedup_by_source_not_title(env):
+    # Two uploads that got the SAME title but come from DIFFERENT source docs must
+    # stay two entities (no collision / data loss) — identity is source_document.
+    writer, db_path, _ = env
+    a = _document(
+        relpath="users/mdopp/okf/documents/a.md",
+        title="Versorgungsurkunde",
+        source_document="users/mdopp/uploads/a.md",
+    )
+    b = _document(
+        relpath="users/mdopp/okf/documents/b.md",
+        title="Versorgungsurkunde",
+        source_document="users/mdopp/uploads/b.md",
+    )
+    _run(FakeObsidianReader([a, b]), writer, db_path)
+    conn = projection.open_conn(db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM entities WHERE type = 'document'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 2  # not collapsed into one by the shared title
+
+
 def test_document_confirmed_correction_wins_over_extraction(env):
     # A human correction writes the fact under a distinct source at confidence
     # 1.0; source-scoped replace keeps both, the confirmed one is authoritative.

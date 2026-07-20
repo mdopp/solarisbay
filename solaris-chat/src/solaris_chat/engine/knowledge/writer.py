@@ -81,6 +81,12 @@ class OkfWriter:
                     if record.projection_only
                     else uuid.uuid4().hex
                 )
+            elif record.identity_key:
+                # Identity is pinned to a stable key (a document's source upload),
+                # not the canonical name — so two uploads with the same title don't
+                # collide into one entity (data loss), and re-extracting the same
+                # upload updates the same entity (#doc).
+                ref_id = okf.deterministic_id(record.identity_key)
             else:
                 ref_id = (
                     projection.resolve_entity(

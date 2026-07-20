@@ -267,6 +267,10 @@ class ObsidianIngest:
             tags=note.tags,
             body=note.body,
             facts=facts,
+            # Identity = the source upload, so two uploads that got the same title
+            # don't collide into one entity (#doc). Falls back to the note path.
+            identity_key=note.frontmatter.get("source_document", "").strip()
+            or note.relpath,
         )
         if self._writer.write_concept(rec, ingesting_uid=self._uid).skipped:
             stats.skipped += 1

@@ -688,6 +688,31 @@
       background: none; border: none; padding: 0;
     }
     .doc-edit:hover { color: var(--accent); }
+    /* On mobile the wide table can't fit, so each row becomes a card with its
+       values stacked; the German column header is shown before each value via
+       data-label. Matches the app's 760px mobile switch (tab bar / rail). */
+    @media (max-width: 760px) {
+      .doc-table-wrap { overflow-x: visible; }
+      .doc-table { font-size: 14px; }
+      .doc-table thead { display: none; }
+      .doc-table tr {
+        display: block; margin: 0 0 12px; padding: 10px 12px;
+        border: 1px solid var(--line); border-radius: var(--radius);
+        background: var(--panel-solid);
+      }
+      .doc-table td {
+        display: block; border: none; padding: 4px 0; white-space: normal;
+      }
+      .doc-table td[data-label]::before {
+        content: attr(data-label); display: block;
+        color: var(--muted); font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.03em;
+      }
+      .doc-table .doc-title-cell {
+        font-size: 16px; padding-bottom: 8px; margin-bottom: 4px;
+        border-bottom: 1px solid var(--line);
+      }
+    }
     .notes-explainer {
       margin: 4px 0 14px; padding: 12px 14px; border-radius: 10px;
       background: var(--panel-solid); border: 1px solid var(--line);
@@ -6074,9 +6099,10 @@
               titleTd.textContent = row.title || row.entity_id || "—";
               tr.appendChild(titleTd);
               cols.forEach(function (p) {
-                tr.appendChild(docCell(card, category, row, p));
+                tr.appendChild(docCell(card, category, row, p, DOCUMENT_FIELD_LABEL[p] || p));
               });
               var origTd = document.createElement("td");
+              origTd.setAttribute("data-label", "Original");
               var src = (row.facts && row.facts.source_document && row.facts.source_document.value) || row.source_document;
               var href = documentSourceLink(src);
               if (href) {
@@ -6118,8 +6144,9 @@
       // POSTs a confirmed value then re-renders the whole table (clearing badges).
       // The inline editor is a prompt() for now — a nicer in-cell editor is a
       // follow-up.
-      function docCell(card, category, row, predicate) {
+      function docCell(card, category, row, predicate, label) {
         var td = document.createElement("td");
+        td.setAttribute("data-label", label || DOCUMENT_FIELD_LABEL[predicate] || predicate);
         var fact = (row.facts || {})[predicate];
         var value = fact ? fact.value : null;
         var span = document.createElement("span");
