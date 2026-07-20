@@ -2,32 +2,28 @@
 
 Every document's provider is an `organization` entity carrying contact facts
 (phone/email/address/contact_person) — see `ingest/obsidian.py`. This projects
-each org into the owner's Radicale address book as one vCard, so the providers
-show up among the household's real contacts on their phones.
+each org into a shared "Solaris Anbieter" address book as one vCard, so the
+providers show up as contacts on the household's phones.
 
-Filesystem write (like `solaris-import-google`): Radicale runs `owner_only`, so
-there is no admin DAV path — we drop `<uid>.vcf` files straight into the storage
-tree under the org owner's `contacts/` collection and let Radicale rescan. The
-vCard UID is derived from the entity id, so a re-sync overwrites in place instead
-of duplicating. Disabled (no-op) when `radicale_data` is unset.
+**Authenticated CardDAV PUT**, not a filesystem mount: the sync runs as a
+dedicated `solaris` DAV account (its own LLDAP identity), and Radicale's
+`owner_only` rights scope that account to only its own collection — no raw
+storage access, no other resident's data, no loosened perms. The vCard UID is
+derived from the entity id, so a re-sync overwrites the same card instead of
+duplicating, and never touches a human's own contacts (different UIDs). Disabled
+(no-op) when the collection URL / credentials are unset.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import vobject
 
-from solaris_chat import notes_search
-from solaris_chat.engine.importers.google_takeout import radicale_store
+from solaris_chat.engine.ingest.dav_client import HttpDavClient
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.logging import log
 
-# The owner's personal address book — the same collection the Google-import
-# writes to, so providers land among the resident's existing contacts.
-_COLLECTION = "contacts"
 # A vCard UID that marks the card as Solaris-owned, so a re-sync overwrites the
-# same file and a human's own contacts (different UIDs) are never touched.
+# same resource and a human's own contacts (different UIDs) are never touched.
 _UID_PREFIX = "solaris-provider-"
 _CONTACT_PREDICATES = ("phone", "email", "address", "contact_person")
 
@@ -64,41 +60,40 @@ def _build_vcard(entity_id: str, name: str, contact: dict[str, str]) -> str:
     return card.serialize()
 
 
-def sync_contacts(db_path: str, radicale_data: str) -> dict[str, int]:
-    """Write every provider org's vCard into its owner's Radicale address book.
+async def sync_contacts(
+    db_path: str, collection_url: str, username: str, password: str
+) -> dict[str, int]:
+    """PUT every provider org's vCard into the Solaris address book collection.
 
-    Returns `{written, skipped}`. Household-scoped orgs have no personal book
-    (no LDAP principal) and are skipped. Never raises — a sync failure must not
-    abort the night run."""
-    if not radicale_data:
-        return {"written": 0, "skipped": 0}
-    data = Path(radicale_data)
-    written = skipped = 0
+    Returns `{written, failed}`. Never raises — a sync failure must not abort the
+    night run. No-op when the collection URL or credentials are unset."""
+    if not (collection_url and username and password):
+        return {"written": 0, "failed": 0}
+    client = HttpDavClient(carddav_username=username, carddav_password=password)
+    written = failed = 0
     conn = projection.open_conn(db_path)
     try:
         orgs = conn.execute(
-            "SELECT id, canonical_name, resident_uid FROM entities"
-            " WHERE type = 'organization' ORDER BY resident_uid, canonical_name"
+            "SELECT id, canonical_name FROM entities WHERE type = 'organization'"
+            " ORDER BY canonical_name"
         ).fetchall()
-        with radicale_store.storage_lock(data):
-            for org in orgs:
-                user = org["resident_uid"]
-                # The shared/household scope maps to no single Radicale principal;
-                # only per-resident orgs sync to a real address book.
-                if not user or user == notes_search.SHARED_UID:
-                    skipped += 1
-                    continue
-                coll = radicale_store.ensure_collection(
-                    data, user, _COLLECTION, tag="VADDRESSBOOK", displayname="Kontakte"
-                )
-                vcard = _build_vcard(
-                    org["id"], org["canonical_name"], _org_contact(conn, org["id"])
-                )
-                radicale_store.write_item(coll, _UID_PREFIX + org["id"], vcard, "vcf")
-                written += 1
-    except Exception as e:  # noqa: BLE001 — sync must never crash the night run.
-        log.error("engine.contacts_sync.failed", error=str(e))
+        rows = [
+            (o["id"], o["canonical_name"], _org_contact(conn, o["id"])) for o in orgs
+        ]
     finally:
         conn.close()
-    log.info("engine.contacts_sync", written=written, skipped=skipped)
-    return {"written": written, "skipped": skipped}
+    for entity_id, name, contact in rows:
+        try:
+            await client.put_item(
+                collection_url,
+                _UID_PREFIX + entity_id,
+                _build_vcard(entity_id, name, contact),
+                suffix=".vcf",
+                content_type="text/vcard; charset=utf-8",
+            )
+            written += 1
+        except Exception as e:  # noqa: BLE001 — one bad card must not stop the sync.
+            log.error("engine.contacts_sync.card_failed", org=name, error=str(e))
+            failed += 1
+    log.info("engine.contacts_sync", written=written, failed=failed)
+    return {"written": written, "failed": failed}

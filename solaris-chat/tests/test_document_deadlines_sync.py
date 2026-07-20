@@ -1,18 +1,18 @@
-"""Document deadlines → the "Solaris Fristen" calendar (#doc-graph, slice 3).
+"""Document deadlines → the Solaris Fristen calendar (#doc-graph, slice 3).
 
-`document_deadlines_sync.sync_deadlines` reads a document's dated facts and drops
-one all-day, alarmed `<uid>.ics` per deadline into the owner's Radicale calendar.
-These tests prove the write target, the event/alarm content, the stable
-overwrite UID, that non-deadline/unparseable dates are skipped, the household
-skip, and the disabled no-op.
+`document_deadlines_sync.sync_deadlines` reads a document's dated facts and PUTs
+one all-day, alarmed calendar object per deadline into the dedicated `solaris`
+account's CalDAV collection (authenticated HTTP). These tests mock `put_item`
+and prove the event/alarm content, the stable overwrite UID, that non-deadline
+/ unparseable dates are skipped, and the disabled no-op.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 from solaris_chat.engine import document_deadlines_sync
+from solaris_chat.engine.document_deadlines_sync import sync_deadlines
 
 _SCHEMA = """
 CREATE TABLE entities (
@@ -25,43 +25,48 @@ CREATE TABLE facts (
   source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')));
 """
 
+_URL = "https://caldav.example/solaris/fristen/"
 
-def _doc(conn, eid, title, resident, facts):
+
+def _doc(conn, eid, title, facts):
     conn.execute(
         "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
-        " content_hash) VALUES (?, 'document', ?, ?, 'documents', 'h')",
-        (eid, title, resident),
+        " content_hash) VALUES (?, 'document', ?, 'mdopp', 'documents', 'h')",
+        (eid, title),
     )
     for i, (pred, val) in enumerate(facts):
         conn.execute(
             "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate,"
-            " value, confidence, source) VALUES (?, ?, ?, ?, ?, 0.6, 'documents')",
-            (f"{eid}-{i}", eid, resident, pred, val),
+            " value, confidence, source) VALUES (?, ?, 'mdopp', ?, ?, 0.6, 'd')",
+            (f"{eid}-{i}", eid, pred, val),
         )
 
 
-def _db(tmp_path, facts, resident="mdopp"):
+def _db(tmp_path, facts):
     db = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(db)
     conn.executescript(_SCHEMA)
-    _doc(conn, "d1", "ERGO Rechtsschutz", resident, facts)
+    _doc(conn, "d1", "ERGO Rechtsschutz", facts)
     conn.commit()
     conn.close()
     return db
 
 
-def _events(radicale_data, user):
-    coll = (
-        Path(radicale_data)
-        / "collections"
-        / "collection-root"
-        / user
-        / "solaris-fristen"
-    )
-    return sorted(coll.glob("*.ics")) if coll.exists() else []
+def _capture(monkeypatch):
+    calls = []
+
+    async def fake_put(self, collection_url, uid, body, *, suffix, content_type):
+        calls.append(
+            {"url": collection_url, "uid": uid, "body": body, "suffix": suffix}
+        )
+        return collection_url + uid
+
+    monkeypatch.setattr(document_deadlines_sync.HttpDavClient, "put_item", fake_put)
+    return calls
 
 
-def test_deadline_becomes_alarmed_all_day_event(tmp_path):
+async def test_deadline_puts_alarmed_all_day_event(tmp_path, monkeypatch):
+    calls = _capture(monkeypatch)
     db = _db(
         tmp_path,
         [
@@ -70,66 +75,49 @@ def test_deadline_becomes_alarmed_all_day_event(tmp_path):
             ("cancellation_deadline", "2026-12-15"),
         ],
     )
-    rad = str(tmp_path / "radicale")
-    out = document_deadlines_sync.sync_deadlines(db, rad)
-    assert out == {"written": 1, "skipped": 0}
-    events = _events(rad, "mdopp")
-    assert len(events) == 1
-    ics = events[0].read_text()
-    assert "SUMMARY:Kündigungsfrist: ERGO Rechtsschutz" in ics
-    assert "DTSTART;VALUE=DATE:20261215" in ics
-    assert "BEGIN:VALARM" in ics and "TRIGGER:-P14D" in ics
-    assert "ERGO" in ics and "SV 072714970" in ics  # description
-    assert "UID:solaris-deadline-d1-cancellation_deadline" in ics
+    out = await sync_deadlines(db, _URL, "solaris", "pw")
+    assert out == {"written": 1, "skipped": 0, "failed": 0}
+    c = calls[0]
+    assert c["url"] == _URL and c["suffix"] == ".ics"
+    assert c["uid"] == "solaris-deadline-d1-cancellation_deadline"
+    assert "SUMMARY:Kündigungsfrist: ERGO Rechtsschutz" in c["body"]
+    assert "DTSTART;VALUE=DATE:20261215" in c["body"]
+    assert "BEGIN:VALARM" in c["body"] and "TRIGGER:-P14D" in c["body"]
+    assert "ERGO" in c["body"] and "SV 072714970" in c["body"]
 
 
-def test_multiple_deadlines_one_event_each(tmp_path):
+async def test_multiple_deadlines_each_put(tmp_path, monkeypatch):
+    calls = _capture(monkeypatch)
     db = _db(
         tmp_path,
         [("cancellation_deadline", "2026-12-15"), ("hu_date", "2027-03-01")],
     )
-    rad = str(tmp_path / "radicale")
-    out = document_deadlines_sync.sync_deadlines(db, rad)
-    assert out["written"] == 2
-    assert len(_events(rad, "mdopp")) == 2
+    out = await sync_deadlines(db, _URL, "solaris", "pw")
+    assert out["written"] == 2 and len(calls) == 2
 
 
-def test_idempotent_overwrite(tmp_path):
-    db = _db(tmp_path, [("cancellation_deadline", "2026-12-15")])
-    rad = str(tmp_path / "radicale")
-    document_deadlines_sync.sync_deadlines(db, rad)
-    document_deadlines_sync.sync_deadlines(db, rad)
-    assert len(_events(rad, "mdopp")) == 1  # stable UID → overwrite
-
-
-def test_unparseable_date_skipped(tmp_path):
-    # "zum Ende des Versicherungsjahres" isn't ISO — counted as skipped, no event.
+async def test_unparseable_date_skipped(tmp_path, monkeypatch):
+    calls = _capture(monkeypatch)
     db = _db(tmp_path, [("cancellation_deadline", "zum Vertragsende")])
-    rad = str(tmp_path / "radicale")
-    out = document_deadlines_sync.sync_deadlines(db, rad)
-    assert out == {"written": 0, "skipped": 1}
-    assert _events(rad, "mdopp") == []
+    out = await sync_deadlines(db, _URL, "solaris", "pw")
+    assert out == {"written": 0, "skipped": 1, "failed": 0}
+    assert calls == []
 
 
-def test_non_deadline_date_ignored(tmp_path):
-    # start_date is a date but NOT a deadline — no event, not even a skip.
+async def test_non_deadline_date_ignored(tmp_path, monkeypatch):
+    calls = _capture(monkeypatch)
     db = _db(tmp_path, [("start_date", "2026-01-01")])
-    rad = str(tmp_path / "radicale")
-    assert document_deadlines_sync.sync_deadlines(db, rad) == {
-        "written": 0,
-        "skipped": 0,
-    }
+    out = await sync_deadlines(db, _URL, "solaris", "pw")
+    assert out == {"written": 0, "skipped": 0, "failed": 0}
+    assert calls == []
 
 
-def test_household_doc_skipped(tmp_path):
-    db = _db(tmp_path, [("cancellation_deadline", "2026-12-15")], resident="household")
-    out = document_deadlines_sync.sync_deadlines(db, str(tmp_path / "radicale"))
-    assert out == {"written": 0, "skipped": 0}
-
-
-def test_disabled_when_no_radicale_data(tmp_path):
+async def test_disabled_when_unconfigured(tmp_path, monkeypatch):
+    calls = _capture(monkeypatch)
     db = _db(tmp_path, [("cancellation_deadline", "2026-12-15")])
-    assert document_deadlines_sync.sync_deadlines(db, "") == {
+    assert await sync_deadlines(db, "", "solaris", "pw") == {
         "written": 0,
         "skipped": 0,
+        "failed": 0,
     }
+    assert calls == []
