@@ -603,8 +603,13 @@ def test_vault_reader_skips_okf_subtree_and_facts(tmp_path):
     )
     (vault / "facts" / "f.md").write_text("a fact", "utf-8")
     (vault / "hand.md").write_text("hand-written", "utf-8")
+    # okf/documents is the exception: self-authored document notes are read.
+    (vault / "okf" / "documents").mkdir(parents=True)
+    (vault / "okf" / "documents" / "ergo.md").write_text(
+        "---\ntype: document\n---\n", "utf-8"
+    )
     paths = {n.relpath for n in VaultObsidianReader(str(vault)).iter_notes()}
-    assert paths == {"hand.md"}  # own OKF output + fact-capture dir excluded
+    assert paths == {"hand.md", "okf/documents/ergo.md"}
 
 
 def test_vault_reader_skips_per_user_okf_and_facts_but_keeps_user_notes(tmp_path):
@@ -619,8 +624,13 @@ def test_vault_reader_skips_per_user_okf_and_facts_but_keeps_user_notes(tmp_path
     )
     (vault / "users" / "cdopp" / "facts" / "f.md").write_text("a fact", "utf-8")
     (vault / "users" / "cdopp" / "tagebuch.md").write_text("privat", "utf-8")
+    # …but users/<uid>/okf/documents is read (self-authored document notes).
+    (vault / "users" / "cdopp" / "okf" / "documents").mkdir(parents=True)
+    (vault / "users" / "cdopp" / "okf" / "documents" / "d.md").write_text(
+        "---\ntype: document\n---\n", "utf-8"
+    )
     paths = {n.relpath for n in VaultObsidianReader(str(vault)).iter_notes()}
-    assert paths == {"users/cdopp/tagebuch.md"}
+    assert paths == {"users/cdopp/tagebuch.md", "users/cdopp/okf/documents/d.md"}
 
 
 def test_vault_reader_does_not_write_the_source(tmp_path):
