@@ -30,6 +30,7 @@ from aiohttp.typedefs import Handler
 from solaris_chat import (
     compaction,
     device_token_store,
+    documents_portal_db,
     favorites_store,
     mentions_store,
     notes_portal_db,
@@ -3769,6 +3770,72 @@ def build_app(
         status = 200 if result.get("ok") else 503
         return web.json_response(result, status=status)
 
+    async def portal_documents(request: web.Request) -> web.Response:
+        """Category doorways for the documents page (#doc): `{category: count}`,
+        owner-scoped (caller ∪ shared household)."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        cats = await asyncio.to_thread(
+            documents_portal_db.categories, solaris_db_path, uid
+        )
+        return web.json_response({"ok": True, "categories": cats or {}})
+
+    async def portal_documents_category(request: web.Request) -> web.Response:
+        """The table rows for one document category — each document's title +
+        fact map (value + confidence per predicate), owner-scoped."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        category = request.match_info["category"]
+        rows = await asyncio.to_thread(
+            documents_portal_db.category_view, solaris_db_path, uid, category
+        )
+        return web.json_response({"ok": True, "category": category, "rows": rows or []})
+
+    def _document_confirm_fact(uid: str, entity_id: str, predicate: str, value: str) -> bool:
+        """Write a human-confirmed document fact (confidence 1.0) under source
+        `documents:confirmed` — coexists with and outranks the agent-extracted
+        0.6 fact (ADR 0003), and survives the source-scoped re-ingest. Owner-
+        gated: the caller must own or share the document."""
+        conn = projection.open_conn(solaris_db_path)
+        try:
+            ent = conn.execute(
+                "SELECT resident_uid FROM entities WHERE id = ? AND type = 'document'",
+                (entity_id,),
+            ).fetchone()
+            if ent is None or ent["resident_uid"] not in (uid, notes_search.SHARED_UID):
+                return False
+            projection.upsert_fact(
+                conn,
+                subject_entity_id=entity_id,
+                resident_uid=ent["resident_uid"],
+                source="documents:confirmed",
+                predicate=predicate,
+                value=value,
+                confidence=1.0,
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    async def portal_documents_correct(request: web.Request) -> web.Response:
+        """Confirm/correct one document field. POST `{entity_id, predicate,
+        value}` → writes it at confidence 1.0 (the „Korrigieren" action)."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — a malformed body is a 400, not a 500.
+            return web.json_response({"ok": False, "error": "bad json"}, status=400)
+        entity_id = str(body.get("entity_id") or "").strip()
+        predicate = str(body.get("predicate") or "").strip()
+        value = str(body.get("value") or "")
+        if not entity_id or not predicate:
+            return web.json_response(
+                {"ok": False, "error": "entity_id + predicate required"}, status=400
+            )
+        ok = await asyncio.to_thread(
+            _document_confirm_fact, uid, entity_id, predicate, value
+        )
+        return web.json_response({"ok": ok}, status=200 if ok else 404)
+
     def _interactive_uid(request: web.Request) -> str | None:
         """The resident behind a real Authelia session, or None (#717).
 
@@ -4933,6 +5000,9 @@ def build_app(
     app.router.add_post("/api/portal/notes/assign", portal_notes_assign)
     app.router.add_post("/api/portal/notes/archive", portal_notes_archive)
     app.router.add_post("/api/portal/notes/curate", portal_notes_curate)
+    app.router.add_get("/api/portal/documents", portal_documents)
+    app.router.add_post("/api/portal/documents/correct", portal_documents_correct)
+    app.router.add_get("/api/portal/documents/{category}", portal_documents_category)
     app.router.add_post("/api/favorites", favorites_create)
     app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
     app.router.add_put("/api/favorites/{fav_id}", favorites_reorder)
