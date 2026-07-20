@@ -202,6 +202,42 @@ def replace_facts(
         )
 
 
+def upsert_fact(
+    conn: sqlite3.Connection,
+    *,
+    subject_entity_id: str,
+    resident_uid: str,
+    source: str,
+    predicate: str,
+    value: str,
+    confidence: float | None,
+) -> None:
+    """Upsert a SINGLE (source, predicate) fact without touching the source's
+    other facts — unlike `replace_facts`, which replaces the whole source.
+
+    A human document correction confirms one field at a time under source
+    `documents:confirmed`; using `replace_facts` per field would wipe the
+    previously-confirmed fields, so corrections need this per-predicate write."""
+    conn.execute(
+        "DELETE FROM facts WHERE subject_entity_id = ? AND source = ? AND predicate = ?",
+        (subject_entity_id, source, predicate),
+    )
+    conn.execute(
+        "INSERT INTO facts"
+        " (id, subject_entity_id, resident_uid, predicate, value, confidence, source)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            uuid.uuid4().hex,
+            subject_entity_id,
+            resident_uid,
+            predicate,
+            value,
+            confidence,
+            source,
+        ),
+    )
+
+
 def upsert_concept(
     conn: sqlite3.Connection,
     *,

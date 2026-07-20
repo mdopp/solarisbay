@@ -25,6 +25,9 @@ _DOMAIN_BY_TYPE = {
     "band": "bands",
     "trip": "trips",
     "note": "notes",
+    # A life-document (insurance, contract, …) extracted from an upload: one
+    # `document` type carrying a `category` fact, not a type per category (#doc).
+    "document": "documents",
 }
 
 # Types projected to the `events` table; everything else is an `entity` (§4).

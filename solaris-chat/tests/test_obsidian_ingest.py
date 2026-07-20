@@ -333,6 +333,119 @@ def _album_facts(db_path, name, caller="household"):
         conn.close()
 
 
+# --- document note -> typed facts (#doc) -------------------------------------
+
+
+def _document(**fm) -> VaultNote:
+    """A `type: document` note the extraction agent writes from an upload: the
+    typed fields live in the injected `frontmatter` map."""
+    base = dict(
+        category="insurance",
+        provider="ERGO",
+        policy_number="SV 072714970",
+        cancellation_deadline="2026-12-15",
+        source_document="users/mdopp/uploads/2026-07-16-ergo-rechtsschutz.md",
+        kind="document",  # a reserved key — must NOT become a fact
+    )
+    base.update(fm)
+    relpath = base.pop("relpath", "users/mdopp/okf/documents/ergo-rechtsschutz.md")
+    return VaultNote(
+        relpath=relpath,
+        folder="documents",
+        title=base.pop("title", "ERGO Rechtsschutz"),
+        body=base.pop("body", "Rechtsschutzversicherung."),
+        note_type="document",
+        frontmatter=base,
+    )
+
+
+def _document_facts(db_path, title, caller="mdopp"):
+    conn = projection.open_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id FROM entities WHERE type = 'document' AND canonical_name = ?",
+            (title,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            (f["predicate"], f["value"], f["source"], f["confidence"])
+            for f in conn.execute(
+                "SELECT predicate, value, source, confidence FROM facts"
+                " WHERE subject_entity_id = ?",
+                (row["id"],),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+
+def test_document_note_projects_typed_facts_at_extraction_confidence(env):
+    writer, db_path, tmp_path = env
+    stats = _run(FakeObsidianReader([_document()]), writer, db_path)
+    assert stats.written == 1
+    facts = _document_facts(db_path, "ERGO Rechtsschutz")
+    # Every non-reserved field is a fact, source=documents, confidence 0.6.
+    assert ("category", "insurance", "documents", 0.6) in facts
+    assert ("provider", "ERGO", "documents", 0.6) in facts
+    assert ("policy_number", "SV 072714970", "documents", 0.6) in facts
+    assert ("cancellation_deadline", "2026-12-15", "documents", 0.6) in facts
+    assert (
+        "source_document",
+        "users/mdopp/uploads/2026-07-16-ergo-rechtsschutz.md",
+        "documents",
+        0.6,
+    ) in facts
+    # Reserved keys never leak in as facts.
+    assert not any(p == "kind" for (p, _v, _s, _c) in facts)
+    # The document note keeps its own markdown (RAG surface), pinned to the file
+    # stem so the writer re-serializes in place.
+    doc_md = (
+        tmp_path
+        / "notes"
+        / "users"
+        / "mdopp"
+        / "okf"
+        / "documents"
+        / "ergo-rechtsschutz.md"
+    )
+    assert doc_md.is_file()
+    assert "type: document" in doc_md.read_text()
+
+
+def test_document_confirmed_correction_wins_over_extraction(env):
+    # A human correction writes the fact under a distinct source at confidence
+    # 1.0; source-scoped replace keeps both, the confirmed one is authoritative.
+    writer, db_path, _ = env
+    _run(FakeObsidianReader([_document()]), writer, db_path)
+    conn = projection.open_conn(db_path)
+    try:
+        eid = conn.execute(
+            "SELECT id FROM entities WHERE type = 'document'"
+        ).fetchone()["id"]
+        projection.replace_facts(
+            conn,
+            subject_entity_id=eid,
+            resident_uid="mdopp",
+            source="documents:confirmed",
+            facts=[("cancellation_deadline", "2026-11-30", 1.0)],
+        )
+        conn.commit()
+        rows = {
+            (f["value"], f["source"], f["confidence"])
+            for f in conn.execute(
+                "SELECT value, source, confidence FROM facts"
+                " WHERE subject_entity_id = ? AND predicate = 'cancellation_deadline'",
+                (eid,),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    # Both coexist (ADR 0003); the confirmed 1.0 value is the authoritative one.
+    assert ("2026-12-15", "documents", 0.6) in rows
+    assert ("2026-11-30", "documents:confirmed", 1.0) in rows
+
+
 def test_physical_media_note_creates_album_if_absent_with_owned_physical_fact(env):
     writer, db_path, tmp_path = env
     reader = FakeObsidianReader(
