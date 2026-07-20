@@ -458,17 +458,18 @@ class CronRunner:
         # BETWEEN ingest and re-ingest; the re-ingest picks up the merged/stubbed
         # files and re-embeds via content_hash → #650 drain.
         await self._run_in_worker(_ingest_step)
-        # Extract structured data from newly-OCR'd uploads into typed `document`
-        # notes (#doc), then curate — both edit vault files that the re-ingest
-        # below projects. Same slot as the bibliothekar.
-        try:
-            await self._document_extractor()
-        except Exception as e:  # noqa: BLE001 — one bad scope must not kill the run.
-            log.error("engine.night.document_extractor_failed", error=str(e))
+        # Bibliothekar first (it and the stenograph share the fast model), THEN
+        # the document extractor (a stronger model) — so ollama swaps models once
+        # per night (fast → strong) instead of thrashing fast→strong→fast. Both
+        # edit vault files the re-ingest below projects.
         try:
             await self._bibliothekar()
         except Exception as e:  # noqa: BLE001 — one bad scope must not kill the run.
             log.error("engine.night.bibliothekar_failed", error=str(e))
+        try:
+            await self._document_extractor()
+        except Exception as e:  # noqa: BLE001 — one bad scope must not kill the run.
+            log.error("engine.night.document_extractor_failed", error=str(e))
         await self._run_in_worker(_reingest_step)
 
     @staticmethod
@@ -724,36 +725,55 @@ class CronRunner:
         notes_dir = self._ingest_settings.notes_dir
         if not notes_dir:
             return
-        for scope in self._bibliothekar_scopes(notes_dir):
-            for candidate in self._document_extractor_candidates(notes_dir, scope):
+        work = [
+            (scope, cand)
+            for scope in self._bibliothekar_scopes(notes_dir)
+            for cand in self._document_extractor_candidates(notes_dir, scope)
+        ]
+        if not work:
+            return
+        # Log BEFORE the first turn: it loads the (bigger) extractor model — a
+        # multi-minute, disk-bound step that otherwise looks like a silent stall
+        # between the ingest and the first extracted document.
+        log.info(
+            "engine.night.document_extractor_start",
+            candidates=len(work),
+            model=self._extractor_model,
+        )
+        extracted = 0
+        for scope, candidate in work:
+            try:
+                prompt = DOCUMENT_EXTRACTOR_PROMPT + candidate
+                session_id = await self._librarian.create_session(scope, ephemeral=True)
                 try:
-                    prompt = DOCUMENT_EXTRACTOR_PROMPT + candidate
-                    session_id = await self._librarian.create_session(
-                        scope, ephemeral=True
+                    reply = await self._librarian.chat(
+                        session_id,
+                        prompt,
+                        None,
+                        "high",
+                        model_override=self._extractor_model,
                     )
-                    try:
-                        reply = await self._librarian.chat(
-                            session_id,
-                            prompt,
-                            None,
-                            "high",
-                            model_override=self._extractor_model,
-                        )
-                        log.info(
-                            "engine.night.document_extractor_doc",
-                            scope=scope,
-                            doc=candidate,
-                            reply_len=len(reply),
-                        )
-                    finally:
-                        await self._librarian.delete_session(session_id, scope)
-                except Exception as e:  # noqa: BLE001 — one bad doc mustn't abort.
-                    log.error(
-                        "engine.night.document_extractor_doc_failed",
+                    extracted += 1
+                    log.info(
+                        "engine.night.document_extractor_doc",
                         scope=scope,
                         doc=candidate,
-                        error=str(e),
+                        reply_len=len(reply),
                     )
+                finally:
+                    await self._librarian.delete_session(session_id, scope)
+            except Exception as e:  # noqa: BLE001 — one bad doc mustn't abort.
+                log.error(
+                    "engine.night.document_extractor_doc_failed",
+                    scope=scope,
+                    doc=candidate,
+                    error=str(e),
+                )
+        log.info(
+            "engine.night.document_extractor_done",
+            extracted=extracted,
+            total=len(work),
+        )
 
     async def curate_scope(self, notes_dir: str, scope: str) -> dict[str, object]:
         """Run one on-demand librarian turn for a single scope (#697).
