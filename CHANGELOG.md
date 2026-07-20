@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.1](https://github.com/mdopp/solarisbay/compare/v0.32.0...v0.32.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **chat:** structured document_extract tool for reliable extraction ([#905](https://github.com/mdopp/solarisbay/issues/905)) ([8c9695e](https://github.com/mdopp/solarisbay/commit/8c9695e6c9847fdc18a1155b61f09bde050e56d3))
+
 ## [0.32.0](https://github.com/mdopp/solarisbay/compare/v0.31.1...v0.32.0) (2026-07-20)
 
 
