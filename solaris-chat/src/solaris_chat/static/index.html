@@ -800,6 +800,15 @@
     .task-meta { font-size: 12px; color: var(--muted); }
     .task-acts { display: flex; gap: 6px; flex-shrink: 0; }
     .task-empty { color: var(--muted); padding: 8px 0; }
+    /* Dot-command live card in the chat history (#dotcmd). */
+    .dot-card .dc-head { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+    .dot-card .dc-title { font-weight: 600; margin-bottom: 10px; word-break: break-word; }
+    .dot-card .dc-title .placeholder { color: var(--muted); font-weight: 400; }
+    .dot-card .dc-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .dot-card input[type=date], .dot-card input[type=text] { padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); }
+    .dot-card .dc-hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    .dot-card.done .dc-title { color: var(--accent); }
     .note-frontmatter {
       display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
       margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px;
@@ -1617,6 +1626,7 @@
         <div class="attach-preview" id="attach-preview" hidden></div>
         <form id="composer">
           <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Commands" hidden></div>
+          <div class="slash-menu" id="dot-menu" role="listbox" aria-label="Punkt-Befehle" hidden></div>
           <div class="slash-menu" id="mention-menu" role="listbox" aria-label="Mentions" hidden></div>
           <div class="composer-tools">
             <button id="attach-btn" class="composer-icon" type="button" title="Anhängen (Bild, Takeout-.zip oder -.json)" aria-label="Anhängen"><svg class="ic"><use href="#i-paperclip"></use></svg></button>
@@ -3745,7 +3755,7 @@
         input.style.height = h + "px";
         form.classList.toggle("grown", h > 43);
       }
-      input.addEventListener("input", function () { autosize(); slash.refresh(); mention.refresh(); });
+      input.addEventListener("input", function () { autosize(); slash.refresh(); dotcmd.refresh(); mention.refresh(); });
       // Caret moves (arrows/click) can enter or leave a #/@ token without an
       // input event, so re-evaluate the mention menu on those too.
       input.addEventListener("keyup", function (e) {
@@ -3754,6 +3764,7 @@
       input.addEventListener("click", function () { mention.refresh(); });
       input.addEventListener("keydown", function (e) {
         if (slash.handleKey(e)) return;   // arrow/enter/tab/esc while the slash menu is open
+        if (dotcmd.handleKey(e)) return;  // same nav while the dot menu / a dot card is active
         if (mention.handleKey(e)) return; // same nav while the mention menu is open
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
       });
@@ -3931,6 +3942,13 @@
         ["/voice", "Solaris's spoken voice (admins)", true],
         ["/model", "Everyday-chat model — Schnell/Gründlich (admins)", true]
       ];
+      // Punkt-Befehle (#dotcmd): mobile-freundliche Kurzbefehle, die eine
+      // Live-Karte im Chat-Verlauf öffnen und beim Tippen mitfüllen. Wachsen pro
+      // Slice — hier stehen nur die schon implementierten.
+      var DOT_COMMANDS = [
+        [".help", "Befehle anzeigen"],
+        [".task", "Aufgabe anlegen — .task <Text> (mit #/@)"]
+      ];
       // Admin-only commands (3rd element) are hidden from non-admins so the
       // autocomplete and /help only ever offer what actually works for them.
       function availableCommands() {
@@ -3953,7 +3971,10 @@
           commandEntries.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
         }
         lines.push("");
-        lines.push("Anything not starting with `/` is sent to Solaris.");
+        lines.push("**Punkt-Befehle** — öffnen eine Karte im Verlauf:");
+        DOT_COMMANDS.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
+        lines.push("");
+        lines.push("Anything not starting with `/` or `.` is sent to Solaris.");
         return lines.join("\n");
       }
       function handleCommand(raw) {
@@ -4140,6 +4161,147 @@
         });
 
         return { refresh: refresh, handleKey: handleKey, close: close };
+      })();
+
+      // ---- Punkt-Befehle (#dotcmd) ----
+      // A mobile-friendly command palette: `.task`/… render a LIVE card in the
+      // chat history that fills as you type (#/@ linked like anywhere); `.help`
+      // mirrors `/help`. The card is submitted with Enter or its button and then
+      // stays in the transcript as a confirmation.
+      var dotcmd = (function () {
+        var menu = document.getElementById("dot-menu");
+        var items = [], active = -1;
+        var card = null;   // the live card in the log (null = none active)
+        var kind = "";     // active command ("task", …)
+
+        function closeMenu() { menu.hidden = true; menu.textContent = ""; items = []; active = -1; }
+        function clearCard() {
+          if (card && card.parentNode) card.parentNode.removeChild(card);
+          card = null; kind = "";
+        }
+        function parse(v) {
+          var m = /^\.([a-zäöü]*)([ \n]([\s\S]*))?$/i.exec(v);
+          if (!m) return null;
+          return { cmd: (m[1] || "").toLowerCase(), sawSpace: m[2] != null, rest: m[3] || "" };
+        }
+        function known(cmd) {
+          return DOT_COMMANDS.some(function (c) { return c[0].slice(1) === cmd; });
+        }
+
+        function renderMenu(cmd) {
+          items = DOT_COMMANDS.filter(function (c) { return c[0].slice(1).indexOf(cmd) === 0; });
+          if (!items.length) { closeMenu(); return; }
+          active = 0; menu.textContent = "";
+          items.forEach(function (c, i) {
+            var row = document.createElement("div");
+            row.className = "slash-item" + (i === active ? " active" : "");
+            row.setAttribute("role", "option");
+            var name = document.createElement("span"); name.className = "cmd"; name.textContent = c[0];
+            var desc = document.createElement("span"); desc.className = "cmd-desc"; desc.textContent = c[1];
+            row.appendChild(name); row.appendChild(desc);
+            row.addEventListener("mousedown", function (e) { e.preventDefault(); chooseMenu(i); });
+            menu.appendChild(row);
+          });
+          menu.hidden = false;
+        }
+        function moveMenu(d) {
+          if (!items.length) return;
+          var rows = menu.querySelectorAll(".slash-item");
+          if (rows[active]) rows[active].classList.remove("active");
+          active = (active + d + items.length) % items.length;
+          rows[active].classList.add("active"); rows[active].scrollIntoView({ block: "nearest" });
+        }
+        function chooseMenu(i) {
+          var c = items[i]; if (!c) return;
+          input.value = c[0] + (c[0] === ".help" ? "" : " ");
+          closeMenu(); autosize(); input.focus(); refresh();
+        }
+
+        function ensureCard(cmd) {
+          if (kind === cmd && card) return;
+          clearCard(); kind = cmd;
+          card = document.createElement("div");
+          card.className = "msg sol dot-card dot-" + cmd;
+          var head = document.createElement("div"); head.className = "dc-head";
+          head.textContent = cmd === "task" ? "Neue Aufgabe" : cmd;
+          card.appendChild(head);
+          if (cmd === "task") buildTaskCard(card);
+          log.appendChild(card); scrollDown(true);
+        }
+        function buildTaskCard(el) {
+          var title = document.createElement("div"); title.className = "dc-title";
+          el.appendChild(title); el._title = title;
+          var row = document.createElement("div"); row.className = "dc-row";
+          var due = document.createElement("input"); due.type = "date"; due.title = "Fällig (optional)";
+          var btn = document.createElement("button"); btn.className = "ac-btn ac-primary"; btn.type = "button";
+          btn.textContent = "Hinzufügen";
+          btn.addEventListener("click", function () { submit(); });
+          row.appendChild(due); row.appendChild(btn); el.appendChild(row); el._due = due;
+          var hint = document.createElement("div"); hint.className = "dc-hint";
+          hint.textContent = "Enter legt an · #/@ werden verlinkt";
+          el.appendChild(hint);
+        }
+        function updateCard(cmd, rest) {
+          if (cmd === "task" && card && card._title) {
+            var t = card._title; t.textContent = "";
+            if (rest.trim()) { appendMentionText(t, rest.trim()); linkifyWikiLinks(t); }
+            else { var p = document.createElement("span"); p.className = "placeholder"; p.textContent = "Titel eingeben…"; t.appendChild(p); }
+          }
+        }
+
+        function refresh() {
+          var p = parse(input.value);
+          if (!p) { closeMenu(); clearCard(); return; }
+          if (!p.sawSpace) { clearCard(); renderMenu(p.cmd); return; }
+          closeMenu();
+          if (p.cmd === "help" || !known(p.cmd)) { clearCard(); return; }
+          ensureCard(p.cmd); updateCard(p.cmd, p.rest);
+        }
+
+        // Returns true when the current input line was a dot-command we handled
+        // (so the composer submit must NOT send it as a chat message).
+        function submitFromInput() {
+          var p = parse(input.value);
+          if (!p || (p.cmd !== "help" && !known(p.cmd))) return false;
+          if (p.cmd === "help") { input.value = ""; autosize(); closeMenu(); addInfo(helpMarkdown()); return true; }
+          submit(); return true;
+        }
+        function submit() {
+          if (kind !== "task" || !card) return;
+          var p = parse(input.value);
+          var title = p ? p.rest.trim() : "";
+          if (!title) return;
+          var due = card._due ? card._due.value : "";
+          var theCard = card;
+          taskAction("task.add", { title: title, due: due }).then(function (j) {
+            if (!j || !j.ok) { theCard.querySelector(".dc-hint").textContent = "Konnte nicht anlegen."; return; }
+            theCard.classList.add("done");
+            theCard.querySelector(".dc-head").textContent = "Aufgabe angelegt";
+            var row = theCard.querySelector(".dc-row"); if (row) row.remove();
+            var hint = theCard.querySelector(".dc-hint");
+            if (hint) hint.textContent = "✓ Notiert" + (due ? " · fällig " + due : "");
+          });
+          card = null; kind = "";           // stop tracking; the card stays in the log
+          input.value = ""; autosize(); closeMenu();
+        }
+
+        function handleKey(e) {
+          if (!menu.hidden) {
+            if (e.key === "ArrowDown") { e.preventDefault(); moveMenu(1); return true; }
+            if (e.key === "ArrowUp") { e.preventDefault(); moveMenu(-1); return true; }
+            if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); chooseMenu(active); return true; }
+            if (e.key === "Escape") { e.preventDefault(); closeMenu(); return true; }
+            return false;
+          }
+          if (kind && e.key === "Escape") { e.preventDefault(); clearCard(); input.value = ""; autosize(); return true; }
+          return false;
+        }
+
+        document.addEventListener("click", function (e) {
+          if (!menu.hidden && e.target !== input && !menu.contains(e.target)) closeMenu();
+        });
+
+        return { refresh: refresh, handleKey: handleKey, close: closeMenu, submitFromInput: submitFromInput };
       })();
 
       // ---- #tag / @person mention autosuggest (#279) ----
@@ -4551,6 +4713,9 @@
         e.preventDefault();
         slash.close();
         mention.close();
+        // A `.`-command (task/help/…) is browser-local and submits its live card,
+        // never a chat turn — intercept before the normal send path.
+        if (dotcmd.submitFromInput()) return;
         var text = input.value.trim();
         var images = attach.take(); // data-URLs; clears the tray
         if (!text && !images.length) return;
