@@ -1638,7 +1638,7 @@
             <button id="attach-btn" class="composer-icon" type="button" title="Anhängen (Bild, Takeout-.zip oder -.json)" aria-label="Anhängen"><svg class="ic"><use href="#i-paperclip"></use></svg></button>
             <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
           </div>
-          <textarea id="input" rows="1" placeholder="Nachricht · /Chat · .Erfassen" autofocus></textarea>
+          <textarea id="input" rows="1" placeholder="Nachricht · /control · .tool" autofocus></textarea>
           <button id="send" class="btn-primary" type="submit" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
           <button id="stop" class="composer-icon stop" type="button" title="Antwort stoppen" aria-label="Antwort stoppen" hidden><svg class="ic"><use href="#i-stop"></use></svg></button>
           <input id="file-input" type="file" accept="image/*,.zip,.json,application/json" hidden />
@@ -3954,7 +3954,8 @@
       var DOT_COMMANDS = [
         [".help", "Befehle anzeigen"],
         [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"],
-        [".note", "Notiz anlegen + Notizen suchen — .note <Text>"]
+        [".note", "Notiz anlegen + Notizen suchen — .note <Text>"],
+        [".doc", "Dokument/Takeout hochladen — Bild, PDF, .zip/.json"]
       ];
       // Admin-only commands (3rd element) are hidden from non-admins so the
       // autocomplete and /help only ever offer what actually works for them.
@@ -4117,7 +4118,7 @@
           active = 0;
           menu.textContent = "";
           var sh = document.createElement("div"); sh.className = "slash-head";
-          sh.textContent = "Chat & Solaris"; menu.appendChild(sh);
+          sh.textContent = "Control — Chat & Solaris"; menu.appendChild(sh);
           items.forEach(function (c, i) {
             var row = document.createElement("div");
             row.className = "slash-item" + (i === active ? " active" : "");
@@ -4202,7 +4203,7 @@
           if (!items.length) { closeMenu(); return; }
           active = 0; menu.textContent = "";
           var dh = document.createElement("div"); dh.className = "slash-head";
-          dh.textContent = "Erfassen & Finden"; menu.appendChild(dh);
+          dh.textContent = "Tools — Erfassen & Finden"; menu.appendChild(dh);
           items.forEach(function (c, i) {
             var row = document.createElement("div");
             row.className = "slash-item" + (i === active ? " active" : "");
@@ -4228,7 +4229,7 @@
           closeMenu(); autosize(); input.focus(); refresh();
         }
 
-        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz" };
+        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen" };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
           clearCard(); kind = cmd;
@@ -4239,7 +4240,48 @@
           card.appendChild(head);
           if (cmd === "task") buildTaskCard(card);
           else if (cmd === "note") buildNoteCard(card);
+          else if (cmd === "doc") buildDocCard(card);
           log.appendChild(card); scrollDown(true);
+        }
+        function buildDocCard(el) {
+          var drop = document.createElement("div"); drop.className = "import-drop";
+          drop.setAttribute("role", "button"); drop.tabIndex = 0;
+          var dt = document.createElement("div"); dt.className = "id-title";
+          dt.textContent = "Dokument hier ablegen";
+          var dh = document.createElement("div"); dh.className = "id-hint";
+          dh.textContent = "oder klicken — Bild/PDF (wird gescannt) oder Takeout-.zip/.json";
+          drop.appendChild(dt); drop.appendChild(dh); el.appendChild(drop);
+          var fi = document.createElement("input"); fi.type = "file";
+          fi.accept = "image/*,application/pdf,.pdf,.zip,.json,application/json"; fi.hidden = true;
+          el.appendChild(fi);
+          var status = document.createElement("div"); status.className = "import-status"; status.hidden = true;
+          el.appendChild(status);
+          function take(f) {
+            if (!f) return;
+            if (f.type === "application/zip" || f.type === "application/json" || /\.(zip|json)$/i.test(f.name || "")) {
+              drop.classList.add("busy"); uploadTakeout(f, drop, status);   // Takeout → plan card + progress
+            } else {
+              uploadDoc(f, drop, status);                                    // Bild/PDF → Vault + Scan
+            }
+          }
+          drop.addEventListener("click", function () { if (!drop.classList.contains("busy")) fi.click(); });
+          fi.addEventListener("change", function () { var f = fi.files && fi.files[0]; fi.value = ""; take(f); });
+          ["dragenter", "dragover"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); }); });
+          ["dragleave", "dragend"].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.remove("over"); }); });
+          drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
+        }
+        function uploadDoc(file, drop, status) {
+          drop.classList.add("busy");
+          importSetStatus(status, "", "Wird gescannt …", file.name);
+          var fd = new FormData(); fd.append("file", file, file.name || "dokument");
+          fetch("/api/upload", { method: "POST", body: fd })
+            .then(function (r) { return r.json().catch(function () { return null; }); })
+            .then(function (j) {
+              drop.classList.remove("busy");
+              if (!j || !j.ok) { importSetStatus(status, "failed", "Fehlgeschlagen", (j && j.error) || "Bitte erneut versuchen."); return; }
+              importSetStatus(status, "done", "Dokument gespeichert", "Wird ausgewertet — die Felder erscheinen dann unter Dokumente (Notizen-Seite).");
+            })
+            .catch(function () { drop.classList.remove("busy"); importSetStatus(status, "failed", "Netzwerkfehler", "Bitte erneut versuchen."); });
         }
         function buildNoteCard(el) {
           var title = document.createElement("div"); title.className = "dc-title";
