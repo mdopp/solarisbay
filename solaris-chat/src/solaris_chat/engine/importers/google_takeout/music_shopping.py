@@ -191,37 +191,15 @@ def _accumulate_entry(entry: dict, plays: dict[str, dict], since: datetime | Non
         rec["podcast"] = True
 
 
-def aggregate_plays_iter(history_bytes: bytes, since: datetime | None = None):
-    """Generator: fold the watch history into track records, YIELDING progress
-    every 200 entries ("Titel einordnen … i/N") so the (per-entry, LLM-classifying
-    but memoized) pass surfaces a MOVING bar instead of a frozen "Historie einlesen"
-    — the reported must-have. Terminates with `{"plays": <dict>}`."""
-    data = json.loads(history_bytes)
-    plays: dict[str, dict] = {}
-    total = len(data)
-    for i, entry in enumerate(data, 1):
-        _accumulate_entry(entry, plays, since)
-        if i % 200 == 0 or i == total:
-            yield {
-                "stage": "parse",
-                "message": f"Titel einordnen … {i}/{total}",
-                "done": i,
-                "total": total,
-                "pct": 2 + int(6 * i / max(total, 1)),
-            }
-    yield {"plays": plays}
-
-
 def aggregate_plays(
     history_bytes: bytes, since: datetime | None = None
 ) -> dict[str, dict]:
     """videoId(or synthetic key) -> {artist, title, videoId, count, …}; `since`
-    drops older plays. Non-progress callers (the classify preview, tests) drain
-    `aggregate_plays_iter` for the final result."""
+    drops older plays. Classification is mechanical (seed list) so this is a fast
+    in-memory fold — no per-track network/LLM call."""
     plays: dict[str, dict] = {}
-    for ev in aggregate_plays_iter(history_bytes, since):
-        if "plays" in ev:
-            plays = ev["plays"]
+    for entry in json.loads(history_bytes):
+        _accumulate_entry(entry, plays, since)
     return plays
 
 
@@ -343,15 +321,7 @@ def analyze_iter(
         since = datetime.now(timezone.utc) - timedelta(days=30 * months)
 
     yield {"stage": "parse", "message": "Historie einlesen …", "pct": 2}
-    # Drive the (slow, per-track) classification through its progress-yielding
-    # generator so the bar MOVES during it — the frozen "Historie einlesen … 2%"
-    # was the reported must-have violation (#943).
-    plays: dict[str, dict] = {}
-    for ev in aggregate_plays_iter(history_bytes, since=since):
-        if "plays" in ev:
-            plays = ev["plays"]
-        elif not is_canceled():
-            yield ev
+    plays = aggregate_plays(history_bytes, since=since)
     if min_plays and min_plays > 1:
         plays = {k: v for k, v in plays.items() if v["count"] >= min_plays}
     total_plays = sum(p["count"] for p in plays.values())
