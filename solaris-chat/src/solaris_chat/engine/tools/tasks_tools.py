@@ -78,11 +78,13 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
         Tool(
             name="task_add",
             description=(
-                "Setzt eine Aufgabe auf die To-Do-Liste (Aufgaben). Nutze das, wenn"
-                " der Nutzer etwas erledigen/merken will ('setz X auf die To-Do',"
-                " 'ich muss noch X') oder du selbst etwas Aktionierbares erkennst."
-                " due optional als ISO-Datum YYYY-MM-DD (wird dann auch ein"
-                " Kalendereintrag)."
+                "Setzt eine Aufgabe auf die To-Do-Liste. Rufe das SOFORT auf, sobald"
+                " der Nutzer etwas Zu-Erledigendes nennt — 'wir müssen X', 'ich muss"
+                " X', 'denk an X', 'X besorgen/kaufen', 'morgen X'. NICHT vorher um"
+                " Erlaubnis fragen (eine Aufgabe ist leicht wieder zu löschen);"
+                " einfach eintragen und danach kurz bestätigen ('Notiert: X ✓')."
+                " Nennt der Nutzer einen Tag ('morgen', '1. August'), gib due als"
+                " ISO-Datum YYYY-MM-DD mit (wird dann auch ein Kalendereintrag)."
             ),
             parameters={
                 "type": "object",
@@ -100,8 +102,11 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
         Tool(
             name="task_list",
             description=(
-                "Listet die offenen Aufgaben (To-Do) des Nutzers. include_done=true"
-                " zeigt auch erledigte/verworfene."
+                "Listet die offenen Aufgaben (To-Do). Nutze DIESES Tool — nicht"
+                " notes_search — für 'was müssen wir tun/erledigen', 'was steht an',"
+                " 'unsere To-Dos', 'haben wir was notiert/für morgen'. Aufgaben"
+                " stehen hier, nicht in den Notizen. include_done=true zeigt auch"
+                " erledigte/verworfene."
             ),
             parameters={
                 "type": "object",
