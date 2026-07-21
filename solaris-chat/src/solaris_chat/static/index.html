@@ -1066,6 +1066,10 @@
       border-radius: var(--radius); box-shadow: var(--shadow-panel);
       padding: 6px;
     }
+    .slash-head {
+      font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--muted); padding: 4px 10px 6px;
+    }
     .slash-item {
       display: flex; align-items: baseline; gap: 10px;
       padding: 7px 10px; border-radius: 8px; cursor: pointer;
@@ -1634,7 +1638,7 @@
             <button id="attach-btn" class="composer-icon" type="button" title="Anhängen (Bild, Takeout-.zip oder -.json)" aria-label="Anhängen"><svg class="ic"><use href="#i-paperclip"></use></svg></button>
             <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
           </div>
-          <textarea id="input" rows="1" placeholder="type message or /help" autofocus></textarea>
+          <textarea id="input" rows="1" placeholder="Nachricht · /Chat · .Erfassen" autofocus></textarea>
           <button id="send" class="btn-primary" type="submit" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
           <button id="stop" class="composer-icon stop" type="button" title="Antwort stoppen" aria-label="Antwort stoppen" hidden><svg class="ic"><use href="#i-stop"></use></svg></button>
           <input id="file-input" type="file" accept="image/*,.zip,.json,application/json" hidden />
@@ -4112,6 +4116,8 @@
           if (!items.length) { close(); return; }
           active = 0;
           menu.textContent = "";
+          var sh = document.createElement("div"); sh.className = "slash-head";
+          sh.textContent = "Chat & Solaris"; menu.appendChild(sh);
           items.forEach(function (c, i) {
             var row = document.createElement("div");
             row.className = "slash-item" + (i === active ? " active" : "");
@@ -4195,6 +4201,8 @@
           items = DOT_COMMANDS.filter(function (c) { return c[0].slice(1).indexOf(cmd) === 0; });
           if (!items.length) { closeMenu(); return; }
           active = 0; menu.textContent = "";
+          var dh = document.createElement("div"); dh.className = "slash-head";
+          dh.textContent = "Erfassen & Finden"; menu.appendChild(dh);
           items.forEach(function (c, i) {
             var row = document.createElement("div");
             row.className = "slash-item" + (i === active ? " active" : "");
