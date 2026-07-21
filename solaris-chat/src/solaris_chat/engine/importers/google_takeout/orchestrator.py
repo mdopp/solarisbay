@@ -485,7 +485,12 @@ def run_import(payload: dict[str, Any], is_canceled=None):
         }
         try:
             if category == "music":
-                history = _find_watch_history(zip_bytes, buckets["music"])
+                # Same as classify_archive: a bare uploaded .json lands in
+                # `unknown` (no Takeout folder hint); `_find_watch_history`
+                # content-verifies, so include it or the run finds no history.
+                history = _find_watch_history(
+                    zip_bytes, buckets["music"] + buckets["unknown"]
+                )
                 count = 0
                 for ev in (
                     _run_music(zip_bytes, history, payload, is_canceled)

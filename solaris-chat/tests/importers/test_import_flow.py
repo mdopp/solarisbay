@@ -455,3 +455,28 @@ def test_ensure_takeout_zip_passes_through_existing_zip():
 
     zb = _make_zip(calendar=False, contacts=False, keep=False)
     assert _ensure_takeout_zip(zb, "takeout.zip") is zb  # unchanged, no re-wrap
+
+
+def test_bare_json_archive_runs_music_import(db, tmp_path, monkeypatch):
+    """A bare Takeout .json (root entry, no folder → `unknown` bucket) must still
+    reach the music writer at RUN time — not just classify as music. The runner
+    reads buckets["music"] + buckets["unknown"], else it writes 0 (the music:0
+    regression)."""
+    from solaris_chat.server import _ensure_takeout_zip
+
+    seen = {}
+
+    def fake_run_music_import(history_bytes, paths, **kw):
+        seen["bytes"] = history_bytes
+        yield {"stage": "done", "result": {"albums_written": 7}}
+
+    monkeypatch.setattr(
+        "solaris_chat.engine.importers.google_takeout.importers.music.run_music_import",
+        fake_run_music_import,
+    )
+    zb = _ensure_takeout_zip(_HIST.encode("utf-8"), "Wiedergabeverlauf.json")
+    p = _payload(tmp_path, zb, ["music"])
+    p.update({"music_dir": str(tmp_path / "m"), "data_dir": str(tmp_path / "d")})
+    _, _, snap = _run(db, p)
+    assert snap["result"]["per_category"] == {"music": 7}  # not 0
+    assert b"Anti-Hero" in seen["bytes"]  # the bare json's content reached the writer
