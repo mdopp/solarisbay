@@ -1600,7 +1600,7 @@
           <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Commands" hidden></div>
           <div class="slash-menu" id="mention-menu" role="listbox" aria-label="Mentions" hidden></div>
           <div class="composer-tools">
-            <button id="attach-btn" class="composer-icon" type="button" title="Bild anhängen" aria-label="Bild anhängen"><svg class="ic"><use href="#i-image"></use></svg></button>
+            <button id="attach-btn" class="composer-icon" type="button" title="Anhängen (Bild oder Import-Archiv)" aria-label="Anhängen"><svg class="ic"><use href="#i-image"></use></svg></button>
             <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
           </div>
           <textarea id="input" rows="1" placeholder="type message or /help" autofocus></textarea>
@@ -6400,7 +6400,7 @@
         intro.className = "import-intro";
         intro.textContent =
           "Du hast bei Google einen Datenexport („Google Takeout“) angefordert? " +
-          "Lege die .zip hier ab — Solaris schaut hinein, zeigt dir im Chat, was drin ist " +
+          "Lege die .zip hier ab — Solaris schaut hinein, zeigt dir gleich hier, was drin ist " +
           "(Kalender, Kontakte, Notizen, YouTube-Music), und importiert erst nach deiner Bestätigung. " +
           "Alles landet zum Sichten im Posteingang.";
         card.appendChild(intro);
@@ -6504,16 +6504,16 @@
                 return (importCategoryLabel[c.category] || c.category) + " (" + c.count + ")";
               }).join(", ");
               var el = importSetStatus(statusEl, "",
-                "Gefunden — im Chat wartet dein Import-Plan",
-                found ? "Gefunden: " + found + "." : "");
-              var note = document.createElement("div");
-              note.className = "import-note";
-              var a = document.createElement("a");
-              a.href = "#";
-              a.textContent = "Zum Chat wechseln, um zu bestätigen →";
-              a.addEventListener("click", function (e) { e.preventDefault(); showView("chat"); });
-              note.appendChild(a);
-              el.appendChild(note);
+                "In deinem Archiv gefunden — bestätige den Import:",
+                found ? found + "." : "");
+              // Render the plan card RIGHT HERE (with a working Importieren
+              // button) instead of sending the resident to hunt for it in the
+              // chat — the card is otherwise a transient live inject.
+              if (j.card) {
+                var pc = renderActionCard(j.card);
+                pc.classList.add("import-plan-card");
+                el.appendChild(pc);
+              }
             }
             // The confirm + live progress happen via the chat card; mirror the
             // job's live status here too so the section stays informative.
@@ -6536,9 +6536,24 @@
           fetch("/api/import/status")
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (j) {
+              if (!document.body.contains(statusEl)) return; // page navigated away
+              // A pending, unconfirmed plan → re-attach its actionable card here
+              // (survives reload / an upload from this section) and keep polling
+              // so the job progress takes over once Importieren is pressed.
+              var plan = j && j.ok && j.plan;
+              if (plan && plan.card) {
+                if (!statusEl.querySelector(".import-plan-card")) {
+                  var pel = importSetStatus(statusEl, "",
+                    "Import wartet auf deine Bestätigung", "");
+                  var pc = renderActionCard(plan.card);
+                  pc.classList.add("import-plan-card");
+                  pel.appendChild(pc);
+                }
+                importPollTimer = setTimeout(tick, 2000);
+                return;
+              }
               var job = j && j.ok && j.job;
               if (!job) return; // nothing to show — leave whatever's there
-              if (!document.body.contains(statusEl)) return; // page navigated away
               var prog = job.progress || {};
               if (job.status === "running") {
                 var el = importSetStatus(statusEl, "", "Import läuft …",

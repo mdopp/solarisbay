@@ -4044,6 +4044,49 @@ def build_app(
             )
         log.info("import.done", uid=uid, job=jid, per_category=per)
 
+    # A pending import plan the resident hasn't confirmed yet. The plan card is
+    # otherwise only a transient live chat inject, so an upload from the Notizen
+    # section — or a reload before pressing Importieren — loses the actionable
+    # card, leaving only the "archive received" text. Persist it beside the
+    # archive so `import_status` can re-attach it; Importieren/Abbrechen consumes it.
+    _PLAN_SUFFIX = ".plan.json"
+
+    def _pending_plan_path(archive_path: Path) -> Path:
+        return archive_path.parent / (archive_path.name + _PLAN_SUFFIX)
+
+    def _write_pending_plan(
+        archive_path: Path, archive_id: str, card: dict[str, Any]
+    ) -> None:
+        try:
+            _pending_plan_path(archive_path).write_text(
+                json.dumps({"archive_id": archive_id, "card": card}), encoding="utf-8"
+            )
+        except OSError as e:  # noqa: BLE001 — persistence is best-effort.
+            log.warn("import.plan_persist_failed", error=str(e))
+
+    def _clear_pending_plan(uid: str, archive_id: str) -> None:
+        p = _notes_resolve_owned(notes_dir, archive_id, uid) if archive_id else None
+        if p is not None:
+            try:
+                _pending_plan_path(p).unlink()
+            except OSError:
+                pass
+
+    def _latest_pending_plan(uid: str) -> dict[str, Any] | None:
+        root = Path(notes_dir).resolve()
+        base = root if uid == notes_search.SHARED_UID else root / "users" / uid
+        d = base / _ARCHIVE_SUBDIR
+        if not d.is_dir():
+            return None
+        for p in sorted(
+            d.glob(f"*{_PLAN_SUFFIX}"), key=lambda f: f.stat().st_mtime, reverse=True
+        ):
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+        return None
+
     async def _handle_takeout_archive(
         request: web.Request, uid: str, part: Any, base: Path
     ) -> web.Response:
@@ -4094,6 +4137,7 @@ def build_app(
             )
         archive_id = str(archive_path.relative_to(Path(notes_dir).resolve()))
         card = import_flow.build_plan_card(classification, archive_id)
+        _write_pending_plan(archive_path, archive_id, card)
         if event_bus is not None:
             session_id = store.ensure_household_session(solaris_db_path, uid)
             await inject(
@@ -4148,6 +4192,7 @@ def build_app(
             "hash": params.get("hash", ""),
         }
         job_id = import_jobs.start(uid, "import", payload)
+        _clear_pending_plan(uid, archive_id)  # confirmed → no longer pending
         session_id = store.ensure_household_session(solaris_db_path, uid)
         asyncio.ensure_future(
             _stream_import_progress(uid, session_id, job_id, categories)
@@ -4156,6 +4201,9 @@ def build_app(
 
     async def _import_cancel(body: dict[str, Any]) -> dict[str, Any]:
         """Action-card callback: dismiss the plan without importing (#869)."""
+        params = body.get("params") or {}
+        uid = body.get("uid") or default_uid
+        _clear_pending_plan(uid, str(params.get("archive_id") or ""))
         return {"ok": True, "detail": "abgebrochen"}
 
     async def import_status(request: web.Request) -> web.Response:
@@ -4165,6 +4213,12 @@ def build_app(
         uid = _interactive_uid(request)
         if uid is None:
             return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        # A pending, unconfirmed plan re-attaches its actionable card on reload
+        # (it exists only between upload and Importieren/Abbrechen); an active job
+        # takes over once confirmed.
+        plan = _latest_pending_plan(uid)
+        if plan is not None:
+            return web.json_response({"ok": True, "plan": plan})
         if import_jobs is None:
             return web.json_response({"ok": True, "job": None})
         return web.json_response({"ok": True, "job": import_jobs.latest_for(uid)})
