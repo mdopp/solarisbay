@@ -6497,7 +6497,21 @@
                 : j.error === "unreadable archive" ? "Das Archiv konnte nicht gelesen werden."
                 : "Der Upload ist fehlgeschlagen.";
               if (statusEl) importSetStatus(statusEl, "failed", "Upload fehlgeschlagen", msg);
+              else addText("system", msg);
               return;
+            }
+            if (!statusEl && j.card) {
+              // Composer path (attached via the paperclip): render the actionable
+              // plan card straight into the chat log. Don't rely on the server's
+              // household-session SSE inject — that only shows if that exact
+              // session is open and no turn is active (index.html:3859).
+              var mb = document.createElement("div");
+              mb.className = "msg sol";
+              var cc = renderActionCard(j.card);
+              cc.classList.add("import-plan-card");
+              mb.appendChild(cc);
+              log.appendChild(mb);
+              scrollDown(true);
             }
             if (statusEl) {
               var claims = (j.classification && j.classification.claims) || [];
