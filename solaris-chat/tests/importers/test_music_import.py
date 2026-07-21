@@ -6,13 +6,12 @@ Covers the P3 slice wiring `music_shopping` into a durable import-job kind:
     `play_count` facts onto album entities (resolved/created by P1a's
     "Artist – Album" canonical_name/slug), surfaced by `music_query op="wishlist"`
     minus what is owned/digital;
-  - the Hörspiel/Podcast classification prefers the LLM and falls back to the
-    shipped seed lists when the LLM is unavailable;
+  - the Hörspiel/Podcast classification is mechanical (shipped seed lists);
   - the run is idempotent (re-run updates facts, no duplicate album nodes) and
     per-resident (owner-scoped).
 
-ytmusicapi is mocked via the on-disk album cache (no network); the LLM is mocked
-by installing a stub classifier. Schema mirrors the affinity/ingest tests.
+ytmusicapi is mocked via the on-disk album cache (no network). Schema mirrors the
+affinity/ingest tests.
 """
 
 from __future__ import annotations
@@ -24,7 +23,6 @@ import pytest
 
 from solaris_chat.engine.importers import jobs as jobs_mod
 from solaris_chat.engine.importers.google_takeout import REGISTRY, catalog
-from solaris_chat.engine.importers.google_takeout.importers import music
 from solaris_chat.engine.importers.jobs import JobRunner, registered_kind
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools.music_query import build_music_query_tools
@@ -111,22 +109,6 @@ def env(tmp_path):
         )
     )
     return db_path, str(tmp_path / "notes"), str(music_dir), str(data_dir)
-
-
-@pytest.fixture(autouse=True)
-def _no_llm():
-    """No test should reach a real Ollama — force the mechanical fallback unless a
-    test installs its own stub classifier."""
-    catalog.set_llm_classifier(None)
-    yield
-    catalog.set_llm_classifier(None)
-
-
-@pytest.fixture(autouse=True)
-def _stub_llm_factory(monkeypatch):
-    """`run_music_import` installs an LLM classifier; make that stub-installable so
-    the job run never dials Ollama. Default stub returns None (→ mechanical)."""
-    monkeypatch.setattr(music, "_llm_classifier", lambda url, model: lambda a, t: None)
 
 
 def _payload(db_path, notes_dir, music_dir, data_dir, owner="mdopp"):
@@ -273,32 +255,11 @@ def test_facts_are_owner_scoped(env):
     assert row["resident_uid"] == "lena"
 
 
-# --- classification: LLM-with-mechanical-fallback ----------------------------
+# --- classification: mechanical seed list ------------------------------------
 
 
-def test_classify_falls_back_to_mechanical_when_no_llm():
-    # No classifier installed → the shipped seed lists decide.
-    catalog.set_llm_classifier(None)
+def test_classify_uses_mechanical_seed_list():
+    # Deterministic seed-list matching — no LLM in the path.
     assert catalog.classify("Fest & Flauschig", "Folge 300") == "Podcast"
     assert catalog.classify("Benjamin Blümchen", "Der Zoo") == "Hörspiel"
     assert catalog.classify("Taylor Swift", "Anti-Hero") is None
-
-
-def test_classify_falls_back_when_llm_raises():
-    def _boom(artist, title):
-        raise RuntimeError("ollama down")
-
-    catalog.set_llm_classifier(_boom)
-    # LLM error → degrade to the mechanical seed lists, not a crash.
-    assert catalog.classify("Gemischtes Hack", "irgendwas") == "Podcast"
-    assert catalog.classify("Taylor Swift", "Anti-Hero") is None
-
-
-def test_classify_prefers_llm_verdict():
-    # The LLM recognises a show the seed lists never listed.
-    catalog.set_llm_classifier(
-        lambda a, t: "Podcast" if a == "Mein Unbekannter Podcast" else "Musik"
-    )
-    assert catalog.classify("Mein Unbekannter Podcast", "Folge 1") == "Podcast"
-    # LLM says "Musik" → None (music), even for a channel a seed list would flag.
-    assert catalog.classify("Benjamin Blümchen", "Der Zoo") is None
