@@ -294,3 +294,28 @@ def test_resume_owner_scoped(db):
     _wait(r, "mine", {"done"})
     # lena's row is untouched by mdopp's owner-scoped resume.
     assert r.get("hers", "lena")["status"] == "running"
+
+
+def test_resume_all_owners_respawns_resident_job(db):
+    # The single engine process serves every owner, so a resume with no owner
+    # arg (#941) must re-spawn a running job whose owner is a non-default
+    # resident, not just the household default.
+    @runner("res")
+    def _build(payload):
+        def factory(is_canceled):
+            yield {"pct": 100}
+
+        return factory
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO engine_import_jobs (id, owner_uid, kind, status, payload)"
+        " VALUES ('hers', 'lena', 'res', 'running', '{}')"
+    )
+    conn.commit()
+    conn.close()
+
+    r = JobRunner(db)
+    r.resume()
+    snap = _wait(r, "hers", {"done"}, owner="lena")
+    assert snap["status"] == "done"

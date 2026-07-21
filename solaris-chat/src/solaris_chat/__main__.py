@@ -140,11 +140,12 @@ async def _run() -> None:
     crons.start()
 
     # Durable import jobs (#864): re-attach any import still `running` when the
-    # server last died. Owner-scoped to the household default uid — mirrors the
-    # timer/scheduler boot re-arm; a job with no registered runner is marked
-    # `interrupted` rather than lost. Importer kinds are wired in #868.
+    # server last died. This single engine process serves every owner, so resume
+    # ALL running jobs — not just the household default — else a resident's
+    # in-flight import (#941) zombies at `status='running'`. A job with no
+    # registered runner is marked `interrupted` rather than lost.
     import_jobs = JobRunner(settings.solaris_db_path)
-    import_jobs.resume(settings.default_uid)
+    import_jobs.resume()
 
     # Populate the OKF store on boot (#517). Run in a dedicated worker thread
     # with its own event loop, NOT as a task on the chat server's loop: the
