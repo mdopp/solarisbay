@@ -12,12 +12,14 @@ import asyncio
 import functools
 import hashlib
 import html
+import io
 import json
 import os
 import re
 import sqlite3
 import time
 import uuid
+import zipfile
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -860,6 +862,21 @@ _UPLOAD_MAX_FILES = 20
 _ARCHIVE_MIME = {"application/zip", "application/x-zip-compressed"}
 _ARCHIVE_MAX_BYTES = 2 * 1024 * 1024 * 1024
 _ARCHIVE_SUBDIR = "imports"
+
+
+def _ensure_takeout_zip(data: bytes, filename: str) -> bytes:
+    """Wrap a bare Takeout `.json` (e.g. `Wiedergabeverlauf.json` on its own) into
+    a single-entry zip so the whole zip-based import pipeline handles it unchanged.
+    Bytes that are already a zip (`PK\\x03\\x04`) pass through untouched."""
+    if data[:4] == b"PK\x03\x04":
+        return data
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1] or "Wiedergabeverlauf.json"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(name, data)
+    return buf.getvalue()
+
+
 # Room for `_UPLOAD_MAX_FILES` max-size parts plus multipart framing, so a legit
 # series upload isn't rejected by aiohttp's whole-body `client_max_size` before
 # the handler's own per-file guard runs.
@@ -4114,7 +4131,9 @@ def build_app(
                 )
         if not data:
             return web.json_response({"ok": False, "error": "empty file"}, status=400)
-        zip_bytes = bytes(data)
+        # A bare Takeout `.json` (dropped without zipping) is wrapped into a
+        # single-entry zip so the rest of the pipeline stays zip-only.
+        zip_bytes = _ensure_takeout_zip(bytes(data), part.filename or "")
         archive_hash = import_flow.content_hash(zip_bytes)
         import_dir = base / _ARCHIVE_SUBDIR
         import_dir.mkdir(parents=True, exist_ok=True)
@@ -4282,7 +4301,11 @@ def build_app(
                 continue
             mime = (part.headers.get("Content-Type") or "").split(";")[0].strip()
             part_name = part.filename or ""
-            if mime in _ARCHIVE_MIME or part_name.lower().endswith(".zip"):
+            if (
+                mime in _ARCHIVE_MIME
+                or part_name.lower().endswith((".zip", ".json"))
+                or mime == "application/json"
+            ):
                 return await _handle_takeout_archive(request, uid, part, base)
             if mime not in _UPLOAD_MIME_EXT:
                 return web.json_response(

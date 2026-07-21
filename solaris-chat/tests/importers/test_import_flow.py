@@ -427,3 +427,31 @@ def test_music_routes_through_run_music_import(db, tmp_path, monkeypatch):
     assert snap["result"]["per_category"] == {"music": 4}
     assert seen["owner"] == "mdopp"
     assert b"watch-history" not in seen["bytes"]  # it's the file *content*, not name
+
+
+# --- bare Takeout .json (uploaded without zipping) ---------------------------
+
+
+def test_ensure_takeout_zip_wraps_bare_json():
+    """A raw `Wiedergabeverlauf.json` dropped on its own is wrapped into a
+    single-entry zip, and that zip classifies as a music archive (#943 follow-up:
+    upload without having to zip first)."""
+    from solaris_chat.server import _ensure_takeout_zip
+
+    raw = _HIST.encode("utf-8")
+    zb = _ensure_takeout_zip(raw, "Wiedergabeverlauf.json")
+    assert zb[:4] == b"PK\x03\x04"  # it is now a zip
+    with zipfile.ZipFile(io.BytesIO(zb)) as zf:
+        assert zf.namelist() == ["Wiedergabeverlauf.json"]
+        assert zf.read("Wiedergabeverlauf.json") == raw
+    # …and the wrapped archive is recognised as music purely by content
+    # (`_find_watch_history`), with NO llm.
+    classification = o.classify_archive(zb, llm=None)
+    assert any(c["category"] == "music" for c in classification["claims"])
+
+
+def test_ensure_takeout_zip_passes_through_existing_zip():
+    from solaris_chat.server import _ensure_takeout_zip
+
+    zb = _make_zip(calendar=False, contacts=False, keep=False)
+    assert _ensure_takeout_zip(zb, "takeout.zip") is zb  # unchanged, no re-wrap

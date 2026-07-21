@@ -1493,6 +1493,7 @@
     <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4M8 21h8"/></symbol>
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+    <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
@@ -1600,13 +1601,13 @@
           <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Commands" hidden></div>
           <div class="slash-menu" id="mention-menu" role="listbox" aria-label="Mentions" hidden></div>
           <div class="composer-tools">
-            <button id="attach-btn" class="composer-icon" type="button" title="Anhängen (Bild oder Import-Archiv)" aria-label="Anhängen"><svg class="ic"><use href="#i-image"></use></svg></button>
+            <button id="attach-btn" class="composer-icon" type="button" title="Anhängen (Bild, Takeout-.zip oder -.json)" aria-label="Anhängen"><svg class="ic"><use href="#i-paperclip"></use></svg></button>
             <button id="mic-btn" class="composer-icon" type="button" title="Spracheingabe" aria-label="Spracheingabe"><svg class="ic"><use href="#i-mic"></use></svg></button>
           </div>
           <textarea id="input" rows="1" placeholder="type message or /help" autofocus></textarea>
           <button id="send" class="btn-primary" type="submit" aria-label="Send"><svg class="ic"><use href="#i-send"></use></svg></button>
           <button id="stop" class="composer-icon stop" type="button" title="Antwort stoppen" aria-label="Antwort stoppen" hidden><svg class="ic"><use href="#i-stop"></use></svg></button>
-          <input id="file-input" type="file" accept="image/*,.zip" hidden />
+          <input id="file-input" type="file" accept="image/*,.zip,.json,application/json" hidden />
         </form>
       </div>
     </section>
@@ -1872,16 +1873,16 @@
 
   <!-- Attachment modal: camera capture (getUserMedia) + client-side crop (#183) -->
   <div class="modal-backdrop" id="attach-modal" hidden>
-    <div class="modal" role="dialog" aria-label="Bild anhängen">
+    <div class="modal" role="dialog" aria-label="Anhängen">
       <div class="modal-head">
-        <span class="modal-title" id="attach-modal-title">Bild anhängen</span>
+        <span class="modal-title" id="attach-modal-title">Anhängen</span>
         <span class="grow"></span>
         <button class="icon-btn" id="attach-close" type="button" aria-label="Schließen"><svg class="ic"><use href="#i-x"></use></svg></button>
       </div>
       <div class="modal-body">
         <div class="attach-choose" id="attach-choose">
           <button class="attach-opt" id="attach-camera" type="button"><svg class="ic"><use href="#i-camera"></use></svg> Kamera</button>
-          <button class="attach-opt" id="attach-upload" type="button"><svg class="ic"><use href="#i-upload"></use></svg> Hochladen</button>
+          <button class="attach-opt" id="attach-upload" type="button"><svg class="ic"><use href="#i-upload"></use></svg> Datei / Import</button>
         </div>
         <div class="cam-stage" id="cam-stage" hidden>
           <video id="cam-video" playsinline autoplay muted></video>
@@ -4282,12 +4283,12 @@
           var f = fileInput.files && fileInput.files[0];
           fileInput.value = "";
           if (!f) return;
-          // A Takeout .zip routes to the interactive import (#869) — uploaded
-          // straight to /api/upload; the plan card comes back over the chat SSE.
-          // Images keep the crop-then-attach path.
-          if ((f.type === "application/zip" || /\.zip$/i.test(f.name || ""))) {
+          // A Takeout .zip OR a bare Takeout .json routes to the interactive
+          // import (#869) — uploaded straight to /api/upload; the plan card comes
+          // back over the chat SSE. Images keep the crop-then-attach path.
+          if (f.type === "application/zip" || f.type === "application/json" || /\.(zip|json)$/i.test(f.name || "")) {
             closeModal();
-            addText("system", "Dein Google-Takeout-Archiv wird analysiert… gleich erscheint hier dein Import-Plan.");
+            addText("system", "Deine Google-Takeout-Daten werden analysiert… gleich erscheint hier dein Import-Plan.");
             uploadTakeout(f, null, null);
             return;
           }
@@ -6400,7 +6401,7 @@
         intro.className = "import-intro";
         intro.textContent =
           "Du hast bei Google einen Datenexport („Google Takeout“) angefordert? " +
-          "Lege die .zip hier ab — Solaris schaut hinein, zeigt dir gleich hier, was drin ist " +
+          "Lege die .zip (oder eine einzelne Takeout-.json) hier ab — Solaris schaut hinein, zeigt dir gleich hier, was drin ist " +
           "(Kalender, Kontakte, Notizen, YouTube-Music), und importiert erst nach deiner Bestätigung. " +
           "Alles landet zum Sichten im Posteingang.";
         card.appendChild(intro);
@@ -6411,7 +6412,7 @@
         drop.tabIndex = 0;
         var dTitle = document.createElement("div");
         dTitle.className = "id-title";
-        dTitle.textContent = "Takeout-Archiv (.zip) hier ablegen";
+        dTitle.textContent = "Takeout-Archiv (.zip oder .json) hier ablegen";
         var dHint = document.createElement("div");
         dHint.className = "id-hint";
         dHint.textContent = "oder klicken, um eine Datei auszuwählen";
@@ -6421,7 +6422,7 @@
 
         var fileInput = document.createElement("input");
         fileInput.type = "file";
-        fileInput.accept = ".zip";
+        fileInput.accept = ".zip,.json,application/json";
         fileInput.hidden = true;
         card.appendChild(fileInput);
 
