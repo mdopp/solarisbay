@@ -56,6 +56,18 @@ _HIST = json.dumps(
         }
     ]
 )
+# The sibling SEARCH history a German export ships next to the watch history —
+# same list-of-records shape but `results?search_query=` URLs (no `watch?v=`), so
+# the content-based finder must NOT mistake it for the watch history.
+_SEARCH = json.dumps(
+    [
+        {
+            "header": "YouTube",
+            "title": "taylor swift gesucht",
+            "titleUrl": "https://www.youtube.com/results?search_query=taylor+swift",
+        }
+    ]
+)
 
 
 def _make_zip(
@@ -91,6 +103,37 @@ def test_classify_counts_each_category():
 def test_classify_omits_empty_categories():
     c = o.classify_archive(_make_zip(contacts=False, music=False))
     assert {claim["category"] for claim in c["claims"]} == {"calendar", "keep"}
+
+
+def test_classify_finds_localized_german_watch_history():
+    # A German Takeout localises BOTH the folder and the FILENAME:
+    # `Verlauf/Wiedergabeverlauf.json`, next to a `Suchverlauf.json` (search) and
+    # `Playlists/*.csv`. The content-based finder must pick the watch history by
+    # its `watch?v=` URLs — the exact case that regressed (issue #935).
+    z = _make_zip(
+        music=False,
+        extra={
+            "Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.json": _HIST,
+            "Takeout/YouTube und YouTube Music/Verlauf/Suchverlauf.json": _SEARCH,
+            "Takeout/YouTube und YouTube Music/Playlists/Zuhause-Videos.csv": "a,b\n1,2\n",
+        },
+    )
+    counts = {
+        claim["category"]: claim["count"] for claim in o.classify_archive(z)["claims"]
+    }
+    assert counts.get("music") == 1
+
+
+def test_classify_search_history_alone_is_not_music():
+    # The search history must NOT be mistaken for the watch history (no `watch?v=`).
+    z = _make_zip(
+        calendar=False,
+        contacts=False,
+        keep=False,
+        music=False,
+        extra={"Takeout/YouTube und YouTube Music/Verlauf/Suchverlauf.json": _SEARCH},
+    )
+    assert not any(c["category"] == "music" for c in o.classify_archive(z)["claims"])
 
 
 def test_classify_stable_hash_is_idempotency_key():

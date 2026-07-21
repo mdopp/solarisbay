@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -79,6 +80,28 @@ def _members(zip_bytes: bytes) -> list[zipfile.ZipInfo]:
 def _read(zip_bytes: bytes, name: str) -> bytes:
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         return zf.read(name)
+
+
+def _find_watch_history(zip_bytes: bytes, names: list[str]) -> str | None:
+    """The YouTube watch-history JSON, found by CONTENT — Takeout **localises the
+    filename** (`watch-history.json` EN, `Wiedergabeverlauf.json` DE,
+    `historique-de-visionnage.json` FR, …), so a fixed English name silently
+    misses every non-English export. It is the `.json` holding a list of watch
+    records (a `titleUrl` with `watch?v=`), which also distinguishes it from the
+    sibling search history (`Suchverlauf.json` → `results?search_query=`)."""
+    for name in names:
+        if not name.lower().endswith(".json"):
+            continue
+        try:
+            data = json.loads(_read(zip_bytes, name))
+        except Exception:  # noqa: BLE001 — a non-JSON / other file just isn't it.
+            continue
+        if isinstance(data, list) and any(
+            isinstance(r, dict) and "watch?v=" in str(r.get("titleUrl", ""))
+            for r in data[:50]
+        ):
+            return name
+    return None
 
 
 def _top_folder(name: str) -> str:
@@ -187,7 +210,7 @@ def _count_keep(zip_bytes: bytes, names: list[str]) -> dict[str, Any]:
 def _count_music(zip_bytes: bytes, names: list[str]) -> dict[str, Any]:
     from .music_shopping import aggregate_plays
 
-    history = next((n for n in names if n.lower().endswith("watch-history.json")), None)
+    history = _find_watch_history(zip_bytes, names)
     if history is None:
         return {"category": "music", "count": 0, "samples": []}
     try:
@@ -441,14 +464,7 @@ def run_import(payload: dict[str, Any], is_canceled=None):
         }
         try:
             if category == "music":
-                history = next(
-                    (
-                        n
-                        for n in buckets["music"]
-                        if n.lower().endswith("watch-history.json")
-                    ),
-                    None,
-                )
+                history = _find_watch_history(zip_bytes, buckets["music"])
                 count = _run_music(zip_bytes, history, payload) if history else 0
             else:
                 count = fn(zip_bytes, buckets[category], payload)
