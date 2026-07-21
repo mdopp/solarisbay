@@ -136,6 +136,23 @@ def test_progress_events(music_dir, paths):
     assert evs[-1]["pct"] == 100 and "result" in evs[-1]
 
 
+def test_aggregate_plays_iter_yields_progress():
+    # The classification pass must surface progress (moving bar) — the must-have
+    # that the frozen "Historie einlesen … 2%" violated (#943).
+    evs = list(m.aggregate_plays_iter(HIST))
+    assert any(
+        e.get("stage") == "parse" and "Titel einordnen" in e.get("message", "")
+        for e in evs[:-1]
+    )
+    assert "plays" in evs[-1]  # final event carries the dict
+    assert m.aggregate_plays(HIST) == evs[-1]["plays"]  # wrapper == drained result
+
+
+def test_analyze_iter_forwards_classification_progress(music_dir, paths):
+    msgs = [e.get("message", "") for e in m.analyze_iter(HIST, paths, resolve=False)]
+    assert any("Titel einordnen" in msg for msg in msgs)
+
+
 # --- parsing / categorisation --------------------------------------------
 
 
