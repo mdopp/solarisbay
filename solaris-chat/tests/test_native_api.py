@@ -1203,10 +1203,19 @@ async def test_import_status_running_job_beats_stale_plan(aiohttp_client, tmp_pa
     imp = tmp_path / "users" / "mdopp" / "imports"
     imp.mkdir(parents=True)
     (imp / "takeout-stale.zip.plan.json").write_text(
-        _json.dumps({"archive_id": "users/mdopp/imports/takeout-stale.zip", "card": {}}),
+        _json.dumps(
+            {"archive_id": "users/mdopp/imports/takeout-stale.zip", "card": {}}
+        ),
         encoding="utf-8",
     )
-    running = {"jobId": "j1", "status": "running", "progress": {"pct": 32}, "result": None}
-    client = await aiohttp_client(_import_app(tmp_path, db, _StubJobs({"mdopp": running})))
+    running = {
+        "jobId": "j1",
+        "status": "running",
+        "progress": {"pct": 32},
+        "result": None,
+    }
+    client = await aiohttp_client(
+        _import_app(tmp_path, db, _StubJobs({"mdopp": running}))
+    )
     r = await client.get("/api/import/status", headers={"Remote-User": "mdopp"})
     assert (await r.json()) == {"ok": True, "job": running}  # job wins, not the plan
