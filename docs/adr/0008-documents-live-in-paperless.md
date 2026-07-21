@@ -62,9 +62,11 @@ adapter replaces the extractor, adding almost no new *ingest* code (ADR 0006).
 
 ## Consequences
 
-- A new ServiceBay service (paperless-ngx v3 + Postgres + Redis) — a template in
-  this repo, a dependency like Jellyfin/Immich. LLM suggestions point at the box
-  Ollama; nothing leaves the box.
+- A new ServiceBay service (paperless-ngx v3 + Redis; **SQLite** by default —
+  `PAPERLESS_DBENGINE=sqlite`, `sqlite-vec` vector store — so **no Postgres**
+  needed at household scale, Postgres only if a large library demands it) — a
+  template in this repo, a dependency like Jellyfin/Immich. LLM suggestions point
+  at the box Ollama; nothing leaves the box.
 - Correspondent **merge in paperless's UI** becomes the primary provider-dedup
   (fixes the Hellmann OCR-variance the normalization can't); Solaris's normalized
   `provider_key` stays as a secondary grouping key.
@@ -81,8 +83,9 @@ adapter replaces the extractor, adding almost no new *ingest* code (ADR 0006).
 1. **PoC** — v3-beta via ServiceBay; run the 18 docs through it; confirm
    local-Ollama suggestions, correspondents and custom fields carry what the OKF
    adapter needs (provider, policy number, dates, category).
-2. **Template** — `templates/paperless/` (paperless-ngx + Postgres + Redis),
-   Ollama wired to the box; a `solaris` API token minted for the adapter.
+2. **Template** — `templates/paperless/` (paperless-ngx + Redis + SQLite;
+   Postgres optional for scale), Ollama wired to the box; a `solaris` API token
+   minted for the adapter.
 3. **`PaperlessIngest` adapter** — REST read → OKF `document`/`organization`/
    `person` + facts (`source=paperless`); the webhook receiver + a reconcile
    sweep. The contact/deadline syncs run unchanged off the new projection.
