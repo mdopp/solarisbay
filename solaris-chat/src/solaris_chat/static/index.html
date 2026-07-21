@@ -809,8 +809,17 @@
       border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); }
     .dot-card .dc-hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
     .dot-card.done .dc-title { color: var(--accent); }
-    .dot-card .dc-list { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
-    .dot-card .dc-list-head { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+    /* Clear split between the create-action (top) and the search/list (bottom),
+       so the action buttons don't get lost in the results. */
+    .dot-card .dc-list { margin: 16px -14px 0; padding: 12px 14px 4px;
+      border-top: 1px solid var(--line); background: rgba(127,127,127,0.05);
+      border-radius: 0 0 var(--radius) var(--radius); }
+    .dot-card .dc-list-head { font-size: 11px; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--muted); margin-bottom: 8px; }
+    .task-row.task-check { justify-content: flex-start; gap: 10px; cursor: pointer; }
+    .task-cb { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); margin: 0; }
+    .task-row.resolved { opacity: .65; }
+    .task-row.resolved .task-title { text-decoration: line-through; color: var(--muted); }
     .note-frontmatter {
       display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
       margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px;
@@ -4301,7 +4310,7 @@
         function renderNoteMatches(el, q) {
           var listEl = el._list; if (!listEl) return;
           q = (q || "").trim();
-          if (q.length < 2) { listEl.textContent = ""; return; }
+          if (q.length < 3) { listEl.textContent = ""; return; }
           var seq = ++_noteSearchSeq;
           fetch("/api/portal/notes/search?q=" + encodeURIComponent(q))
             .then(function (r) { return r.ok ? r.json() : null; })
@@ -4310,10 +4319,23 @@
               listEl.textContent = "";
               var hits = (j && j.ok && j.hits) || [];
               if (!Array.isArray(hits)) hits = (hits && hits.hits) || [];
+              // notes_search is fuzzy/semantic and always returns *something*;
+              // keep it restrictive — only hits that actually CONTAIN every query
+              // word (title/path/snippet), so nonsense finds nothing.
+              var words = q.toLowerCase().split(/\s+/).filter(Boolean);
+              var strict = hits.filter(function (hit) {
+                var hay = (typeof hit === "string" ? hit : JSON.stringify(hit)).toLowerCase();
+                return words.every(function (w) { return hay.indexOf(w) !== -1; });
+              });
               var h = document.createElement("div"); h.className = "dc-list-head";
-              h.textContent = hits.length + " Notiz-Treffer für „" + q + "“";
+              h.textContent = strict.length + " Notiz-Treffer für „" + q + "“";
               listEl.appendChild(h);
-              hits.slice(0, 6).forEach(function (hit) {
+              if (!strict.length) {
+                var e = document.createElement("div"); e.className = "task-empty";
+                e.textContent = "Keine passende Notiz.";
+                listEl.appendChild(e); return;
+              }
+              strict.slice(0, 6).forEach(function (hit) {
                 var label = hit.title || hit.name || hit.path || hit.okf_path || (typeof hit === "string" ? hit : "");
                 if (!label) return;
                 var a = document.createElement("div"); a.className = "task-row";
@@ -4343,7 +4365,8 @@
           loadTaskList(el);
         }
         function loadTaskList(el) {
-          fetch("/api/portal/tasks")
+          // Fetch open AND resolved; the view keeps open + resolved-in-last-week.
+          fetch("/api/portal/tasks?done=1")
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (j) {
               el._tasks = (j && j.ok && j.tasks) || [];
@@ -4356,12 +4379,15 @@
           listEl.textContent = "";
           var f = (filter || "").trim().toLowerCase();
           var showAll = (f === "" || f === "list");
+          var weekAgo = Date.now() - 7 * 864e5;
           var items = el._tasks.filter(function (t) {
+            var recent = t.status === "open" || (t.resolved_at && Date.parse(t.resolved_at) >= weekAgo);
+            if (!recent) return false;
             return showAll || t.title.toLowerCase().indexOf(f) !== -1;
           });
           var h = document.createElement("div"); h.className = "dc-list-head";
           h.textContent = showAll
-            ? "Aufgaben (" + items.length + ")"
+            ? "Aufgaben (offen + letzte Woche)"
             : items.length + " Treffer für „" + filter.trim() + "“";
           listEl.appendChild(h);
           if (!items.length) {
@@ -4370,19 +4396,18 @@
             listEl.appendChild(e); return;
           }
           items.slice(0, 8).forEach(function (t) {
-            var row = document.createElement("div"); row.className = "task-row";
+            var done = t.status !== "open";
+            var row = document.createElement("label"); row.className = "task-row task-check" + (done ? " resolved" : "");
+            var cb = document.createElement("input"); cb.type = "checkbox"; cb.className = "task-cb"; cb.checked = done;
+            cb.addEventListener("change", function () {
+              taskAction("task.set_status", { entity_id: t.id, status: cb.checked ? "done" : "open" })
+                .then(function () { loadTaskList(el); });
+            });
             var main = document.createElement("div"); main.className = "task-main";
             var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = t.title;
             main.appendChild(tt);
             if (t.due) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = "📅 " + t.due; main.appendChild(d); }
-            row.appendChild(main);
-            var acts = document.createElement("div"); acts.className = "task-acts";
-            var doneB = document.createElement("button"); doneB.className = "ac-btn ac-primary"; doneB.type = "button"; doneB.textContent = "Erledigt";
-            doneB.addEventListener("click", function () {
-              doneB.disabled = true;
-              taskAction("task.set_status", { entity_id: t.id, status: "done" }).then(function () { loadTaskList(el); });
-            });
-            acts.appendChild(doneB); row.appendChild(acts);
+            row.appendChild(cb); row.appendChild(main);
             listEl.appendChild(row);
           });
           if (items.length > 8) {
