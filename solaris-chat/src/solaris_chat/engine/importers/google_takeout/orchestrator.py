@@ -413,7 +413,10 @@ def _run_keep(zip_bytes: bytes, names: list[str], cfg: dict[str, Any]) -> int:
     return report["written"]
 
 
-def _run_music(zip_bytes: bytes, history: str, cfg: dict[str, Any]) -> int:
+def _run_music(zip_bytes: bytes, history: str, cfg: dict[str, Any], is_canceled=None):
+    """Generator: yields `run_music_import`'s progress events (so the slow ytmusic
+    album resolution surfaces a MOVING bar — „Alben auflösen … 500/5768" — instead
+    of a frozen 0%), the final one carrying the `result` (albums_written)."""
     from .importers.music import run_music_import
     from .paths import ImporterPaths
 
@@ -422,8 +425,7 @@ def _run_music(zip_bytes: bytes, history: str, cfg: dict[str, Any]) -> int:
         music_dir=Path(cfg["music_dir"]),
         data_dir=Path(cfg["data_dir"]),
     )
-    written = 0
-    for ev in run_music_import(
+    yield from run_music_import(
         _read(zip_bytes, history),
         paths,
         owner_uid=cfg["owner_uid"],
@@ -431,10 +433,8 @@ def _run_music(zip_bytes: bytes, history: str, cfg: dict[str, Any]) -> int:
         notes_dir=cfg["notes_dir"],
         ollama_url=cfg["ollama_url"],
         model=cfg["model"],
-    ):
-        if "result" in ev:
-            written = ev["result"].get("albums_written", 0)
-    return written
+        is_canceled=is_canceled,
+    )
 
 
 # category -> (progress label, the per-category runner)
@@ -481,7 +481,24 @@ def run_import(payload: dict[str, Any], is_canceled=None):
         try:
             if category == "music":
                 history = _find_watch_history(zip_bytes, buckets["music"])
-                count = _run_music(zip_bytes, history, payload) if history else 0
+                count = 0
+                for ev in (
+                    _run_music(zip_bytes, history, payload, is_canceled)
+                    if history is not None
+                    else ()
+                ):
+                    if "result" in ev:
+                        count = ev["result"].get("albums_written", 0)
+                    else:
+                        # Surface the inner resolution progress on the job so the
+                        # bar actually moves during the long ytmusic lookups.
+                        yield {
+                            "stage": "music",
+                            "message": ev.get("message", label),
+                            "pct": ev.get("pct", 0),
+                            "done": i,
+                            "total": total,
+                        }
             else:
                 count = fn(zip_bytes, buckets[category], payload)
         except Exception as exc:  # noqa: BLE001 — one category failing must not abort the rest.

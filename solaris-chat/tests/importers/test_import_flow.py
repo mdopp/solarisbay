@@ -262,9 +262,12 @@ def mock_importers(monkeypatch):
         calls["keep"] += 1
         return 1
 
-    def music(zip_bytes, history, cfg):
+    def music(zip_bytes, history, cfg, is_canceled=None):
+        # Generator now (mirrors _run_music): yields resolution progress, then the
+        # result — so run_import can surface a moving bar for the ytmusic lookups.
         calls["music"] += 1
-        return 3
+        yield {"stage": "resolve", "message": "Alben auflösen … 3/3", "pct": 90}
+        yield {"stage": "done", "result": {"albums_written": 3}}
 
     monkeypatch.setattr(o, "_run_calendar", cal)
     monkeypatch.setattr(o, "_run_contacts", con)
@@ -346,6 +349,24 @@ def test_job_streams_progress(db, tmp_path, mock_importers):
         "contacts": 2,
         "keep": 1,
     }
+
+
+def test_music_resolution_progress_is_forwarded(db, tmp_path, mock_importers):
+    # The slow ytmusic resolution's inner progress must SURFACE on the job so the
+    # bar moves instead of freezing at 0% (the reported "keine sinnvolle Anzeige").
+    zb = _make_zip(
+        calendar=False,
+        contacts=False,
+        keep=False,
+        music=False,
+        extra={
+            "Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.json": _HIST
+        },
+    )
+    events = list(o.run_import(_payload(tmp_path, zb, ["music"])))
+    msgs = [e.get("message", "") for e in events]
+    assert any("Alben auflösen" in m for m in msgs)  # inner progress forwarded
+    assert events[-1]["result"]["per_category"] == {"music": 3}
 
 
 def test_result_lands_in_posteingang(db, tmp_path, mock_importers):
