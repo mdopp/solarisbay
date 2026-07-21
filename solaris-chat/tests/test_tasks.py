@@ -74,6 +74,18 @@ def test_create_list_and_complete(tmp_path):
     assert len(done) == 1 and done[0]["status"] == "done"
 
 
+def test_resolved_at_stamped_and_cleared(tmp_path):
+    db, notes = _env(tmp_path)
+    tid = tasks.create_task(db_path=db, notes_dir=notes, uid="mdopp", title="X")
+    tasks.set_status(db_path=db, uid="mdopp", entity_id=tid, status="done")
+    done = tasks.list_tasks(db, "mdopp", include_done=True)[0]
+    assert done["status"] == "done" and done["resolved_at"]  # stamped
+    # Re-opening clears the resolution timestamp.
+    tasks.set_status(db_path=db, uid="mdopp", entity_id=tid, status="open")
+    reopened = tasks.list_tasks(db, "mdopp")[0]
+    assert reopened["status"] == "open" and reopened["resolved_at"] == ""
+
+
 def test_owner_scoped(tmp_path):
     db, notes = _env(tmp_path)
     tasks.create_task(db_path=db, notes_dir=notes, uid="mdopp", title="privat")

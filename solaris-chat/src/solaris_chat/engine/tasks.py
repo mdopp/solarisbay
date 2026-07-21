@@ -89,6 +89,12 @@ def set_status(*, db_path: str, uid: str, entity_id: str, status: str) -> bool:
             for f in projection.entity_facts(conn, entity_id, uid)
         }
         current["status"] = (status, 1.0)
+        # Stamp when it left `open` so a recently-resolved task can still surface
+        # (the `.task` filter shows open + resolved-in-the-last-week).
+        if status == _OPEN:
+            current.pop("resolved_at", None)
+        else:
+            current["resolved_at"] = (_now_iso(), 1.0)
         projection.replace_facts(
             conn,
             subject_entity_id=entity_id,
@@ -131,6 +137,7 @@ def list_tasks(
                     "due": facts.get("due", ""),
                     "source": facts.get("task_source", "manual"),
                     "created": facts.get("created", ""),
+                    "resolved_at": facts.get("resolved_at", ""),
                 }
             )
     finally:
