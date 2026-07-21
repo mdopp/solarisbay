@@ -22,12 +22,18 @@ from .textnorm import normalize
 # The music import job installs one (see ``importers.music``); left None it never
 # runs and ``classify`` uses the shipped seed lists only.
 _LLM_CLASSIFIER: Callable[[str, str], str | None] | None = None
+# Memoize per (artist, title): a watch history replays the same track many times
+# (11.6k entries → ~5.8k unique), and each miss is an LLM call — without this the
+# import fires thousands of redundant ollama calls. Cleared when the classifier
+# changes (a new one may label differently).
+_CLASSIFY_MEMO: dict[tuple[str, str], str | None] = {}
 
 
 def set_llm_classifier(fn: Callable[[str, str], str | None] | None) -> None:
     """Install (or clear) the LLM-backed classifier ``classify`` prefers."""
     global _LLM_CLASSIFIER
     _LLM_CLASSIFIER = fn
+    _CLASSIFY_MEMO.clear()
 
 
 _HOERSPIEL = [
@@ -129,7 +135,17 @@ def classify(artist: str, title: str) -> str | None:
     """Return "Podcast" / "Hörspiel" if the show is recognised, else None.
 
     Prefers the installed LLM classifier; falls back to the shipped seed lists
-    when none is installed or the LLM raised/returned an unusable value."""
+    when none is installed or the LLM raised/returned an unusable value.
+    Memoized per (artist, title) — see `_CLASSIFY_MEMO`."""
+    key = (artist, title)
+    if key in _CLASSIFY_MEMO:
+        return _CLASSIFY_MEMO[key]
+    result = _classify_uncached(artist, title)
+    _CLASSIFY_MEMO[key] = result
+    return result
+
+
+def _classify_uncached(artist: str, title: str) -> str | None:
     if _LLM_CLASSIFIER is not None:
         try:
             label = _LLM_CLASSIFIER(artist, title)
