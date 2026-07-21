@@ -4156,20 +4156,11 @@ def build_app(
             )
         archive_id = str(archive_path.relative_to(Path(notes_dir).resolve()))
         card = import_flow.build_plan_card(classification, archive_id)
+        # The plan is persisted (reload re-attaches it) and returned in the
+        # response — the client renders the single actionable card inline where
+        # the upload happened. No household-session SSE inject: it duplicated the
+        # inline card and only surfaced when that exact session was open.
         _write_pending_plan(archive_path, archive_id, card)
-        if event_bus is not None:
-            session_id = store.ensure_household_session(solaris_db_path, uid)
-            await inject(
-                solaris_db_path,
-                event_bus,
-                notifier,
-                session_id,
-                uid,
-                "Ich habe dein Google-Takeout-Archiv erhalten.",
-                card=card,
-            )
-            if bus is not None:
-                bus.publish(session_id, uid, {"kind": "card", "event": {"card": card}})
         log.info(
             "import.uploaded",
             uid=uid,
@@ -4245,7 +4236,10 @@ def build_app(
     # The import plan-card buttons (#869). Confirm WRITES (calendar/contacts into
     # Radicale, notes into the vault, wishlist facts onto album entities), so it is
     # confirm-gated via the same mechanism the destructive Wartung cards use.
-    action_cards.register(import_flow.CONFIRM_ACTION, _import_confirm, destructive=True)
+    # Not destructive: "Importieren" is itself the explicit intent, and the import
+    # is additive + idempotent + lands in the Posteingang for review — a second
+    # generic browser confirm() is just friction.
+    action_cards.register(import_flow.CONFIRM_ACTION, _import_confirm)
     action_cards.register(import_flow.CANCEL_ACTION, _import_cancel)
 
     async def napi_upload(request: web.Request) -> web.Response:

@@ -782,6 +782,10 @@
     .import-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
     .import-note { color: var(--muted); font-size: 13px; margin-top: 8px; }
     .import-note a { color: var(--accent); }
+    /* The plan card rendered inline in the chat log (composer attach path): one
+       card, wider than the 240px .ha-card cap so the findings + buttons breathe. */
+    .import-chat { margin: 6px 0 10px; }
+    .import-chat .import-plan-card { max-width: 460px; }
     .note-frontmatter {
       display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
       margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px;
@@ -6502,16 +6506,20 @@
             }
             if (!statusEl && j.card) {
               // Composer path (attached via the paperclip): render the actionable
-              // plan card straight into the chat log. Don't rely on the server's
-              // household-session SSE inject — that only shows if that exact
-              // session is open and no turn is active (index.html:3859).
-              var mb = document.createElement("div");
-              mb.className = "msg sol";
+              // plan card as ONE element in the chat log (no message-bubble
+              // wrapper — that read as a card-on-a-card), then poll the job so the
+              // SAME element morphs into live progress → result once the resident
+              // presses Importieren. Don't rely on the server's household-session
+              // SSE inject — it only shows if that exact session is open and no
+              // turn is active (index.html card listener).
+              var wrap = document.createElement("div");
+              wrap.className = "import-chat";
               var cc = renderActionCard(j.card);
               cc.classList.add("import-plan-card");
-              mb.appendChild(cc);
-              log.appendChild(mb);
+              wrap.appendChild(cc);
+              log.appendChild(wrap);
               scrollDown(true);
+              pollImportIntoChat(wrap);
             }
             if (statusEl) {
               var claims = (j.classification && j.classification.claims) || [];
@@ -6599,6 +6607,56 @@
               }
             })
             .catch(function () {});
+        }
+        tick();
+      }
+
+      // Chat-path import progress (#943 follow-up): the plan card lives in `wrap`.
+      // While the plan is pending, `/api/import/status` returns {plan} (no job) —
+      // leave the card. Once the resident presses Importieren the durable job
+      // starts; morph `wrap` IN PLACE into a live progress line, then the result —
+      // one element, no second card, no dependence on the SSE inject.
+      var importChatTimer = null;
+      function pollImportIntoChat(wrap) {
+        if (importChatTimer) { clearTimeout(importChatTimer); importChatTimer = null; }
+        function tick() {
+          fetch("/api/import/status")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              if (!document.body.contains(wrap)) return; // navigated away
+              var job = j && j.ok && j.job;
+              if (!job) { importChatTimer = setTimeout(tick, 1500); return; } // plan still awaiting confirm
+              var prog = job.progress || {};
+              if (job.status === "running") {
+                var el = importSetStatus(wrap, "", "Import läuft …",
+                  prog.message || "Deine Google-Daten werden importiert…");
+                if (prog.pct != null) {
+                  var bar = document.createElement("div");
+                  bar.className = "import-bar";
+                  var fill = document.createElement("span");
+                  fill.style.width = Math.max(0, Math.min(100, prog.pct)) + "%";
+                  bar.appendChild(fill);
+                  el.appendChild(bar);
+                }
+                scrollDown(atBottom());
+                importChatTimer = setTimeout(tick, 1000);
+              } else if (job.status === "done") {
+                var per = (job.result && job.result.per_category) || {};
+                var parts = [];
+                if (per.calendar != null) parts.push(per.calendar + " Termine");
+                if (per.contacts != null) parts.push(per.contacts + " Kontakte");
+                if (per.keep != null) parts.push(per.keep + " Notizen");
+                if (per.music != null) parts.push(per.music + " Wunsch-Alben ergänzt");
+                importSetStatus(wrap, "done", "Import abgeschlossen",
+                  parts.length ? "Fertig: " + parts.join(", ") + " — im Posteingang zum Sichten."
+                    : "Import abgeschlossen.");
+                scrollDown(atBottom());
+              } else if (job.status === "failed" || job.status === "interrupted") {
+                importSetStatus(wrap, "failed", "Import fehlgeschlagen",
+                  job.error || "Der Import konnte nicht abgeschlossen werden.");
+              }
+            })
+            .catch(function () { importChatTimer = setTimeout(tick, 2000); });
         }
         tick();
       }
