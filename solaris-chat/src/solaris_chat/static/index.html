@@ -3968,7 +3968,6 @@
       // Live-Karte im Chat-Verlauf öffnen und beim Tippen mitfüllen. Wachsen pro
       // Slice — hier stehen nur die schon implementierten.
       var DOT_COMMANDS = [
-        [".help", "Befehle anzeigen"],
         [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"],
         [".note", "Notiz anlegen + Notizen suchen — .note <Text>"],
         [".doc", "Dokument/Takeout hochladen + einsortieren"]
@@ -3986,7 +3985,24 @@
         return COMMANDS.filter(function (c) { return !c[2] || isAdmin; });
       }
       function helpMarkdown() {
-        var lines = ["**Commands** — type these in the message box:", ""];
+        var lines = [
+          "**Solaris — das zweite Gehirn deines Haushalts**",
+          "",
+          "Du denkst hier laut mit Solaris. Nachts merkt sich der Stenograph die " +
+            "Fakten aus euren Gesprächen; Dokumente, Fotos, Musik, Kalender und " +
+            "Kontakte fließen über den Import dazu, und der Bibliothekar webt alles " +
+            "zu einem einzigen Wissensgraph. Frag Solaris alles — es antwortet aus " +
+            "dem, was es für euch weiß, nicht aus dem Internet.",
+          "",
+          "So bedienst du es:",
+          "- **`/` — Chat & Solaris:** Befehle rund um den Chat selbst (neuer Chat, " +
+            "suchen, Einstellungen, Skills).",
+          "- **`.` — Tools:** erfassen & finden — eine Live-Karte im Verlauf zum " +
+            "Anlegen *und* Durchsuchen (Aufgabe, Notiz, Dokument, …).",
+          "",
+          "**`/` — Chat & Solaris**",
+          "",
+        ];
         availableCommands()
           .slice()
           .sort(function (a, b) { return a[0].localeCompare(b[0]); })
@@ -4002,10 +4018,10 @@
           commandEntries.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
         }
         lines.push("");
-        lines.push("**Punkt-Befehle** — öffnen eine Karte im Verlauf:");
+        lines.push("**`.` — Tools** (öffnen eine Karte im Verlauf):");
         DOT_COMMANDS.forEach(function (c) { lines.push("- `" + c[0] + "` — " + c[1]); });
         lines.push("");
-        lines.push("Anything not starting with `/` or `.` is sent to Solaris.");
+        lines.push("Alles, was nicht mit `/` oder `.` beginnt, geht als Nachricht an Solaris.");
         return lines.join("\n");
       }
       function handleCommand(raw) {
@@ -4499,14 +4515,14 @@
           var p = parse(input.value);
           if (!p) { closeMenu(); clearCard(); return; }
           if (!p.sawSpace) {
-            // A fully-typed card command (`.task`, no space yet) opens its card
-            // straight away (empty arg → create placeholder + full list); a partial
-            // word (or `.help`, which has no card) keeps showing the menu.
-            if (known(p.cmd) && p.cmd !== "help") { closeMenu(); ensureCard(p.cmd); updateCard(p.cmd, ""); return; }
+            // A fully-typed command (`.task`, no space yet) opens its card straight
+            // away (empty arg → create placeholder + full list); a partial word
+            // keeps showing the menu.
+            if (known(p.cmd)) { closeMenu(); ensureCard(p.cmd); updateCard(p.cmd, ""); return; }
             clearCard(); renderMenu(p.cmd); return;
           }
           closeMenu();
-          if (p.cmd === "help" || !known(p.cmd)) { clearCard(); return; }
+          if (!known(p.cmd)) { clearCard(); return; }
           ensureCard(p.cmd); updateCard(p.cmd, p.rest);
         }
 
@@ -4514,8 +4530,7 @@
         // (so the composer submit must NOT send it as a chat message).
         function submitFromInput() {
           var p = parse(input.value);
-          if (!p || (p.cmd !== "help" && !known(p.cmd))) return false;
-          if (p.cmd === "help") { input.value = ""; autosize(); closeMenu(); addInfo(helpMarkdown()); return true; }
+          if (!p || !known(p.cmd)) return false;
           submit(); return true;
         }
         function freeze(theCard, headText, hintText) {
