@@ -146,8 +146,12 @@ def _category_for(folder: str, llm: Callable[[str], str] | None) -> str:
 def _bucket_members(
     zip_bytes: bytes, llm: Callable[[str], str] | None
 ) -> dict[str, list[str]]:
-    """Group archive members by category using the folder hint (+ LLM fallback)."""
-    buckets: dict[str, list[str]] = {c: [] for c in _CATEGORY_HINTS}
+    """Group archive members by category using the folder hint (+ LLM fallback).
+
+    An ``unknown`` bucket collects members no hint/LLM placed — e.g. a bare
+    Takeout ``.json`` uploaded on its own, or an oddly-named folder. It is fed to
+    the content-verifying music counter so a watch history still classifies."""
+    buckets: dict[str, list[str]] = {c: [] for c in (*_CATEGORY_HINTS, "unknown")}
     folder_labels: dict[str, str] = {}
     for info in _members(zip_bytes):
         folder = _top_folder(info.filename)
@@ -155,8 +159,7 @@ def _bucket_members(
         if category is None:
             category = _category_for(folder, llm)
             folder_labels[folder] = category
-        if category in buckets:
-            buckets[category].append(info.filename)
+        buckets[category if category in buckets else "unknown"].append(info.filename)
     return buckets
 
 
@@ -261,7 +264,9 @@ def classify_archive(
         _count_calendar(zip_bytes, buckets["calendar"]),
         _count_contacts(zip_bytes, buckets["contacts"]),
         _count_keep(zip_bytes, buckets["keep"]),
-        _count_music(zip_bytes, buckets["music"]),
+        # `unknown` (e.g. a bare uploaded .json) joins music: `_find_watch_history`
+        # verifies by content, so a non-watch-history just yields count 0.
+        _count_music(zip_bytes, buckets["music"] + buckets["unknown"]),
     ):
         if claim["count"] > 0:
             claims.append(claim)
