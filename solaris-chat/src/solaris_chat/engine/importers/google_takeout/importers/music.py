@@ -178,9 +178,19 @@ class MusicImporter:
 
     kind = "music"
 
+    # Takeout localises the watch-history filename (watch-history.json EN,
+    # Wiedergabeverlauf.json DE, …). The .zip upload path finds it by CONTENT
+    # (orchestrator._find_watch_history); this manifest-only protocol method has
+    # no content, so it matches the known localized basenames.
+    _HISTORY_BASENAMES = ("watch-history.json", "wiedergabeverlauf.json")
+
     def detect(self, manifest: Any) -> list[dict[str, Any]]:
         names = manifest if isinstance(manifest, list) else []
-        if any(str(n).endswith("watch-history.json") for n in names):
+        if any(
+            str(n).replace("\\", "/").rsplit("/", 1)[-1].lower()
+            in self._HISTORY_BASENAMES
+            for n in names
+        ):
             return [{"kind": self.kind, "datatype": "ytmusic"}]
         return []
 
