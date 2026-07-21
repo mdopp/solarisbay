@@ -809,6 +809,8 @@
       border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); }
     .dot-card .dc-hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
     .dot-card.done .dc-title { color: var(--accent); }
+    .dot-card .dc-list { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+    .dot-card .dc-list-head { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
     .note-frontmatter {
       display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
       margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px;
@@ -3947,7 +3949,7 @@
       // Slice — hier stehen nur die schon implementierten.
       var DOT_COMMANDS = [
         [".help", "Befehle anzeigen"],
-        [".task", "Aufgabe anlegen — .task <Text> (mit #/@)"]
+        [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"]
       ];
       // Admin-only commands (3rd element) are hidden from non-admins so the
       // autocomplete and /help only ever offer what actually works for them.
@@ -4240,6 +4242,60 @@
           var hint = document.createElement("div"); hint.className = "dc-hint";
           hint.textContent = "Enter legt an · #/@ verlinkt · Datum wie 25.08.2026 wird erkannt";
           el.appendChild(hint);
+          // The same argument that fills the create-card above ALSO filters the
+          // existing tasks below (case-insensitive) — type to create, type to find.
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list; el._tasks = null;
+          loadTaskList(el);
+        }
+        function loadTaskList(el) {
+          fetch("/api/portal/tasks")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              el._tasks = (j && j.ok && j.tasks) || [];
+              if (card === el) renderTaskList(el, el._lastFilter || "");
+            })
+            .catch(function () { el._tasks = []; });
+        }
+        function renderTaskList(el, filter) {
+          var listEl = el._list; if (!listEl || el._tasks == null) return;
+          listEl.textContent = "";
+          var f = (filter || "").trim().toLowerCase();
+          var showAll = (f === "" || f === "list");
+          var items = el._tasks.filter(function (t) {
+            return showAll || t.title.toLowerCase().indexOf(f) !== -1;
+          });
+          var h = document.createElement("div"); h.className = "dc-list-head";
+          h.textContent = showAll
+            ? "Aufgaben (" + items.length + ")"
+            : items.length + " Treffer für „" + filter.trim() + "“";
+          listEl.appendChild(h);
+          if (!items.length) {
+            var e = document.createElement("div"); e.className = "task-empty";
+            e.textContent = showAll ? "Noch keine Aufgaben." : "Keine passende Aufgabe.";
+            listEl.appendChild(e); return;
+          }
+          items.slice(0, 8).forEach(function (t) {
+            var row = document.createElement("div"); row.className = "task-row";
+            var main = document.createElement("div"); main.className = "task-main";
+            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = t.title;
+            main.appendChild(tt);
+            if (t.due) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = "📅 " + t.due; main.appendChild(d); }
+            row.appendChild(main);
+            var acts = document.createElement("div"); acts.className = "task-acts";
+            var doneB = document.createElement("button"); doneB.className = "ac-btn ac-primary"; doneB.type = "button"; doneB.textContent = "Erledigt";
+            doneB.addEventListener("click", function () {
+              doneB.disabled = true;
+              taskAction("task.set_status", { entity_id: t.id, status: "done" }).then(function () { loadTaskList(el); });
+            });
+            acts.appendChild(doneB); row.appendChild(acts);
+            listEl.appendChild(row);
+          });
+          if (items.length > 8) {
+            var more = document.createElement("div"); more.className = "dc-hint";
+            more.textContent = "… und " + (items.length - 8) + " weitere (unter ✅ Aufgaben)";
+            listEl.appendChild(more);
+          }
         }
         // Recognise a date typed in the input's own format — TT.MM.JJJJ (also
         // TT.MM.JJ and a bare TT.MM. with the year inferred: this year, or next
@@ -4270,16 +4326,25 @@
             if (parsed) { card._due.value = parsed.iso; card._dueAuto = true; }
             else if (card._dueAuto) { card._due.value = ""; card._dueAuto = false; }
             var titleText = parsed ? parsed.title : rest.trim();
+            var isList = !titleText || titleText.toLowerCase() === "list";
             var t = card._title; t.textContent = "";
-            if (titleText) { appendMentionText(t, titleText); linkifyWikiLinks(t); }
+            if (!isList) { appendMentionText(t, titleText); linkifyWikiLinks(t); }
             else { var p = document.createElement("span"); p.className = "placeholder"; p.textContent = "Titel eingeben…"; t.appendChild(p); }
+            card._lastFilter = titleText;
+            renderTaskList(card, titleText);
           }
         }
 
         function refresh() {
           var p = parse(input.value);
           if (!p) { closeMenu(); clearCard(); return; }
-          if (!p.sawSpace) { clearCard(); renderMenu(p.cmd); return; }
+          if (!p.sawSpace) {
+            // A fully-typed card command (`.task`, no space yet) opens its card
+            // straight away (empty arg → create placeholder + full list); a partial
+            // word (or `.help`, which has no card) keeps showing the menu.
+            if (known(p.cmd) && p.cmd !== "help") { closeMenu(); ensureCard(p.cmd); updateCard(p.cmd, ""); return; }
+            clearCard(); renderMenu(p.cmd); return;
+          }
           closeMenu();
           if (p.cmd === "help" || !known(p.cmd)) { clearCard(); return; }
           ensureCard(p.cmd); updateCard(p.cmd, p.rest);
@@ -4299,7 +4364,8 @@
           var rest = p ? p.rest : "";
           var parsed = extractDate(rest);
           var title = parsed ? parsed.title : rest.trim();
-          if (!title) return;
+          if (!title || title.toLowerCase() === "list") return; // list/empty → no create
+          if (card._list && card._list.parentNode) card._list.remove(); // drop the filter list from the frozen card
           var due = card._due ? card._due.value : "";
           var theCard = card;
           taskAction("task.add", { title: title, due: due }).then(function (j) {
