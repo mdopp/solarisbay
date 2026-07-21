@@ -32,6 +32,10 @@ _DOMAIN_BY_TYPE = {
     # every document's `provider` converges here so all of a contact's documents
     # sit together and the entity can sync to the phone book via CardDAV (#doc-graph).
     "organization": "organizations",
+    # An Aufgabe (to-do): a projection-only entity carrying `status`/`due`/
+    # `task_source` facts. The general task surface — the music import lands one
+    # dynamic task, the chat and documents add others (#todo).
+    "task": "tasks",
 }
 
 # Types projected to the `events` table; everything else is an `entity` (§4).

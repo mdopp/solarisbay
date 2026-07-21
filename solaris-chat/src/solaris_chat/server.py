@@ -53,6 +53,7 @@ from solaris_chat.engine import (
     confirm,
     escalation,
     store,
+    tasks as tasks_svc,
     updates,
 )
 from solaris_chat.engine import sb_companion as sb_companion_module
@@ -3815,6 +3816,55 @@ def build_app(
         )
         return web.json_response({"ok": True, "contacts": rows or []})
 
+    async def portal_tasks(request: web.Request) -> web.Response:
+        """The Aufgaben (to-do) doorway (#todo): the caller's open tasks (own ∪
+        shared household); `?done=1` also returns resolved ones."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        include_done = request.query.get("done") == "1"
+        rows = await asyncio.to_thread(
+            tasks_svc.list_tasks, solaris_db_path, uid, include_done=include_done
+        )
+        return web.json_response({"ok": True, "tasks": rows})
+
+    async def _task_set_status(body: dict[str, Any]) -> dict[str, Any]:
+        """Card callback: mark a task done / dismissed (params: entity_id, status)."""
+        uid = body.get("uid") or default_uid
+        params = body.get("params") or {}
+        entity_id = params.get("entity_id")
+        status = params.get("status") or "done"
+        if not isinstance(entity_id, str) or status not in (
+            "done",
+            "dismissed",
+            "open",
+        ):
+            return {"ok": False, "reason": "bad_params"}
+        ok = await asyncio.to_thread(
+            tasks_svc.set_status,
+            db_path=solaris_db_path,
+            uid=uid,
+            entity_id=entity_id,
+            status=status,
+        )
+        return {"ok": ok}
+
+    async def _task_add(body: dict[str, Any]) -> dict[str, Any]:
+        """Card callback: add a task from the doorway (params: title, due?)."""
+        uid = body.get("uid") or default_uid
+        params = body.get("params") or {}
+        try:
+            tid = await asyncio.to_thread(
+                tasks_svc.create_task,
+                db_path=solaris_db_path,
+                notes_dir=notes_dir,
+                uid=uid,
+                title=str(params.get("title") or ""),
+                due=str(params.get("due") or ""),
+                task_source="manual",
+            )
+        except ValueError:
+            return {"ok": False, "reason": "bad_title"}
+        return {"ok": True, "id": tid}
+
     def _document_confirm_fact(
         uid: str, entity_id: str, predicate: str, value: str
     ) -> bool:
@@ -4259,6 +4309,10 @@ def build_app(
     # generic browser confirm() is just friction.
     action_cards.register(import_flow.CONFIRM_ACTION, _import_confirm)
     action_cards.register(import_flow.CANCEL_ACTION, _import_cancel)
+    # Aufgaben doorway actions (#todo): tap to complete/dismiss/add — not
+    # destructive (a task is the resident's own to-do, additive + reversible).
+    action_cards.register("task.set_status", _task_set_status)
+    action_cards.register("task.add", _task_add)
 
     async def napi_upload(request: web.Request) -> web.Response:
         """Store a camera capture / PDF / Takeout `.zip` into the vault (#826/#869).
@@ -5102,6 +5156,7 @@ def build_app(
     app.router.add_post("/api/portal/notes/curate", portal_notes_curate)
     app.router.add_get("/api/portal/documents", portal_documents)
     app.router.add_get("/api/portal/contacts", portal_contacts)
+    app.router.add_get("/api/portal/tasks", portal_tasks)
     app.router.add_post("/api/portal/documents/correct", portal_documents_correct)
     app.router.add_get("/api/portal/documents/{category}", portal_documents_category)
     app.router.add_post("/api/favorites", favorites_create)

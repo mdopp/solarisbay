@@ -1,4 +1,5 @@
-"""Project document deadlines into a calendar (#doc-graph, plan slice 3).
+"""Project document deadlines + dated to-do tasks into a calendar (#doc-graph /
+#todo).
 
 A document carries dated facts — a `cancellation_deadline`, a `hu_date`, a
 contract `end_date`. Rather than push notifications, we write each as an all-day
@@ -35,6 +36,7 @@ _DEADLINE_LABELS = {
     "end_date": "Vertragsende",
 }
 _UID_PREFIX = "solaris-deadline-"
+_TASK_UID_PREFIX = "solaris-task-"
 # Days before the date the calendar app raises its alarm.
 _LEAD_DAYS = 14
 
@@ -112,6 +114,22 @@ async def sync_deadlines(
                 uid = f"{_UID_PREFIX}{doc['id']}-{pred}"
                 summary = f"{label}: {doc['canonical_name']}"
                 events.append((uid, _build_event(uid, summary, desc, day)))
+        # Dated to-do tasks (#todo) become calendar entries too: an OPEN task with
+        # an ISO `due`. A resolved task simply stops being written (its event
+        # lingers until the calendar is re-synced away — refined in a later slice).
+        tasks = conn.execute(
+            "SELECT id, canonical_name FROM entities WHERE type = 'task'"
+        ).fetchall()
+        for task in tasks:
+            facts = _facts(conn, task["id"])
+            if facts.get("status", "open") != "open":
+                continue
+            day = _parse_iso(facts.get("due", ""))
+            if day is None:
+                continue
+            uid = f"{_TASK_UID_PREFIX}{task['id']}"
+            summary = f"Aufgabe: {facts.get('title_text', task['canonical_name'])}"
+            events.append((uid, _build_event(uid, summary, "", day)))
     finally:
         conn.close()
     for uid, ics in events:

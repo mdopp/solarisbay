@@ -786,6 +786,20 @@
        card, wider than the 240px .ha-card cap so the findings + buttons breathe. */
     .import-chat { margin: 6px 0 10px; }
     .import-chat .import-plan-card { max-width: 460px; }
+    /* Aufgaben (to-do) doorway (#todo). */
+    .task-add { display: flex; gap: 8px; margin: 8px 0 16px; flex-wrap: wrap; }
+    .task-add input[type=text] { flex: 1 1 200px; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); }
+    .task-add input[type=date] { padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); }
+    .task-row { display: flex; justify-content: space-between; align-items: center;
+      gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+      margin-bottom: 8px; background: var(--panel-solid); }
+    .task-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .task-title { font-weight: 600; }
+    .task-meta { font-size: 12px; color: var(--muted); }
+    .task-acts { display: flex; gap: 6px; flex-shrink: 0; }
+    .task-empty { color: var(--muted); padding: 8px 0; }
     .note-frontmatter {
       display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
       margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px;
@@ -5495,7 +5509,7 @@
         // entity_id keeps its dots, so match the sub-path prefix, not a slug.
         if (type.indexOf("camera/") === 0) { openCameraPage(type.slice(7)); return; }
         if (type === "camera") { showView("chat"); return; }
-        if (type !== "energy" && type !== "start" && type !== "notes" && type !== "documents") { showView("chat"); return; }
+        if (type !== "energy" && type !== "start" && type !== "notes" && type !== "documents" && type !== "tasks") { showView("chat"); return; }
         // Navigating anywhere leaves any open category view; stop the
         // viewport-change listener from re-rendering onto the reused card.
         activeCategoryView = null;
@@ -5521,6 +5535,10 @@
         }
         if (type === "documents") {
           renderDocumentsPage(card);
+          return;
+        }
+        if (type === "tasks") {
+          renderTasksPage(card);
           return;
         }
         fetch("/api/portal/energy")
@@ -5709,6 +5727,20 @@
             });
             doors.appendChild(b);
           });
+        // Aufgaben (to-do) — the general task list, always shown as the first door.
+        var todo = document.createElement("button");
+        todo.type = "button";
+        todo.className = "notes-door";
+        var tem = document.createElement("span");
+        tem.className = "nd-emoji";
+        tem.textContent = "✅";
+        var tlab = document.createElement("span");
+        tlab.className = "nd-label";
+        tlab.textContent = "Aufgaben";
+        todo.appendChild(tem);
+        todo.appendChild(tlab);
+        todo.addEventListener("click", function () { location.hash = "#/p/tasks"; });
+        doors.insertBefore(todo, doors.firstChild);
         mem.appendChild(doors);
 
         // "So entsteht dein Wissen" — the transparency the maintainer asked for:
@@ -6097,6 +6129,119 @@
             card.appendChild(list);
           })
           .catch(function () { card.textContent = "Konnte die Kontakte nicht laden."; });
+      }
+
+      // ---- Aufgaben (to-do) doorway (#todo) --------------------------------
+      function taskAction(actionId, params) {
+        return fetch("/api/action-callback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action_id: actionId, confirmed: true, params: params }),
+        }).then(function (r) { return r.json().catch(function () { return null; }); });
+      }
+
+      function renderTasksPage(card) {
+        card.textContent = "";
+        card.className = "msg info concept-card";
+        var bar = document.createElement("div");
+        bar.className = "reader-bar";
+        var back = document.createElement("button");
+        back.className = "back";
+        back.innerHTML = '<svg class="ic"><use href="#i-back"></use></svg> Notizen';
+        back.addEventListener("click", function () { location.hash = "#/p/notes"; });
+        bar.appendChild(back);
+        card.appendChild(bar);
+        var title = document.createElement("h2");
+        title.textContent = "Aufgaben";
+        card.appendChild(title);
+
+        var add = document.createElement("div");
+        add.className = "task-add";
+        var inp = document.createElement("input");
+        inp.type = "text";
+        inp.placeholder = "Neue Aufgabe…";
+        var due = document.createElement("input");
+        due.type = "date";
+        due.title = "Fällig (optional) — wird auch ein Kalendereintrag";
+        var addBtn = document.createElement("button");
+        addBtn.className = "btn-primary";
+        addBtn.textContent = "Hinzufügen";
+        add.appendChild(inp);
+        add.appendChild(due);
+        add.appendChild(addBtn);
+        card.appendChild(add);
+
+        var listEl = document.createElement("div");
+        listEl.className = "task-list";
+        card.appendChild(listEl);
+
+        function reload() {
+          fetch("/api/portal/tasks")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              listEl.textContent = "";
+              var items = (j && j.ok && j.tasks) || [];
+              if (!items.length) {
+                var e = document.createElement("div");
+                e.className = "task-empty";
+                e.textContent = "Keine offenen Aufgaben. Leg oben eine an — oder sag es Solaris im Chat.";
+                listEl.appendChild(e);
+                return;
+              }
+              items.forEach(function (t) {
+                var row = document.createElement("div");
+                row.className = "task-row";
+                var main = document.createElement("div");
+                main.className = "task-main";
+                var tt = document.createElement("span");
+                tt.className = "task-title";
+                tt.textContent = t.title;
+                main.appendChild(tt);
+                var meta = document.createElement("span");
+                meta.className = "task-meta";
+                var bits = [];
+                if (t.due) bits.push("📅 " + t.due);
+                if (t.source && t.source !== "manual") bits.push(t.source);
+                meta.textContent = bits.join(" · ");
+                if (bits.length) main.appendChild(meta);
+                row.appendChild(main);
+                var acts = document.createElement("div");
+                acts.className = "task-acts";
+                var doneB = document.createElement("button");
+                doneB.className = "ac-btn ac-primary";
+                doneB.textContent = "Erledigt";
+                doneB.addEventListener("click", function () {
+                  doneB.disabled = true;
+                  taskAction("task.set_status", { entity_id: t.id, status: "done" }).then(reload);
+                });
+                var disB = document.createElement("button");
+                disB.className = "ac-btn";
+                disB.title = "Verwerfen (kein Interesse)";
+                disB.textContent = "✕";
+                disB.addEventListener("click", function () {
+                  disB.disabled = true;
+                  taskAction("task.set_status", { entity_id: t.id, status: "dismissed" }).then(reload);
+                });
+                acts.appendChild(doneB);
+                acts.appendChild(disB);
+                row.appendChild(acts);
+                listEl.appendChild(row);
+              });
+            })
+            .catch(function () { listEl.textContent = "Konnte die Aufgaben nicht laden."; });
+        }
+
+        function submitAdd() {
+          var v = inp.value.trim();
+          if (!v) return;
+          addBtn.disabled = true;
+          taskAction("task.add", { title: v, due: due.value || "" }).then(function () {
+            inp.value = ""; due.value = ""; addBtn.disabled = false; reload();
+          });
+        }
+        addBtn.addEventListener("click", submitAdd);
+        inp.addEventListener("keydown", function (e) { if (e.key === "Enter") submitAdd(); });
+        reload();
       }
 
       function buildContactCard(c) {

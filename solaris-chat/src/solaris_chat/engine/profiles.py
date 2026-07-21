@@ -36,6 +36,7 @@ from solaris_chat.engine.tools.media import build_media_tools
 from solaris_chat.engine.tools.music_query import build_music_query_tools
 from solaris_chat.engine.tools.documents import build_document_tools
 from solaris_chat.engine.tools.notes import build_notes_tools
+from solaris_chat.engine.tools.tasks_tools import build_tasks_tools
 from solaris_chat.engine.tools.onboarding_approval import (
     build_onboarding_approval_tools,
 )
@@ -163,6 +164,10 @@ def build_engine_clients(
         household_tools += build_notes_tools(
             notes_dir, _current_uid, db_path=db_path, ollama=ollama
         )
+    # Aufgaben (to-do) tools (#todo): add/list/complete tasks on the one shared
+    # list. Household + deep share it; scoped to the caller via _current_uid.
+    if db_path and notes_dir:
+        household_tools += build_tasks_tools(db_path, _current_uid, notes_dir=notes_dir)
     # Start-page pins (#645): pin_favorite reads the last action from the shared
     # recorder and resolves target devices against HA. Household + deep share
     # this list; guest gets nothing (its list is separate + ephemeral).
