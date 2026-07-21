@@ -39,13 +39,15 @@ def test_mention_token_detection_is_cursor_anchored():
 
 
 def test_mention_keyboard_nav_wired_into_input_handlers():
-    # The mention menu's nav runs in the keydown chain after the slash menu …
+    # The mention menu's nav runs in the keydown chain after the slash + dot menus …
     assert re.search(
-        r"if \(slash\.handleKey\(e\)\) return;.*\n.*if \(mention\.handleKey\(e\)\) return;",
+        r"if \(slash\.handleKey\(e\)\) return;[\s\S]*?"
+        r"if \(mention\.handleKey\(e\)\) return;",
         _HTML,
     )
-    # … and refresh fires on input and on caret-moving keys/clicks.
-    assert "slash.refresh(); mention.refresh();" in _HTML
+    # … and refresh fires on input and on caret-moving keys/clicks (dot menu rides
+    # the same chain, between slash and mention).
+    assert "slash.refresh(); dotcmd.refresh(); mention.refresh();" in _HTML
     assert (
         'input.addEventListener("click", function () { mention.refresh(); });' in _HTML
     )
