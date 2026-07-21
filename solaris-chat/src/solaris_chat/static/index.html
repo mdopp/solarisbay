@@ -820,6 +820,10 @@
     .task-cb { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); margin: 0; }
     .task-row.resolved { opacity: .65; }
     .task-row.resolved .task-title { text-decoration: line-through; color: var(--muted); }
+    .import-status .dc-row { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .dc-cat, .import-status .dc-row input[type=text] { padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); }
+    .import-status .dc-row input[type=text] { flex: 1 1 160px; }
     .note-frontmatter {
       display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px;
       margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px;
@@ -3964,7 +3968,14 @@
         [".help", "Befehle anzeigen"],
         [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"],
         [".note", "Notiz anlegen + Notizen suchen — .note <Text>"],
-        [".doc", "Dokument/Takeout hochladen — Bild, PDF, .zip/.json"]
+        [".doc", "Dokument/Takeout hochladen + einsortieren"]
+      ];
+      // Starter category list for a .doc upload (key → German label).
+      var DOC_CATEGORIES = [
+        ["insurance", "Versicherung"], ["contract", "Vertrag"], ["invoice", "Rechnung"],
+        ["utility", "Abo/Versorger"], ["warranty", "Garantie/Beleg"], ["vehicle", "Fahrzeug"],
+        ["finance", "Bank/Finanzen"], ["official", "Behörde/Amt"], ["medical", "Gesundheit"],
+        ["other", "Sonstiges"]
       ];
       // Admin-only commands (3rd element) are hidden from non-admins so the
       // autocomplete and /help only ever offer what actually works for them.
@@ -4270,7 +4281,7 @@
             if (f.type === "application/zip" || f.type === "application/json" || /\.(zip|json)$/i.test(f.name || "")) {
               drop.classList.add("busy"); uploadTakeout(f, drop, status);   // Takeout → plan card + progress
             } else {
-              uploadDoc(f, drop, status);                                    // Bild/PDF → Vault + Scan
+              uploadDoc(f, drop, status);                                    // Bild/PDF → Vault + einsortieren
             }
           }
           drop.addEventListener("click", function () { if (!drop.classList.contains("busy")) fi.click(); });
@@ -4281,16 +4292,38 @@
         }
         function uploadDoc(file, drop, status) {
           drop.classList.add("busy");
-          importSetStatus(status, "", "Wird gescannt …", file.name);
+          importSetStatus(status, "", "Wird hochgeladen …", file.name);
           var fd = new FormData(); fd.append("file", file, file.name || "dokument");
           fetch("/api/upload", { method: "POST", body: fd })
             .then(function (r) { return r.json().catch(function () { return null; }); })
             .then(function (j) {
               drop.classList.remove("busy");
-              if (!j || !j.ok) { importSetStatus(status, "failed", "Fehlgeschlagen", (j && j.error) || "Bitte erneut versuchen."); return; }
-              importSetStatus(status, "done", "Dokument gespeichert", "Wird ausgewertet — die Felder erscheinen dann unter Dokumente (Notizen-Seite).");
+              if (!j || !j.ok || !j.id) { importSetStatus(status, "failed", "Fehlgeschlagen", (j && j.error) || "Bitte erneut versuchen."); return; }
+              renderDocClassify(status, j.id, file.name);
             })
             .catch(function () { drop.classList.remove("busy"); importSetStatus(status, "failed", "Netzwerkfehler", "Bitte erneut versuchen."); });
+        }
+        function renderDocClassify(status, uploadId, filename) {
+          // Uploaded — now let the resident SORT it right away (category + tags),
+          // so it lands under Dokumente immediately instead of a dead-end.
+          var el = importSetStatus(status, "", "Hochgeladen: " + filename, "Was ist das? Kategorie + Schlagwörter wählen, dann einsortieren:");
+          var row = document.createElement("div"); row.className = "dc-row";
+          var sel = document.createElement("select"); sel.className = "dc-cat";
+          DOC_CATEGORIES.forEach(function (c) { var o = document.createElement("option"); o.value = c[0]; o.textContent = c[1]; sel.appendChild(o); });
+          var tags = document.createElement("input"); tags.type = "text"; tags.placeholder = "Schlagwörter (Komma/Leerzeichen)";
+          var btn = document.createElement("button"); btn.className = "ac-btn ac-primary"; btn.type = "button"; btn.textContent = "Einsortieren";
+          btn.addEventListener("click", function () {
+            btn.disabled = true;
+            taskAction("doc.classify", { upload: uploadId, category: sel.value, tags: tags.value }).then(function (j) {
+              if (!j || !j.ok) { btn.disabled = false; return; }
+              var lbl = sel.value;
+              for (var i = 0; i < DOC_CATEGORIES.length; i++) { if (DOC_CATEGORIES[i][0] === sel.value) { lbl = DOC_CATEGORIES[i][1]; break; } }
+              var t = (j.tags && j.tags.length) ? " · " + j.tags.map(function (x) { return "#" + x; }).join(" ") : "";
+              importSetStatus(status, "done", "✓ Eingeordnet als " + lbl, "Zu finden unter Dokumente" + t + ".");
+            });
+          });
+          row.appendChild(sel); row.appendChild(tags); row.appendChild(btn);
+          el.appendChild(row);
         }
         function buildNoteCard(el) {
           var title = document.createElement("div"); title.className = "dc-title";

@@ -70,6 +70,8 @@ from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.notify import emit_chat, inject
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
 from solaris_chat.engine.knowledge import okf, projection
+from solaris_chat.engine.knowledge.records import ConceptRecord
+from solaris_chat.engine.knowledge.writer import write_concept
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
 from solaris_chat.engine.areas import AreaRegistry
 from solaris_chat.engine.tools.ha import (
@@ -3893,6 +3895,52 @@ def build_app(
         rel = await asyncio.to_thread(_write_quick_note, uid, text)
         return {"ok": True, "path": rel}
 
+    def _create_document(
+        uid: str, upload_rel: str, category: str, tags: list[str]
+    ) -> str:
+        """Sort a just-uploaded file into a `document` entity with a category +
+        keyword facts, so it shows under Dokumente immediately and is searchable;
+        the nightly extractor later fills the detail fields on the same entity
+        (identity_key = the upload path)."""
+        src = _notes_resolve_owned(notes_dir, upload_rel, uid)
+        title = (
+            src.stem
+            if src is not None
+            else (upload_rel.rsplit("/", 1)[-1] or "Dokument")
+        )
+        facts: list[tuple[str, str, float | None]] = [
+            ("category", category or "other", 1.0)
+        ]
+        facts += [("keyword", t, 1.0) for t in tags[:12]]
+        rec = ConceptRecord(
+            type="document",
+            title=title,
+            source="upload",
+            external_id=f"upload:{upload_rel}",
+            identity_key=upload_rel,
+            resident=uid,
+            facts=facts,
+        )
+        return write_concept(
+            rec, db_path=solaris_db_path, notes_dir=notes_dir, ingesting_uid=uid
+        ).ref_id
+
+    async def _doc_classify(body: dict[str, Any]) -> dict[str, Any]:
+        """Card callback: sort a `.doc` upload (params: upload, category, tags)."""
+        uid = body.get("uid") or default_uid
+        p = body.get("params") or {}
+        upload_rel = str(p.get("upload") or "")
+        if not upload_rel:
+            return {"ok": False, "reason": "bad_params"}
+        category = (str(p.get("category") or "other").strip()) or "other"
+        tags = [
+            t.strip().lstrip("#")
+            for t in re.split(r"[,\s]+", str(p.get("tags") or ""))
+            if t.strip()
+        ]
+        eid = await asyncio.to_thread(_create_document, uid, upload_rel, category, tags)
+        return {"ok": True, "id": eid, "category": category, "tags": tags}
+
     def _document_confirm_fact(
         uid: str, entity_id: str, predicate: str, value: str
     ) -> bool:
@@ -4342,6 +4390,7 @@ def build_app(
     action_cards.register("task.set_status", _task_set_status)
     action_cards.register("task.add", _task_add)
     action_cards.register("note.add", _note_add)
+    action_cards.register("doc.classify", _doc_classify)
 
     async def napi_upload(request: web.Request) -> web.Response:
         """Store a camera capture / PDF / Takeout `.zip` into the vault (#826/#869).
