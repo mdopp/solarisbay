@@ -3970,7 +3970,8 @@
       var DOT_COMMANDS = [
         [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"],
         [".note", "Notiz anlegen + Notizen suchen — .note <Text>"],
-        [".doc", "Dokument/Takeout hochladen + einsortieren"]
+        [".doc", "Dokument/Takeout hochladen + einsortieren"],
+        [".contacts", "Kontakt anlegen + suchen — .contacts <Name|@Mail|Tel>"]
       ];
       // Starter category list for a .doc upload (key → German label).
       var DOC_CATEGORIES = [
@@ -4268,7 +4269,7 @@
           closeMenu(); autosize(); input.focus(); refresh();
         }
 
-        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen" };
+        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt" };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
           clearCard(); kind = cmd;
@@ -4280,6 +4281,7 @@
           if (cmd === "task") buildTaskCard(card);
           else if (cmd === "note") buildNoteCard(card);
           else if (cmd === "doc") buildDocCard(card);
+          else if (cmd === "contacts") buildContactsCard(card);
           log.appendChild(card); scrollDown(true);
         }
         function buildDocCard(el) {
@@ -4343,6 +4345,54 @@
           });
           row.appendChild(sel); row.appendChild(tags); row.appendChild(btn);
           el.appendChild(row);
+        }
+        function parseContact(v) {
+          v = (v || "").trim();
+          if (v.indexOf("@") !== -1 && v.lastIndexOf(".") > v.indexOf("@")) return { kind: "email", label: "E-Mail", value: v };
+          if (v.replace(/\D/g, "").length >= 5 && /^[\d\s/+()\-]+$/.test(v)) return { kind: "phone", label: "Telefon", value: v };
+          return { kind: "name", label: "Name", value: v };
+        }
+        function buildContactsCard(el) {
+          var title = document.createElement("div"); title.className = "dc-title";
+          el.appendChild(title); el._title = title;
+          var row = document.createElement("div"); row.className = "dc-row";
+          var btn = document.createElement("button"); btn.className = "ac-btn ac-primary"; btn.type = "button";
+          btn.textContent = "Anlegen";
+          btn.addEventListener("click", function () { submit(); });
+          row.appendChild(btn); el.appendChild(row);
+          var hint = document.createElement("div"); hint.className = "dc-hint";
+          hint.textContent = "Enter legt an · @ = E-Mail, nur Zahlen = Telefon, sonst Name";
+          el.appendChild(hint);
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list; el._persons = null;
+          loadPersons(el);
+        }
+        function loadPersons(el) {
+          fetch("/api/portal/persons")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) { el._persons = (j && j.ok && j.contacts) || []; if (card === el) renderPersonList(el, el._lastFilter || ""); })
+            .catch(function () { el._persons = []; });
+        }
+        function renderPersonList(el, filter) {
+          var listEl = el._list; if (!listEl || el._persons == null) return;
+          listEl.textContent = "";
+          var f = (filter || "").trim().toLowerCase();
+          var showAll = (f === "" || f === "list");
+          var items = el._persons.filter(function (c) {
+            return showAll || (c.name + " " + c.email + " " + c.phone).toLowerCase().indexOf(f) !== -1;
+          });
+          var h = document.createElement("div"); h.className = "dc-list-head";
+          h.textContent = showAll ? "Kontakte (" + items.length + ")" : items.length + " Treffer für „" + filter.trim() + "“";
+          listEl.appendChild(h);
+          if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = showAll ? "Noch keine Kontakte." : "Kein passender Kontakt."; listEl.appendChild(e); return; }
+          items.slice(0, 8).forEach(function (c) {
+            var rw = document.createElement("div"); rw.className = "task-row";
+            var m = document.createElement("div"); m.className = "task-main";
+            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.name || c.email || c.phone; m.appendChild(tt);
+            var bits = []; if (c.phone) bits.push("📞 " + c.phone); if (c.email) bits.push("✉ " + c.email);
+            if (bits.length) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = bits.join(" · "); m.appendChild(d); }
+            rw.appendChild(m); listEl.appendChild(rw);
+          });
         }
         function buildNoteCard(el) {
           var title = document.createElement("div"); title.className = "dc-title";
@@ -4508,6 +4558,14 @@
             if (rest.trim()) { appendMentionText(t2, rest.trim()); linkifyWikiLinks(t2); }
             else { var p2 = document.createElement("span"); p2.className = "placeholder"; p2.textContent = "Notiztext eingeben…"; t2.appendChild(p2); }
             renderNoteMatches(card, rest);
+          } else if (cmd === "contacts" && card && card._title) {
+            var v = rest.trim();
+            var isList = !v || v.toLowerCase() === "list";
+            var t3 = card._title; t3.textContent = "";
+            if (!isList) { var pc = parseContact(v); var s = document.createElement("span"); s.textContent = pc.label + ": " + pc.value; t3.appendChild(s); }
+            else { var p3 = document.createElement("span"); p3.className = "placeholder"; p3.textContent = "Name, @E-Mail oder Telefon…"; t3.appendChild(p3); }
+            card._lastFilter = v;
+            renderPersonList(card, v);
           }
         }
 
@@ -4541,7 +4599,7 @@
           var hint = theCard.querySelector(".dc-hint"); if (hint) hint.textContent = hintText;
         }
         function submit() {
-          if (!card || (kind !== "task" && kind !== "note")) return;
+          if (!card || (kind !== "task" && kind !== "note" && kind !== "contacts")) return;
           var p = parse(input.value);
           var rest = p ? p.rest : "";
           var theCard = card;
@@ -4560,6 +4618,14 @@
             taskAction("note.add", { text: text }).then(function (j) {
               if (!j || !j.ok) { theCard.querySelector(".dc-hint").textContent = "Konnte nicht speichern."; return; }
               freeze(theCard, "Notiz gespeichert", "✓ Gespeichert");
+            });
+          } else if (kind === "contacts") {
+            var v = rest.trim();
+            if (!v || v.toLowerCase() === "list") return;
+            taskAction("contact.add", { value: v }).then(function (j) {
+              if (!j || !j.ok) { theCard.querySelector(".dc-hint").textContent = "Konnte nicht anlegen."; return; }
+              var who = j.name || j.email || j.phone || v;
+              freeze(theCard, "Kontakt angelegt", "✓ " + who);
             });
           }
           card = null; kind = "";           // stop tracking; the card stays in the log

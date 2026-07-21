@@ -3941,6 +3941,67 @@ def build_app(
         eid = await asyncio.to_thread(_create_document, uid, upload_rel, category, tags)
         return {"ok": True, "id": eid, "category": category, "tags": tags}
 
+    def _parse_contact_value(v: str) -> tuple[str, str]:
+        """A bare `.contacts` value → (kind, value): `@` → email, mostly digits →
+        phone, else a name."""
+        v = v.strip()
+        if "@" in v and "." in v.rsplit("@", 1)[-1]:
+            return ("email", v)
+        if len(re.sub(r"\D", "", v)) >= 5 and re.fullmatch(r"[\d\s/+()\-]+", v):
+            return ("phone", v)
+        return ("name", v)
+
+    def _create_contact(uid: str, name: str, email: str, phone: str) -> str:
+        title = name or email or phone or "Kontakt"
+        facts: list[tuple[str, str, float | None]] = []
+        if email:
+            facts.append(("email", email, 1.0))
+        if phone:
+            facts.append(("phone", phone, 1.0))
+        key = f"contact:{uid}:{uuid.uuid4().hex[:12]}"
+        rec = ConceptRecord(
+            type="person",
+            title=title,
+            source="contact",
+            external_id=key,
+            identity_key=key,
+            resident=uid,
+            facts=facts,
+        )
+        return write_concept(
+            rec, db_path=solaris_db_path, notes_dir=notes_dir, ingesting_uid=uid
+        ).ref_id
+
+    async def _contact_add(body: dict[str, Any]) -> dict[str, Any]:
+        """Card callback: create a personal contact from `.contacts` (params: value,
+        or explicit name/email/phone)."""
+        uid = body.get("uid") or default_uid
+        p = body.get("params") or {}
+        name = str(p.get("name") or "").strip()
+        email = str(p.get("email") or "").strip()
+        phone = str(p.get("phone") or "").strip()
+        value = str(p.get("value") or "").strip()
+        if value and not (name or email or phone):
+            kind, val = _parse_contact_value(value)
+            if kind == "email":
+                email = val
+            elif kind == "phone":
+                phone = val
+            else:
+                name = val
+        if not (name or email or phone):
+            return {"ok": False, "reason": "empty"}
+        eid = await asyncio.to_thread(_create_contact, uid, name, email, phone)
+        return {"ok": True, "id": eid, "name": name, "email": email, "phone": phone}
+
+    async def portal_persons(request: web.Request) -> web.Response:
+        """Personal contacts for the `.contacts` filter (own ∪ shared household)."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        rows = await asyncio.to_thread(
+            documents_portal_db.person_contacts, solaris_db_path, uid
+        )
+        return web.json_response({"ok": True, "contacts": rows or []})
+
     def _document_confirm_fact(
         uid: str, entity_id: str, predicate: str, value: str
     ) -> bool:
@@ -4391,6 +4452,7 @@ def build_app(
     action_cards.register("task.add", _task_add)
     action_cards.register("note.add", _note_add)
     action_cards.register("doc.classify", _doc_classify)
+    action_cards.register("contact.add", _contact_add)
 
     async def napi_upload(request: web.Request) -> web.Response:
         """Store a camera capture / PDF / Takeout `.zip` into the vault (#826/#869).
@@ -5235,6 +5297,7 @@ def build_app(
     app.router.add_get("/api/portal/documents", portal_documents)
     app.router.add_get("/api/portal/contacts", portal_contacts)
     app.router.add_get("/api/portal/tasks", portal_tasks)
+    app.router.add_get("/api/portal/persons", portal_persons)
     app.router.add_post("/api/portal/documents/correct", portal_documents_correct)
     app.router.add_get("/api/portal/documents/{category}", portal_documents_category)
     app.router.add_post("/api/favorites", favorites_create)
