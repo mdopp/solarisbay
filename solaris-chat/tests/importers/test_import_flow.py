@@ -56,16 +56,27 @@ _HIST = json.dumps(
         }
     ]
 )
-# The sibling SEARCH history a German export ships next to the watch history —
-# same list-of-records shape but `results?search_query=` URLs (no `watch?v=`), so
-# the content-based finder must NOT mistake it for the watch history.
+# The sibling SEARCH history a German export ships next to the watch history.
+# It is MOSTLY `results?search_query=`, but — like the real export — carries a
+# stray watched-ad `watch?v=` record. The finder must not be fooled by that lone
+# watch into picking the search history (the exact real-data regression).
 _SEARCH = json.dumps(
     [
         {
             "header": "YouTube",
+            "title": "Werbung angesehen",
+            "titleUrl": "https://www.youtube.com/watch?v=adX",
+        },
+        {
+            "header": "YouTube",
             "title": "taylor swift gesucht",
             "titleUrl": "https://www.youtube.com/results?search_query=taylor+swift",
-        }
+        },
+        {
+            "header": "YouTube",
+            "title": "offspring gesucht",
+            "titleUrl": "https://www.youtube.com/results?search_query=offspring",
+        },
     ]
 )
 
@@ -108,24 +119,39 @@ def test_classify_omits_empty_categories():
 def test_classify_finds_localized_german_watch_history():
     # A German Takeout localises BOTH the folder and the FILENAME:
     # `Verlauf/Wiedergabeverlauf.json`, next to a `Suchverlauf.json` (search) and
-    # `Playlists/*.csv`. The content-based finder must pick the watch history by
-    # its `watch?v=` URLs — the exact case that regressed (issue #935).
+    # `Playlists/*.csv`. The finder must pick the watch history — even though the
+    # search history is written FIRST and itself contains a stray `watch?v=`
+    # (issue #935; the real-data regression the first fix missed).
     z = _make_zip(
         music=False,
         extra={
-            "Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.json": _HIST,
             "Takeout/YouTube und YouTube Music/Verlauf/Suchverlauf.json": _SEARCH,
+            "Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.json": _HIST,
             "Takeout/YouTube und YouTube Music/Playlists/Zuhause-Videos.csv": "a,b\n1,2\n",
         },
     )
     counts = {
         claim["category"]: claim["count"] for claim in o.classify_archive(z)["claims"]
     }
-    assert counts.get("music") == 1
+    assert counts.get("music") == 1  # the single WATCH record, not the search ad
+
+
+def test_find_watch_history_prefers_dominant_watches():
+    # Directly: search history (1 watch + 2 searches) written before the watch
+    # history (1 watch) → the finder returns the watch history (net watches win).
+    z = _make_zip(
+        music=False,
+        extra={
+            "Takeout/YouTube und YouTube Music/Verlauf/Suchverlauf.json": _SEARCH,
+            "Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.json": _HIST,
+        },
+    )
+    names = [i.filename for i in o._members(z)]
+    assert o._find_watch_history(z, names).endswith("Wiedergabeverlauf.json")
 
 
 def test_classify_search_history_alone_is_not_music():
-    # The search history must NOT be mistaken for the watch history (no `watch?v=`).
+    # A search history alone (net searches ≫ watches) must NOT count as music.
     z = _make_zip(
         calendar=False,
         contacts=False,
