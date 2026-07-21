@@ -3949,7 +3949,8 @@
       // Slice — hier stehen nur die schon implementierten.
       var DOT_COMMANDS = [
         [".help", "Befehle anzeigen"],
-        [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"]
+        [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"],
+        [".note", "Notiz anlegen + Notizen suchen — .note <Text>"]
       ];
       // Admin-only commands (3rd element) are hidden from non-admins so the
       // autocomplete and /help only ever offer what actually works for them.
@@ -4219,16 +4220,59 @@
           closeMenu(); autosize(); input.focus(); refresh();
         }
 
+        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz" };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
           clearCard(); kind = cmd;
           card = document.createElement("div");
           card.className = "msg sol dot-card dot-" + cmd;
           var head = document.createElement("div"); head.className = "dc-head";
-          head.textContent = cmd === "task" ? "Neue Aufgabe" : cmd;
+          head.textContent = DC_HEAD[cmd] || cmd;
           card.appendChild(head);
           if (cmd === "task") buildTaskCard(card);
+          else if (cmd === "note") buildNoteCard(card);
           log.appendChild(card); scrollDown(true);
+        }
+        function buildNoteCard(el) {
+          var title = document.createElement("div"); title.className = "dc-title";
+          el.appendChild(title); el._title = title;
+          var row = document.createElement("div"); row.className = "dc-row";
+          var btn = document.createElement("button"); btn.className = "ac-btn ac-primary"; btn.type = "button";
+          btn.textContent = "Speichern";
+          btn.addEventListener("click", function () { submit(); });
+          row.appendChild(btn); el.appendChild(row);
+          var hint = document.createElement("div"); hint.className = "dc-hint";
+          hint.textContent = "Enter speichert · #/@ werden verlinkt";
+          el.appendChild(hint);
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list;
+        }
+        var _noteSearchSeq = 0;
+        function renderNoteMatches(el, q) {
+          var listEl = el._list; if (!listEl) return;
+          q = (q || "").trim();
+          if (q.length < 2) { listEl.textContent = ""; return; }
+          var seq = ++_noteSearchSeq;
+          fetch("/api/portal/notes/search?q=" + encodeURIComponent(q))
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              if (seq !== _noteSearchSeq || card !== el) return;
+              listEl.textContent = "";
+              var hits = (j && j.ok && j.hits) || [];
+              if (!Array.isArray(hits)) hits = (hits && hits.hits) || [];
+              var h = document.createElement("div"); h.className = "dc-list-head";
+              h.textContent = hits.length + " Notiz-Treffer für „" + q + "“";
+              listEl.appendChild(h);
+              hits.slice(0, 6).forEach(function (hit) {
+                var label = hit.title || hit.name || hit.path || hit.okf_path || (typeof hit === "string" ? hit : "");
+                if (!label) return;
+                var a = document.createElement("div"); a.className = "task-row";
+                var m = document.createElement("div"); m.className = "task-main";
+                var t = document.createElement("span"); t.className = "task-title"; t.textContent = label;
+                m.appendChild(t); a.appendChild(m); listEl.appendChild(a);
+              });
+            })
+            .catch(function () {});
         }
         function buildTaskCard(el) {
           var title = document.createElement("div"); title.className = "dc-title";
@@ -4332,6 +4376,11 @@
             else { var p = document.createElement("span"); p.className = "placeholder"; p.textContent = "Titel eingeben…"; t.appendChild(p); }
             card._lastFilter = titleText;
             renderTaskList(card, titleText);
+          } else if (cmd === "note" && card && card._title) {
+            var t2 = card._title; t2.textContent = "";
+            if (rest.trim()) { appendMentionText(t2, rest.trim()); linkifyWikiLinks(t2); }
+            else { var p2 = document.createElement("span"); p2.className = "placeholder"; p2.textContent = "Notiztext eingeben…"; t2.appendChild(p2); }
+            renderNoteMatches(card, rest);
           }
         }
 
@@ -4358,24 +4407,35 @@
           if (p.cmd === "help") { input.value = ""; autosize(); closeMenu(); addInfo(helpMarkdown()); return true; }
           submit(); return true;
         }
+        function freeze(theCard, headText, hintText) {
+          theCard.classList.add("done");
+          var hd = theCard.querySelector(".dc-head"); if (hd) hd.textContent = headText;
+          var row = theCard.querySelector(".dc-row"); if (row) row.remove();
+          if (theCard._list && theCard._list.parentNode) theCard._list.remove();
+          var hint = theCard.querySelector(".dc-hint"); if (hint) hint.textContent = hintText;
+        }
         function submit() {
-          if (kind !== "task" || !card) return;
+          if (!card || (kind !== "task" && kind !== "note")) return;
           var p = parse(input.value);
           var rest = p ? p.rest : "";
-          var parsed = extractDate(rest);
-          var title = parsed ? parsed.title : rest.trim();
-          if (!title || title.toLowerCase() === "list") return; // list/empty → no create
-          if (card._list && card._list.parentNode) card._list.remove(); // drop the filter list from the frozen card
-          var due = card._due ? card._due.value : "";
           var theCard = card;
-          taskAction("task.add", { title: title, due: due }).then(function (j) {
-            if (!j || !j.ok) { theCard.querySelector(".dc-hint").textContent = "Konnte nicht anlegen."; return; }
-            theCard.classList.add("done");
-            theCard.querySelector(".dc-head").textContent = "Aufgabe angelegt";
-            var row = theCard.querySelector(".dc-row"); if (row) row.remove();
-            var hint = theCard.querySelector(".dc-hint");
-            if (hint) hint.textContent = "✓ Notiert" + (due ? " · fällig " + due : "");
-          });
+          if (kind === "task") {
+            var parsed = extractDate(rest);
+            var title = parsed ? parsed.title : rest.trim();
+            if (!title || title.toLowerCase() === "list") return; // list/empty → no create
+            var due = card._due ? card._due.value : "";
+            taskAction("task.add", { title: title, due: due }).then(function (j) {
+              if (!j || !j.ok) { theCard.querySelector(".dc-hint").textContent = "Konnte nicht anlegen."; return; }
+              freeze(theCard, "Aufgabe angelegt", "✓ Notiert" + (due ? " · fällig " + due : ""));
+            });
+          } else if (kind === "note") {
+            var text = rest.trim();
+            if (!text || text.toLowerCase() === "list") return;
+            taskAction("note.add", { text: text }).then(function (j) {
+              if (!j || !j.ok) { theCard.querySelector(".dc-hint").textContent = "Konnte nicht speichern."; return; }
+              freeze(theCard, "Notiz gespeichert", "✓ Gespeichert");
+            });
+          }
           card = null; kind = "";           // stop tracking; the card stays in the log
           input.value = ""; autosize(); closeMenu();
         }

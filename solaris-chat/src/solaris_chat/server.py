@@ -3865,6 +3865,34 @@ def build_app(
             return {"ok": False, "reason": "bad_title"}
         return {"ok": True, "id": tid}
 
+    def _write_quick_note(uid: str, text: str) -> str:
+        """A quick vault note from the composer `.note` command: a dated markdown
+        file under the resident's `notes/` that the nightly ingest projects +
+        `notes_search` finds. Returns the vault-relative path."""
+        from datetime import datetime, timezone
+
+        root = Path(notes_dir).resolve()
+        base = root if uid == notes_search.SHARED_UID else root / "users" / uid
+        d = base / "notes"
+        d.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc)
+        slug = re.sub(r"[^a-z0-9]+", "-", text.lower())[:40].strip("-") or "notiz"
+        path = d / f"{now:%Y-%m-%d-%H%M%S}-{slug}.md"
+        path.write_text(
+            f"---\nadded_by: {uid}\ndate: {now:%Y-%m-%d}\ntype: note\n---\n\n{text}\n",
+            encoding="utf-8",
+        )
+        return str(path.relative_to(root))
+
+    async def _note_add(body: dict[str, Any]) -> dict[str, Any]:
+        """Card callback: file a quick note from the `.note` command (params: text)."""
+        uid = body.get("uid") or default_uid
+        text = str((body.get("params") or {}).get("text") or "").strip()
+        if not text:
+            return {"ok": False, "reason": "empty"}
+        rel = await asyncio.to_thread(_write_quick_note, uid, text)
+        return {"ok": True, "path": rel}
+
     def _document_confirm_fact(
         uid: str, entity_id: str, predicate: str, value: str
     ) -> bool:
@@ -4313,6 +4341,7 @@ def build_app(
     # destructive (a task is the resident's own to-do, additive + reversible).
     action_cards.register("task.set_status", _task_set_status)
     action_cards.register("task.add", _task_add)
+    action_cards.register("note.add", _note_add)
 
     async def napi_upload(request: web.Request) -> web.Response:
         """Store a camera capture / PDF / Takeout `.zip` into the vault (#826/#869).
