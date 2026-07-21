@@ -86,9 +86,14 @@ def _find_watch_history(zip_bytes: bytes, names: list[str]) -> str | None:
     """The YouTube watch-history JSON, found by CONTENT — Takeout **localises the
     filename** (`watch-history.json` EN, `Wiedergabeverlauf.json` DE,
     `historique-de-visionnage.json` FR, …), so a fixed English name silently
-    misses every non-English export. It is the `.json` holding a list of watch
-    records (a `titleUrl` with `watch?v=`), which also distinguishes it from the
-    sibling search history (`Suchverlauf.json` → `results?search_query=`)."""
+    misses every non-English export.
+
+    The watch history is **dominated** by video-watch URLs (`watch?v=`); its
+    sibling search history (`Suchverlauf.json`) is mostly `results?search_query=`
+    with only a stray watched-ad — so merely *containing* a `watch?v=` is not
+    enough to tell them apart. Pick the `.json` where watches most outweigh
+    searches (net-positive)."""
+    best_name, best_score = None, 0
     for name in names:
         if not name.lower().endswith(".json"):
             continue
@@ -96,12 +101,23 @@ def _find_watch_history(zip_bytes: bytes, names: list[str]) -> str | None:
             data = json.loads(_read(zip_bytes, name))
         except Exception:  # noqa: BLE001 — a non-JSON / other file just isn't it.
             continue
-        if isinstance(data, list) and any(
-            isinstance(r, dict) and "watch?v=" in str(r.get("titleUrl", ""))
-            for r in data[:50]
-        ):
-            return name
-    return None
+        if not isinstance(data, list):
+            continue
+        watches = sum(
+            1
+            for r in data
+            if isinstance(r, dict) and "watch?v=" in str(r.get("titleUrl", ""))
+        )
+        searches = sum(
+            1
+            for r in data
+            if isinstance(r, dict)
+            and "results?search_query=" in str(r.get("titleUrl", ""))
+        )
+        if watches - searches > best_score:
+            best_score = watches - searches
+            best_name = name
+    return best_name
 
 
 def _top_folder(name: str) -> str:
