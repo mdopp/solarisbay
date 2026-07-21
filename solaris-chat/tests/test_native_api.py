@@ -1170,3 +1170,25 @@ async def test_import_status_reflects_latest_job_owner_scoped(aiohttp_client, tm
     # lena has no job → null (owner-scoped via latest_for).
     r = await client.get("/api/import/status", headers={"Remote-User": "lena"})
     assert (await r.json()) == {"ok": True, "job": None}
+
+
+async def test_import_status_reattaches_pending_plan(aiohttp_client, tmp_path):
+    # An unconfirmed plan persisted beside the archive re-attaches on reload
+    # (the actionable card is otherwise a transient live inject), owner-scoped,
+    # and takes precedence over a null job.
+    import json as _json
+
+    db = _db(tmp_path)
+    imp = tmp_path / "users" / "mdopp" / "imports"
+    imp.mkdir(parents=True)
+    plan = {
+        "archive_id": "users/mdopp/imports/takeout-x.zip",
+        "card": {"kind": "action", "title": "Import aus Google Takeout", "buttons": []},
+    }
+    (imp / "takeout-x.zip.plan.json").write_text(_json.dumps(plan), encoding="utf-8")
+    client = await aiohttp_client(_import_app(tmp_path, db, _StubJobs({})))
+    r = await client.get("/api/import/status", headers={"Remote-User": "mdopp"})
+    assert (await r.json()) == {"ok": True, "plan": plan}
+    # lena has no pending plan → falls through to the (null) job.
+    r = await client.get("/api/import/status", headers={"Remote-User": "lena"})
+    assert (await r.json()) == {"ok": True, "job": None}
