@@ -4238,13 +4238,40 @@
           btn.addEventListener("click", function () { submit(); });
           row.appendChild(due); row.appendChild(btn); el.appendChild(row); el._due = due;
           var hint = document.createElement("div"); hint.className = "dc-hint";
-          hint.textContent = "Enter legt an · #/@ werden verlinkt";
+          hint.textContent = "Enter legt an · #/@ verlinkt · Datum wie 25.08.2026 wird erkannt";
           el.appendChild(hint);
         }
+        // Recognise a date typed in the input's own format — TT.MM.JJJJ (also
+        // TT.MM.JJ and a bare TT.MM. with the year inferred: this year, or next
+        // if it's already past). Returns {iso, title} with the date lifted out of
+        // the title, or null.
+        function pad2(n) { return ("0" + n).slice(-2); }
+        function extractDate(text) {
+          var m = /(?:^|\s)(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})?(?=\s|$)/.exec(text);
+          if (!m) return null;
+          var d = +m[1], mo = +m[2], y;
+          if (m[3] && m[3].length === 4) y = +m[3];
+          else if (m[3] && m[3].length === 2) y = 2000 + +m[3];
+          else {
+            var now = new Date();
+            y = now.getFullYear();
+            var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            if (new Date(y, mo - 1, d) < today) y += 1;
+          }
+          var dt = new Date(y, mo - 1, d);
+          if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+          var title = (text.slice(0, m.index) + text.slice(m.index + m[0].length)).replace(/\s{2,}/g, " ").trim();
+          return { iso: y + "-" + pad2(mo) + "-" + pad2(d), title: title };
+        }
+
         function updateCard(cmd, rest) {
           if (cmd === "task" && card && card._title) {
+            var parsed = extractDate(rest);
+            if (parsed) { card._due.value = parsed.iso; card._dueAuto = true; }
+            else if (card._dueAuto) { card._due.value = ""; card._dueAuto = false; }
+            var titleText = parsed ? parsed.title : rest.trim();
             var t = card._title; t.textContent = "";
-            if (rest.trim()) { appendMentionText(t, rest.trim()); linkifyWikiLinks(t); }
+            if (titleText) { appendMentionText(t, titleText); linkifyWikiLinks(t); }
             else { var p = document.createElement("span"); p.className = "placeholder"; p.textContent = "Titel eingeben…"; t.appendChild(p); }
           }
         }
@@ -4269,7 +4296,9 @@
         function submit() {
           if (kind !== "task" || !card) return;
           var p = parse(input.value);
-          var title = p ? p.rest.trim() : "";
+          var rest = p ? p.rest : "";
+          var parsed = extractDate(rest);
+          var title = parsed ? parsed.title : rest.trim();
           if (!title) return;
           var due = card._due ? card._due.value : "";
           var theCard = card;
