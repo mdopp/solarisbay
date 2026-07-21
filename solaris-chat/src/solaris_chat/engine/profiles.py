@@ -167,9 +167,7 @@ def build_engine_clients(
     # Aufgaben (to-do) tools (#todo): add/list/complete tasks on the one shared
     # list. Household + deep share it; scoped to the caller via _current_uid.
     if db_path and notes_dir:
-        household_tools += build_tasks_tools(
-            db_path, _current_uid, notes_dir=notes_dir
-        )
+        household_tools += build_tasks_tools(db_path, _current_uid, notes_dir=notes_dir)
     # Start-page pins (#645): pin_favorite reads the last action from the shared
     # recorder and resolves target devices against HA. Household + deep share
     # this list; guest gets nothing (its list is separate + ephemeral).

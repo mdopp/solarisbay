@@ -3832,7 +3832,11 @@ def build_app(
         params = body.get("params") or {}
         entity_id = params.get("entity_id")
         status = params.get("status") or "done"
-        if not isinstance(entity_id, str) or status not in ("done", "dismissed", "open"):
+        if not isinstance(entity_id, str) or status not in (
+            "done",
+            "dismissed",
+            "open",
+        ):
             return {"ok": False, "reason": "bad_params"}
         ok = await asyncio.to_thread(
             tasks_svc.set_status,
