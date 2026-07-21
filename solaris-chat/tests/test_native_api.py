@@ -1192,3 +1192,21 @@ async def test_import_status_reattaches_pending_plan(aiohttp_client, tmp_path):
     # lena has no pending plan → falls through to the (null) job.
     r = await client.get("/api/import/status", headers={"Remote-User": "lena"})
     assert (await r.json()) == {"ok": True, "job": None}
+
+
+async def test_import_status_running_job_beats_stale_plan(aiohttp_client, tmp_path):
+    # A stale, never-confirmed plan from an earlier upload must NOT mask a running
+    # import — otherwise the live progress never surfaces (Importieren looked dead).
+    import json as _json
+
+    db = _db(tmp_path)
+    imp = tmp_path / "users" / "mdopp" / "imports"
+    imp.mkdir(parents=True)
+    (imp / "takeout-stale.zip.plan.json").write_text(
+        _json.dumps({"archive_id": "users/mdopp/imports/takeout-stale.zip", "card": {}}),
+        encoding="utf-8",
+    )
+    running = {"jobId": "j1", "status": "running", "progress": {"pct": 32}, "result": None}
+    client = await aiohttp_client(_import_app(tmp_path, db, _StubJobs({"mdopp": running})))
+    r = await client.get("/api/import/status", headers={"Remote-User": "mdopp"})
+    assert (await r.json()) == {"ok": True, "job": running}  # job wins, not the plan

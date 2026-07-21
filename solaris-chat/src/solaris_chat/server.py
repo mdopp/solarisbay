@@ -4089,6 +4089,21 @@ def build_app(
             except OSError:
                 pass
 
+    def _clear_all_pending_plans(uid: str) -> None:
+        """Drop every pending plan for the resident — used on confirm so an earlier
+        abandoned upload's plan can't linger and mask the live import (it made
+        Importieren look dead)."""
+        root = Path(notes_dir).resolve()
+        base = root if uid == notes_search.SHARED_UID else root / "users" / uid
+        d = base / _ARCHIVE_SUBDIR
+        if not d.is_dir():
+            return
+        for p in d.glob(f"*{_PLAN_SUFFIX}"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
     def _latest_pending_plan(uid: str) -> dict[str, Any] | None:
         root = Path(notes_dir).resolve()
         base = root if uid == notes_search.SHARED_UID else root / "users" / uid
@@ -4202,7 +4217,7 @@ def build_app(
             "hash": params.get("hash", ""),
         }
         job_id = import_jobs.start(uid, "import", payload)
-        _clear_pending_plan(uid, archive_id)  # confirmed → no longer pending
+        _clear_all_pending_plans(uid)  # confirmed → drop this + any abandoned plans
         session_id = store.ensure_household_session(solaris_db_path, uid)
         asyncio.ensure_future(
             _stream_import_progress(uid, session_id, job_id, categories)
@@ -4223,15 +4238,18 @@ def build_app(
         uid = _interactive_uid(request)
         if uid is None:
             return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
-        # A pending, unconfirmed plan re-attaches its actionable card on reload
-        # (it exists only between upload and Importieren/Abbrechen); an active job
-        # takes over once confirmed.
+        # A RUNNING job's progress trumps any pending plan: a stale, never-confirmed
+        # plan from an earlier abandoned upload must not mask the live import (that
+        # left "Importieren" looking dead — the job ran, but status kept returning
+        # the old plan). Otherwise a pending plan re-attaches its actionable card on
+        # reload (it exists only between upload and Importieren/Abbrechen).
+        job = import_jobs.latest_for(uid) if import_jobs is not None else None
+        if job is not None and job.get("status") == "running":
+            return web.json_response({"ok": True, "job": job})
         plan = _latest_pending_plan(uid)
         if plan is not None:
             return web.json_response({"ok": True, "plan": plan})
-        if import_jobs is None:
-            return web.json_response({"ok": True, "job": None})
-        return web.json_response({"ok": True, "job": import_jobs.latest_for(uid)})
+        return web.json_response({"ok": True, "job": job})
 
     # The import plan-card buttons (#869). Confirm WRITES (calendar/contacts into
     # Radicale, notes into the vault, wishlist facts onto album entities), so it is
