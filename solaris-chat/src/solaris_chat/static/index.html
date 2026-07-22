@@ -2919,8 +2919,57 @@
           if (domain === "cover") renderCoverControls(card, c);
           else if (domain === "light") renderLightControls(card, c);
           else if (domain === "switch") renderSwitchControls(card, c);
+          else if (domain === "climate") renderClimateControls(card, c, st);
         }
         return card;
+      }
+
+      // Climate widget controls (#974): the setpoint −/+ stepper + HVAC mode
+      // picker on the widget card, restoring the control the group-row path keeps
+      // via renderClimateCard. The current temp is already the card's big-state,
+      // so this renders only the target stepper + mode selector, routed through
+      // haCall like renderSwitchControls/renderCoverControls.
+      function renderClimateControls(card, c, st) {
+        var feat = Number(c.supported_features || 0);
+        if (feat & CLIMATE_TARGET_TEMP || c.temperature != null) {
+          var step = Number(c.target_temp_step) || 0.5;
+          var min = c.min_temp != null ? Number(c.min_temp) : 7;
+          var max = c.max_temp != null ? Number(c.max_temp) : 35;
+          var target = c.temperature != null ? Number(c.temperature) : min;
+          var set = document.createElement("div");
+          set.className = "hc-set";
+          var label = document.createElement("span");
+          label.className = "hc-target";
+          label.textContent = target + "°";
+          var apply = function (next) {
+            next = Math.min(max, Math.max(min, Math.round(next / step) * step));
+            label.textContent = next + "°";
+            haCall(card, c, "climate.set_temperature", { temperature: next });
+          };
+          var minus = document.createElement("button");
+          minus.textContent = "−";
+          minus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) - step); });
+          var plus = document.createElement("button");
+          plus.textContent = "+";
+          plus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) + step); });
+          set.appendChild(minus); set.appendChild(label); set.appendChild(plus);
+          card.appendChild(set);
+        }
+        var modes = c.hvac_modes || [];
+        if (modes.length) {
+          var sel = document.createElement("select");
+          sel.className = "hc-mode";
+          modes.forEach(function (m) {
+            var opt = document.createElement("option");
+            opt.value = m; opt.textContent = m;
+            if (m === st) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          sel.addEventListener("change", function () {
+            haCall(card, c, "climate.set_hvac_mode", { hvac_mode: sel.value });
+          });
+          card.appendChild(sel);
+        }
       }
 
       // Action card (Wartung P2a, #787): a {title, body, buttons:[{label,
