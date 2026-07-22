@@ -188,6 +188,37 @@ async def test_task_lands_in_owning_residents_calendar(tmp_path, monkeypatch):
     assert all("Gynäkologe" not in c["body"] for c in calls if c["url"] == _SHARED_URL)
 
 
+async def test_household_items_routed_to_primary_resident(tmp_path, monkeypatch):
+    # #1011: `household` isn't a real Radicale principal (writing under it 409s),
+    # so with a configured primary resident the household document deadline AND a
+    # household task are routed to THAT resident's own `/uid/solaris/` calendar.
+    calls, ensured = _capture(monkeypatch)
+    db = str(tmp_path / "solaris.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    _doc(conn, "d1", "ERGO Rechtsschutz", [("cancellation_deadline", "2026-12-15")])
+    _task(
+        conn,
+        "t-shared",
+        "Müll rausbringen",
+        _SHARED,
+        [("status", "open"), ("due", "2026-09-02"), ("title_text", "Müll rausbringen")],
+    )
+    conn.commit()
+    conn.close()
+    out = await sync_deadlines(db, _BASE, "solaris", "pw", household_uid="mdopp")
+    assert out == {"written": 2, "skipped": 0, "failed": 0}
+    mdopp_url = f"{_BASE}/mdopp/{_CALENDAR}/"
+    # Both the household deadline and the household task land on mdopp's calendar,
+    # and nothing is written under the principal-less `household` uid.
+    assert all(c["url"] == mdopp_url for c in calls)
+    assert _SHARED_URL not in ensured
+    assert {c["uid"] for c in calls} == {
+        "solaris-deadline-d1-cancellation_deadline",
+        "solaris-task-t-shared",
+    }
+
+
 async def test_resolved_task_not_written(tmp_path, monkeypatch):
     calls, _ = _capture(monkeypatch)
     db = str(tmp_path / "solaris.db")

@@ -277,12 +277,17 @@ spec:
     - name: DEADLINES_SYNC_URL
       value: "{{DEADLINES_SYNC_URL}}"
     # The Radicale ROOT the per-resident calendar sync writes under (#997 /
-    # #1010, option B): the engine PUTs to `{base}/solaris/{resident_uid}/`,
-    # its own `solaris` principal tree, which owner_only permits with no
-    # shared-auth change. The engine pod is host-networked (it reaches HA /
+    # #1010 / #1011, option A): the engine PUTs to `{base}/{resident_uid}/solaris/`,
+    # under each RESIDENT's own principal, which the converged Radicale rights let
+    # the `solaris` account write. The engine pod is host-networked (it reaches HA /
     # ollama at 127.0.0.1 above), so Radicale is the box-local loopback root.
     - name: DEADLINES_SYNC_URL_BASE
       value: "{{DEADLINES_SYNC_URL_BASE}}"
+    # Household-wide dated items (shared document deadlines + household tasks) have
+    # no principal of their own; they're routed to THIS resident's `/uid/solaris/`
+    # calendar (#1011). Empty ⇒ they keep the principal-less `household` uid.
+    - name: HOUSEHOLD_CALENDAR_UID
+      value: "{{HOUSEHOLD_CALENDAR_UID}}"
     # The household Jellyfin server the music-ingest adapter reads (read-only,
     # #564) to map the music catalog into OKF band/song concepts. Reuses the
     # existing JELLYFIN_* stack vars (username/password, not an API key). An
