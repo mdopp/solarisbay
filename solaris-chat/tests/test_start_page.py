@@ -914,18 +914,12 @@ def test_ha_watch_status_getter():
     assert configured.status == "connected"
 
 
-def test_frequent_star_pins_device_as_card_else_action():
-    # #743 source contract: a frequent DEVICE (ha_call_service + entity_id) pins
-    # the entity card; any other tool stays a one-shot action favorite.
-    assert (
-        'var entityId = p.tool === "ha_call_service" && p.args && p.args.entity_id;'
-        in _HTML
-    )
-    assert (
-        '? { kind: "entity", scope: DEVICE_PIN_SCOPE, payload: { entity_id: entityId } }'
-        in _HTML
-    )
-    assert ': { kind: "action", label: f.label, payload: f.payload };' in _HTML
+def test_frequent_section_removed():
+    # #973: the auto "Häufig genutzt" section is gone — the Geräte page is one
+    # grid of the resident's pinned favourites, no frequent auto-list.
+    assert "Häufig genutzt" not in _HTML
+    assert "renderFrequent" not in _HTML
+    assert "data.frequent" not in _HTML
 
 
 def test_device_pin_defaults_to_household_scope():
@@ -935,14 +929,13 @@ def test_device_pin_defaults_to_household_scope():
     assert "scope: DEVICE_PIN_SCOPE," in _HTML
 
 
-def test_single_scope_renders_one_section_and_hides_move():
-    # #745 source contract: uid==household collapses to one "Favoriten" section
-    # and the scope-move affordance is hidden when single_scope.
+def test_single_grid_merges_favourites_and_hides_move_on_single_scope():
+    # #973 source contract: the Geräte page is ONE grid — personal + household
+    # favourites merge into a single .start-favs list (no household sub-section).
+    # #745: the scope-move affordance is still hidden when single_scope.
     assert "card.singleScope = !!data.single_scope;" in _HTML
-    assert (
-        'section("Favoriten", (data.personal || []).concat(data.household || []));'
-        in _HTML
-    )
+    assert "var favs = (data.personal || []).concat(data.household || []);" in _HTML
+    assert 'wrap.className = "ha-cards start-favs";' in _HTML
     assert "if (!page.singleScope) {" in _HTML
 
 

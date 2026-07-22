@@ -113,7 +113,7 @@ def test_chat_search_moved_out_of_the_header():
 
 
 def test_household_chat_title_reads_zuhause():
-    # The header title is context-aware (#671): "Favoriten" on #/p/start
+    # The header title is context-aware (#671): "Geräte" on #/p/start
     # (matching the bottom tab, #677), "Zuhause" in the household chat, else the
     # session title — never the generic "Neuer Chat" placeholder on the
     # start/household views. All three live in the single syncChatTitle helper.
@@ -122,7 +122,7 @@ def test_household_chat_title_reads_zuhause():
     )
     assert sync, "syncChatTitle not found"
     body = sync.group(1)
-    assert '"Favoriten"' in body
+    assert '"Geräte"' in body
     assert '"#/p/start"' in body
     assert '"Zuhause"' in body
     assert (
