@@ -1136,6 +1136,60 @@ def apply_jellyfin_password_to_engine(password: str) -> bool:
     return True
 
 
+def _patched_sync_dav_yaml(src: str, password: str) -> tuple[str, int]:
+    """Stamp SYNC_DAV_USERNAME=solaris + SYNC_DAV_PASSWORD in the pod manifest
+    text (pure). Returns (new_text, n_replacements) — n is the SYNC_DAV_PASSWORD
+    hits (the username hit is incidental). Same `- name: …\\n value: …` patch
+    shape apply_jellyfin_password_to_engine uses."""
+    new, _ = re.subn(
+        r'(- name: SYNC_DAV_USERNAME\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
+        lambda m: m.group(1) + '"' + JELLYFIN_SOLARIS_USER + '"',
+        src,
+    )
+    return re.subn(
+        r'(- name: SYNC_DAV_PASSWORD\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
+        lambda m: m.group(1) + '"' + password + '"',
+        new,
+    )
+
+
+def apply_sync_dav_credential_to_engine(password: str) -> bool:
+    """Wire the DAV write account into the deployed solaris.yml — the SAME
+    `solaris` LLDAP identity + managed password the Jellyfin converge already
+    persists/resets (#997 / #1010). owner_only scopes it to `/solaris/*`, so no
+    new user, no new password, no shared-auth change. Best-effort; returns True
+    when the manifest now carries the password."""
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog("warn", "sync-dav", "solaris.yml not found at expected path", path=pod_yml)
+        return False
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "sync-dav", "could not read solaris.yml", error=str(e))
+        return False
+    new, n = _patched_sync_dav_yaml(src, password)
+    if n == 0:
+        jlog(
+            "warn",
+            "sync-dav",
+            "SYNC_DAV_PASSWORD env entry not found in solaris.yml — not stamped",
+            path=pod_yml,
+        )
+        return False
+    if new == src:
+        return True
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "sync-dav", "could not write patched solaris.yml", error=str(e))
+        return False
+    jlog("info", "sync-dav", "stamped managed solaris DAV credential into solaris.yml")
+    return True
+
+
 def converge_jellyfin_credential(data_dir: str) -> str | None:
     """Self-heal the Jellyfin `solaris` service-user credential (#626): persist a
     managed password, reset the lldap user to it, and stamp it into the deployed
@@ -1147,6 +1201,9 @@ def converge_jellyfin_credential(data_dir: str) -> str | None:
         return None
     reset_lldap_solaris_password(password)
     apply_jellyfin_password_to_engine(password)
+    # The DAV write account (#997 / #1010) is the SAME solaris identity: reuse
+    # its managed password so the engine authenticates its `/solaris/*` PUTs.
+    apply_sync_dav_credential_to_engine(password)
     return password
 
 

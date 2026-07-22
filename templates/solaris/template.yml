@@ -276,6 +276,13 @@ spec:
       value: "{{CONTACTS_SYNC_URL}}"
     - name: DEADLINES_SYNC_URL
       value: "{{DEADLINES_SYNC_URL}}"
+    # The Radicale ROOT the per-resident calendar sync writes under (#997 /
+    # #1010, option B): the engine PUTs to `{base}/solaris/{resident_uid}/`,
+    # its own `solaris` principal tree, which owner_only permits with no
+    # shared-auth change. The engine pod is host-networked (it reaches HA /
+    # ollama at 127.0.0.1 above), so Radicale is the box-local loopback root.
+    - name: DEADLINES_SYNC_URL_BASE
+      value: "{{DEADLINES_SYNC_URL_BASE}}"
     # The household Jellyfin server the music-ingest adapter reads (read-only,
     # #564) to map the music catalog into OKF band/song concepts. Reuses the
     # existing JELLYFIN_* stack vars (username/password, not an API key). An
