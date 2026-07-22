@@ -6,12 +6,14 @@ contract `end_date`. Rather than push notifications, we write each as an all-day
 event with an advance alarm into a calendar, where the calendar app itself
 reminds the resident (the passive, non-intrusive channel the plan chose).
 
-Solaris owns, the calendar mirrors (#997): each resident's dated OPEN tasks are
-written under THAT resident's own DAV context — `{base}/{resident_uid}/<cal>/` —
-so a resident's private task lands only in their own calendar and is never
-visible cross-resident. Household-scoped document deadlines and household tasks
-(`SHARED_UID`) go to the household principal's calendar
-`{base}/{SHARED_UID}/<cal>/`.
+Solaris owns, the calendar mirrors (#997, option B / #1010): every resident's
+calendar lives under Solaris's OWN `solaris` principal tree —
+`{base}/solaris/{resident_uid}/` — one collection per resident, named by the
+resident uid. Because the `solaris` account owns all of `/solaris/*`, Radicale's
+`rights = owner_only` permits these writes with NO shared-auth change. A
+resident's private dated task lands only in their own `/solaris/{resident_uid}/`
+collection; household-scoped document deadlines and household tasks (`SHARED_UID`)
+go to `{base}/solaris/{SHARED_UID}/`.
 
 **Authenticated CalDAV PUT** as the dedicated `solaris` DAV account, not a
 filesystem mount: Radicale's rights scope it to the collections it may write.
@@ -45,10 +47,10 @@ _UID_PREFIX = "solaris-deadline-"
 _TASK_UID_PREFIX = "solaris-task-"
 # Days before the date the calendar app raises its alarm.
 _LEAD_DAYS = 14
-# The stable Solaris-owned calendar name each resident's collection lives under:
-# `{base}/{resident_uid}/{_CALENDAR_NAME}/`. Named for the surface it backs
-# (Aufgaben/To-Do + Fristen) and kept stable so a re-sync overwrites in place.
-_CALENDAR_NAME = "solaris"
+# The Solaris-owned principal every resident's calendar collection lives under:
+# `{base}/{_PRINCIPAL}/{resident_uid}/`. The `solaris` account owns all of
+# `/solaris/*`, so owner_only permits the write without any shared-auth change.
+_PRINCIPAL = "solaris"
 
 
 def _parse_iso(value: str) -> date | None:
@@ -92,19 +94,19 @@ def _facts(conn, entity_id: str) -> dict[str, str]:
 
 
 def _collection_url(base_url: str, resident_uid: str) -> str:
-    """The resident's Solaris calendar collection — `{base}/{uid}/{cal}/`.
+    """The resident's Solaris calendar collection — `{base}/solaris/{uid}/`.
 
-    Same URL shape the Takeout calendar importer PUTs to (orchestrator
-    `{base}/{owner_uid}/{cal_name}/`), so both write paths agree.
+    Under Solaris's own principal (option B / #1010): the `solaris` account owns
+    `/solaris/*`, so owner_only permits the PUT with no shared-auth change.
     """
-    return f"{base_url.rstrip('/')}/{resident_uid}/{_CALENDAR_NAME}/"
+    return f"{base_url.rstrip('/')}/{_PRINCIPAL}/{resident_uid}/"
 
 
 async def sync_deadlines(
     db_path: str, base_url: str, username: str, password: str
 ) -> dict[str, int]:
     """PUT each resident's dated OPEN tasks + the household's document deadlines
-    into their PER-RESIDENT Solaris calendar (`{base}/{resident_uid}/<cal>/`).
+    into their PER-RESIDENT Solaris calendar (`{base}/solaris/{resident_uid}/`).
 
     Returns `{written, skipped, failed}`. Never raises. Disabled (no-op) when the
     base URL / credentials are unset.
