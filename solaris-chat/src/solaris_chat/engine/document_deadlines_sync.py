@@ -117,8 +117,13 @@ async def sync_deadlines(
         # Dated to-do tasks (#todo) become calendar entries too: an OPEN task with
         # an ISO `due`. A resolved task simply stops being written (its event
         # lingers until the calendar is re-synced away — refined in a later slice).
+        # Only household-scoped tasks reach this SHARED calendar — a per-resident
+        # task must never become visible cross-resident (unlike documents, which
+        # are shared household data and are synced unscoped above).
         tasks = conn.execute(
-            "SELECT id, canonical_name FROM entities WHERE type = 'task'"
+            "SELECT id, canonical_name FROM entities"
+            " WHERE type = 'task' AND resident_uid = ?",
+            (projection.SHARED_UID,),
         ).fetchall()
         for task in tasks:
             facts = _facts(conn, task["id"])
