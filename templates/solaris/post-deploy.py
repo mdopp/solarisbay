@@ -1336,6 +1336,90 @@ def converge_jellyfin_credential(data_dir: str) -> str | None:
     return password
 
 
+HOUSEHOLD_CALENDAR_UID_FILE = ".household-calendar-uid"
+
+
+def _persisted_household_calendar_uid(data_dir: str) -> str:
+    """The operator's household-calendar resident uid, persisted at
+    <data_dir>/solarisbay/.household-calendar-uid.
+
+    ServiceBay's renderer prunes the `HOUSEHOLD_CALENDAR_UID` template.yml env
+    entry (like the SYNC_DAV block, #1011) and drops the install-variable override
+    for a newly-added var — so the pod env can't carry it. We instead persist the
+    operator's choice to a file (seeded from the env when SB DOES pass it, reused
+    after) and stamp it into the pod ourselves. Returns "" when neither a file nor
+    the env provides one — household items then keep the principal-less `household`
+    uid (documented no-op)."""
+    path = os.path.join(data_dir, "solarisbay", HOUSEHOLD_CALENDAR_UID_FILE)
+    from_env = os.environ.get("HOUSEHOLD_CALENDAR_UID", "").strip()
+    if from_env:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(from_env + "\n")
+            os.chmod(path, 0o600)
+        except OSError as e:
+            jlog(
+                "warn", "household-cal", "could not persist household uid", error=str(e)
+            )
+        return from_env
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def apply_household_calendar_uid_to_engine(data_dir: str) -> bool:
+    """Stamp HOUSEHOLD_CALENDAR_UID into the deployed solaris.yml so the nightly
+    deadlines sync routes household-wide items to the primary resident's calendar
+    (#1011) — the renderer prunes the template.yml entry, so we insert/patch it
+    ourselves (same shape as the SYNC_DAV wiring). No-op when unconfigured;
+    best-effort. Returns True when the manifest now carries the value."""
+    uid = _persisted_household_calendar_uid(data_dir)
+    if not uid:
+        return False
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog("warn", "household-cal", "solaris.yml not found", path=pod_yml)
+        return False
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "household-cal", "could not read solaris.yml", error=str(e))
+        return False
+    if re.search(r"- name: HOUSEHOLD_CALENDAR_UID\n\s+value:", src):
+        new, n = _patch_env_value(src, "HOUSEHOLD_CALENDAR_UID", uid)
+    else:
+        new = _insert_after_caldav_anchor(src, [("HOUSEHOLD_CALENDAR_UID", uid)])
+        n = 1 if new != src else 0
+    if n == 0:
+        jlog(
+            "warn",
+            "household-cal",
+            "could not wire HOUSEHOLD_CALENDAR_UID into solaris.yml — no entry to "
+            "patch nor a CALDAV_URL anchor to insert after",
+            path=pod_yml,
+        )
+        return False
+    if new == src:
+        return True
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "household-cal", "could not write solaris.yml", error=str(e))
+        return False
+    jlog(
+        "info",
+        "household-cal",
+        "stamped HOUSEHOLD_CALENDAR_UID into solaris.yml",
+        uid=uid,
+    )
+    return True
+
+
 def _radicale_rights_heredoc(ind: str) -> str:
     """The `cat > /config/rights <<'EOF' … EOF` shell heredoc, every line at the
     block scalar's `ind` (so YAML strips it to column 0 and the `EOF` delimiter
@@ -2460,6 +2544,10 @@ def main() -> int:
     # keeps owner_only's guarantee and additionally lets `solaris` write only the
     # per-resident `solaris` calendar. Restarts radicale itself on drift.
     converge_radicale_rights()
+    # Route household-wide dated items to the primary resident's calendar (#1011):
+    # stamp HOUSEHOLD_CALENDAR_UID (persisted operator choice) into the pod env,
+    # which the renderer otherwise prunes. The restart below picks it up.
+    apply_household_calendar_uid_to_engine(data_dir)
     ha_token = adopt_ha_long_lived_token(data_dir)
     if ha_token:
         ensure_ha_jellyfin_integration(
