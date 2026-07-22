@@ -4811,7 +4811,9 @@
           var favMatches = [], rest = [];
           items.forEach(function (c) { (favSet.has(c.entity_id) ? favMatches : rest).push(c); });
           var ordered = favMatches.concat(rest);
-          var wrap = document.createElement("div"); wrap.className = "ha-cards";
+          // hc-grid (columns:220px) so cards fill the width: one full-width column
+          // on mobile, multiple on wider screens — matching the room/start grids.
+          var wrap = document.createElement("div"); wrap.className = "hc-grid";
           ordered.slice(0, 12).forEach(function (c) { wrap.appendChild(renderHaCard(c, false, {})); });
           listEl.appendChild(wrap);
         }
@@ -4826,7 +4828,7 @@
               var favs = ((j && j.ok && j.personal) || []).filter(function (f) { return f.kind === "entity" && f.card; });
               var h = document.createElement("div"); h.className = "dc-list-head"; h.textContent = "Meine Favoriten"; listEl.appendChild(h);
               if (!favs.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = "Noch keine Favoriten — tippe einen Gerätenamen."; listEl.appendChild(e); return; }
-              var wrap = document.createElement("div"); wrap.className = "ha-cards";
+              var wrap = document.createElement("div"); wrap.className = "hc-grid";
               favs.slice(0, 12).forEach(function (f) { wrap.appendChild(renderHaCard(f.card, false, {})); });
               listEl.appendChild(wrap);
             })
