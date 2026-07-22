@@ -4114,12 +4114,15 @@
           skillEntries = skillDefs
             .map(function (s) { return ["/" + s.id, s.description || s.name || ""]; })
             .sort(function (a, b) { return a[0].localeCompare(b[0]); });
-          // A command's trigger is its `command:` field if set (the built-in
-          // aliases pin /debug //status etc.), else `/<id>` for a user template.
-          // Scheduler entries that carry a `command:` join as a manual run-now
-          // trigger (#485) — their body runs once on demand alongside the cron.
+          // A command's trigger is its `command:` field if set, else `/<id>` for a
+          // user template. Scheduler entries that carry a `command:` join as a
+          // manual run-now trigger (#485). The built-in inline skill aliases
+          // (/notes /status /audit /debug) are DELIBERATELY excluded from the `/`
+          // menu: they either need admin/MCP tools the household chat lacks
+          // (/status/audit/debug) or are covered by natural language + the . tools
+          // (/notes) — so they read as "listed but broken". The skills still fire
+          // on a natural question; they just aren't a typeable `/`-command.
           var typeable = cmdDefs.map(function (d) { return { d: d, kind: "command" }; })
-            .concat(skillDefs.filter(function (s) { return s.command; }).map(function (d) { return { d: d, kind: "skill" }; }))
             .concat(schedDefs.filter(function (s) { return s.command; }).map(function (d) { return { d: d, kind: "scheduler" }; }));
           commandEntries = []; commandDefs = {};
           typeable.forEach(function (e) {
