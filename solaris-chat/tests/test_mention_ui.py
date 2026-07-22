@@ -118,6 +118,30 @@ def test_home_dot_command_wired(_html=_HTML):
     ).group(0)
 
 
+def test_home_cards_register_a_live_host(_html=_HTML):
+    # #980: a .home list registers itself as a live host so its widget cards
+    # self-update from the SSE/poll stream. Both the filtered-results list and the
+    # no-arg favorites list collect {entityId, el} entries and register them.
+    assert "function registerHomeLiveHost(listEl, entries)" in _html
+    reg = re.search(
+        r"function registerHomeLiveHost\(listEl, entries\) \{(.*?)\n        \}",
+        _html,
+        re.S,
+    ).group(1)
+    # apply(rec, card) re-renders one widget in place via renderHaCard.
+    assert "registerLiveHost(listEl, entries" in reg
+    assert re.search(r"renderHaCard\(c, false, \{\}\)", reg)
+    # An empty result unregisters so we don't hold a detached node.
+    assert "if (!entries.length) { unregisterLiveHost(listEl); return; }" in reg
+    # renderHomeList collects each card's entity_id and registers the list.
+    assert re.search(
+        r"entries\.push\(\{ entityId: c\.entity_id, c: c, el: cardEl \}\)", _html
+    )
+    assert "registerHomeLiveHost(listEl, entries);" in _html
+    # Tearing down / switching away from the .home dot-card unregisters its host.
+    assert "if (card && card._list) unregisterLiveHost(card._list);" in _html
+
+
 def test_energy_dot_command_wired(_html=_HTML):
     # `.energy` (#980 follow-up) is its own display-only dot-command, split out
     # of `.home` so each command does one thing.
