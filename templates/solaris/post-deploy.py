@@ -1420,6 +1420,84 @@ def apply_household_calendar_uid_to_engine(data_dir: str) -> bool:
     return True
 
 
+def _patch_or_insert_env(src: str, name: str, value: str) -> str:
+    """PATCH `name`'s value in place, or INSERT it after the CALDAV_URL anchor
+    when absent (the renderer prunes env entries whose var resolves empty)."""
+    if re.search(rf"- name: {re.escape(name)}\n\s+value:", src):
+        new, _ = _patch_env_value(src, name, value)
+        return new
+    return _insert_after_caldav_anchor(src, [(name, value)])
+
+
+def _patched_caldav_read_yaml(src: str, uid: str, password: str) -> tuple[str, int]:
+    """Point the CalDAV READ ingest at the resident's OWN `/<uid>/solaris/`
+    collection — the one collection `solaris` may legally read under the
+    from_file rights (#524, option a). Reuses CALDAV_USERNAME=solaris + the
+    managed DAV password; CARDDAV stays off (solaris has no legal contacts
+    collection). Returns (new_text, n) with n>0 when CALDAV_URL now points at
+    the collection. Returns (src, 0) when the CALDAV_URL anchor is absent."""
+    base = (
+        os.environ.get("DEADLINES_SYNC_URL_BASE") or DEADLINES_SYNC_URL_BASE_DEFAULT
+    ).rstrip("/")
+    url = f"{base}/{uid}/solaris/"
+    new, n = _patch_env_value(src, "CALDAV_URL", url)
+    if n == 0:
+        return src, 0
+    new = _patch_or_insert_env(new, "CALDAV_USERNAME", JELLYFIN_SOLARIS_USER)
+    new = _patch_or_insert_env(new, "CALDAV_PASSWORD", password)
+    return new, n
+
+
+def apply_caldav_read_to_engine(data_dir: str, password: str) -> bool:
+    """Wire the CalDAV read ingest to the resident's own `/<uid>/solaris/` mirror
+    (#524, option a) so Solaris re-ingests its own written deadlines/tasks into
+    `events`. Reuses the managed `solaris` DAV creds; the renderer prunes these
+    template.yml entries, so we stamp them ourselves. No-op when no household uid
+    is configured or no password is available; best-effort."""
+    if not password:
+        return False
+    uid = (
+        _persisted_household_calendar_uid(data_dir)
+        or os.environ.get("DEFAULT_UID", "").strip()
+    )
+    if not uid:
+        return False
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog("warn", "caldav-read", "solaris.yml not found", path=pod_yml)
+        return False
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "caldav-read", "could not read solaris.yml", error=str(e))
+        return False
+    new, n = _patched_caldav_read_yaml(src, uid, password)
+    if n == 0:
+        jlog(
+            "warn",
+            "caldav-read",
+            "CALDAV_URL anchor not found in solaris.yml — read ingest stays off",
+            path=pod_yml,
+        )
+        return False
+    if new == src:
+        return True
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "caldav-read", "could not write solaris.yml", error=str(e))
+        return False
+    jlog(
+        "info",
+        "caldav-read",
+        "stamped CalDAV read ingest at the resident's /<uid>/solaris/ mirror",
+        uid=uid,
+    )
+    return True
+
+
 def _radicale_rights_heredoc(ind: str) -> str:
     """The `cat > /config/rights <<'EOF' … EOF` shell heredoc, every line at the
     block scalar's `ind` (so YAML strips it to column 0 and the `EOF` delimiter
@@ -2548,6 +2626,11 @@ def main() -> int:
     # stamp HOUSEHOLD_CALENDAR_UID (persisted operator choice) into the pod env,
     # which the renderer otherwise prunes. The restart below picks it up.
     apply_household_calendar_uid_to_engine(data_dir)
+    # Re-ingest the resident's own written deadlines/tasks (#524, option a): point
+    # the CalDAV READ ingest at the same `/<uid>/solaris/` mirror the write path
+    # fills, reusing the managed `solaris` DAV password. Renderer prunes these env
+    # entries, so we stamp them; the restart below picks them up.
+    apply_caldav_read_to_engine(data_dir, jellyfin_password)
     ha_token = adopt_ha_long_lived_token(data_dir)
     if ha_token:
         ensure_ha_jellyfin_integration(
