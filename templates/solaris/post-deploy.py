@@ -74,9 +74,46 @@ LLDAP_PORT = 17170
 JELLYFIN_SOLARIS_USER = "solaris"
 
 # The Radicale ROOT the per-resident calendar/contacts sync PUTs under (#997 /
-# #1010, option B). The engine pod is host-networked, so Radicale is the
-# box-local loopback root. DEADLINES_SYNC_URL_BASE overrides it.
+# #1010 / #1011, option A: `{base}/{resident_uid}/solaris/`). The engine pod is
+# host-networked, so Radicale is the box-local loopback root.
+# DEADLINES_SYNC_URL_BASE overrides it.
 DEADLINES_SYNC_URL_BASE_DEFAULT = "http://127.0.0.1:5232/"
+
+# ── Radicale rights converge (option A, #997 / #1011) ────────────────────────
+# The per-resident calendar lives under the RESIDENT's OWN principal
+# (`/<resident>/solaris/`) so the resident subscribes as themselves — no shared
+# password. Radicale ships `[rights] type = owner_only`, which lets a principal
+# touch ONLY its own tree, so the `solaris` DAV account gets 403 writing
+# `/<resident>/solaris/`. We converge Radicale's rights to an equivalent
+# `from_file` ruleset that keeps owner_only's guarantee AND grants `solaris`
+# write access to `<resident>/solaris` (and nothing else). Radicale is a
+# ServiceBay-registry service, so its pod manifest is regenerated (back to
+# owner_only) on a radicale re-render; this re-applies on the next solaris
+# deploy — the same converge model as the Jellyfin credential. `solaris` is a
+# dependency-ordered install AFTER radicale, so on a fresh box this runs once
+# radicale exists.
+RADICALE_POD_YML = "~/.config/containers/systemd/radicale.yml"
+RADICALE_RIGHTS_FILE = "/config/rights"
+# The from_file body. `{0}` is Radicale's substitution for the matched user (a
+# literal token here, NOT a Python format field). Uppercase RrWw = full read/
+# write on the collection AND its children (so MKCALENDAR + PUT both pass).
+_RADICALE_RIGHTS_BODY = [
+    "# Owner-only base: each authenticated user has full read/write over their",
+    "# OWN principal subtree — and nothing else (equivalent to owner_only).",
+    "[owner]",
+    "user: .+",
+    "collection: {0}(/.*)?",
+    "permissions: RrWw",
+    "",
+    "# The `solaris` service account may ADDITIONALLY read/write ONLY the",
+    "# `solaris` calendar under ANY resident principal — the per-resident",
+    "# calendar the deadlines/tasks sync writes (option A, #997/#1011). No",
+    "# reach into a resident's other calendars nor the principal root.",
+    "[solaris-subcal]",
+    "user: solaris",
+    "collection: [^/]+/solaris(/.*)?",
+    "permissions: RrWw",
+]
 
 PIPELINE_NAME = "Solaris"
 CONVERSATION_AGENT_NAME = "Solaris"
@@ -1296,6 +1333,104 @@ def converge_jellyfin_credential(data_dir: str) -> str | None:
     return password
 
 
+def _patched_radicale_rights_yaml(src: str) -> tuple[str, int]:
+    """Converge the radicale pod manifest from `owner_only` to the `from_file`
+    ruleset that also lets `solaris` write `<resident>/solaris` (pure).
+
+    Two edits inside the `write-config` initContainer's `/config/config`
+    heredoc: flip `[rights] type = owner_only` → `type = from_file` + `file =`,
+    and add a second `cat > /config/rights` heredoc carrying _RADICALE_RIGHTS_BODY.
+    Both reuse the heredoc's own indentation (the `| ` block scalar strips it, so
+    the emitted shell heredoc's `EOF` lands at column 0). Idempotent: a manifest
+    already carrying `from_file` + the rights heredoc returns (src, 0). Returns
+    (src, 0) unchanged when the anchors are absent or the result isn't valid YAML
+    — a bad edit would crash-loop radicale."""
+    new, _ = re.subn(
+        r"(\[rights\]\n([ \t]*))type = owner_only",
+        lambda m: (
+            f"{m.group(1)}type = from_file\n{m.group(2)}file = " + RADICALE_RIGHTS_FILE
+        ),
+        src,
+    )
+    if "cat > /config/rights" not in new:
+        m = re.search(
+            r"(?P<ind>[ \t]*)cat > /config/config <<'EOF'\n(?:.*\n)*?(?P=ind)EOF\n",
+            new,
+        )
+        if m:
+            ind = m.group("ind")
+            heredoc = (
+                f"{ind}cat > {RADICALE_RIGHTS_FILE} <<'EOF'\n"
+                + "".join(
+                    (f"{ind}{line}\n" if line else "\n")
+                    for line in _RADICALE_RIGHTS_BODY
+                )
+                + f"{ind}EOF\n"
+            )
+            new = new[: m.end()] + heredoc + new[m.end() :]
+    if new == src:
+        return src, 0
+    # PyYAML is present in the pod image (where this runs) but not in templates
+    # CI; skip the validity check there rather than fail import.
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    if yaml is not None:
+        try:
+            yaml.safe_load(new)
+        except yaml.YAMLError as e:
+            jlog(
+                "warn",
+                "radicale-rights",
+                "rights patch produced invalid YAML — abandoning it to avoid a "
+                "radicale crash-loop",
+                error=str(e),
+            )
+            return src, 0
+    return new, 1
+
+
+def converge_radicale_rights() -> bool:
+    """Grant the `solaris` DAV account write access to `<resident>/solaris` by
+    converging Radicale's rights from `owner_only` to an equivalent `from_file`
+    ruleset (option A, #997/#1011). Patches the radicale pod manifest's config
+    heredoc and restarts radicale ONLY on drift. Idempotent + best-effort:
+    skips cleanly when radicale isn't installed, when already converged, or when
+    the anchors are absent. Returns True when radicale was (re)configured."""
+    pod_yml = os.path.expanduser(RADICALE_POD_YML)
+    if not os.path.exists(pod_yml):
+        jlog("info", "radicale-rights", "radicale.yml absent — radicale not installed")
+        return False
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "radicale-rights", "could not read radicale.yml", error=str(e))
+        return False
+    new, n = _patched_radicale_rights_yaml(src)
+    if n == 0:
+        jlog("info", "radicale-rights", "radicale rights already converged — no-op")
+        return False
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "radicale-rights", "could not write radicale.yml", error=str(e))
+        return False
+    jlog(
+        "info",
+        "radicale-rights",
+        "granted solaris write to <resident>/solaris (from_file); restarting radicale",
+    )
+    subprocess.run(
+        ["systemctl", "--user", "restart", "radicale.service"],
+        check=False,
+        capture_output=True,
+    )
+    return True
+
+
 # ── voice pipeline ───────────────────────────────────────────────────────────
 
 
@@ -2297,6 +2432,11 @@ def main() -> int:
     jellyfin_password = converge_jellyfin_credential(data_dir) or env(
         "JELLYFIN_PASSWORD"
     )
+    # Grant the `solaris` DAV account write access to `<resident>/solaris` (option
+    # A, #997/#1011): converge Radicale's owner_only → a from_file ruleset that
+    # keeps owner_only's guarantee and additionally lets `solaris` write only the
+    # per-resident `solaris` calendar. Restarts radicale itself on drift.
+    converge_radicale_rights()
     ha_token = adopt_ha_long_lived_token(data_dir)
     if ha_token:
         ensure_ha_jellyfin_integration(
