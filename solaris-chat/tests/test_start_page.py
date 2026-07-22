@@ -973,10 +973,11 @@ def test_periodic_poll_is_sse_down_fallback_only():
     # The 12s poll is no longer armed unconditionally in loadStartPage; SSE
     # open/error gate it. On open → mark connected + stop the poll; on error →
     # mark disconnected + (re)start the poll.
-    assert (
-        'es.addEventListener("open", function () { sseConnected = true; stopPoll(); });'
-        in _HTML
-    )
+    opened = re.search(
+        r'es\.addEventListener\("open", function \(\) \{(.*?)\}\);', _HTML, re.S
+    ).group(1)
+    assert "sseConnected = true;" in opened
+    assert "stopPoll();" in opened
     err = re.search(
         r'es\.addEventListener\("error", function \(\) \{(.*?)\}\);', _HTML, re.S
     ).group(1)
@@ -991,3 +992,32 @@ def test_periodic_poll_is_sse_down_fallback_only():
         r"function loadStartPage\(card\) \{(.*?)\n      \}", _HTML, re.S
     ).group(1)
     assert "setInterval(refreshStartPage" not in load
+
+
+def test_sse_reconnect_and_visibility_reconcile():
+    # #714 SSE reliability: the connection can silently die (nginx 60s idle
+    # timeout); EventSource reopens it but nothing caught up the gap. Every
+    # (re)connect and every return-to-visible must reconcile the live hosts —
+    # else a switch flipped while backgrounded leaves the card stale.
+    opened = re.search(
+        r'es\.addEventListener\("open", function \(\) \{(.*?)\}\);', _HTML, re.S
+    ).group(1)
+    assert "reconcileLiveHosts();" in opened  # reconcile on EVERY (re)connect
+    # reconcileLiveHosts catches up the start-page host via refreshStartPage and
+    # each .home host's entries via the per-entity state endpoint; it is
+    # debounced and skips while hidden / with no hosts.
+    rec = re.search(
+        r"function reconcileLiveHosts\(\) \{(.*?)\n      \}\n", _HTML, re.S
+    ).group(1)
+    assert "if (reconcileTimer) return;" in rec  # debounce
+    assert "if (document.hidden) return;" in rec
+    assert "if (h.el === startPageCard) { refreshStartPage(); return; }" in rec
+    assert '"/api/portal/state?entity_id=" + encodeURIComponent(rec.entityId)' in rec
+    # The visibilitychange handler resubscribes a dropped SSE and reconciles.
+    vis = re.search(
+        r'addEventListener\("visibilitychange", function \(\) \{(.*?)\n      \}\);',
+        _HTML,
+        re.S,
+    ).group(1)
+    assert "if (!sseConnected && liveHosts.length) startEventsSubscribe();" in vis
+    assert "reconcileLiveHosts();" in vis
