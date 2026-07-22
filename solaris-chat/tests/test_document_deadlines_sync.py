@@ -1,10 +1,13 @@
-"""Document deadlines → the Solaris Fristen calendar (#doc-graph, slice 3).
+"""Document deadlines + dated tasks → PER-RESIDENT Solaris calendars (#doc-graph,
+#997).
 
-`document_deadlines_sync.sync_deadlines` reads a document's dated facts and PUTs
-one all-day, alarmed calendar object per deadline into the dedicated `solaris`
-account's CalDAV collection (authenticated HTTP). These tests mock `put_item`
-and prove the event/alarm content, the stable overwrite UID, that non-deadline
-/ unparseable dates are skipped, and the disabled no-op.
+`document_deadlines_sync.sync_deadlines` reads each document's dated facts and
+each resident's dated OPEN tasks and PUTs one all-day, alarmed calendar object
+per item into that owner's own CalDAV collection (`{base}/{uid}/{cal}/`). These
+tests mock `put_item`/`ensure_calendar` and prove the per-resident collection
+URLs, the event/alarm content, the stable overwrite UID, owner-scoping (a
+resident's task never reaches another's calendar), that non-deadline /
+unparseable dates are skipped, and the disabled no-op.
 """
 
 from __future__ import annotations
@@ -25,7 +28,11 @@ CREATE TABLE facts (
   source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')));
 """
 
-_URL = "https://caldav.example/solaris/fristen/"
+_BASE = "https://caldav.example/dav"
+_SHARED = document_deadlines_sync.projection.SHARED_UID
+_CAL = document_deadlines_sync._CALENDAR_NAME
+# Document deadlines are household data → the household principal's calendar.
+_SHARED_URL = f"{_BASE}/{_SHARED}/{_CAL}/"
 
 
 def _doc(conn, eid, title, facts):
@@ -68,6 +75,7 @@ def _db(tmp_path, facts):
 
 def _capture(monkeypatch):
     calls = []
+    ensured = []
 
     async def fake_put(self, collection_url, uid, body, *, suffix, content_type):
         calls.append(
@@ -75,12 +83,18 @@ def _capture(monkeypatch):
         )
         return collection_url + uid
 
+    async def fake_ensure(self, collection_url):
+        ensured.append(collection_url)
+
     monkeypatch.setattr(document_deadlines_sync.HttpDavClient, "put_item", fake_put)
-    return calls
+    monkeypatch.setattr(
+        document_deadlines_sync.HttpDavClient, "ensure_calendar", fake_ensure
+    )
+    return calls, ensured
 
 
 async def test_deadline_puts_alarmed_all_day_event(tmp_path, monkeypatch):
-    calls = _capture(monkeypatch)
+    calls, ensured = _capture(monkeypatch)
     db = _db(
         tmp_path,
         [
@@ -89,10 +103,12 @@ async def test_deadline_puts_alarmed_all_day_event(tmp_path, monkeypatch):
             ("cancellation_deadline", "2026-12-15"),
         ],
     )
-    out = await sync_deadlines(db, _URL, "solaris", "pw")
+    out = await sync_deadlines(db, _BASE, "solaris", "pw")
     assert out == {"written": 1, "skipped": 0, "failed": 0}
     c = calls[0]
-    assert c["url"] == _URL and c["suffix"] == ".ics"
+    # A document deadline lands in the household principal's calendar.
+    assert c["url"] == _SHARED_URL and c["suffix"] == ".ics"
+    assert _SHARED_URL in ensured  # collection ensured before its PUTs
     assert c["uid"] == "solaris-deadline-d1-cancellation_deadline"
     assert "SUMMARY:Kündigungsfrist: ERGO Rechtsschutz" in c["body"]
     assert "DTSTART;VALUE=DATE:20261215" in c["body"]
@@ -101,35 +117,36 @@ async def test_deadline_puts_alarmed_all_day_event(tmp_path, monkeypatch):
 
 
 async def test_multiple_deadlines_each_put(tmp_path, monkeypatch):
-    calls = _capture(monkeypatch)
+    calls, _ = _capture(monkeypatch)
     db = _db(
         tmp_path,
         [("cancellation_deadline", "2026-12-15"), ("hu_date", "2027-03-01")],
     )
-    out = await sync_deadlines(db, _URL, "solaris", "pw")
+    out = await sync_deadlines(db, _BASE, "solaris", "pw")
     assert out["written"] == 2 and len(calls) == 2
 
 
 async def test_unparseable_date_skipped(tmp_path, monkeypatch):
-    calls = _capture(monkeypatch)
+    calls, _ = _capture(monkeypatch)
     db = _db(tmp_path, [("cancellation_deadline", "zum Vertragsende")])
-    out = await sync_deadlines(db, _URL, "solaris", "pw")
+    out = await sync_deadlines(db, _BASE, "solaris", "pw")
     assert out == {"written": 0, "skipped": 1, "failed": 0}
     assert calls == []
 
 
 async def test_non_deadline_date_ignored(tmp_path, monkeypatch):
-    calls = _capture(monkeypatch)
+    calls, _ = _capture(monkeypatch)
     db = _db(tmp_path, [("start_date", "2026-01-01")])
-    out = await sync_deadlines(db, _URL, "solaris", "pw")
+    out = await sync_deadlines(db, _BASE, "solaris", "pw")
     assert out == {"written": 0, "skipped": 0, "failed": 0}
     assert calls == []
 
 
-async def test_per_resident_task_not_synced_to_shared_calendar(tmp_path, monkeypatch):
-    # Privacy boundary: a resident's private dated task must NOT reach the shared
-    # Fristen calendar, while a household-scoped task must.
-    calls = _capture(monkeypatch)
+async def test_task_lands_in_owning_residents_calendar(tmp_path, monkeypatch):
+    # #997 owner-scoping: a resident's private dated task is written ONLY under
+    # that resident's own DAV context, and a household task under SHARED_UID —
+    # a resident's task must never reach another resident's calendar.
+    calls, ensured = _capture(monkeypatch)
     db = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(db)
     conn.executescript(_SCHEMA)
@@ -144,23 +161,56 @@ async def test_per_resident_task_not_synced_to_shared_calendar(tmp_path, monkeyp
         conn,
         "t-shared",
         "Müll rausbringen",
-        document_deadlines_sync.projection.SHARED_UID,
+        _SHARED,
         [("status", "open"), ("due", "2026-09-02"), ("title_text", "Müll rausbringen")],
     )
     conn.commit()
     conn.close()
-    out = await sync_deadlines(db, _URL, "solaris", "pw")
-    assert out == {"written": 1, "skipped": 0, "failed": 0}
-    assert [c["uid"] for c in calls] == ["solaris-task-t-shared"]
-    assert all("Gynäkologe" not in c["body"] for c in calls)
+    out = await sync_deadlines(db, _BASE, "solaris", "pw")
+    assert out == {"written": 2, "skipped": 0, "failed": 0}
+    by_uid = {c["uid"]: c for c in calls}
+    lena_url = f"{_BASE}/lena/{_CAL}/"
+    # Lena's task → only Lena's calendar; the household task → only SHARED.
+    assert by_uid["solaris-task-t-lena"]["url"] == lena_url
+    assert by_uid["solaris-task-t-shared"]["url"] == _SHARED_URL
+    # Owner-safety: Lena's task never PUT to the household (B's) URL, and vice versa.
+    assert not any(
+        c["uid"] == "solaris-task-t-lena" and c["url"] == _SHARED_URL for c in calls
+    )
+    assert not any(
+        c["uid"] == "solaris-task-t-shared" and c["url"] == lena_url for c in calls
+    )
+    # Each owner's collection ensured before its PUTs.
+    assert lena_url in ensured and _SHARED_URL in ensured
+    # And Lena's private title never leaks into the household calendar's bodies.
+    assert all("Gynäkologe" not in c["body"] for c in calls if c["url"] == _SHARED_URL)
+
+
+async def test_resolved_task_not_written(tmp_path, monkeypatch):
+    calls, _ = _capture(monkeypatch)
+    db = str(tmp_path / "solaris.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    _task(
+        conn,
+        "t-done",
+        "erledigt",
+        "lena",
+        [("status", "done"), ("due", "2026-09-01"), ("title_text", "erledigt")],
+    )
+    conn.commit()
+    conn.close()
+    out = await sync_deadlines(db, _BASE, "solaris", "pw")
+    assert out == {"written": 0, "skipped": 0, "failed": 0}
+    assert calls == []
 
 
 async def test_disabled_when_unconfigured(tmp_path, monkeypatch):
-    calls = _capture(monkeypatch)
+    calls, ensured = _capture(monkeypatch)
     db = _db(tmp_path, [("cancellation_deadline", "2026-12-15")])
     assert await sync_deadlines(db, "", "solaris", "pw") == {
         "written": 0,
         "skipped": 0,
         "failed": 0,
     }
-    assert calls == []
+    assert calls == [] and ensured == []

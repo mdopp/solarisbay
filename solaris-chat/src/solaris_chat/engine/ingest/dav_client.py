@@ -357,6 +357,21 @@ class HttpDavClient:
                 resp.raise_for_status()
         return resource_url
 
+    async def ensure_calendar(self, collection_url: str) -> None:
+        """MKCALENDAR the collection so a following PUT lands (RFC 4791 §5.3.1).
+
+        Radicale answers 405 (Method Not Allowed) when the collection already
+        exists — expected on every re-sync, so it's not an error. Any other
+        non-2xx raises. Uses the CalDAV credentials.
+        """
+        url = collection_url if collection_url.endswith("/") else collection_url + "/"
+        async with aiohttp.ClientSession(
+            timeout=self._timeout, auth=self._caldav_auth
+        ) as session:
+            async with session.request("MKCALENDAR", url) as resp:
+                if resp.status != 405:
+                    resp.raise_for_status()
+
     async def _iter_resources(
         self, url: str, auth: aiohttp.BasicAuth | None, suffix: str
     ) -> AsyncIterator[tuple[str, str, str]]:
