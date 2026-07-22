@@ -5200,14 +5200,28 @@
                 var hay = (typeof hit === "string" ? hit : JSON.stringify(hit)).toLowerCase();
                 return words.every(function (w) { return hay.indexOf(w) !== -1; });
               });
-              // notes_search returns several chunk-hits per file; de-duplicate by
-              // note path so one note appears once (#note-dupes).
-              var seen = {};
-              var uniq = strict.filter(function (hit) {
-                var p = (typeof hit === "string" ? hit : (hit.path || hit.okf_path || hit.title || hit.name || ""));
-                var key = String(p).toLowerCase();
-                if (!key || seen[key]) return false;
-                seen[key] = 1; return true;
+              // One uploaded note exists as TWO files — the raw upload companion
+              // (users/…/uploads/…) and the extracted OKF note (…/okf/notes/…) —
+              // same title, different paths. De-duplicate by display LABEL so it
+              // shows once, and open the OKF note (not the raw upload) when both
+              // exist (#note-dupes).
+              function hitPath(hit) { return typeof hit === "string" ? hit : (hit.path || hit.okf_path || ""); }
+              function hitLabel(hit) { return typeof hit === "string" ? hit : (hit.title || hit.name || hitPath(hit)); }
+              var byLabel = {};
+              var uniq = [];
+              strict.forEach(function (hit) {
+                var label = hitLabel(hit);
+                var key = String(label).toLowerCase();
+                if (!key) return;
+                var path = hitPath(hit);
+                if (byLabel[key] != null) {
+                  var prev = uniq[byLabel[key]];
+                  // prefer the OKF note over the raw upload companion for opening.
+                  if (/\/uploads\//.test(prev.path) && !/\/uploads\//.test(path)) prev.path = path;
+                  return;
+                }
+                byLabel[key] = uniq.length;
+                uniq.push({ label: label, path: path });
               });
               var h = document.createElement("div"); h.className = "dc-list-head";
               h.textContent = uniq.length + " Notiz-Treffer für „" + q + "“";
@@ -5217,18 +5231,16 @@
                 e.textContent = "Keine passende Notiz.";
                 listEl.appendChild(e); return;
               }
-              uniq.slice(0, 6).forEach(function (hit) {
-                var path = (typeof hit === "string" ? hit : (hit.path || hit.okf_path || ""));
-                var label = hit.title || hit.name || path || (typeof hit === "string" ? hit : "");
-                if (!label) return;
+              uniq.slice(0, 6).forEach(function (u) {
+                if (!u.label) return;
                 var a = document.createElement("div"); a.className = "task-row";
                 var m = document.createElement("div"); m.className = "task-main";
-                var t = document.createElement("span"); t.className = "task-title"; t.textContent = label;
+                var t = document.createElement("span"); t.className = "task-title"; t.textContent = u.label;
                 m.appendChild(t); a.appendChild(m);
                 // Tap a note result to open it in the note viewer (#note-click).
-                if (path) {
+                if (u.path) {
                   a.style.cursor = "pointer";
-                  a.addEventListener("click", function () { openNoteViewer(path); });
+                  a.addEventListener("click", function () { openNoteViewer(u.path); });
                 }
                 listEl.appendChild(a);
               });
