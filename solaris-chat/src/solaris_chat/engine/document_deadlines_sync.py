@@ -106,16 +106,29 @@ def _collection_url(base_url: str, resident_uid: str) -> str:
 
 
 async def sync_deadlines(
-    db_path: str, base_url: str, username: str, password: str
+    db_path: str,
+    base_url: str,
+    username: str,
+    password: str,
+    household_uid: str = "",
 ) -> dict[str, int]:
     """PUT each resident's dated OPEN tasks + the household's document deadlines
-    into their PER-RESIDENT Solaris calendar (`{base}/solaris/{resident_uid}/`).
+    into their PER-RESIDENT Solaris calendar (`{base}/{resident_uid}/solaris/`).
+
+    Household-wide items (shared document deadlines + household tasks) carry the
+    `SHARED_UID` sentinel, which is NOT a real Radicale principal — writing under
+    it 409s where no `household` principal exists. So when `household_uid` is set
+    (the operator's primary resident), those items are routed to that resident's
+    own calendar instead; when empty, the `SHARED_UID` behaviour is unchanged.
 
     Returns `{written, skipped, failed}`. Never raises. Disabled (no-op) when the
     base URL / credentials are unset.
     """
     if not (base_url and username and password):
         return {"written": 0, "skipped": 0, "failed": 0}
+    # Where household-scoped items land: the primary resident's own calendar when
+    # configured, else the (principal-less) SHARED_UID as before.
+    shared_target = household_uid or projection.SHARED_UID
     client = HttpDavClient(caldav_username=username, caldav_password=password)
     written = skipped = failed = 0
     # owner resident_uid → [(uid, ics)]; an event only ever lands under its own
@@ -144,7 +157,7 @@ async def sync_deadlines(
                     continue
                 uid = f"{_UID_PREFIX}{doc['id']}-{pred}"
                 summary = f"{label}: {doc['canonical_name']}"
-                per_resident.setdefault(projection.SHARED_UID, []).append(
+                per_resident.setdefault(shared_target, []).append(
                     (uid, _build_event(uid, summary, desc, day))
                 )
         # Dated to-do tasks (#todo, #997): an OPEN task with an ISO `due` becomes
@@ -164,7 +177,12 @@ async def sync_deadlines(
                 continue
             uid = f"{_TASK_UID_PREFIX}{task['id']}"
             summary = f"Aufgabe: {facts.get('title_text', task['canonical_name'])}"
-            per_resident.setdefault(task["resident_uid"], []).append(
+            # A private task lands in its owner's calendar; a household task
+            # (SHARED_UID) is routed to the primary resident like the deadlines.
+            owner = task["resident_uid"]
+            if owner == projection.SHARED_UID:
+                owner = shared_target
+            per_resident.setdefault(owner, []).append(
                 (uid, _build_event(uid, summary, "", day))
             )
     finally:

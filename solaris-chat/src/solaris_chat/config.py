@@ -180,6 +180,13 @@ class Settings:
     # writes `{deadlines_sync_url_base}/{resident_uid}/{calendar}/` — the same URL
     # shape the Takeout calendar importer uses. Empty ⇒ per-resident sync disabled.
     deadlines_sync_url_base: str
+    # The resident whose calendar receives HOUSEHOLD-wide dated items (shared
+    # document deadlines + household tasks), which have no principal of their own
+    # (#997/#1011). "household" isn't a real Radicale principal, so household
+    # items are routed to this resident's own `/uid/solaris/` calendar instead.
+    # Empty ⇒ keep the `household` uid (only valid where a household principal
+    # exists); set it to the primary resident's uid to land them there.
+    household_calendar_uid: str
     # Where the interactive Takeout import (#869) reads library ownership from
     # (`music_dir`) and stores its scratch state / stored archives (`import_data_dir`,
     # also the ytmusicapi album cache). Defaults match the stack's data mounts.
@@ -364,6 +371,7 @@ class Settings:
             deadlines_sync_url_base=os.environ.get(
                 "DEADLINES_SYNC_URL_BASE", ""
             ).strip(),
+            household_calendar_uid=os.environ.get("HOUSEHOLD_CALENDAR_UID", "").strip(),
             music_dir=os.environ.get("MUSIC_DIR", "/opt/data/music").strip(),
             import_data_dir=os.environ.get("IMPORT_DATA_DIR", "/data/imports").strip(),
             # The household Jellyfin server the music-ingest adapter reads

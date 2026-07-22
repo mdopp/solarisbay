@@ -524,6 +524,7 @@ class CronRunner:
                 settings.deadlines_sync_url_base,
                 settings.sync_dav_username,
                 settings.sync_dav_password,
+                settings.household_calendar_uid,
             )
         except Exception as e:  # noqa: BLE001 — one bad step must not kill the run.
             log.error("engine.night.deadlines_sync_failed", error=str(e))

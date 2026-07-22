@@ -253,8 +253,13 @@
   },
   "DEADLINES_SYNC_URL_BASE": {
     "type": "text",
-    "description": "The Radicale ROOT the per-resident calendar sync writes under (#997 / #1010, option B). The engine PUTs to `{base}/solaris/{resident_uid}/` — its own `solaris` principal, which owner_only permits with no shared-auth change. The engine pod is host-networked (it reaches HA/ollama at 127.0.0.1), so this is the box-local Radicale loopback root. Blank disables the calendar sync.",
+    "description": "The Radicale ROOT the per-resident calendar sync writes under (#997 / #1010 / #1011, option A). The engine PUTs to `{base}/{resident_uid}/solaris/` — under each RESIDENT's own principal, which the converged Radicale rights let the `solaris` account write. The engine pod is host-networked (it reaches HA/ollama at 127.0.0.1), so this is the box-local Radicale loopback root. Blank disables the calendar sync.",
     "default": "http://127.0.0.1:5232/"
+  },
+  "HOUSEHOLD_CALENDAR_UID": {
+    "type": "text",
+    "description": "The resident whose `/uid/solaris/` calendar receives HOUSEHOLD-wide dated items (shared document deadlines + household tasks), which have no principal of their own (#1011). `household` is not a real Radicale principal, so set this to the primary resident's uid to land those items there. Blank keeps the principal-less `household` uid.",
+    "default": ""
   },
   "SERVICEBAY_MCP_URL": {
     "type": "text",
