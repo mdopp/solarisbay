@@ -9,6 +9,15 @@ the full layout.
 
 These rules apply to every session, human or agent.
 
+## Design (resident-facing UI)
+
+- Every change to a resident-facing surface (the chat, cards, `.tool`s, pages)
+  must meet the **"could my mother use it?"** bar — see
+  [`docs/design-guidelines.md`](docs/design-guidelines.md): self-explaining,
+  mobile-first, plain language, obvious/safe actions, immediate feedback, no dead
+  ends, one card/pattern SSOT. Walk that checklist before shipping UI; note in the
+  PR any rule a change can't meet.
+
 ## Commits
 
 - **Conventional Commits**: `type(scope): subject` — `feat`/`fix`/`refactor`/
