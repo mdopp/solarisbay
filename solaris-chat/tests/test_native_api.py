@@ -1219,3 +1219,90 @@ async def test_import_status_running_job_beats_stale_plan(aiohttp_client, tmp_pa
     )
     r = await client.get("/api/import/status", headers={"Remote-User": "mdopp"})
     assert (await r.json()) == {"ok": True, "job": running}  # job wins, not the plan
+
+
+# ---- person.update: the EDIT leg of the create·find·edit pattern (#967) -----
+
+_PERSON_SCHEMA = """
+CREATE TABLE entities (
+  id TEXT PRIMARY KEY, type TEXT NOT NULL, canonical_name TEXT NOT NULL,
+  resident_uid TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE entity_aliases (
+  entity_id TEXT NOT NULL, alias TEXT NOT NULL, PRIMARY KEY (entity_id, alias));
+CREATE TABLE facts (
+  id TEXT PRIMARY KEY, subject_entity_id TEXT, resident_uid TEXT NOT NULL,
+  predicate TEXT NOT NULL, value TEXT NOT NULL, confidence REAL,
+  source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')));
+"""
+
+
+def _person_db(tmp_path):
+    """A DB with a `.contacts`-created person (name + email/phone under source
+    `contact`), for exercising the person.update correction path."""
+    path = _db(tmp_path)
+    conn = sqlite3.connect(path)
+    conn.executescript(_PERSON_SCHEMA)
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES ('p-mike', 'person', 'Mike', 'mdopp', 'contact', 'h')"
+    )
+    conn.execute(
+        "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate, value,"
+        " confidence, source) VALUES ('f1', 'p-mike', 'mdopp', 'email',"
+        " 'old@x.de', 1.0, 'contact')"
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+async def test_person_update_correction_wins_and_persists(aiohttp_client, tmp_path):
+    from solaris_chat import documents_portal_db
+
+    db = _person_db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.post(
+        "/api/action-callback",
+        headers={"Remote-User": "mdopp"},
+        json={
+            "action_id": "person.update",
+            "confirmed": True,
+            "params": {
+                "entity_id": "p-mike",
+                "name": "Michael",
+                "email": "michael@x.de",
+                "phone": "0151 123",
+            },
+        },
+    )
+    assert r.status == 200 and (await r.json())["ok"] is True
+    # The correction replaced the created `contact` facts and renamed the entity.
+    rows = documents_portal_db.person_contacts(db, "mdopp")
+    row = next(x for x in rows if x["id"] == "p-mike")
+    assert row["name"] == "Michael"
+    assert row["email"] == "michael@x.de" and row["phone"] == "0151 123"
+
+
+async def test_person_update_owner_scoped(aiohttp_client, tmp_path):
+    from solaris_chat import documents_portal_db
+
+    db = _person_db(tmp_path)  # person owned by mdopp
+    client = await aiohttp_client(_app(tmp_path, db))
+    # lena neither owns nor shares the person → no-op False, facts untouched.
+    r = await client.post(
+        "/api/action-callback",
+        headers={"Remote-User": "lena"},
+        json={
+            "action_id": "person.update",
+            "confirmed": True,
+            "params": {"entity_id": "p-mike", "name": "Hijack", "email": "e@x.de"},
+        },
+    )
+    assert r.status == 200 and (await r.json())["ok"] is False
+    row = next(
+        x
+        for x in documents_portal_db.person_contacts(db, "mdopp")
+        if x["id"] == "p-mike"
+    )
+    assert row["name"] == "Mike" and row["email"] == "old@x.de"

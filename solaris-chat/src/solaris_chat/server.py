@@ -3877,6 +3877,26 @@ def build_app(
             return {"ok": False, "reason": "bad_title"}
         return {"ok": True, "id": tid}
 
+    async def _task_update(body: dict[str, Any]) -> dict[str, Any]:
+        """Card callback: correct a task's title/due (params: entity_id, title, due?)."""
+        uid = body.get("uid") or default_uid
+        params = body.get("params") or {}
+        entity_id = params.get("entity_id")
+        if not isinstance(entity_id, str) or not entity_id:
+            return {"ok": False, "reason": "bad_params"}
+        try:
+            ok = await asyncio.to_thread(
+                tasks_svc.update,
+                db_path=solaris_db_path,
+                uid=uid,
+                entity_id=entity_id,
+                title=str(params.get("title") or ""),
+                due=str(params.get("due") or ""),
+            )
+        except ValueError:
+            return {"ok": False, "reason": "bad_title"}
+        return {"ok": ok}
+
     def _write_quick_note(uid: str, text: str) -> str:
         """A quick vault note from the composer `.note` command: a dated markdown
         file under the resident's `notes/` that the nightly ingest projects +
@@ -4003,6 +4023,62 @@ def build_app(
             return {"ok": False, "reason": "empty"}
         eid = await asyncio.to_thread(_create_contact, uid, name, email, phone)
         return {"ok": True, "id": eid, "name": name, "email": email, "phone": phone}
+
+    def _update_contact(
+        uid: str, entity_id: str, name: str, email: str, phone: str
+    ) -> bool:
+        """Correct a personal contact's name/email/phone. Writes the email/phone
+        facts under source `contact` — the same source `.contacts` creates under —
+        so `replace_facts` overwrites the created values (the correction wins), and
+        renames the entity for the name. Owner-gated: the caller must own or share
+        the person."""
+        conn = projection.open_conn(solaris_db_path)
+        try:
+            ent = conn.execute(
+                "SELECT resident_uid FROM entities WHERE id = ? AND type = 'person'",
+                (entity_id,),
+            ).fetchone()
+            if ent is None or ent["resident_uid"] not in (uid, notes_search.SHARED_UID):
+                return False
+            facts: list[tuple[str, str, float | None]] = []
+            if email:
+                facts.append(("email", email, 1.0))
+            if phone:
+                facts.append(("phone", phone, 1.0))
+            projection.replace_facts(
+                conn,
+                subject_entity_id=entity_id,
+                resident_uid=ent["resident_uid"],
+                source="contact",
+                facts=facts,
+            )
+            if name:
+                conn.execute(
+                    "UPDATE entities SET canonical_name = ? WHERE id = ?",
+                    (name, entity_id),
+                )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    async def _person_update(body: dict[str, Any]) -> dict[str, Any]:
+        """Card callback: correct a `.contacts` person (params: entity_id, name,
+        email, phone) — the edit leg of the create-and-find pattern (#967)."""
+        uid = body.get("uid") or default_uid
+        p = body.get("params") or {}
+        entity_id = str(p.get("entity_id") or "").strip()
+        name = str(p.get("name") or "").strip()
+        email = str(p.get("email") or "").strip()
+        phone = str(p.get("phone") or "").strip()
+        if not entity_id:
+            return {"ok": False, "reason": "bad_params"}
+        if not (name or email or phone):
+            return {"ok": False, "reason": "empty"}
+        ok = await asyncio.to_thread(
+            _update_contact, uid, entity_id, name, email, phone
+        )
+        return {"ok": ok, "name": name, "email": email, "phone": phone}
 
     async def portal_persons(request: web.Request) -> web.Response:
         """Personal contacts for the `.contacts` filter (own ∪ shared household)."""
@@ -4460,9 +4536,11 @@ def build_app(
     # destructive (a task is the resident's own to-do, additive + reversible).
     action_cards.register("task.set_status", _task_set_status)
     action_cards.register("task.add", _task_add)
+    action_cards.register("task.update", _task_update)
     action_cards.register("note.add", _note_add)
     action_cards.register("doc.classify", _doc_classify)
     action_cards.register("contact.add", _contact_add)
+    action_cards.register("person.update", _person_update)
 
     async def napi_upload(request: web.Request) -> web.Response:
         """Store a camera capture / PDF / Takeout `.zip` into the vault (#826/#869).

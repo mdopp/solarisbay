@@ -55,6 +55,28 @@ def test_mention_keyboard_nav_wired_into_input_handlers():
     assert re.search(r"slash\.close\(\);\s*\n\s*mention\.close\(\);", _HTML)
 
 
+def test_dot_list_rows_open_inline_edit(_html=_HTML):
+    # The create·find·EDIT pattern (#967): a tapped task/person row opens a pre-
+    # filled inline editor that PATCHes via the *.update actions and re-renders.
+    assert "function beginTaskEdit(el, row, t)" in _html
+    assert "function beginPersonEdit(el, row, c)" in _html
+    # Task row → title area is tappable (not the checkbox) → task.update.
+    assert (
+        'main.addEventListener("click", function (e) { e.preventDefault(); beginTaskEdit(el, row, t); });'
+        in _html
+    )
+    assert '"task.update"' in _html
+    # Person row → tappable → the new person.update action.
+    assert (
+        'rw.addEventListener("click", function () { beginPersonEdit(el, rw, c); });'
+        in _html
+    )
+    assert '"person.update"' in _html
+    # Saving re-renders by reloading the list; the create path is untouched.
+    assert re.search(r"beginTaskEdit[\s\S]*?loadTaskList\(el\)", _html)
+    assert re.search(r"beginPersonEdit[\s\S]*?loadPersons\(el\)", _html)
+
+
 def test_sent_turns_highlight_mentions():
     # User-turn rendering wraps #tag/@person tokens in a styled chip span; both
     # the live-send and history-load paths go through appendMentionText().

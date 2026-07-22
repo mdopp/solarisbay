@@ -845,6 +845,12 @@
       border-radius: 0 0 var(--radius) var(--radius); }
     .dot-card .dc-list-head { font-size: 11px; text-transform: uppercase;
       letter-spacing: .05em; color: var(--muted); margin-bottom: 8px; }
+    /* Inline edit form (create·find·edit, #967): the create fields reused in a row. */
+    .dot-card .dc-edit { flex-wrap: wrap; gap: 8px; }
+    .dot-card .dc-edit input { flex: 1 1 120px; min-width: 0; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); }
+    .dot-card .dc-edit .dc-edit-title { flex-basis: 100%; font-weight: 600; }
+    .dot-card .dc-edit .ac-btn { flex: 0 0 auto; }
     .task-row.task-check { justify-content: flex-start; gap: 10px; cursor: pointer; }
     .task-cb { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); margin: 0; }
     .task-row.resolved { opacity: .65; }
@@ -4824,8 +4830,32 @@
             var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.name || c.email || c.phone; m.appendChild(tt);
             var bits = []; if (c.phone) bits.push("📞 " + c.phone); if (c.email) bits.push("✉ " + c.email);
             if (bits.length) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = bits.join(" · "); m.appendChild(d); }
+            // Tap a contact to correct it (create·find·edit, #967) via person.update.
+            rw.style.cursor = "pointer";
+            rw.addEventListener("click", function () { beginPersonEdit(el, rw, c); });
             rw.appendChild(m); listEl.appendChild(rw);
           });
+        }
+        // The .contacts create fields (name/email/phone) reused in EDIT mode: swap
+        // the tapped row for a pre-filled form that PATCHes via person.update.
+        function beginPersonEdit(el, row, c) {
+          var form = document.createElement("div"); form.className = "task-row dc-edit";
+          var name = document.createElement("input"); name.type = "text"; name.className = "dc-edit-title"; name.placeholder = "Name"; name.value = c.name || "";
+          var email = document.createElement("input"); email.type = "email"; email.placeholder = "E-Mail"; email.value = c.email || "";
+          var phone = document.createElement("input"); phone.type = "tel"; phone.placeholder = "Telefon"; phone.value = c.phone || "";
+          var save = document.createElement("button"); save.className = "ac-btn ac-primary"; save.type = "button"; save.textContent = "Speichern";
+          var cancel = document.createElement("button"); cancel.className = "ac-btn"; cancel.type = "button"; cancel.textContent = "Abbrechen";
+          function close() { loadPersons(el); }
+          save.addEventListener("click", function () {
+            if (!name.value.trim() && !email.value.trim() && !phone.value.trim()) return;
+            save.disabled = true;
+            taskAction("person.update", { entity_id: c.id, name: name.value.trim(), email: email.value.trim(), phone: phone.value.trim() })
+              .then(function (j) { if (!j || !j.ok) { save.disabled = false; return; } close(); });
+          });
+          cancel.addEventListener("click", close);
+          [name, email, phone].forEach(function (i) { i.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); save.click(); } else if (e.key === "Escape") { e.preventDefault(); close(); } }); });
+          form.appendChild(name); form.appendChild(email); form.appendChild(phone); form.appendChild(save); form.appendChild(cancel);
+          row.parentNode.replaceChild(form, row); name.focus(); name.select();
         }
         function buildNoteCard(el) {
           var title = document.createElement("div"); title.className = "dc-title";
@@ -4942,6 +4972,9 @@
             var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = t.title;
             main.appendChild(tt);
             if (t.due) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = "📅 " + t.due; main.appendChild(d); }
+            // Tap the title (not the checkbox) to edit — the third leg of the
+            // create·find·edit pattern (#967). Prevent the label toggling the box.
+            main.addEventListener("click", function (e) { e.preventDefault(); beginTaskEdit(el, row, t); });
             row.appendChild(cb); row.appendChild(main);
             listEl.appendChild(row);
           });
@@ -4950,6 +4983,26 @@
             more.textContent = "… und " + (items.length - 8) + " weitere (unter ✅ Aufgaben)";
             listEl.appendChild(more);
           }
+        }
+        // The create-card fields (title input + date) reused in EDIT mode: swap the
+        // tapped row for a pre-filled inline form that PATCHes via task.update.
+        function beginTaskEdit(el, row, t) {
+          var form = document.createElement("div"); form.className = "task-row dc-edit";
+          var ti = document.createElement("input"); ti.type = "text"; ti.className = "dc-edit-title"; ti.value = t.title;
+          var due = document.createElement("input"); due.type = "date"; due.title = "Fällig (optional)"; due.value = t.due || "";
+          var save = document.createElement("button"); save.className = "ac-btn ac-primary"; save.type = "button"; save.textContent = "Speichern";
+          var cancel = document.createElement("button"); cancel.className = "ac-btn"; cancel.type = "button"; cancel.textContent = "Abbrechen";
+          function close() { loadTaskList(el); }
+          save.addEventListener("click", function () {
+            var title = ti.value.trim(); if (!title) return;
+            save.disabled = true;
+            taskAction("task.update", { entity_id: t.id, title: title, due: due.value || "" })
+              .then(function (j) { if (!j || !j.ok) { save.disabled = false; return; } close(); });
+          });
+          cancel.addEventListener("click", close);
+          ti.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); save.click(); } else if (e.key === "Escape") { e.preventDefault(); close(); } });
+          form.appendChild(ti); form.appendChild(due); form.appendChild(save); form.appendChild(cancel);
+          row.parentNode.replaceChild(form, row); ti.focus(); ti.select();
         }
         // Recognise a date typed in the input's own format — TT.MM.JJJJ (also
         // TT.MM.JJ and a bare TT.MM. with the year inferred: this year, or next

@@ -108,6 +108,46 @@ def set_status(*, db_path: str, uid: str, entity_id: str, status: str) -> bool:
     return True
 
 
+def update(*, db_path: str, uid: str, entity_id: str, title: str, due: str) -> bool:
+    """Correct a task's title/due; rewrites the `task`-source facts, preserving
+    status and the rest. Returns False if the task isn't visible to the caller."""
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("task title is empty")
+    conn = projection.open_conn(db_path)
+    try:
+        owner = conn.execute(
+            "SELECT resident_uid FROM entities WHERE id = ? AND type = 'task'"
+            " AND resident_uid IN (?, ?)",
+            (entity_id, uid, projection.SHARED_UID),
+        ).fetchone()
+        if owner is None:
+            return False
+        current = {
+            f["predicate"]: (f["value"], f["confidence"])
+            for f in projection.entity_facts(conn, entity_id, uid)
+        }
+        current["title_text"] = (title, 1.0)
+        if due.strip():
+            current["due"] = (due.strip(), 1.0)
+        else:
+            current.pop("due", None)
+        projection.replace_facts(
+            conn,
+            subject_entity_id=entity_id,
+            resident_uid=owner["resident_uid"],
+            source=_SOURCE,
+            facts=[(p, v, c) for p, (v, c) in current.items()],
+        )
+        conn.execute(
+            "UPDATE entities SET canonical_name = ? WHERE id = ?", (title, entity_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return True
+
+
 def list_tasks(
     db_path: str, uid: str, *, include_done: bool = False
 ) -> list[dict[str, Any]]:

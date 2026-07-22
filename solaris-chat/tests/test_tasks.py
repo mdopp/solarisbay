@@ -86,6 +86,28 @@ def test_resolved_at_stamped_and_cleared(tmp_path):
     assert reopened["status"] == "open" and reopened["resolved_at"] == ""
 
 
+def test_update_changes_title_and_due(tmp_path):
+    db, notes = _env(tmp_path)
+    tid = tasks.create_task(
+        db_path=db, notes_dir=notes, uid="mdopp", title="alt", due="2026-08-01"
+    )
+    assert tasks.update(
+        db_path=db, uid="mdopp", entity_id=tid, title="neu", due="2026-09-09"
+    )
+    t = tasks.list_tasks(db, "mdopp")[0]
+    assert t["title"] == "neu" and t["due"] == "2026-09-09" and t["status"] == "open"
+
+    # Clearing the due date drops it; status is preserved.
+    assert tasks.update(db_path=db, uid="mdopp", entity_id=tid, title="neu", due="")
+    assert tasks.list_tasks(db, "mdopp")[0]["due"] == ""
+
+    # Not visible to another resident → no-op False.
+    assert not tasks.update(
+        db_path=db, uid="lena", entity_id=tid, title="fremd", due=""
+    )
+    assert tasks.list_tasks(db, "mdopp")[0]["title"] == "neu"
+
+
 def test_owner_scoped(tmp_path):
     db, notes = _env(tmp_path)
     tasks.create_task(db_path=db, notes_dir=notes, uid="mdopp", title="privat")
