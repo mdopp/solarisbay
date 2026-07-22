@@ -425,15 +425,38 @@
       border-color: transparent; text-decoration: underline;
       text-decoration-style: dotted;
     }
+    /* Device cards mirror the Solaris Android MEDIUM home-screen widget: a fixed
+       210px dark tile (gradient body, hairline border, 22px radius) that stacks
+       header → state block → controls. Dark-only, so literal hex not var()s. */
     .ha-card {
-      flex: 0 1 auto; min-width: 120px; max-width: 240px;
+      flex: 0 0 auto; width: 210px; min-width: 210px;
       box-sizing: border-box;
-      border: 1px solid var(--line); border-radius: 10px;
-      padding: 6px 10px; background: rgba(127,127,127,0.05);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 22px;
+      padding: 16px;
+      background: linear-gradient(180deg, #17171D, #0D0D11);
     }
-    /* Inside a grid a card fills its column (no 240px cap, no shrink-overflow):
-       border-box + min-width:0 keep its contents within the column edge. */
-    .hc-grid > .ha-card { max-width: 100%; min-width: 0; }
+    /* Inside a grid / masonry a card grows to fill its column (border-box +
+       min-width:0 keep its contents within the column edge). */
+    .hc-grid > .ha-card, .start-favs > .ha-card { width: 100%; max-width: 100%; min-width: 0; }
+    /* Header: 38px accent icon + name (18px bold, may wrap 2 lines) + a
+       right-aligned 🔒 lock badge for sensitive/confirm-gated cards. */
+    .ha-card .hc-icon {
+      flex: 0 0 auto; width: 38px; height: 38px; color: #FFC107;
+    }
+    .ha-card .hc-icon svg { width: 100%; height: 100%; display: block; fill: currentColor; }
+    .ha-card .hc-lock { flex: 0 0 auto; font-size: 20px; color: #B0BEC5; margin-left: auto; }
+    /* Big state label in the domain accent colour, sitting under the header. */
+    .ha-card .hc-big {
+      font-size: 22px; font-weight: 700; line-height: 1.15;
+      margin: 12px 0 0; color: #FFC107;
+    }
+    .ha-card .hc-big .hc-unit { font-size: 15px; font-weight: 400; color: #B0BEC5; margin-left: 4px; }
+    /* Level bar (brightness/position): track + accent fill. */
+    .ha-card .hc-bar {
+      height: 8px; border-radius: 4px; margin-top: 10px;
+      background: rgba(255,255,255,0.15); overflow: hidden;
+    }
+    .ha-card .hc-bar > i { display: block; height: 100%; border-radius: 4px; background: #FFC107; }
     /* #692: the card header — name on the left, the on/off toggle (light/switch)
        + cover open/stop/close + the ☆ pin right-aligned. Keeping the toggle here
        (not on its own body row) makes a light card just header + slider + %. */
@@ -442,7 +465,13 @@
     }
     .hc-head .hc-name { flex: 1 1 auto; min-width: 0; }
     .hc-head .hc-compact { flex: 0 0 auto; margin-top: 0; }
-    .ha-card .hc-name { font-size: 12px; color: var(--muted); }
+    /* Widget card header: icon + name baseline-aligned at the top; the name is
+       the large device label (18px bold), wrapping at most two lines. */
+    .ha-card .hc-head { align-items: flex-start; gap: 10px; }
+    .ha-card .hc-name {
+      font-size: 18px; font-weight: 700; color: #F2F2F5; line-height: 1.2;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
     .ha-card .hc-state { font-size: 18px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
     .ha-card .hc-unit { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 3px; }
     .ha-card .hc-badge {
@@ -981,6 +1010,22 @@
       border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08); color: inherit;
     }
     .hc-group .hc-set .hc-target { font-size: 16px; font-weight: 600; min-width: 52px; text-align: center; }
+    /* Widget controls row: a full-width row of large touch buttons at the card
+       foot (cover ▲■▼, light −/+, switch Umschalten). Big + clearly labelled so
+       a garage tap is unmissable on a phone (the old tiny ▲■▼ were unusable). */
+    .ha-card .hc-controls {
+      display: flex; gap: 8px; margin-top: 14px; width: 100%;
+    }
+    .ha-card .hc-controls > button {
+      flex: 1 1 0; min-width: 0; box-sizing: border-box;
+      height: 48px; border: none; border-radius: 10px;
+      background: rgba(255,255,255,0.12); color: #F2F2F5;
+      font: inherit; font-size: 18px; font-weight: 600; line-height: 1; cursor: pointer;
+    }
+    .ha-card .hc-controls > button:hover { background: rgba(255,255,255,0.20); }
+    .ha-card .hc-controls > button.hc-off {
+      color: #9E9E9E; pointer-events: none;
+    }
     /* Phase 3 (#477): slider / colour / climate controls on a card. */
     .ha-card .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
     .ha-card .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 0; max-width: 100%; }
@@ -2574,9 +2619,70 @@
         });
       }
 
+      // Solaris Android MEDIUM-widget palette: per-domain accent used for the
+      // icon tint, the big state label and the level-bar fill. Off/disabled → grey.
+      var HC_ACCENT = {
+        light: "#FFC107", cover: "#7E9CFF", switch: "#66BB6A",
+        climate: "#FF8A65", sensor: "#FFC107",
+      };
+      function hcAccent(domain) { return HC_ACCENT[domain] || "#FFC107"; }
+      // Inline domain icon (24-grid path, tinted via currentColor). Reuses the
+      // sprite's bolt for switch; simple glyphs for the others.
+      var HC_ICON = {
+        light: '<path d="M9 21h6v-1H9zM12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/>',
+        cover: '<path d="M3 4h18v2H3zM5 7h14v13H5zm2 2v9h10V9z"/>',
+        switch: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+        climate: '<path d="M13 5a3 3 0 0 0-6 0v7.2a5 5 0 1 0 6 0zm-3 12.5a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/>',
+        sensor: '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4a1 1 0 0 1 1 1v5l3.5 2-1 1.7L11 13V7a1 1 0 0 1 1-1z"/>',
+      };
+      function hcIconSvg(domain) {
+        return HC_ICON[domain] || HC_ICON.sensor;
+      }
+      // Big state label per domain (German), matching the widget wording.
+      function hcBigState(c, st) {
+        var d = c.domain;
+        if (d === "light") {
+          if (st === "on") {
+            if (c.brightness != null) return Math.round(c.brightness / 255 * 100) + " %";
+            return "an";
+          }
+          return "aus";
+        }
+        if (d === "switch") return st === "on" ? "an" : "aus";
+        if (d === "cover") {
+          var p = c.current_position;
+          if (p == null) return st === "open" || st === "on" ? "offen" : "zu";
+          p = Number(p);
+          if (p >= 99) return "offen";
+          if (p <= 1) return "zu";
+          return p + " % offen";
+        }
+        if (d === "climate") {
+          var t = c.current_temperature != null ? c.current_temperature
+            : (c.temperature != null ? c.temperature : null);
+          if (t != null) return String(Math.round(Number(t) * 10) / 10).replace(".", ",") + " °";
+          return st || "—";
+        }
+        return st || "—";
+      }
+      // The 0–100 level for the widget's fill bar, or null when the domain has
+      // no bar (switch/sensor/climate).
+      function hcLevel(c) {
+        if (c.domain === "light") {
+          if (c.brightness != null) return Math.round(c.brightness / 255 * 100);
+          return null;
+        }
+        if (c.domain === "cover" && c.current_position != null) return Number(c.current_position);
+        return null;
+      }
+
       // One entity's card. `row` renders it as a compact group row (no card
       // chrome) reusing the same controls; otherwise as a standalone card.
       function renderHaCard(c, row, opts) {
+        // A standalone card (not a group row) uses the Solaris MEDIUM-widget
+        // layout: header (icon + name + 🔒) → big state + level bar → controls.
+        // The compact group row keeps the pre-widget rendering below.
+        if (!row) return renderHaWidget(c, opts);
         var card = document.createElement("div");
         card.className = row ? "hc-row" : "ha-card";
         // Picker-inert mode (#702): in the "+ Karten hinzufügen" overlay a tile
@@ -2710,6 +2816,113 @@
         return card;
       }
 
+      // Standalone device card in the Solaris Android MEDIUM-widget style: a
+      // fixed 210px dark tile stacking header (accent icon + name + 🔒) → big
+      // accent state label + level bar → a full-width controls row. Every
+      // control still fires through haCall/haToggle (garage confirm intact);
+      // picker mode stays inert, offline entities stay greyed, ☆ pin preserved.
+      function renderHaWidget(c, opts) {
+        var card = document.createElement("div");
+        card.className = "ha-card";
+        var inert = !!(opts && opts.picker);
+        if (inert) card.classList.add("hc-inert");
+        var domain = c.domain;
+        var st = String(c.state == null ? "" : c.state);
+        var offline = st === "unavailable" || st === "unknown" || st === "";
+
+        // Header: accent-tinted domain icon + device name (may wrap 2 lines).
+        var head = document.createElement("div");
+        head.className = "hc-head";
+        card.appendChild(head);
+        var accent = offline ? "#9E9E9E" : hcAccent(domain);
+        var icon = document.createElement("span");
+        icon.className = "hc-icon";
+        icon.style.color = accent;
+        icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + hcIconSvg(domain) + "</svg>";
+        head.appendChild(icon);
+        var name = document.createElement("div");
+        name.className = "hc-name";
+        name.textContent = c.name || c.entity_id || "";
+        head.appendChild(name);
+        // Lock badge (#702): sensitive garage/door/gate cards wear a 🔒 so the
+        // resident sees the tap is confirm-gated. Right-aligned via margin-auto.
+        if (c.sensitive) {
+          card.classList.add("hc-sensitive");
+          var lock = document.createElement("span");
+          lock.className = "hc-lock";
+          lock.textContent = "🔒";
+          lock.title = "Bestätigungspflichtig";
+          head.appendChild(lock);
+        }
+        // ☆ pin (chat renderers only, #646) sits last in the header.
+        if (opts && opts.pin && c.entity_id) {
+          card.classList.add("hc-pinnable");
+          var pin = document.createElement("button");
+          pin.className = "hc-pin";
+          pin.type = "button";
+          pin.textContent = "☆";
+          pin.title = "Auf die Startseite pinnen";
+          pin.addEventListener("click", function (ev) { ev.stopPropagation(); pinEntity(pin, c); });
+          head.appendChild(pin);
+        }
+
+        // #732: an offline/unreachable entity is greyed + inert (no controls),
+        // never a device tap that HA can't reach.
+        if (offline && domain !== "climate" && domain !== "media_player") {
+          card.classList.add("hc-unavailable");
+          var ulbl = document.createElement("div");
+          ulbl.className = "hc-unavail-label";
+          ulbl.textContent = "nicht verfügbar";
+          card.appendChild(ulbl);
+          return card;
+        }
+
+        // media_player keeps its richer transport card (wide span).
+        if (domain === "media_player") {
+          card.classList.add("hc-span2");
+          renderMediaPlayerCard(card, c, st, inert);
+          return card;
+        }
+
+        // Big state label in the domain accent colour.
+        var onish = st === "on" || st === "open";
+        card.classList.add(onish ? "on" : "off");
+        var big = document.createElement("div");
+        big.className = "hc-big";
+        big.style.color = accent;
+        if (domain === "sensor") {
+          big.textContent = fmtNum(st) || "—";
+          if (c.unit) {
+            var u = document.createElement("span");
+            u.className = "hc-unit"; u.textContent = c.unit;
+            big.appendChild(u);
+          }
+        } else {
+          big.textContent = hcBigState(c, st);
+        }
+        card.appendChild(big);
+
+        // Level bar (brightness/position) — hidden for switch/sensor/climate.
+        var level = hcLevel(c);
+        if (level != null) {
+          var bar = document.createElement("div");
+          bar.className = "hc-bar";
+          var fill = document.createElement("i");
+          fill.style.width = Math.max(0, Math.min(100, level)) + "%";
+          fill.style.background = accent;
+          bar.appendChild(fill);
+          card.appendChild(bar);
+        }
+
+        // Controls row (skipped in picker mode — an inert tile is state-only).
+        if (!inert) {
+          if (domain === "cover") renderCoverControls(card, c);
+          else if (domain === "light") renderLightControls(card, c);
+          else if (domain === "switch") renderSwitchControls(card, c);
+        }
+        return card;
+      }
+
       // Action card (Wartung P2a, #787): a {title, body, buttons:[{label,
       // action_id, style}]} card injected into a chat (#785). Each button posts
       // its action_id to /api/action-callback, which maps it to a server-side
@@ -2777,6 +2990,38 @@
       // Brightness slider (when the light is dimmable) + colour picker (when it
       // supports a colour mode). Acts via light.turn_on {brightness_pct|rgb_color}.
       function renderLightControls(card, c, brightHost) {
+        // Widget card (no brightHost): tapping the icon/state toggles the light
+        // (light.toggle via haToggle); a dimmable light gets big −/+ brightness
+        // buttons (light.turn_on {brightness_pct: current∓10}); a colour light
+        // keeps its picker on its own row below.
+        if (brightHost == null) {
+          hcWireWidgetToggle(card, c);
+          var dim = c.brightness != null ||
+            (c.supported_color_modes || []).some(function (m) { return m !== "onoff"; });
+          if (dim) {
+            if (c.brightness != null) hcLastBrightness[c.entity_id] = Math.round(c.brightness / 255 * 100);
+            var curPct = c.brightness != null ? Math.round(c.brightness / 255 * 100)
+              : (hcLastBrightness[c.entity_id] != null ? hcLastBrightness[c.entity_id] : 0);
+            var ctr = document.createElement("div");
+            ctr.className = "hc-controls";
+            [["−", -10, "Dunkler"], ["+", 10, "Heller"]].forEach(function (b) {
+              var btn = document.createElement("button");
+              btn.type = "button";
+              btn.textContent = b[0];
+              btn.title = b[2];
+              btn.style.color = "#FFC107";
+              btn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                curPct = Math.max(0, Math.min(100, curPct + b[1]));
+                haCall(card, c, "light.turn_on", { brightness_pct: curPct });
+              });
+              ctr.appendChild(btn);
+            });
+            card.appendChild(ctr);
+          }
+          hcRenderColourPicker(card, c);
+          return;
+        }
         var dimmable = c.brightness != null ||
           (c.supported_color_modes || []).some(function (m) { return m !== "onoff"; });
         if (dimmable) {
@@ -2795,6 +3040,12 @@
           }, true, !known && cached == null);
           card.hcBrightness = slider;
         }
+        hcRenderColourPicker(card, c);
+      }
+
+      // Colour picker row (shared by the legacy row + the widget card). Acts via
+      // light.turn_on {rgb_color}; #738 infers cancel to revert on dismiss.
+      function hcRenderColourPicker(card, c) {
         var hasColour = (c.supported_color_modes || []).some(function (m) {
           return COLOUR_MODES.indexOf(m) !== -1;
         });
@@ -2864,6 +3115,59 @@
         }
       }
 
+      // Make a widget light/switch card's icon + big state a tap target that
+      // toggles the device (<domain>.toggle through haCall — same confirm-gate
+      // path). Optimistically flips the .on/.off class + the big label so the
+      // card reads right before the SSE/poll card_state settles it.
+      function hcWireWidgetToggle(card, c) {
+        var big = card.querySelector(".hc-big");
+        var icon = card.querySelector(".hc-icon");
+        var toggle = function (e) {
+          if (e) e.stopPropagation();
+          if (card.classList.contains("busy")) return;
+          var wasOn = card.classList.contains("on");
+          var nowOn = !wasOn;
+          card.classList.toggle("on", nowOn);
+          card.classList.toggle("off", !nowOn);
+          c.state = nowOn ? "on" : "off";
+          if (big) big.textContent = hcBigState(c, c.state);
+          hcExpect(c.entity_id, nowOn ? "on" : "off");
+          haCall(card, c, c.domain + ".toggle", {});
+        };
+        [icon, big].forEach(function (el) {
+          if (!el) return;
+          el.style.cursor = "pointer";
+          el.addEventListener("click", toggle);
+        });
+      }
+
+      // Switch widget: tapping the icon/state toggles; a full-width Umschalten
+      // button at the foot mirrors it (switch.toggle through haCall).
+      function renderSwitchControls(card, c) {
+        hcWireWidgetToggle(card, c);
+        var ctr = document.createElement("div");
+        ctr.className = "hc-controls";
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "Umschalten";
+        btn.title = "Umschalten";
+        btn.style.color = "#66BB6A";
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          if (card.classList.contains("busy")) return;
+          var nowOn = !card.classList.contains("on");
+          card.classList.toggle("on", nowOn);
+          card.classList.toggle("off", !nowOn);
+          c.state = nowOn ? "on" : "off";
+          var big = card.querySelector(".hc-big");
+          if (big) big.textContent = hcBigState(c, c.state);
+          hcExpect(c.entity_id, nowOn ? "on" : "off");
+          haCall(card, c, "switch.toggle", {});
+        });
+        ctr.appendChild(btn);
+        card.appendChild(ctr);
+      }
+
       // Position slider + open/close/stop. A garage cover is confirm-first.
       // #550: open/stop/close ride the compact badge row; the position slider
       // sits on its own line below when the cover supports set_position.
@@ -2872,6 +3176,36 @@
         // server (#702); moving it asks an explicit confirm and sends
         // confirmed=true so the server's gate lets the confirmed tap through.
         var sensitive = c.sensitive || c.device_class === "garage";
+        // Widget card (no host): three big equal-weight ▲ ■ ▼ buttons at the
+        // foot — ▲ greys out when already open (pos≥99), ▼ when closed (pos≤1),
+        // ■ always active. This is the garage's primary, unmissable control.
+        if (host == null) {
+          var pos = c.current_position != null ? Number(c.current_position) : null;
+          var atOpen = pos != null && pos >= 99;
+          var atClosed = pos != null && pos <= 1;
+          var controls = document.createElement("div");
+          controls.className = "hc-controls";
+          [["▲", "open_cover", "Öffnen", atOpen],
+           ["■", "stop_cover", "Stopp", false],
+           ["▼", "close_cover", "Schließen", atClosed]].forEach(function (b) {
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.textContent = b[0];
+            btn.title = b[2];
+            var disabled = b[3];
+            if (disabled) btn.classList.add("hc-off");
+            else btn.style.color = b[1] === "stop_cover" ? "#F2F2F5" : "#7E9CFF";
+            btn.addEventListener("click", function () {
+              if (disabled) return;
+              if (sensitive && b[1] !== "stop_cover" &&
+                  !window.confirm(b[2] + " — " + (c.name || "Tor") + " wirklich bewegen?")) return;
+              haCall(card, c, "cover." + b[1], {}, sensitive);
+            });
+            controls.appendChild(btn);
+          });
+          card.appendChild(controls);
+          return;
+        }
         makeButtons(host || card, [
           ["▲", "open_cover", "Öffnen"], ["■", "stop_cover", "Stopp"],
           ["▼", "close_cover", "Schließen"],
