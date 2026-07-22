@@ -5200,21 +5200,37 @@
                 var hay = (typeof hit === "string" ? hit : JSON.stringify(hit)).toLowerCase();
                 return words.every(function (w) { return hay.indexOf(w) !== -1; });
               });
+              // notes_search returns several chunk-hits per file; de-duplicate by
+              // note path so one note appears once (#note-dupes).
+              var seen = {};
+              var uniq = strict.filter(function (hit) {
+                var p = (typeof hit === "string" ? hit : (hit.path || hit.okf_path || hit.title || hit.name || ""));
+                var key = String(p).toLowerCase();
+                if (!key || seen[key]) return false;
+                seen[key] = 1; return true;
+              });
               var h = document.createElement("div"); h.className = "dc-list-head";
-              h.textContent = strict.length + " Notiz-Treffer für „" + q + "“";
+              h.textContent = uniq.length + " Notiz-Treffer für „" + q + "“";
               listEl.appendChild(h);
-              if (!strict.length) {
+              if (!uniq.length) {
                 var e = document.createElement("div"); e.className = "task-empty";
                 e.textContent = "Keine passende Notiz.";
                 listEl.appendChild(e); return;
               }
-              strict.slice(0, 6).forEach(function (hit) {
-                var label = hit.title || hit.name || hit.path || hit.okf_path || (typeof hit === "string" ? hit : "");
+              uniq.slice(0, 6).forEach(function (hit) {
+                var path = (typeof hit === "string" ? hit : (hit.path || hit.okf_path || ""));
+                var label = hit.title || hit.name || path || (typeof hit === "string" ? hit : "");
                 if (!label) return;
                 var a = document.createElement("div"); a.className = "task-row";
                 var m = document.createElement("div"); m.className = "task-main";
                 var t = document.createElement("span"); t.className = "task-title"; t.textContent = label;
-                m.appendChild(t); a.appendChild(m); listEl.appendChild(a);
+                m.appendChild(t); a.appendChild(m);
+                // Tap a note result to open it in the note viewer (#note-click).
+                if (path) {
+                  a.style.cursor = "pointer";
+                  a.addEventListener("click", function () { openNoteViewer(path); });
+                }
+                listEl.appendChild(a);
               });
             })
             .catch(function () {});
