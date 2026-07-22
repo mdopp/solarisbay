@@ -4376,7 +4376,8 @@
         [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"],
         [".note", "Notiz anlegen + Notizen suchen — .note <Text>"],
         [".doc", "Dokument/Takeout hochladen + einsortieren"],
-        [".contacts", "Kontakt anlegen + suchen — .contacts <Name|@Mail|Tel>"]
+        [".contacts", "Kontakt anlegen + suchen — .contacts <Name|@Mail|Tel>"],
+        [".photo", "Foto hochladen + suchen — .photo <Person|Text>"]
       ];
       // Starter category list for a .doc upload (key → German label).
       var DOC_CATEGORIES = [
@@ -4677,7 +4678,7 @@
           closeMenu(); autosize(); input.focus(); refresh();
         }
 
-        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt" };
+        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen" };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
           clearCard(); kind = cmd;
@@ -4690,6 +4691,7 @@
           else if (cmd === "note") buildNoteCard(card);
           else if (cmd === "doc") buildDocCard(card);
           else if (cmd === "contacts") buildContactsCard(card);
+          else if (cmd === "photo") buildPhotoCard(card);
           log.appendChild(card); scrollDown(true);
         }
         function buildDocCard(el) {
@@ -4747,6 +4749,71 @@
             var m = document.createElement("div"); m.className = "task-main";
             var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.title || "(ohne Titel)"; m.appendChild(tt);
             if (c.category) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = c.category; m.appendChild(d); }
+            rw.appendChild(m); listEl.appendChild(rw);
+          });
+        }
+        function buildPhotoCard(el) {
+          // Same shape as buildDocCard (#961): a dropzone that uploads to Immich +
+          // a dc-list filtered by a debounced GET /api/photo?q= (person/caption/text).
+          var drop = document.createElement("div"); drop.className = "import-drop";
+          drop.setAttribute("role", "button"); drop.tabIndex = 0;
+          var dt = document.createElement("div"); dt.className = "id-title";
+          dt.textContent = "Foto hier ablegen";
+          var dh = document.createElement("div"); dh.className = "id-hint";
+          dh.textContent = "oder klicken — Bild wird zu Immich hochgeladen";
+          drop.appendChild(dt); drop.appendChild(dh); el.appendChild(drop);
+          var fi = document.createElement("input"); fi.type = "file";
+          fi.accept = "image/*"; fi.hidden = true;
+          el.appendChild(fi);
+          var status = document.createElement("div"); status.className = "import-status"; status.hidden = true;
+          el.appendChild(status);
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list; el._photos = null; el._photoTimer = null;
+          searchPhotos(el, "");
+          function take(f) { if (f) uploadPhoto(f, drop, status); }
+          drop.addEventListener("click", function () { if (!drop.classList.contains("busy")) fi.click(); });
+          fi.addEventListener("change", function () { var f = fi.files && fi.files[0]; fi.value = ""; take(f); });
+          ["dragenter", "dragover"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); }); });
+          ["dragleave", "dragend"].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.remove("over"); }); });
+          drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
+        }
+        function uploadPhoto(file, drop, status) {
+          drop.classList.add("busy");
+          importSetStatus(status, "", "Wird hochgeladen …", file.name);
+          var fd = new FormData(); fd.append("file", file, file.name || "foto.jpg");
+          fetch("/api/photo", { method: "POST", body: fd })
+            .then(function (r) { return r.json().catch(function () { return null; }); })
+            .then(function (j) {
+              drop.classList.remove("busy");
+              if (!j || !j.ok) { importSetStatus(status, "failed", "Fehlgeschlagen", (j && j.error) || "Bitte erneut versuchen."); return; }
+              importSetStatus(status, "done", "✓ Hochgeladen", "In Immich gespeichert.");
+            })
+            .catch(function () { drop.classList.remove("busy"); importSetStatus(status, "failed", "Netzwerkfehler", "Bitte erneut versuchen."); });
+        }
+        function searchPhotos(el, q) {
+          if (el._photoTimer) clearTimeout(el._photoTimer);
+          el._photoTimer = setTimeout(function () {
+            fetch("/api/photo?q=" + encodeURIComponent(q))
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (j) { if (card === el) { el._photos = (j && j.ok && j.photos) || []; renderPhotoList(el, q); } })
+              .catch(function () { if (card === el) { el._photos = []; renderPhotoList(el, q); } });
+          }, 200);
+        }
+        function renderPhotoList(el, filter) {
+          var listEl = el._list; if (!listEl || el._photos == null) return;
+          listEl.textContent = "";
+          var f = (filter || "").trim();
+          var items = el._photos;
+          var h = document.createElement("div"); h.className = "dc-list-head";
+          h.textContent = f ? items.length + " Treffer für „" + f + "“" : "Fotos (" + items.length + ")";
+          listEl.appendChild(h);
+          if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = f ? "Kein passendes Foto." : "Noch keine Fotos."; listEl.appendChild(e); return; }
+          items.slice(0, 8).forEach(function (c) {
+            var rw = document.createElement("div"); rw.className = "task-row";
+            var m = document.createElement("div"); m.className = "task-main";
+            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.name || "(ohne Namen)"; m.appendChild(tt);
+            var who = (c.people && c.people.length) ? c.people.join(", ") : "";
+            if (who) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = who; m.appendChild(d); }
             rw.appendChild(m); listEl.appendChild(rw);
           });
         }
@@ -5056,6 +5123,10 @@
             var vd = rest.trim();
             card._lastFilter = vd;
             searchDocs(card, vd);
+          } else if (cmd === "photo" && card && card._list) {
+            var vp = rest.trim();
+            card._lastFilter = vp;
+            searchPhotos(card, vp);
           }
         }
 

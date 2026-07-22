@@ -77,6 +77,20 @@ def test_dot_list_rows_open_inline_edit(_html=_HTML):
     assert re.search(r"beginPersonEdit[\s\S]*?loadPersons\(el\)", _html)
 
 
+def test_photo_dot_command_wired(_html=_HTML):
+    # `.photo` (#961) is offered in the dot-command menu with a head label …
+    assert re.search(r'\[".photo",', _html)
+    assert 'photo: "Foto hochladen"' in _html
+    # … and builds a card following buildDocCard's shape: an upload dropzone that
+    # POSTs to /api/photo, plus a dc-list filtered by a debounced GET /api/photo?q=.
+    assert "function buildPhotoCard(el)" in _html
+    assert 'else if (cmd === "photo") buildPhotoCard(card);' in _html
+    assert '"/api/photo"' in _html
+    assert '"/api/photo?q=" + encodeURIComponent(q)' in _html
+    # Typing `.photo <text>` live-filters via searchPhotos in updateCard.
+    assert re.search(r'cmd === "photo"[\s\S]*?searchPhotos\(card, vp\)', _html)
+
+
 def test_sent_turns_highlight_mentions():
     # User-turn rendering wraps #tag/@person tokens in a styled chip span; both
     # the live-send and history-load paths go through appendMentionText().

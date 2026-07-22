@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 import aiohttp
@@ -115,6 +116,36 @@ class RestImmichClient:
 
     def asset_uri(self, asset_id: str) -> str:
         return f"{self._base_url}/api/assets/{asset_id}"
+
+    async def upload_asset(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        *,
+        content_type: str = "application/octet-stream",
+    ) -> str:
+        """Upload a photo to Immich (`POST /api/assets` multipart), returning the
+        new asset id. Write-side counterpart to the read-only iter/search path;
+        uses the same api-key auth + session style. Immich requires the device
+        bookkeeping fields alongside `assetData`."""
+        now = datetime.now(timezone.utc).isoformat()
+        form = aiohttp.FormData()
+        form.add_field("deviceAssetId", f"solaris-{filename}-{now}")
+        form.add_field("deviceId", "solaris-chat")
+        form.add_field("fileCreatedAt", now)
+        form.add_field("fileModifiedAt", now)
+        form.add_field(
+            "assetData", file_bytes, filename=filename, content_type=content_type
+        )
+        async with aiohttp.ClientSession(timeout=self._timeout) as client:
+            async with client.post(
+                f"{self._base_url}/api/assets",
+                data=form,
+                headers=self._headers,
+            ) as resp:
+                resp.raise_for_status()
+                payload = await resp.json()
+        return str(payload.get("id") or "")
 
     async def iter_assets(
         self, *, updated_after: str = ""

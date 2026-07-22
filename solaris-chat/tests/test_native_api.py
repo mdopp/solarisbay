@@ -1306,3 +1306,91 @@ async def test_person_update_owner_scoped(aiohttp_client, tmp_path):
         if x["id"] == "p-mike"
     )
     assert row["name"] == "Mike" and row["email"] == "old@x.de"
+
+
+# ---- /api/photo: .photo dot-command upload + search (#961) -----------------
+# Interactive (Remote-User) surface — no device token; a request that proves no
+# resident is 401. Immich is mocked (no live instance).
+
+
+def _photo_app(tmp_path, db, *, configured=True):
+    return build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        immich_base_url="http://immich" if configured else "",
+        immich_api_key="k" if configured else "",
+    )
+
+
+async def test_photo_search_without_session_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_photo_app(tmp_path, db))
+    r = await client.get("/api/photo?q=anna")
+    assert r.status == 401
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+
+
+async def test_photo_upload_without_session_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_photo_app(tmp_path, db))
+    r = await client.post("/api/photo", data={"file": "x"})
+    assert r.status == 401
+
+
+async def test_photo_search_unconfigured_immich_is_clear_message(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_photo_app(tmp_path, db, configured=False))
+    r = await client.get("/api/photo?q=anna", headers={"Remote-User": "mdopp"})
+    assert r.status == 503
+    assert "nicht konfiguriert" in (await r.json())["error"]
+
+
+async def test_photo_search_filters_by_person_and_returns_rows(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    from solaris_chat import server as srv
+    from solaris_chat.engine.ingest.immich_client import ImmichAsset, ImmichPerson
+
+    assets = [
+        ImmichAsset(
+            id="a1",
+            file_name="strand.jpg",
+            when="2026-06-01T00:00:00",
+            checksum="c1",
+            people=[ImmichPerson(id="p1", name="Anna")],
+        ),
+        ImmichAsset(
+            id="a2",
+            file_name="auto.jpg",
+            when="2026-06-02T00:00:00",
+            checksum="c2",
+        ),
+    ]
+
+    class _FakeImmich:
+        def __init__(self, *a, **k):
+            pass
+
+        async def iter_assets(self, *, updated_after=""):
+            for a in assets:
+                yield a
+
+        def asset_uri(self, asset_id):
+            return f"http://immich/api/assets/{asset_id}"
+
+    monkeypatch.setattr(srv, "RestImmichClient", _FakeImmich)
+    db = _db(tmp_path)
+    client = await aiohttp_client(_photo_app(tmp_path, db))
+    r = await client.get("/api/photo?q=anna", headers={"Remote-User": "mdopp"})
+    assert r.status == 200
+    j = await r.json()
+    assert j["ok"] is True
+    ids = [p["id"] for p in j["photos"]]
+    # Only the asset tagged with Anna matches the person filter.
+    assert ids == ["a1"]
+    assert j["photos"][0]["people"] == ["Anna"]

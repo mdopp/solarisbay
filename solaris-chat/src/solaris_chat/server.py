@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import aiohttp
 from aiohttp import web
 from aiohttp.typedefs import Handler
 
@@ -65,6 +66,7 @@ from solaris_chat.engine.client import (
     current_uid,
 )
 from solaris_chat.engine import vram
+from solaris_chat.engine.ingest.immich_client import RestImmichClient
 from solaris_chat.engine.ingest.upload_extract import extract_into_companion
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.notify import emit_chat, inject
@@ -1220,6 +1222,8 @@ def build_app(
     carddav_password: str = "",
     music_dir: str = "/opt/data/music",
     import_data_dir: str = "/data/imports",
+    immich_base_url: str = "",
+    immich_api_key: str = "",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -4649,6 +4653,108 @@ def build_app(
             return web.json_response(results[0])
         return web.json_response({"ok": True, "files": results})
 
+    def _immich_client() -> RestImmichClient | None:
+        """The Immich REST client, or None when Immich is unconfigured — the
+        `.photo` handlers degrade to a clear message instead of a 500."""
+        if not (immich_base_url and immich_api_key):
+            return None
+        return RestImmichClient(immich_base_url, immich_api_key)
+
+    async def photo_upload(request: web.Request) -> web.Response:
+        """`.photo` dropzone: upload an image part to Immich (#961). Interactive
+        session only (Remote-User); a request that proves no resident is 401."""
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        client = _immich_client()
+        if client is None:
+            return web.json_response(
+                {"ok": False, "error": "Immich ist nicht konfiguriert."}, status=503
+            )
+        if not request.content_type.startswith("multipart/"):
+            return web.json_response(
+                {"ok": False, "error": "expected multipart/form-data"}, status=400
+            )
+        try:
+            reader = await request.multipart()
+        except (ValueError, AssertionError):
+            return web.json_response(
+                {"ok": False, "error": "malformed multipart"}, status=400
+            )
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name != "file":
+                await part.read()
+                continue
+            data = bytearray()
+            while True:
+                chunk = await part.read_chunk()
+                if not chunk:
+                    break
+                data.extend(chunk)
+            if not data:
+                return web.json_response(
+                    {"ok": False, "error": "empty file"}, status=400
+                )
+            mime = (part.headers.get("Content-Type") or "").split(";")[0].strip()
+            name = part.filename or "foto.jpg"
+            try:
+                asset_id = await client.upload_asset(
+                    bytes(data),
+                    name,
+                    content_type=mime or "application/octet-stream",
+                )
+            except (aiohttp.ClientError, TimeoutError) as e:
+                log.error("photo.upload.failed", uid=uid, error=str(e))
+                return web.json_response(
+                    {"ok": False, "error": "Upload fehlgeschlagen."}, status=502
+                )
+            log.info("photo.upload.stored", uid=uid, asset=asset_id, name=name)
+            return web.json_response({"ok": True, "id": asset_id, "name": name})
+        return web.json_response({"ok": False, "error": "no file part"}, status=400)
+
+    async def photo_search(request: web.Request) -> web.Response:
+        """`.photo <text>` filter: matching Immich photos by tagged person /
+        caption / filename (#961). Reuses the read-only metadata search; degrades
+        to a clear message when Immich is unconfigured."""
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        client = _immich_client()
+        if client is None:
+            return web.json_response(
+                {"ok": False, "error": "Immich ist nicht konfiguriert."}, status=503
+            )
+        q = request.query.get("q", "").strip().lower()
+        photos: list[dict[str, Any]] = []
+        try:
+            async for asset in client.iter_assets():
+                people = [p.name for p in asset.people]
+                if q and not (
+                    q in asset.file_name.lower()
+                    or any(q in name.lower() for name in people)
+                ):
+                    continue
+                photos.append(
+                    {
+                        "id": asset.id,
+                        "name": asset.file_name,
+                        "when": asset.when,
+                        "people": people,
+                        "url": client.asset_uri(asset.id),
+                    }
+                )
+                if len(photos) >= 40:
+                    break
+        except (aiohttp.ClientError, TimeoutError) as e:
+            log.error("photo.search.failed", uid=uid, error=str(e))
+            return web.json_response(
+                {"ok": False, "error": "Suche fehlgeschlagen."}, status=502
+            )
+        return web.json_response({"ok": True, "photos": photos})
+
     async def upload_download(request: web.Request) -> web.StreamResponse:
         """Serve the caller's own uploaded original for the `📎 Original öffnen`
         link. Owner-scoped: only the current resident's `uploads/` folder,
@@ -5431,6 +5537,10 @@ def build_app(
     # Serve the caller's own uploaded originals for the note `📎 Original öffnen`
     # link — owner-scoped, path-jailed.
     app.router.add_get("/api/uploads/{path:.*}", upload_download)
+    # `.photo` dot-command (#961): upload an image to Immich, and filter photos by
+    # tagged person / caption. Interactive session; degrades when Immich is unset.
+    app.router.add_post("/api/photo", photo_upload)
+    app.router.add_get("/api/photo", photo_search)
     # Import job status (#869 P4b): the Notizen import section polls this to show
     # live progress + re-attach to a running import after a reload (owner-scoped).
     app.router.add_get("/api/import/status", import_status)
@@ -5748,6 +5858,8 @@ async def serve(
     carddav_password: str = "",
     music_dir: str = "/opt/data/music",
     import_data_dir: str = "/data/imports",
+    immich_base_url: str = "",
+    immich_api_key: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -5806,6 +5918,8 @@ async def serve(
         carddav_password=carddav_password,
         music_dir=music_dir,
         import_data_dir=import_data_dir,
+        immich_base_url=immich_base_url,
+        immich_api_key=immich_api_key,
     )
     runner = web.AppRunner(app)
     await runner.setup()
