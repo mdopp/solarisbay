@@ -4377,7 +4377,8 @@
         [".note", "Notiz anlegen + Notizen suchen — .note <Text>"],
         [".doc", "Dokument/Takeout hochladen + einsortieren"],
         [".contacts", "Kontakt anlegen + suchen — .contacts <Name|@Mail|Tel>"],
-        [".photo", "Foto hochladen + suchen — .photo <Person|Text>"]
+        [".photo", "Foto hochladen + suchen — .photo <Person|Text>"],
+        [".home", "Geräte filtern + steuern — .home <Name|Raum|Text>"]
       ];
       // Starter category list for a .doc upload (key → German label).
       var DOC_CATEGORIES = [
@@ -4678,7 +4679,7 @@
           closeMenu(); autosize(); input.focus(); refresh();
         }
 
-        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen" };
+        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen", home: "Geräte & Bereiche" };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
           clearCard(); kind = cmd;
@@ -4692,6 +4693,7 @@
           else if (cmd === "doc") buildDocCard(card);
           else if (cmd === "contacts") buildContactsCard(card);
           else if (cmd === "photo") buildPhotoCard(card);
+          else if (cmd === "home") buildHomeCard(card);
           log.appendChild(card); scrollDown(true);
         }
         function buildDocCard(el) {
@@ -4751,6 +4753,101 @@
             if (c.category) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = c.category; m.appendChild(d); }
             rw.appendChild(m); listEl.appendChild(rw);
           });
+        }
+        // .home (#980): a FIND/CONTROL-only dot-card — no create, no submit, no
+        // freeze. It reuses the "add favorite" picker's addable endpoint as the
+        // full device source and renders matches as controllable widget cards.
+        function buildHomeCard(el) {
+          var hint = document.createElement("div"); hint.className = "dc-hint";
+          hint.textContent = "Tippe einen Geräte- oder Raumnamen · „energie“ zeigt den Stromfluss";
+          el.appendChild(hint);
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list; el._devices = null; el._lastFilter = ""; el._favIds = null;
+          // Prefetch the resident's favorite entity_ids so filtered matches can
+          // rank favorites first (pinned_entities = pinned in either scope).
+          fetch("/api/portal/start")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              if (card !== el) return;
+              el._favIds = new Set(((j && j.ok && j.pinned_entities) || []));
+              renderHomeList(el, el._lastFilter);
+            })
+            .catch(function () { if (card === el) el._favIds = new Set(); });
+          // The picker's addable list is the full room→cards device source; each
+          // group carries the area name (group.room), flattened onto the card so
+          // the filter can match on area too.
+          fetch("/api/portal/start/addable")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              var devs = [];
+              ((j && j.ok && j.rooms) || []).forEach(function (g) {
+                (g.cards || []).forEach(function (c) { c.area = g.room || ""; devs.push(c); });
+              });
+              if (card === el) { el._devices = devs; renderHomeList(el, el._lastFilter); }
+            })
+            .catch(function () { if (card === el) { el._devices = []; renderHomeList(el, el._lastFilter); } });
+          renderHomeList(el, "");
+        }
+        function renderHomeList(el, filter) {
+          var listEl = el._list; if (!listEl) return;
+          var f = (filter || "").trim();
+          var low = f.toLowerCase();
+          if (low.indexOf("energie") === 0 || low.indexOf("energy") === 0) { renderHomeEnergy(el); return; }
+          if (el._energy) { el._energy = false; }
+          listEl.textContent = "";
+          if (!f || low === "list") { renderHomeFavorites(el, listEl); return; }
+          if (el._devices == null) { var l = document.createElement("div"); l.className = "task-empty"; l.textContent = "Lade Geräte…"; listEl.appendChild(l); return; }
+          var items = el._devices.filter(function (c) {
+            return ((c.name || "") + " " + (c.entity_id || "") + " " + (c.domain || "") + " " + (c.area || "")).toLowerCase().indexOf(low) !== -1;
+          });
+          var h = document.createElement("div"); h.className = "dc-list-head";
+          h.textContent = items.length + " Treffer für „" + f + "“";
+          listEl.appendChild(h);
+          if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = "Keine Geräte für „" + f + "“ gefunden."; listEl.appendChild(e); return; }
+          // Favorites first: stable partition so pinned devices rank ahead of the
+          // rest (in existing order), applied BEFORE the render cap so a favorite
+          // is never dropped in favour of a non-favorite.
+          var favSet = el._favIds || new Set();
+          var favMatches = [], rest = [];
+          items.forEach(function (c) { (favSet.has(c.entity_id) ? favMatches : rest).push(c); });
+          var ordered = favMatches.concat(rest);
+          var wrap = document.createElement("div"); wrap.className = "ha-cards";
+          ordered.slice(0, 12).forEach(function (c) { wrap.appendChild(renderHaCard(c, false, {})); });
+          listEl.appendChild(wrap);
+        }
+        // No-arg quick view: the resident's CURRENT personal favorites (entity
+        // cards) as controllable widgets — not a dump of all devices.
+        function renderHomeFavorites(el, listEl) {
+          fetch("/api/portal/start")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              if (card !== el) return;
+              listEl.textContent = "";
+              var favs = ((j && j.ok && j.personal) || []).filter(function (f) { return f.kind === "entity" && f.card; });
+              var h = document.createElement("div"); h.className = "dc-list-head"; h.textContent = "Meine Favoriten"; listEl.appendChild(h);
+              if (!favs.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = "Noch keine Favoriten — tippe einen Gerätenamen."; listEl.appendChild(e); return; }
+              var wrap = document.createElement("div"); wrap.className = "ha-cards";
+              favs.slice(0, 12).forEach(function (f) { wrap.appendChild(renderHaCard(f.card, false, {})); });
+              listEl.appendChild(wrap);
+            })
+            .catch(function () { if (card === el) { listEl.textContent = ""; var e = document.createElement("div"); e.className = "task-empty"; e.textContent = "Konnte Favoriten nicht laden."; listEl.appendChild(e); } });
+        }
+        // `.home energie` renders the energy view inline by reusing the standalone
+        // page renderers (flow/trend/totals/circuits). Calm fallback when HA/energy
+        // is unconfigured (non-ok / 503) instead of throwing.
+        function renderHomeEnergy(el) {
+          var listEl = el._list; if (!listEl) return;
+          el._energy = true;
+          listEl.textContent = "";
+          fetch("/api/portal/energy")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+              if (card !== el || !el._energy) return;
+              listEl.textContent = "";
+              if (!j || !j.ok) { var n = document.createElement("div"); n.className = "task-empty"; n.textContent = "Energie ist nicht konfiguriert."; listEl.appendChild(n); return; }
+              renderEnergyPage(listEl, j.energy);
+            })
+            .catch(function () { if (card === el && el._energy) { listEl.textContent = ""; var n = document.createElement("div"); n.className = "task-empty"; n.textContent = "Energie ist nicht konfiguriert."; listEl.appendChild(n); } });
         }
         function buildPhotoCard(el) {
           // Same shape as buildDocCard (#961): a dropzone that uploads to Immich +
@@ -5127,6 +5224,10 @@
             var vp = rest.trim();
             card._lastFilter = vp;
             searchPhotos(card, vp);
+          } else if (cmd === "home" && card && card._list) {
+            var vh = rest.trim();
+            card._lastFilter = vh;
+            renderHomeList(card, vh);
           }
         }
 
