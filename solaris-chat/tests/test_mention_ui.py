@@ -91,6 +91,35 @@ def test_photo_dot_command_wired(_html=_HTML):
     assert re.search(r'cmd === "photo"[\s\S]*?searchPhotos\(card, vp\)', _html)
 
 
+def test_home_dot_command_wired(_html=_HTML):
+    # `.home` (#980) is offered in the dot-command menu with a head label …
+    assert re.search(r'\[".home",', _html)
+    assert 'home: "Geräte & Bereiche"' in _html
+    # … dispatched to buildHomeCard and updated live in updateCard.
+    assert 'else if (cmd === "home") buildHomeCard(card);' in _html
+    assert "function buildHomeCard(el)" in _html
+    assert re.search(r'cmd === "home"[\s\S]*?renderHomeList\(card, vh\)', _html)
+    # It reuses the picker's addable-device endpoint as the full device source
+    # and renders matches as controllable widget cards (renderHaCard row=false).
+    assert '"/api/portal/start/addable"' in _html
+    assert re.search(r"renderHaCard\(c, false, \{\}\)", _html)
+    # Filtered matches rank the resident's favorites first: a stable partition
+    # on pinned_entities, applied BEFORE the render cap so favorites aren't
+    # dropped in favour of non-favorites.
+    assert "pinned_entities" in _html
+    assert re.search(r"favMatches\.concat\(rest\)", _html)
+    assert re.search(r"ordered\.slice\(0, 12\)", _html)
+    # `.home energie` reuses the energy renderer inline with a calm fallback.
+    assert "function renderHomeEnergy(el)" in _html
+    assert "renderEnergyPage(listEl, j.energy)" in _html
+    assert "Energie ist nicht konfiguriert." in _html
+    # FIND-ONLY: home is never wired into submit()/freeze — no create/submit.
+    assert 'kind !== "task" && kind !== "note" && kind !== "contacts"' in _html
+    assert '=== "home"' not in re.search(
+        r"function submit\(\)[\s\S]*?\n        \}", _html
+    ).group(0)
+
+
 def test_sent_turns_highlight_mentions():
     # User-turn rendering wraps #tag/@person tokens in a styled chip span; both
     # the live-send and history-load paths go through appendMentionText().
