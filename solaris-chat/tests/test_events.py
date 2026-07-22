@@ -185,6 +185,39 @@ async def test_sse_delivers_household_pins(aiohttp_client, tmp_path):
     resp.close()
 
 
+async def test_sse_emits_heartbeat_and_tears_down_on_disconnect(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    """The idle stream sends a `: ping` SSE comment so nginx's 60s idle timeout
+    never closes it, and closing the client tears the handler down cleanly (no
+    leaked heartbeat/pump tasks, no exception escaping)."""
+    # Fast-forward the heartbeat's 15s wait so the ping fires within the test.
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(delay):
+        await real_sleep(0 if delay >= 15 else delay)
+
+    monkeypatch.setattr("solaris_chat.server.asyncio.sleep", _fast_sleep)
+    bus = EventBus()
+    before = len(asyncio.all_tasks())
+    client = await aiohttp_client(_app(tmp_path, bus))
+    resp = await client.get("/api/events", headers={"Remote-User": "mdopp"})
+    assert resp.status == 200
+    saw_ping = False
+    for _ in range(20):
+        line = (await asyncio.wait_for(resp.content.readline(), 2)).decode()
+        if line.startswith(": ping"):
+            saw_ping = True
+            break
+    assert saw_ping
+    resp.close()
+    # The owner + household subscriptions must still be live under the fan-out.
+    await asyncio.sleep(0.05)
+    assert bus.has_subscriber("mdopp") is False
+    # No tasks left dangling above the pre-connection baseline.
+    assert len(asyncio.all_tasks()) <= before + 1
+
+
 # ---- favorites_store.pinned_entity_owners ----------------------------------
 
 

@@ -6097,7 +6097,13 @@
         if (typeof EventSource === "undefined") { startPoll(); return; }
         var es = new EventSource("/api/events");
         startEvents = es;
-        es.addEventListener("open", function () { sseConnected = true; stopPoll(); });
+        es.addEventListener("open", function () {
+          // #714 SSE reliability: reconcile on EVERY (re)connect, not just the
+          // first — an idle nginx timeout drops the stream and EventSource
+          // silently reopens it; anything HA changed in the gap must be caught
+          // up now, or the cards stay stale until the next user action.
+          sseConnected = true; stopPoll(); reconcileLiveHosts();
+        });
         es.addEventListener("error", function () {
           // A dropped/failed connection: fall back to the poll until SSE recovers
           // (EventSource auto-reconnects and fires `open` again on success).
@@ -6169,9 +6175,43 @@
           })
           .catch(function () {});
       }
+      // #714 SSE reliability: catch EVERY live host up to current truth after a
+      // gap (SSE reconnect, tab/app returning from background). The start-page
+      // host reconciles via the whole-page state poll; a .home host has no
+      // page-level endpoint, so each of its entries (≤12) is re-fetched from
+      // /api/portal/state and applied in place. Debounced so a reconnect that
+      // races a visibilitychange coalesces into one pass.
+      var reconcileTimer = null;
+      function reconcileLiveHosts() {
+        if (reconcileTimer) return;
+        reconcileTimer = setTimeout(function () {
+          reconcileTimer = null;
+          if (document.hidden) return;
+          pruneLiveHosts();
+          if (!liveHosts.length) return;
+          liveHosts.forEach(function (h) {
+            if (h.el === startPageCard) { refreshStartPage(); return; }
+            h.entries.forEach(function (rec) {
+              if (!rec.entityId || !rec.el.isConnected) return;
+              fetch("/api/portal/state?entity_id=" + encodeURIComponent(rec.entityId))
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (j) {
+                  if (j && j.ok && j.card) applyCardState(rec.entityId, j.card);
+                })
+                .catch(function () {});
+            });
+          });
+        }, 1000);
+      }
       // Regaining focus (tab/app) refreshes immediately, not on the next tick.
+      // #714: with SSE primary the poll may be off, so also (re)arm the stream if
+      // it dropped while hidden, and reconcile to catch changes missed while away.
       document.addEventListener("visibilitychange", function () {
-        if (!document.hidden) refreshStartPage();
+        if (document.hidden) return;
+        refreshStartPage();
+        pruneLiveHosts();
+        if (!sseConnected && liveHosts.length) startEventsSubscribe();
+        reconcileLiveHosts();
       });
 
       function renderSessions(list) {

@@ -1747,17 +1747,30 @@ def build_app(
                 if kind in ("card_state", "chat", "servicebay"):
                     await _send_event(resp, kind, event.get("data") or {})
 
+        async def _heartbeat_ping() -> None:
+            # Without traffic this stream sits idle; nginx (NPM) closes it after
+            # its 60s proxy_read_timeout and external HA changes are then lost
+            # until a reconnect. A ~15s SSE comment (comments aren't events, so
+            # clients ignore them) keeps the connection under that timeout. A
+            # failed write means the client is gone: raise so gather() unwinds
+            # and the finally cancels the pumps.
+            while True:
+                await asyncio.sleep(15)
+                await resp.write(b": ping\n\n")
+
         own = asyncio.ensure_future(_pump(event_bus.subscribe(uid)))
         shared = asyncio.ensure_future(
             _pump(event_bus.subscribe(favorites_store.HOUSEHOLD))
         )
+        ping = asyncio.ensure_future(_heartbeat_ping())
         try:
-            await asyncio.gather(own, shared)
+            await asyncio.gather(own, shared, ping)
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
             own.cancel()
             shared.cancel()
+            ping.cancel()
         return resp
 
     async def portal_watch(request: web.Request) -> web.Response:
