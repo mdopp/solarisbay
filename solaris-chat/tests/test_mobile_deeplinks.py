@@ -1,9 +1,10 @@
 """Frontend-contract checks for the mobile deep-link changes (#765/#766/#769).
 
 Source-text asserts over the single-file PWA (index.html) lock the markup/JS
-contract; the real behaviour is box-verified. Covers: the 'Energie' mobile
-bottom tab + the de-duped Chats-page nav (#765), the `?ask=` household deep link
-(#766), and the `#/p/device/<entity_id>` single-device route (#769).
+contract; the real behaviour is box-verified. Covers: the removed standalone
+Energie page (now the `.energy` dot-command, #973) + the de-duped Chats-page nav
+(#765), the `?ask=` household deep link (#766), and the
+`#/p/device/<entity_id>` single-device route (#769).
 """
 
 from __future__ import annotations
@@ -13,15 +14,18 @@ from solaris_chat.server import STATIC_DIR
 _HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
-def test_energie_mobile_bottom_tab_present():
-    # #765: a 4th/-rank Energie tab in the bottom bar opens the existing
-    # #/p/energy portal, wired like the other tabs + lit in syncTabbar.
-    assert 'id="tab-energy"' in _HTML
-    assert 'aria-label="Energie"' in _HTML
-    assert 'var tabEnergy = document.getElementById("tab-energy");' in _HTML
-    assert 'tabEnergy.addEventListener("click"' in _HTML
-    assert 'location.hash = "#/p/energy"' in _HTML
-    assert 'tabEnergy.classList.toggle("active", onEnergy && !railOpen);' in _HTML
+def test_energie_standalone_page_removed():
+    # #973: energy is no longer a standalone page/tab — it lives in the `.energy`
+    # dot-command. The bottom-tab + rail + route are gone; the renderers stay.
+    assert 'id="tab-energy"' not in _HTML
+    assert 'id="rail-energy"' not in _HTML
+    assert "tabEnergy" not in _HTML
+    assert "railEnergy" not in _HTML
+    assert '"#/p/energy"' not in _HTML
+    # Renderers reused by `.energy` remain.
+    assert "function renderEnergyPage(card, e)" in _HTML
+    assert "function drawEnergyChart(body, series)" in _HTML
+    assert 'else if (cmd === "energy") buildEnergyCard(card);' in _HTML
 
 
 def test_chats_page_nav_deduped_on_mobile_only():

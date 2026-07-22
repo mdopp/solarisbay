@@ -1047,16 +1047,17 @@
     .ha-card .hc-controls > button.hc-off {
       color: #9E9E9E; pointer-events: none;
     }
-    /* Colour swatch button (#726 follow-up): sits in the −/+ group; its face is
-       a filled rounded square in the light's current colour (--swatch). */
+    /* Colour swatch button (#726 follow-up): leftmost in the −/+ group. Its face
+       is a bold round colour dot (the light's current colour) so it reads as a
+       colour picker, not another ▲■▼/−+ control button. */
     .ha-card .hc-controls > button.hc-swatch {
       min-width: 38px; padding: 0;
       display: flex; align-items: center; justify-content: center;
     }
     .ha-card .hc-controls > button.hc-swatch::before {
-      content: ""; width: 18px; height: 18px; border-radius: 5px;
+      content: ""; width: 24px; height: 24px; border-radius: 50%;
       background: var(--swatch, #FFC107);
-      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.25);
+      box-shadow: inset 0 0 0 2px rgba(255,255,255,0.30), 0 0 0 1px rgba(0,0,0,0.35);
     }
     /* Phase 3 (#477): slider / colour / climate controls on a card. */
     .ha-card .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
@@ -1656,11 +1657,8 @@
       <button id="rail-home" type="button" title="Zuhause — Haushalts-Chat (Solaris, schnelles Modell)">
         <svg class="ic"><use href="#i-home"></use></svg><span>Zuhause</span>
       </button>
-      <button id="rail-favorites" type="button" title="Favoriten — Startseite">
-        <svg class="ic"><use href="#i-star"></use></svg><span>Favoriten</span>
-      </button>
-      <button id="rail-energy" type="button" title="Energie — Hausverbrauch">
-        <svg class="ic"><use href="#i-bolt"></use></svg><span>Energie</span>
+      <button id="rail-favorites" type="button" title="Geräte — Startseite">
+        <svg class="ic"><use href="#i-star"></use></svg><span>Geräte</span>
       </button>
       <button id="rail-notes" type="button" title="Notizen — Wissen des Haushalts">
         <svg class="ic"><use href="#i-note"></use></svg><span>Notizen</span>
@@ -2061,8 +2059,7 @@
   <nav id="tabbar" aria-label="Navigation">
     <button id="tab-home" type="button" aria-label="Zuhause"><svg class="ic"><use href="#i-home"></use></svg>Zuhause</button>
     <button id="tab-chats" type="button" aria-label="Chats"><svg class="ic"><use href="#i-chat"></use></svg>Chats</button>
-    <button id="tab-favorites" type="button" aria-label="Favoriten"><svg class="ic"><use href="#i-star"></use></svg>Favoriten</button>
-    <button id="tab-energy" type="button" aria-label="Energie"><svg class="ic"><use href="#i-bolt"></use></svg>Energie</button>
+    <button id="tab-favorites" type="button" aria-label="Geräte"><svg class="ic"><use href="#i-star"></use></svg>Geräte</button>
     <button id="tab-notes" type="button" aria-label="Notizen"><svg class="ic"><use href="#i-note"></use></svg>Notizen</button>
     <button id="tab-documents" type="button" aria-label="Dokumente"><svg class="ic"><use href="#i-folder"></use></svg>Dokumente</button>
   </nav>
@@ -3119,6 +3116,9 @@
           // gets its swatch button next to nothing rather than a stray row.
           var ctr = document.createElement("div");
           ctr.className = "hc-controls";
+          // Colour swatch first (leftmost) so the −/+ buttons stay rightmost and
+          // line up across all lights, whether or not a light is colour-capable.
+          hcRenderColourPicker(card, c, ctr);
           if (dim) {
             if (c.brightness != null) hcLastBrightness[c.entity_id] = Math.round(c.brightness / 255 * 100);
             var curPct = c.brightness != null ? Math.round(c.brightness / 255 * 100)
@@ -3137,7 +3137,6 @@
               ctr.appendChild(btn);
             });
           }
-          hcRenderColourPicker(card, c, ctr);
           if (ctr.childNodes.length) (stateHost || card).appendChild(ctr);
           return;
         }
@@ -5947,7 +5946,7 @@
         var ct = document.getElementById("chat-title");
         if (!ct) return;
         if ((location.hash || "").indexOf("#/p/start") === 0) {
-          ct.textContent = "Favoriten";
+          ct.textContent = "Geräte";
         } else if (isHouseholdView() && !(activeS && (activeS.title || activeS.preview))) {
           ct.textContent = (topicsBySlug[HOUSEHOLD_TOPIC] && topicsBySlug[HOUSEHOLD_TOPIC].display_name) || "Zuhause";
         } else {
@@ -6380,9 +6379,9 @@
       newBtn.addEventListener("click", newSession);
       incognitoBtn.addEventListener("click", newIncognito);
 
-      // Desktop rail nav (#681/#700): Zuhause opens the household chat, Favoriten
-      // + Energie route to their portal hash. syncTabbar lights the active one
-      // from the current view.
+      // Desktop rail nav (#681/#700): Zuhause opens the household chat, Geräte
+      // routes to its portal hash. syncTabbar lights the active one from the
+      // current view.
       railHome.addEventListener("click", function () {
         closeRail();
         startHouseholdChat();
@@ -6400,18 +6399,11 @@
         syncTabbar();
       });
       var railFavorites = document.getElementById("rail-favorites");
-      var railEnergy = document.getElementById("rail-energy");
       var railNotes = document.getElementById("rail-notes");
       railFavorites.addEventListener("click", function () {
         closeRail();
         if ((location.hash || "").indexOf("#/p/start") === 0) routeFromLocation();
         else location.hash = "#/p/start";
-        syncTabbar();
-      });
-      railEnergy.addEventListener("click", function () {
-        closeRail();
-        if ((location.hash || "").indexOf("#/p/energy") === 0) routeFromLocation();
-        else location.hash = "#/p/energy";
         syncTabbar();
       });
       railNotes.addEventListener("click", function () {
@@ -6434,7 +6426,6 @@
       var tabHome = document.getElementById("tab-home");
       var tabChats = document.getElementById("tab-chats");
       var tabFavorites = document.getElementById("tab-favorites");
-      var tabEnergy = document.getElementById("tab-energy");
       var tabNotes = document.getElementById("tab-notes");
       var tabDocuments = document.getElementById("tab-documents");
       tabNotes.addEventListener("click", function () {
@@ -6449,14 +6440,6 @@
         else location.hash = "#/p/documents";
         syncTabbar();
       });
-      // Energie bottom tab (#765): opens the existing #/p/energy portal, same
-      // hash-router target as the desktop rail Energie entry — no new routing.
-      tabEnergy.addEventListener("click", function () {
-        closeRail();
-        if ((location.hash || "").indexOf("#/p/energy") === 0) routeFromLocation();
-        else location.hash = "#/p/energy";
-        syncTabbar();
-      });
       tabHome.addEventListener("click", function () {
         if (location.hash) location.hash = "";
         closeRail();
@@ -6467,7 +6450,7 @@
         document.body.classList.add("rail-open");
         syncTabbar();
       });
-      // Favoriten navigates to the standalone #/p/start page (#668). Re-tapping
+      // Geräte navigates to the standalone #/p/start page (#668). Re-tapping
       // while already there sets the same hash (no hashchange), so route
       // explicitly rather than relying on the hashchange listener.
       tabFavorites.addEventListener("click", function () {
@@ -6478,32 +6461,29 @@
       });
       function syncTabbar() {
         // Active tab tracks the current VIEW, not transient drawer state (#675).
-        // Favoriten = on #/p/start; Zuhause = the household session is the open
+        // Geräte = on #/p/start; Zuhause = the household session is the open
         // chat (isHouseholdView, #700); Chats = any other session is the current
         // view — OR while the drawer is open and being browsed. Picking a chat
         // calls closeRail(), so Chats must stay lit from the view (a non-household
         // chat), not from rail-open.
         var railOpen = document.body.classList.contains("rail-open");
         var onStart = (location.hash || "").indexOf("#/p/start") === 0;
-        var onEnergy = (location.hash || "").indexOf("#/p/energy") === 0;
         var onNotes = (location.hash || "").indexOf("#/p/notes") === 0;
         var onDocuments = (location.hash || "").indexOf("#/p/documents") === 0;
-        var onHome = !onStart && !onEnergy && !onNotes && !onDocuments && isHouseholdView();
-        var onChats = railOpen || (!onStart && !onEnergy && !onNotes && !onDocuments && !onHome);
+        var onHome = !onStart && !onNotes && !onDocuments && isHouseholdView();
+        var onChats = railOpen || (!onStart && !onNotes && !onDocuments && !onHome);
         tabFavorites.classList.toggle("active", onStart && !railOpen);
         tabHome.classList.toggle("active", onHome && !railOpen);
-        tabEnergy.classList.toggle("active", onEnergy && !railOpen);
         tabNotes.classList.toggle("active", onNotes && !railOpen);
         tabDocuments.classList.toggle("active", onDocuments && !railOpen);
         tabChats.classList.toggle("active", onChats);
         // Desktop rail entries (#681/#700) highlight strictly from the current
-        // view — exactly one of the five, or none for another session's chat.
+        // view — exactly one, or none for another session's chat.
         railHome.classList.toggle("active", onHome);
         railFavorites.classList.toggle("active", onStart);
-        railEnergy.classList.toggle("active", onEnergy);
         railNotes.classList.toggle("active", onNotes);
         railDocuments.classList.toggle("active", onDocuments);
-        // The header title tracks the route too (#671): "Favoriten" on start,
+        // The header title tracks the route too (#671): "Geräte" on start,
         // the session/"Zuhause" title elsewhere.
         refreshChatTitle();
       }
@@ -6885,14 +6865,18 @@
         // entity_id keeps its dots, so match the sub-path prefix, not a slug.
         if (type.indexOf("camera/") === 0) { openCameraPage(type.slice(7)); return; }
         if (type === "camera") { showView("chat"); return; }
-        if (type !== "energy" && type !== "start" && type !== "notes" && type !== "documents" && type !== "tasks") { showView("chat"); return; }
+        // Energie is no longer a standalone page — it lives in the `.energy`
+        // dot-command (renderEnergyPage/renderEnergyFlow/… still exist). A stale
+        // #/p/energy link falls back to the Geräte start page (#973).
+        if (type === "energy") type = "start";
+        if (type !== "start" && type !== "notes" && type !== "documents" && type !== "tasks") { showView("chat"); return; }
         // Navigating anywhere leaves any open category view; stop the
         // viewport-change listener from re-rendering onto the reused card.
         activeCategoryView = null;
         // Leaving the start page for another portal stops its refresh timer (#711).
         if (type !== "start") stopStartRefresh();
         closeRail();
-        // A portal (#/p/start, #/p/energy, #/p/notes) is a standalone page, not
+        // A portal (#/p/start, #/p/notes, #/p/documents) is a standalone page, not
         // another card stacked on the current chat (#668): clear the transcript so
         // it fills the view — and re-tapping a nav entry doesn't pile up duplicates.
         clearLog();
@@ -6917,13 +6901,6 @@
           renderTasksPage(card);
           return;
         }
-        fetch("/api/portal/energy")
-          .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (j) {
-            if (!j || !j.ok) { card.textContent = "Energiedaten nicht verfügbar."; return; }
-            renderEnergyPage(card, j.energy);
-          })
-          .catch(function () { card.textContent = "Konnte die Energiedaten nicht laden."; });
       }
 
       // #769: a page focused on ONE device — reuses renderHaCard on the same
@@ -8984,62 +8961,31 @@
         var banner = renderHaBanner(card.haStatus);
         if (banner) card.appendChild(banner);
 
-        function section(label, favs) {
-          card.appendChild(conceptSectionTitle(label));
-          if (!favs.length) {
-            var none = document.createElement("p");
-            none.className = "concept-desc";
-            none.textContent = "Noch nichts angepinnt.";
-            card.appendChild(none);
-            return;
-          }
-          var wrap = document.createElement("div");
-          wrap.className = "ha-cards start-favs";
-          favs.forEach(function (f) {
-            var el = renderFavorite(card, f);
-            // Track every entity favorite (card present OR unavailable) so the
-            // live poll can update it in place and repopulate it on reconnect.
-            if (f.kind === "entity" && f.payload && f.payload.entity_id) {
-              card.startFavs.push({ entityId: f.payload.entity_id, f: f, el: el });
-            }
-            wrap.appendChild(el);
-          });
-          card.appendChild(wrap);
-        }
-
-        // Collapse (#745): when the acting uid IS household, personal and
-        // household are the same bucket — render ONE "Favoriten" section and skip
-        // the (meaningless) scope move. A distinct resident gets two sections.
+        // #973: one "Geräte" grid of the resident's favourites — no household /
+        // frequent sub-sections. Personal and household favourites merge into a
+        // single grid (they're the same bucket when the acting uid IS household,
+        // #745; a distinct resident's own + household pins still show as one list).
+        // singleScope still gates the (meaningless) scope-move control per card.
         card.singleScope = !!data.single_scope;
-        if (card.singleScope) {
-          section("Favoriten", (data.personal || []).concat(data.household || []));
-        } else {
-          section("Meine Favoriten", data.personal || []);
-          section("Haushalt", data.household || []);
+        var favs = (data.personal || []).concat(data.household || []);
+        var wrap = document.createElement("div");
+        wrap.className = "ha-cards start-favs";
+        if (!favs.length) {
+          var none = document.createElement("p");
+          none.className = "concept-desc";
+          none.textContent = "Noch nichts angepinnt.";
+          card.appendChild(none);
         }
-
-        // Dedup (#672/#743): a device's on+off count as two rows but pin the one
-        // card, so collapse them by entity_id (keying off the ha_call_service
-        // payload); pure tool actions (e.g. "play_radio") stay label-deduped.
-        var seen = {};
-        var freq = (data.frequent || []).filter(function (f) {
-          if (f.kind !== "action") return false;
-          var p = f.payload || {};
-          var isDevice = p.tool === "ha_call_service" && p.args && p.args.entity_id;
-          var key = isDevice ? "entity:" + p.args.entity_id : (f.label || "");
-          if (seen[key]) return false;
-          seen[key] = true;
-          return true;
+        favs.forEach(function (f) {
+          var el = renderFavorite(card, f);
+          // Track every entity favorite (card present OR unavailable) so the
+          // live poll can update it in place and repopulate it on reconnect.
+          if (f.kind === "entity" && f.payload && f.payload.entity_id) {
+            card.startFavs.push({ entityId: f.payload.entity_id, f: f, el: el });
+          }
+          wrap.appendChild(el);
         });
-        if (freq.length) {
-          card.appendChild(conceptSectionTitle("Häufig genutzt"));
-          var fwrap = document.createElement("div");
-          fwrap.className = "ha-cards start-favs";
-          freq.forEach(function (f) {
-            fwrap.appendChild(renderFrequent(card, f));
-          });
-          card.appendChild(fwrap);
-        }
+        card.appendChild(wrap);
 
         // #980: register the start page as a live host — its startFavs ARE the
         // entries; apply/unavail re-render one favorite in place via renderFavorite
@@ -9343,7 +9289,9 @@
       function renderFavorite(page, f) {
         var el;
         if (f.kind === "entity" && f.card) {
-          el = renderHaCard(f.card, true);
+          // Geräte page renders favourites as the SAME widget cards as chat /
+          // `.home` (row=false), pinnable in place (#973).
+          el = renderHaCard(f.card, false, { pin: true });
         } else if (f.kind === "entity" && f.card_unavailable) {
           // #729: HA is configured but couldn't return this card (HA down / bad
           // token) — an explicit greyed "nicht verfügbar" tile, not a bare name.
@@ -9378,57 +9326,6 @@
           el.textContent = f.label || "";
         }
         el.appendChild(favEditControls(page, f, el));
-        return el;
-      }
-
-      // A frequently-used action is not a saved favorite (no id → not runnable
-      // by /run); it surfaces here only to be PROMOTED into a favorite via ☆
-      // (concept §2: no silent reshuffling of the curated lists).
-      function renderFrequent(page, f) {
-        var el = document.createElement("div");
-        el.className = "hc-row start-frequent";
-        var name = document.createElement("span");
-        // A collapsed device row pins the whole card, so drop the "— An/Aus"
-        // action suffix and show just the device's friendly name (#743).
-        var p = f.payload || {};
-        var isDevice = p.tool === "ha_call_service" && p.args && p.args.entity_id;
-        name.textContent = isDevice
-          ? (f.label || "Aktion").replace(/\s+—\s+.*$/, "")
-          : (f.label || "Aktion");
-        el.appendChild(name);
-        var star = document.createElement("button");
-        star.type = "button";
-        star.className = "hc-pin";
-        // #745: reflect "already pinned in EITHER scope" — a device already on the
-        // start page wears a filled ★, and re-tapping it is a no-op (the deliberate
-        // also-pin/move happens via the edit-mode scope control, not the ☆).
-        var alreadyPinned =
-          isDevice && page.pinnedEntities && page.pinnedEntities[p.args.entity_id];
-        if (alreadyPinned) {
-          star.textContent = "★"; star.title = "Bereits angepinnt"; star.disabled = true;
-        } else {
-          star.textContent = "☆"; star.title = "Anpinnen";
-        }
-        star.addEventListener("click", function (ev) {
-          ev.stopPropagation();
-          if (star.disabled) return;
-          star.disabled = true;
-          // A frequent DEVICE (ha_call_service with an entity_id) pins the full
-          // device CARD (#743), which resolves its own name + live controls;
-          // only a non-device tool action stays a one-shot action button.
-          var p = f.payload || {};
-          var entityId = p.tool === "ha_call_service" && p.args && p.args.entity_id;
-          // A device ☆ pin defaults to household (#745); a pure action stays personal.
-          var body = entityId
-            ? { kind: "entity", scope: DEVICE_PIN_SCOPE, payload: { entity_id: entityId } }
-            : { kind: "action", label: f.label, payload: f.payload };
-          fetch("/api/favorites", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          }).then(function () { loadStartPage(page); });
-        });
-        el.appendChild(star);
         return el;
       }
 
