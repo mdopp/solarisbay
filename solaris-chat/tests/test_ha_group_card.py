@@ -114,13 +114,13 @@ def test_light_card_header_toggle_body_slider():
     assert ", true, " in lcb  # inline flag
     # #726: tapping the colour swatch must not bubble to the card's power toggle
     # (which would flip the light + re-render the picker away). The colour row
-    # stops click + pointerdown propagation, mirroring the slider/button guard.
+    # stops click + pointerdown propagation — now in the shared hcRenderColourPicker.
     assert (
-        'row.addEventListener("click", function (e) { e.stopPropagation(); });' in lcb
+        'row.addEventListener("click", function (e) { e.stopPropagation(); });' in _HTML
     )
     assert (
         'row.addEventListener("pointerdown", function (e) { e.stopPropagation(); });'
-        in lcb
+        in _HTML
     )
 
     # makeSlider honours an inline flag (no own row, drag doesn't toggle).
@@ -251,7 +251,10 @@ def test_grid_renders_one_full_width_column_on_narrow_no_overflow():
     # A base-width column count collapses to one on a phone.
     assert "columns: var(--hc-col);" in _HTML
     # Cards in the grid drop the 240px cap and can shrink to fit the column.
-    assert ".hc-grid > .ha-card { max-width: 100%; min-width: 0; }" in _HTML
+    assert (
+        ".hc-grid > .ha-card, .start-favs > .ha-card"
+        " { width: 100%; max-width: 100%; min-width: 0; }" in _HTML
+    )
     # Cards are border-box so padding/border stay within the column.
     assert "box-sizing: border-box;" in _HTML
     # Sliders take the full row and never claim an intrinsic min that overflows.
