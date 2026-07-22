@@ -1090,6 +1090,33 @@ def _title_from(text: str) -> str:
     return snippet[:57].rstrip() + "…" if len(snippet) > 60 else snippet
 
 
+_CONTACT_EMAIL_RE = re.compile(r"[^\s,]+@[^\s,]+\.[^\s,]+")
+_CONTACT_PHONE_RE = re.compile(r"\+?[\d][\d\s/()\-]{4,}\d")
+
+
+def _parse_contact_input(raw: str) -> tuple[str, str, str]:
+    """Split a raw `.contacts` blob into (name, email, phone).
+
+    Pulls the first email- and phone-shaped run out of the line (German
+    phone/email heuristics) and treats whatever text is left as the name, so a
+    mixed input like `michael dopp 01775524222 mdopp@web.de` lands as clean
+    structured fields instead of dumping the whole string as the name.
+    """
+    rest = " ".join(raw.split())
+    email = ""
+    m = _CONTACT_EMAIL_RE.search(rest)
+    if m:
+        email = m.group(0)
+        rest = (rest[: m.start()] + " " + rest[m.end() :]).strip()
+    phone = ""
+    m = _CONTACT_PHONE_RE.search(rest)
+    if m:
+        phone = m.group(0).strip()
+        rest = (rest[: m.start()] + " " + rest[m.end() :]).strip()
+    name = " ".join(rest.split())
+    return (name, email, phone)
+
+
 def resolve_uid(
     request: web.Request,
     header: str,
@@ -4014,16 +4041,6 @@ def build_app(
         eid = await asyncio.to_thread(_create_document, uid, upload_rel, category, tags)
         return {"ok": True, "id": eid, "category": category, "tags": tags}
 
-    def _parse_contact_value(v: str) -> tuple[str, str]:
-        """A bare `.contacts` value → (kind, value): `@` → email, mostly digits →
-        phone, else a name."""
-        v = v.strip()
-        if "@" in v and "." in v.rsplit("@", 1)[-1]:
-            return ("email", v)
-        if len(re.sub(r"\D", "", v)) >= 5 and re.fullmatch(r"[\d\s/+()\-]+", v):
-            return ("phone", v)
-        return ("name", v)
-
     def _create_contact(uid: str, name: str, email: str, phone: str) -> str:
         title = name or email or phone or "Kontakt"
         facts: list[tuple[str, str, float | None]] = []
@@ -4055,13 +4072,7 @@ def build_app(
         phone = str(p.get("phone") or "").strip()
         value = str(p.get("value") or "").strip()
         if value and not (name or email or phone):
-            kind, val = _parse_contact_value(value)
-            if kind == "email":
-                email = val
-            elif kind == "phone":
-                phone = val
-            else:
-                name = val
+            name, email, phone = _parse_contact_input(value)
         if not (name or email or phone):
             return {"ok": False, "reason": "empty"}
         eid = await asyncio.to_thread(_create_contact, uid, name, email, phone)
