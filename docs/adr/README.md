@@ -22,6 +22,7 @@ knowledge graph.
 | [0008](0008-documents-live-in-paperless.md) | Documents live in paperless-ngx | External DMS owns documents; Solaris ingests projection-only. |
 | [0009](0009-command-surfaces-control-and-tool.md) | `/control` vs `.tool` + create-and-find | `/` controls Solaris; `.` captures/finds data — the arg both fills a card AND filters. |
 | [0010](0010-one-person-entity-all-surfaces.md) | One person entity; every people-surface reads it | One `person` node per human (source-tagged facts + aliases); `.contacts`, Personen doorway and `@`-mentions all read it; orgs stay separate. |
+| [0011](0011-tool-plugins-and-card-ssot.md) | `.tool` plugins (like `/`-commands) + card SSOT | `.tools` become `kind: tool` SKILL.md defs (auto-listed, registry-dispatched); cards are one SSOT (`renderHaCard`/`renderActionCard`/`renderListCell`); a plugin brings a declarative schema, not JS. |
 
 See [`../data-flow.md`](../data-flow.md) for the human-facing overview: the
 consolidated requirements, the capability map (which data source flows to which
