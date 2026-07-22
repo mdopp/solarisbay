@@ -220,6 +220,8 @@ async def _run() -> None:
         carddav_password=settings.carddav_password,
         music_dir=settings.music_dir,
         import_data_dir=settings.import_data_dir,
+        immich_base_url=settings.immich_base_url,
+        immich_api_key=settings.immich_api_key,
     )
 
 

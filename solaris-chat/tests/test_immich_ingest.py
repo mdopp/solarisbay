@@ -455,3 +455,47 @@ def test_same_place_dedups_across_assets(env):
     assert projection.row_count(conn, "events") == 2
     assert projection.row_count(conn, "entities") == 1
     conn.close()
+
+
+# --- upload_asset: write side of the client (#961 .photo) --------------------
+
+
+class _UploadSession:
+    """A fake aiohttp session capturing the POST /api/assets multipart upload."""
+
+    def __init__(self, payload):
+        self._payload = payload
+        self.url = None
+        self.data = None
+        self.headers = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def post(self, url, *, data, headers):
+        self.url = url
+        self.data = data
+        self.headers = headers
+        return _RetryResp(self._payload)
+
+
+def test_upload_asset_posts_multipart_and_returns_id(monkeypatch):
+    from solaris_chat.engine.ingest import immich_client as mod
+
+    session = _UploadSession({"id": "asset-42"})
+    monkeypatch.setattr(mod.aiohttp, "ClientSession", lambda *a, **k: session)
+    client = mod.RestImmichClient("http://immich", "secret-key")
+
+    async def go():
+        return await client.upload_asset(b"\xff\xd8jpegbytes", "urlaub.jpg")
+
+    asset_id = asyncio.run(go())
+    assert asset_id == "asset-42"
+    # POSTed to the write endpoint with the api-key auth header the reads use.
+    assert session.url == "http://immich/api/assets"
+    assert session.headers["x-api-key"] == "secret-key"
+    # Multipart form carries the image bytes plus the device bookkeeping fields.
+    assert isinstance(session.data, aiohttp.FormData)

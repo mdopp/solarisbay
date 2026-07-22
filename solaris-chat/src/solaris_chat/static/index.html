@@ -845,6 +845,12 @@
       border-radius: 0 0 var(--radius) var(--radius); }
     .dot-card .dc-list-head { font-size: 11px; text-transform: uppercase;
       letter-spacing: .05em; color: var(--muted); margin-bottom: 8px; }
+    /* Inline edit form (create·find·edit, #967): the create fields reused in a row. */
+    .dot-card .dc-edit { flex-wrap: wrap; gap: 8px; }
+    .dot-card .dc-edit input { flex: 1 1 120px; min-width: 0; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); }
+    .dot-card .dc-edit .dc-edit-title { flex-basis: 100%; font-weight: 600; }
+    .dot-card .dc-edit .ac-btn { flex: 0 0 auto; }
     .task-row.task-check { justify-content: flex-start; gap: 10px; cursor: pointer; }
     .task-cb { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); margin: 0; }
     .task-row.resolved { opacity: .65; }
@@ -2919,8 +2925,57 @@
           if (domain === "cover") renderCoverControls(card, c);
           else if (domain === "light") renderLightControls(card, c);
           else if (domain === "switch") renderSwitchControls(card, c);
+          else if (domain === "climate") renderClimateControls(card, c, st);
         }
         return card;
+      }
+
+      // Climate widget controls (#974): the setpoint −/+ stepper + HVAC mode
+      // picker on the widget card, restoring the control the group-row path keeps
+      // via renderClimateCard. The current temp is already the card's big-state,
+      // so this renders only the target stepper + mode selector, routed through
+      // haCall like renderSwitchControls/renderCoverControls.
+      function renderClimateControls(card, c, st) {
+        var feat = Number(c.supported_features || 0);
+        if (feat & CLIMATE_TARGET_TEMP || c.temperature != null) {
+          var step = Number(c.target_temp_step) || 0.5;
+          var min = c.min_temp != null ? Number(c.min_temp) : 7;
+          var max = c.max_temp != null ? Number(c.max_temp) : 35;
+          var target = c.temperature != null ? Number(c.temperature) : min;
+          var set = document.createElement("div");
+          set.className = "hc-set";
+          var label = document.createElement("span");
+          label.className = "hc-target";
+          label.textContent = target + "°";
+          var apply = function (next) {
+            next = Math.min(max, Math.max(min, Math.round(next / step) * step));
+            label.textContent = next + "°";
+            haCall(card, c, "climate.set_temperature", { temperature: next });
+          };
+          var minus = document.createElement("button");
+          minus.textContent = "−";
+          minus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) - step); });
+          var plus = document.createElement("button");
+          plus.textContent = "+";
+          plus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) + step); });
+          set.appendChild(minus); set.appendChild(label); set.appendChild(plus);
+          card.appendChild(set);
+        }
+        var modes = c.hvac_modes || [];
+        if (modes.length) {
+          var sel = document.createElement("select");
+          sel.className = "hc-mode";
+          modes.forEach(function (m) {
+            var opt = document.createElement("option");
+            opt.value = m; opt.textContent = m;
+            if (m === st) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          sel.addEventListener("change", function () {
+            haCall(card, c, "climate.set_hvac_mode", { hvac_mode: sel.value });
+          });
+          card.appendChild(sel);
+        }
       }
 
       // Action card (Wartung P2a, #787): a {title, body, buttons:[{label,
@@ -4118,7 +4173,23 @@
         if (e.key.indexOf("Arrow") === 0 || e.key === "Home" || e.key === "End") mention.refresh();
       });
       input.addEventListener("click", function () { mention.refresh(); });
+      var lastEsc = 0;
       input.addEventListener("keydown", function (e) {
+        // Top-level double-Esc (#971): a second Esc within 600ms clears everything,
+        // regardless of which subsystem consumed the first one. Timestamp before the
+        // per-subsystem single-Esc handlers so both presses are tracked.
+        if (e.key === "Escape") {
+          var now = Date.now();
+          if (now - lastEsc < 600) {
+            lastEsc = 0;
+            e.preventDefault();
+            input.value = ""; autosize();
+            dotcmd.clearCard(); dotcmd.close(); slash.close(); mention.close();
+            attach.clear();
+            return;
+          }
+          lastEsc = now;
+        }
         if (slash.handleKey(e)) return;   // arrow/enter/tab/esc while the slash menu is open
         if (dotcmd.handleKey(e)) return;  // same nav while the dot menu / a dot card is active
         if (mention.handleKey(e)) return; // same nav while the mention menu is open
@@ -4305,7 +4376,8 @@
         [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"],
         [".note", "Notiz anlegen + Notizen suchen — .note <Text>"],
         [".doc", "Dokument/Takeout hochladen + einsortieren"],
-        [".contacts", "Kontakt anlegen + suchen — .contacts <Name|@Mail|Tel>"]
+        [".contacts", "Kontakt anlegen + suchen — .contacts <Name|@Mail|Tel>"],
+        [".photo", "Foto hochladen + suchen — .photo <Person|Text>"]
       ];
       // Starter category list for a .doc upload (key → German label).
       var DOC_CATEGORIES = [
@@ -4606,7 +4678,7 @@
           closeMenu(); autosize(); input.focus(); refresh();
         }
 
-        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt" };
+        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen" };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
           clearCard(); kind = cmd;
@@ -4619,6 +4691,7 @@
           else if (cmd === "note") buildNoteCard(card);
           else if (cmd === "doc") buildDocCard(card);
           else if (cmd === "contacts") buildContactsCard(card);
+          else if (cmd === "photo") buildPhotoCard(card);
           log.appendChild(card); scrollDown(true);
         }
         function buildDocCard(el) {
@@ -4634,6 +4707,9 @@
           el.appendChild(fi);
           var status = document.createElement("div"); status.className = "import-status"; status.hidden = true;
           el.appendChild(status);
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list; el._docs = null; el._docTimer = null;
+          searchDocs(el, "");
           function take(f) {
             if (!f) return;
             if (f.type === "application/zip" || f.type === "application/json" || /\.(zip|json)$/i.test(f.name || "")) {
@@ -4647,6 +4723,99 @@
           ["dragenter", "dragover"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); }); });
           ["dragleave", "dragend"].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.remove("over"); }); });
           drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
+        }
+        function searchDocs(el, q) {
+          // Debounced LIKE search over title/category — server-side (own ∪ shared).
+          if (el._docTimer) clearTimeout(el._docTimer);
+          el._docTimer = setTimeout(function () {
+            fetch("/api/portal/documents/search?q=" + encodeURIComponent(q))
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (j) { if (card === el) { el._docs = (j && j.ok && j.documents) || []; renderDocList(el, q); } })
+              .catch(function () { if (card === el) { el._docs = []; renderDocList(el, q); } });
+          }, 200);
+        }
+        function renderDocList(el, filter) {
+          var listEl = el._list; if (!listEl || el._docs == null) return;
+          listEl.textContent = "";
+          var f = (filter || "").trim();
+          var showAll = (f === "" || f.toLowerCase() === "list");
+          var items = el._docs;
+          var h = document.createElement("div"); h.className = "dc-list-head";
+          h.textContent = showAll ? "Dokumente (" + items.length + ")" : items.length + " Treffer für „" + f + "“";
+          listEl.appendChild(h);
+          if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = showAll ? "Noch keine Dokumente." : "Kein passendes Dokument."; listEl.appendChild(e); return; }
+          items.slice(0, 8).forEach(function (c) {
+            var rw = document.createElement("div"); rw.className = "task-row";
+            var m = document.createElement("div"); m.className = "task-main";
+            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.title || "(ohne Titel)"; m.appendChild(tt);
+            if (c.category) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = c.category; m.appendChild(d); }
+            rw.appendChild(m); listEl.appendChild(rw);
+          });
+        }
+        function buildPhotoCard(el) {
+          // Same shape as buildDocCard (#961): a dropzone that uploads to Immich +
+          // a dc-list filtered by a debounced GET /api/photo?q= (person/caption/text).
+          var drop = document.createElement("div"); drop.className = "import-drop";
+          drop.setAttribute("role", "button"); drop.tabIndex = 0;
+          var dt = document.createElement("div"); dt.className = "id-title";
+          dt.textContent = "Foto hier ablegen";
+          var dh = document.createElement("div"); dh.className = "id-hint";
+          dh.textContent = "oder klicken — Bild wird zu Immich hochgeladen";
+          drop.appendChild(dt); drop.appendChild(dh); el.appendChild(drop);
+          var fi = document.createElement("input"); fi.type = "file";
+          fi.accept = "image/*"; fi.hidden = true;
+          el.appendChild(fi);
+          var status = document.createElement("div"); status.className = "import-status"; status.hidden = true;
+          el.appendChild(status);
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list; el._photos = null; el._photoTimer = null;
+          searchPhotos(el, "");
+          function take(f) { if (f) uploadPhoto(f, drop, status); }
+          drop.addEventListener("click", function () { if (!drop.classList.contains("busy")) fi.click(); });
+          fi.addEventListener("change", function () { var f = fi.files && fi.files[0]; fi.value = ""; take(f); });
+          ["dragenter", "dragover"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); }); });
+          ["dragleave", "dragend"].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.remove("over"); }); });
+          drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
+        }
+        function uploadPhoto(file, drop, status) {
+          drop.classList.add("busy");
+          importSetStatus(status, "", "Wird hochgeladen …", file.name);
+          var fd = new FormData(); fd.append("file", file, file.name || "foto.jpg");
+          fetch("/api/photo", { method: "POST", body: fd })
+            .then(function (r) { return r.json().catch(function () { return null; }); })
+            .then(function (j) {
+              drop.classList.remove("busy");
+              if (!j || !j.ok) { importSetStatus(status, "failed", "Fehlgeschlagen", (j && j.error) || "Bitte erneut versuchen."); return; }
+              importSetStatus(status, "done", "✓ Hochgeladen", "In Immich gespeichert.");
+            })
+            .catch(function () { drop.classList.remove("busy"); importSetStatus(status, "failed", "Netzwerkfehler", "Bitte erneut versuchen."); });
+        }
+        function searchPhotos(el, q) {
+          if (el._photoTimer) clearTimeout(el._photoTimer);
+          el._photoTimer = setTimeout(function () {
+            fetch("/api/photo?q=" + encodeURIComponent(q))
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (j) { if (card === el) { el._photos = (j && j.ok && j.photos) || []; renderPhotoList(el, q); } })
+              .catch(function () { if (card === el) { el._photos = []; renderPhotoList(el, q); } });
+          }, 200);
+        }
+        function renderPhotoList(el, filter) {
+          var listEl = el._list; if (!listEl || el._photos == null) return;
+          listEl.textContent = "";
+          var f = (filter || "").trim();
+          var items = el._photos;
+          var h = document.createElement("div"); h.className = "dc-list-head";
+          h.textContent = f ? items.length + " Treffer für „" + f + "“" : "Fotos (" + items.length + ")";
+          listEl.appendChild(h);
+          if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = f ? "Kein passendes Foto." : "Noch keine Fotos."; listEl.appendChild(e); return; }
+          items.slice(0, 8).forEach(function (c) {
+            var rw = document.createElement("div"); rw.className = "task-row";
+            var m = document.createElement("div"); m.className = "task-main";
+            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.name || "(ohne Namen)"; m.appendChild(tt);
+            var who = (c.people && c.people.length) ? c.people.join(", ") : "";
+            if (who) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = who; m.appendChild(d); }
+            rw.appendChild(m); listEl.appendChild(rw);
+          });
         }
         function uploadDoc(file, drop, status) {
           drop.classList.add("busy");
@@ -4728,8 +4897,32 @@
             var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.name || c.email || c.phone; m.appendChild(tt);
             var bits = []; if (c.phone) bits.push("📞 " + c.phone); if (c.email) bits.push("✉ " + c.email);
             if (bits.length) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = bits.join(" · "); m.appendChild(d); }
+            // Tap a contact to correct it (create·find·edit, #967) via person.update.
+            rw.style.cursor = "pointer";
+            rw.addEventListener("click", function () { beginPersonEdit(el, rw, c); });
             rw.appendChild(m); listEl.appendChild(rw);
           });
+        }
+        // The .contacts create fields (name/email/phone) reused in EDIT mode: swap
+        // the tapped row for a pre-filled form that PATCHes via person.update.
+        function beginPersonEdit(el, row, c) {
+          var form = document.createElement("div"); form.className = "task-row dc-edit";
+          var name = document.createElement("input"); name.type = "text"; name.className = "dc-edit-title"; name.placeholder = "Name"; name.value = c.name || "";
+          var email = document.createElement("input"); email.type = "email"; email.placeholder = "E-Mail"; email.value = c.email || "";
+          var phone = document.createElement("input"); phone.type = "tel"; phone.placeholder = "Telefon"; phone.value = c.phone || "";
+          var save = document.createElement("button"); save.className = "ac-btn ac-primary"; save.type = "button"; save.textContent = "Speichern";
+          var cancel = document.createElement("button"); cancel.className = "ac-btn"; cancel.type = "button"; cancel.textContent = "Abbrechen";
+          function close() { loadPersons(el); }
+          save.addEventListener("click", function () {
+            if (!name.value.trim() && !email.value.trim() && !phone.value.trim()) return;
+            save.disabled = true;
+            taskAction("person.update", { entity_id: c.id, name: name.value.trim(), email: email.value.trim(), phone: phone.value.trim() })
+              .then(function (j) { if (!j || !j.ok) { save.disabled = false; return; } close(); });
+          });
+          cancel.addEventListener("click", close);
+          [name, email, phone].forEach(function (i) { i.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); save.click(); } else if (e.key === "Escape") { e.preventDefault(); close(); } }); });
+          form.appendChild(name); form.appendChild(email); form.appendChild(phone); form.appendChild(save); form.appendChild(cancel);
+          row.parentNode.replaceChild(form, row); name.focus(); name.select();
         }
         function buildNoteCard(el) {
           var title = document.createElement("div"); title.className = "dc-title";
@@ -4846,6 +5039,9 @@
             var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = t.title;
             main.appendChild(tt);
             if (t.due) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = "📅 " + t.due; main.appendChild(d); }
+            // Tap the title (not the checkbox) to edit — the third leg of the
+            // create·find·edit pattern (#967). Prevent the label toggling the box.
+            main.addEventListener("click", function (e) { e.preventDefault(); beginTaskEdit(el, row, t); });
             row.appendChild(cb); row.appendChild(main);
             listEl.appendChild(row);
           });
@@ -4854,6 +5050,26 @@
             more.textContent = "… und " + (items.length - 8) + " weitere (unter ✅ Aufgaben)";
             listEl.appendChild(more);
           }
+        }
+        // The create-card fields (title input + date) reused in EDIT mode: swap the
+        // tapped row for a pre-filled inline form that PATCHes via task.update.
+        function beginTaskEdit(el, row, t) {
+          var form = document.createElement("div"); form.className = "task-row dc-edit";
+          var ti = document.createElement("input"); ti.type = "text"; ti.className = "dc-edit-title"; ti.value = t.title;
+          var due = document.createElement("input"); due.type = "date"; due.title = "Fällig (optional)"; due.value = t.due || "";
+          var save = document.createElement("button"); save.className = "ac-btn ac-primary"; save.type = "button"; save.textContent = "Speichern";
+          var cancel = document.createElement("button"); cancel.className = "ac-btn"; cancel.type = "button"; cancel.textContent = "Abbrechen";
+          function close() { loadTaskList(el); }
+          save.addEventListener("click", function () {
+            var title = ti.value.trim(); if (!title) return;
+            save.disabled = true;
+            taskAction("task.update", { entity_id: t.id, title: title, due: due.value || "" })
+              .then(function (j) { if (!j || !j.ok) { save.disabled = false; return; } close(); });
+          });
+          cancel.addEventListener("click", close);
+          ti.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); save.click(); } else if (e.key === "Escape") { e.preventDefault(); close(); } });
+          form.appendChild(ti); form.appendChild(due); form.appendChild(save); form.appendChild(cancel);
+          row.parentNode.replaceChild(form, row); ti.focus(); ti.select();
         }
         // Recognise a date typed in the input's own format — TT.MM.JJJJ (also
         // TT.MM.JJ and a bare TT.MM. with the year inferred: this year, or next
@@ -4903,6 +5119,14 @@
             else { var p3 = document.createElement("span"); p3.className = "placeholder"; p3.textContent = "Name, @E-Mail oder Telefon…"; t3.appendChild(p3); }
             card._lastFilter = v;
             renderPersonList(card, v);
+          } else if (cmd === "doc" && card && card._list) {
+            var vd = rest.trim();
+            card._lastFilter = vd;
+            searchDocs(card, vd);
+          } else if (cmd === "photo" && card && card._list) {
+            var vp = rest.trim();
+            card._lastFilter = vp;
+            searchPhotos(card, vp);
           }
         }
 
@@ -4985,7 +5209,7 @@
           if (!menu.hidden && e.target !== input && !menu.contains(e.target)) closeMenu();
         });
 
-        return { refresh: refresh, handleKey: handleKey, close: closeMenu, submitFromInput: submitFromInput };
+        return { refresh: refresh, handleKey: handleKey, close: closeMenu, clearCard: clearCard, submitFromInput: submitFromInput };
       })();
 
       // ---- #tag / @person mention autosuggest (#279) ----
@@ -5241,7 +5465,10 @@
           closeModal();
         });
 
-        return { take: function () { var out = images.slice(); images = []; renderTray(); return out; } };
+        return {
+          take: function () { var out = images.slice(); images = []; renderTray(); return out; },
+          clear: function () { if (images.length) { images = []; renderTray(); } }
+        };
       })();
 
       // ---- Voice input: browser-local STT into the message box (#184) ----
@@ -6583,11 +6810,26 @@
         var tem = document.createElement("span");
         tem.className = "nd-emoji";
         tem.textContent = "✅";
+        var tnum = document.createElement("span");
+        tnum.className = "nd-count";
+        tnum.textContent = "0";
         var tlab = document.createElement("span");
         tlab.className = "nd-label";
         tlab.textContent = "Aufgaben";
         todo.appendChild(tem);
+        todo.appendChild(tnum);
         todo.appendChild(tlab);
+        // /api/portal/tasks (no ?done=1) returns only OPEN tasks; count them for the badge.
+        fetch("/api/portal/tasks")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            var tasks = (j && j.ok && j.tasks) || [];
+            var open = tasks.filter(function (t) {
+              return t.status !== "done" && t.status !== "dismissed";
+            });
+            tnum.textContent = Number(open.length).toLocaleString("de-DE");
+          })
+          .catch(function () {});
         todo.addEventListener("click", function () { location.hash = "#/p/tasks"; });
         doors.insertBefore(todo, doors.firstChild);
         mem.appendChild(doors);
@@ -8752,6 +8994,30 @@
         return box;
       }
 
+      // #972: subtitle lines for a play_radio/play_music action favorite, built
+      // from the already-stored payload.args. The label already carries the
+      // station/query/title (via _action_label), so only add those if the label
+      // is something else; device + volume are always new info. Reads only the
+      // keys that exist and degrades gracefully when one is absent.
+      function playFavoriteSubtitle(f) {
+        var p = f.payload || {};
+        if (p.tool !== "play_radio" && p.tool !== "play_music") return [];
+        var a = p.args || {};
+        var parts = [];
+        var what = a.station || a.query || a.title || a.artist || "";
+        if (what && String(what) !== String(f.label || "")) parts.push(String(what));
+        var device = a.target || a.area || a.media_player || a.entity_id || "";
+        device = String(device);
+        if (device) {
+          var dot = device.indexOf(".");
+          parts.push(dot >= 0 ? device.slice(dot + 1).replace(/_/g, " ") : device);
+        }
+        if (a.volume_level != null && a.volume_level !== "") {
+          parts.push(Math.round(Number(a.volume_level) * 100) + "%");
+        }
+        return parts;
+      }
+
       function renderFavorite(page, f) {
         var el;
         if (f.kind === "entity" && f.card) {
@@ -8764,8 +9030,21 @@
           el = document.createElement("button");
           el.className = "hc-row start-action";
           el.type = "button";
-          el.textContent = f.label || "Aktion";
           el.addEventListener("click", function () { runFavorite(el, f); });
+          var sub = playFavoriteSubtitle(f);
+          if (sub.length) {
+            // #972: a play_radio/play_music favorite is more than a bare station
+            // name — surface where it plays and how loud from the stored args.
+            var head = document.createElement("div");
+            head.textContent = f.label || "Aktion";
+            el.appendChild(head);
+            var meta = document.createElement("div");
+            meta.className = "hc-name";
+            meta.textContent = sub.join(" · ");
+            el.appendChild(meta);
+          } else {
+            el.textContent = f.label || "Aktion";
+          }
         } else if (f.kind === "link" && f.payload && f.payload.href) {
           el = document.createElement("a");
           el.className = "hc-row start-link";

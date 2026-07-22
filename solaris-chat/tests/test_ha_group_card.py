@@ -386,6 +386,32 @@ def test_off_light_shows_last_known_brightness_not_a_fake_100():
     assert "!known && cached == null);" in lcb
 
 
+def test_widget_climate_card_has_setpoint_stepper_and_mode_selector():
+    # #974: the widget renderer (renderHaWidget) must route a climate thermostat
+    # to interactive controls — a regression left it falling through to a
+    # read-only big-state. Its !inert controls block branches on climate and
+    # renderClimateControls builds the −/+ setpoint stepper + HVAC mode picker,
+    # routing through haCall like the switch/cover widget controls.
+    fn = re.search(r"function renderHaWidget\(c, opts\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "renderHaWidget not found"
+    body = fn.group(1)
+    assert 'domain === "climate"' in body
+    assert "renderClimateControls(card, c, st)" in body
+
+    cc = re.search(
+        r"function renderClimateControls\(card, c, st\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert cc, "renderClimateControls not found"
+    ccb = cc.group(1)
+    # setpoint stepper gated on CLIMATE_TARGET_TEMP, styled as the widget hc-set.
+    assert "feat & CLIMATE_TARGET_TEMP" in ccb
+    assert 'set.className = "hc-set"' in ccb
+    assert 'haCall(card, c, "climate.set_temperature", { temperature: next })' in ccb
+    # HVAC mode selector routing through haCall.
+    assert 'sel.className = "hc-mode"' in ccb
+    assert 'haCall(card, c, "climate.set_hvac_mode", { hvac_mode: sel.value })' in ccb
+
+
 def test_last_known_brightness_cache_updates_on_every_render():
     # The cache lives alongside the other per-entity client state (hcPending) and
     # is refreshed by renderLightControls, which every render path runs (initial

@@ -164,6 +164,44 @@ def test_missing_projection_returns_none(tmp_path):
     assert documents_portal_db.contacts(str(tmp_path / "nope.db"), "mdopp") is None
 
 
+# --- .doc search (title/category LIKE, owner-scoped) --------------------------
+
+
+def test_search_matches_title_and_category(tmp_path):
+    db = _seed(tmp_path)
+    # title match (mdopp's own employment doc)
+    rows = documents_portal_db.search(db, "mdopp", "acme")
+    assert [r["title"] for r in rows] == ["Arbeitsvertrag ACME"]
+    assert rows[0] == {
+        "entity_id": "d-emp",
+        "title": "Arbeitsvertrag ACME",
+        "category": "employment",
+    }
+    # category match (shared insurance)
+    ins = documents_portal_db.search(db, "mdopp", "insurance")
+    assert [r["title"] for r in ins] == ["ERGO Rechtsschutz"]
+
+
+def test_search_empty_q_returns_full_owner_scoped_list(tmp_path):
+    db = _seed(tmp_path)
+    # mdopp: shared ERGO + own ACME, NOT lena's private doc.
+    assert {r["title"] for r in documents_portal_db.search(db, "mdopp", "")} == {
+        "ERGO Rechtsschutz",
+        "Arbeitsvertrag ACME",
+    }
+
+
+def test_search_excludes_other_residents(tmp_path):
+    db = _seed(tmp_path)
+    # lena's private insurance doc must not surface for mdopp even on a match.
+    titles = {r["title"] for r in documents_portal_db.search(db, "mdopp", "hausrat")}
+    assert "Lena Hausrat" not in titles
+
+
+def test_search_missing_projection_returns_none(tmp_path):
+    assert documents_portal_db.search(str(tmp_path / "nope.db"), "mdopp", "x") is None
+
+
 # --- correction endpoint -----------------------------------------------------
 
 
@@ -218,3 +256,41 @@ async def test_correct_endpoint_rejects_other_residents_document(
         headers={"Remote-User": "mdopp"},
     )
     assert r.status == 404
+
+
+# --- .doc search endpoint (interactive; Remote-User → owner-scoped rows) ------
+
+
+async def test_search_endpoint_returns_owner_scoped_rows(aiohttp_client, tmp_path):
+    db = _seed(tmp_path)
+    client = await aiohttp_client(_app(db))
+    r = await client.get(
+        "/api/portal/documents/search?q=insurance", headers={"Remote-User": "mdopp"}
+    )
+    assert r.status == 200
+    body = await r.json()
+    assert body["ok"] is True
+    assert [d["title"] for d in body["documents"]] == ["ERGO Rechtsschutz"]
+
+
+async def test_search_endpoint_excludes_other_residents(aiohttp_client, tmp_path):
+    db = _seed(tmp_path)
+    client = await aiohttp_client(_app(db))
+    # mdopp searching for lena's private doc gets nothing back.
+    r = await client.get(
+        "/api/portal/documents/search?q=hausrat", headers={"Remote-User": "mdopp"}
+    )
+    assert r.status == 200
+    assert (await r.json())["documents"] == []
+
+
+async def test_search_endpoint_empty_q_defaults_to_full_list(aiohttp_client, tmp_path):
+    db = _seed(tmp_path)
+    client = await aiohttp_client(_app(db))
+    # Absent q → the caller's full owner-scoped list (own ∪ shared).
+    r = await client.get(
+        "/api/portal/documents/search", headers={"Remote-User": "mdopp"}
+    )
+    assert r.status == 200
+    titles = {d["title"] for d in (await r.json())["documents"]}
+    assert titles == {"ERGO Rechtsschutz", "Arbeitsvertrag ACME"}

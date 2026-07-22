@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import aiohttp
 from aiohttp import web
 from aiohttp.typedefs import Handler
 
@@ -65,6 +66,7 @@ from solaris_chat.engine.client import (
     current_uid,
 )
 from solaris_chat.engine import vram
+from solaris_chat.engine.ingest.immich_client import RestImmichClient
 from solaris_chat.engine.ingest.upload_extract import extract_into_companion
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.notify import emit_chat, inject
@@ -1220,6 +1222,8 @@ def build_app(
     carddav_password: str = "",
     music_dir: str = "/opt/data/music",
     import_data_dir: str = "/data/imports",
+    immich_base_url: str = "",
+    immich_api_key: str = "",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -3809,6 +3813,16 @@ def build_app(
         )
         return web.json_response({"ok": True, "category": category, "rows": rows or []})
 
+    async def portal_documents_search(request: web.Request) -> web.Response:
+        """Documents matching `?q=` (title/category LIKE), owner-scoped, for the
+        `.doc` filter. Absent/empty `q` → the full owner-scoped list."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        q = request.query.get("q", "")
+        rows = await asyncio.to_thread(
+            documents_portal_db.search, solaris_db_path, uid, q
+        )
+        return web.json_response({"ok": True, "documents": rows or []})
+
     async def portal_contacts(request: web.Request) -> web.Response:
         """The phone-book (#doc-graph): every provider organization with its
         contact facts and the documents grouped under it, owner-scoped."""
@@ -3866,6 +3880,26 @@ def build_app(
         except ValueError:
             return {"ok": False, "reason": "bad_title"}
         return {"ok": True, "id": tid}
+
+    async def _task_update(body: dict[str, Any]) -> dict[str, Any]:
+        """Card callback: correct a task's title/due (params: entity_id, title, due?)."""
+        uid = body.get("uid") or default_uid
+        params = body.get("params") or {}
+        entity_id = params.get("entity_id")
+        if not isinstance(entity_id, str) or not entity_id:
+            return {"ok": False, "reason": "bad_params"}
+        try:
+            ok = await asyncio.to_thread(
+                tasks_svc.update,
+                db_path=solaris_db_path,
+                uid=uid,
+                entity_id=entity_id,
+                title=str(params.get("title") or ""),
+                due=str(params.get("due") or ""),
+            )
+        except ValueError:
+            return {"ok": False, "reason": "bad_title"}
+        return {"ok": ok}
 
     def _write_quick_note(uid: str, text: str) -> str:
         """A quick vault note from the composer `.note` command: a dated markdown
@@ -3993,6 +4027,62 @@ def build_app(
             return {"ok": False, "reason": "empty"}
         eid = await asyncio.to_thread(_create_contact, uid, name, email, phone)
         return {"ok": True, "id": eid, "name": name, "email": email, "phone": phone}
+
+    def _update_contact(
+        uid: str, entity_id: str, name: str, email: str, phone: str
+    ) -> bool:
+        """Correct a personal contact's name/email/phone. Writes the email/phone
+        facts under source `contact` — the same source `.contacts` creates under —
+        so `replace_facts` overwrites the created values (the correction wins), and
+        renames the entity for the name. Owner-gated: the caller must own or share
+        the person."""
+        conn = projection.open_conn(solaris_db_path)
+        try:
+            ent = conn.execute(
+                "SELECT resident_uid FROM entities WHERE id = ? AND type = 'person'",
+                (entity_id,),
+            ).fetchone()
+            if ent is None or ent["resident_uid"] not in (uid, notes_search.SHARED_UID):
+                return False
+            facts: list[tuple[str, str, float | None]] = []
+            if email:
+                facts.append(("email", email, 1.0))
+            if phone:
+                facts.append(("phone", phone, 1.0))
+            projection.replace_facts(
+                conn,
+                subject_entity_id=entity_id,
+                resident_uid=ent["resident_uid"],
+                source="contact",
+                facts=facts,
+            )
+            if name:
+                conn.execute(
+                    "UPDATE entities SET canonical_name = ? WHERE id = ?",
+                    (name, entity_id),
+                )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    async def _person_update(body: dict[str, Any]) -> dict[str, Any]:
+        """Card callback: correct a `.contacts` person (params: entity_id, name,
+        email, phone) — the edit leg of the create-and-find pattern (#967)."""
+        uid = body.get("uid") or default_uid
+        p = body.get("params") or {}
+        entity_id = str(p.get("entity_id") or "").strip()
+        name = str(p.get("name") or "").strip()
+        email = str(p.get("email") or "").strip()
+        phone = str(p.get("phone") or "").strip()
+        if not entity_id:
+            return {"ok": False, "reason": "bad_params"}
+        if not (name or email or phone):
+            return {"ok": False, "reason": "empty"}
+        ok = await asyncio.to_thread(
+            _update_contact, uid, entity_id, name, email, phone
+        )
+        return {"ok": ok, "name": name, "email": email, "phone": phone}
 
     async def portal_persons(request: web.Request) -> web.Response:
         """Personal contacts for the `.contacts` filter (own ∪ shared household)."""
@@ -4450,9 +4540,11 @@ def build_app(
     # destructive (a task is the resident's own to-do, additive + reversible).
     action_cards.register("task.set_status", _task_set_status)
     action_cards.register("task.add", _task_add)
+    action_cards.register("task.update", _task_update)
     action_cards.register("note.add", _note_add)
     action_cards.register("doc.classify", _doc_classify)
     action_cards.register("contact.add", _contact_add)
+    action_cards.register("person.update", _person_update)
 
     async def napi_upload(request: web.Request) -> web.Response:
         """Store a camera capture / PDF / Takeout `.zip` into the vault (#826/#869).
@@ -4560,6 +4652,108 @@ def build_app(
         if len(results) == 1:
             return web.json_response(results[0])
         return web.json_response({"ok": True, "files": results})
+
+    def _immich_client() -> RestImmichClient | None:
+        """The Immich REST client, or None when Immich is unconfigured — the
+        `.photo` handlers degrade to a clear message instead of a 500."""
+        if not (immich_base_url and immich_api_key):
+            return None
+        return RestImmichClient(immich_base_url, immich_api_key)
+
+    async def photo_upload(request: web.Request) -> web.Response:
+        """`.photo` dropzone: upload an image part to Immich (#961). Interactive
+        session only (Remote-User); a request that proves no resident is 401."""
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        client = _immich_client()
+        if client is None:
+            return web.json_response(
+                {"ok": False, "error": "Immich ist nicht konfiguriert."}, status=503
+            )
+        if not request.content_type.startswith("multipart/"):
+            return web.json_response(
+                {"ok": False, "error": "expected multipart/form-data"}, status=400
+            )
+        try:
+            reader = await request.multipart()
+        except (ValueError, AssertionError):
+            return web.json_response(
+                {"ok": False, "error": "malformed multipart"}, status=400
+            )
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name != "file":
+                await part.read()
+                continue
+            data = bytearray()
+            while True:
+                chunk = await part.read_chunk()
+                if not chunk:
+                    break
+                data.extend(chunk)
+            if not data:
+                return web.json_response(
+                    {"ok": False, "error": "empty file"}, status=400
+                )
+            mime = (part.headers.get("Content-Type") or "").split(";")[0].strip()
+            name = part.filename or "foto.jpg"
+            try:
+                asset_id = await client.upload_asset(
+                    bytes(data),
+                    name,
+                    content_type=mime or "application/octet-stream",
+                )
+            except (aiohttp.ClientError, TimeoutError) as e:
+                log.error("photo.upload.failed", uid=uid, error=str(e))
+                return web.json_response(
+                    {"ok": False, "error": "Upload fehlgeschlagen."}, status=502
+                )
+            log.info("photo.upload.stored", uid=uid, asset=asset_id, name=name)
+            return web.json_response({"ok": True, "id": asset_id, "name": name})
+        return web.json_response({"ok": False, "error": "no file part"}, status=400)
+
+    async def photo_search(request: web.Request) -> web.Response:
+        """`.photo <text>` filter: matching Immich photos by tagged person /
+        caption / filename (#961). Reuses the read-only metadata search; degrades
+        to a clear message when Immich is unconfigured."""
+        uid = _interactive_uid(request)
+        if uid is None:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        client = _immich_client()
+        if client is None:
+            return web.json_response(
+                {"ok": False, "error": "Immich ist nicht konfiguriert."}, status=503
+            )
+        q = request.query.get("q", "").strip().lower()
+        photos: list[dict[str, Any]] = []
+        try:
+            async for asset in client.iter_assets():
+                people = [p.name for p in asset.people]
+                if q and not (
+                    q in asset.file_name.lower()
+                    or any(q in name.lower() for name in people)
+                ):
+                    continue
+                photos.append(
+                    {
+                        "id": asset.id,
+                        "name": asset.file_name,
+                        "when": asset.when,
+                        "people": people,
+                        "url": client.asset_uri(asset.id),
+                    }
+                )
+                if len(photos) >= 40:
+                    break
+        except (aiohttp.ClientError, TimeoutError) as e:
+            log.error("photo.search.failed", uid=uid, error=str(e))
+            return web.json_response(
+                {"ok": False, "error": "Suche fehlgeschlagen."}, status=502
+            )
+        return web.json_response({"ok": True, "photos": photos})
 
     async def upload_download(request: web.Request) -> web.StreamResponse:
         """Serve the caller's own uploaded original for the `📎 Original öffnen`
@@ -5299,6 +5493,7 @@ def build_app(
     app.router.add_get("/api/portal/tasks", portal_tasks)
     app.router.add_get("/api/portal/persons", portal_persons)
     app.router.add_post("/api/portal/documents/correct", portal_documents_correct)
+    app.router.add_get("/api/portal/documents/search", portal_documents_search)
     app.router.add_get("/api/portal/documents/{category}", portal_documents_category)
     app.router.add_post("/api/favorites", favorites_create)
     app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
@@ -5342,6 +5537,10 @@ def build_app(
     # Serve the caller's own uploaded originals for the note `📎 Original öffnen`
     # link — owner-scoped, path-jailed.
     app.router.add_get("/api/uploads/{path:.*}", upload_download)
+    # `.photo` dot-command (#961): upload an image to Immich, and filter photos by
+    # tagged person / caption. Interactive session; degrades when Immich is unset.
+    app.router.add_post("/api/photo", photo_upload)
+    app.router.add_get("/api/photo", photo_search)
     # Import job status (#869 P4b): the Notizen import section polls this to show
     # live progress + re-attach to a running import after a reload (owner-scoped).
     app.router.add_get("/api/import/status", import_status)
@@ -5659,6 +5858,8 @@ async def serve(
     carddav_password: str = "",
     music_dir: str = "/opt/data/music",
     import_data_dir: str = "/data/imports",
+    immich_base_url: str = "",
+    immich_api_key: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -5717,6 +5918,8 @@ async def serve(
         carddav_password=carddav_password,
         music_dir=music_dir,
         import_data_dir=import_data_dir,
+        immich_base_url=immich_base_url,
+        immich_api_key=immich_api_key,
     )
     runner = web.AppRunner(app)
     await runner.setup()

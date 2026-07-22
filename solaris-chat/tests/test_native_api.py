@@ -1219,3 +1219,178 @@ async def test_import_status_running_job_beats_stale_plan(aiohttp_client, tmp_pa
     )
     r = await client.get("/api/import/status", headers={"Remote-User": "mdopp"})
     assert (await r.json()) == {"ok": True, "job": running}  # job wins, not the plan
+
+
+# ---- person.update: the EDIT leg of the create·find·edit pattern (#967) -----
+
+_PERSON_SCHEMA = """
+CREATE TABLE entities (
+  id TEXT PRIMARY KEY, type TEXT NOT NULL, canonical_name TEXT NOT NULL,
+  resident_uid TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE entity_aliases (
+  entity_id TEXT NOT NULL, alias TEXT NOT NULL, PRIMARY KEY (entity_id, alias));
+CREATE TABLE facts (
+  id TEXT PRIMARY KEY, subject_entity_id TEXT, resident_uid TEXT NOT NULL,
+  predicate TEXT NOT NULL, value TEXT NOT NULL, confidence REAL,
+  source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')));
+"""
+
+
+def _person_db(tmp_path):
+    """A DB with a `.contacts`-created person (name + email/phone under source
+    `contact`), for exercising the person.update correction path."""
+    path = _db(tmp_path)
+    conn = sqlite3.connect(path)
+    conn.executescript(_PERSON_SCHEMA)
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES ('p-mike', 'person', 'Mike', 'mdopp', 'contact', 'h')"
+    )
+    conn.execute(
+        "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate, value,"
+        " confidence, source) VALUES ('f1', 'p-mike', 'mdopp', 'email',"
+        " 'old@x.de', 1.0, 'contact')"
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+async def test_person_update_correction_wins_and_persists(aiohttp_client, tmp_path):
+    from solaris_chat import documents_portal_db
+
+    db = _person_db(tmp_path)
+    client = await aiohttp_client(_app(tmp_path, db))
+    r = await client.post(
+        "/api/action-callback",
+        headers={"Remote-User": "mdopp"},
+        json={
+            "action_id": "person.update",
+            "confirmed": True,
+            "params": {
+                "entity_id": "p-mike",
+                "name": "Michael",
+                "email": "michael@x.de",
+                "phone": "0151 123",
+            },
+        },
+    )
+    assert r.status == 200 and (await r.json())["ok"] is True
+    # The correction replaced the created `contact` facts and renamed the entity.
+    rows = documents_portal_db.person_contacts(db, "mdopp")
+    row = next(x for x in rows if x["id"] == "p-mike")
+    assert row["name"] == "Michael"
+    assert row["email"] == "michael@x.de" and row["phone"] == "0151 123"
+
+
+async def test_person_update_owner_scoped(aiohttp_client, tmp_path):
+    from solaris_chat import documents_portal_db
+
+    db = _person_db(tmp_path)  # person owned by mdopp
+    client = await aiohttp_client(_app(tmp_path, db))
+    # lena neither owns nor shares the person → no-op False, facts untouched.
+    r = await client.post(
+        "/api/action-callback",
+        headers={"Remote-User": "lena"},
+        json={
+            "action_id": "person.update",
+            "confirmed": True,
+            "params": {"entity_id": "p-mike", "name": "Hijack", "email": "e@x.de"},
+        },
+    )
+    assert r.status == 200 and (await r.json())["ok"] is False
+    row = next(
+        x
+        for x in documents_portal_db.person_contacts(db, "mdopp")
+        if x["id"] == "p-mike"
+    )
+    assert row["name"] == "Mike" and row["email"] == "old@x.de"
+
+
+# ---- /api/photo: .photo dot-command upload + search (#961) -----------------
+# Interactive (Remote-User) surface — no device token; a request that proves no
+# resident is 401. Immich is mocked (no live instance).
+
+
+def _photo_app(tmp_path, db, *, configured=True):
+    return build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path),
+        immich_base_url="http://immich" if configured else "",
+        immich_api_key="k" if configured else "",
+    )
+
+
+async def test_photo_search_without_session_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_photo_app(tmp_path, db))
+    r = await client.get("/api/photo?q=anna")
+    assert r.status == 401
+    assert (await r.json()) == {"ok": False, "error": "unauthorized"}
+
+
+async def test_photo_upload_without_session_is_401(aiohttp_client, tmp_path):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_photo_app(tmp_path, db))
+    r = await client.post("/api/photo", data={"file": "x"})
+    assert r.status == 401
+
+
+async def test_photo_search_unconfigured_immich_is_clear_message(
+    aiohttp_client, tmp_path
+):
+    db = _db(tmp_path)
+    client = await aiohttp_client(_photo_app(tmp_path, db, configured=False))
+    r = await client.get("/api/photo?q=anna", headers={"Remote-User": "mdopp"})
+    assert r.status == 503
+    assert "nicht konfiguriert" in (await r.json())["error"]
+
+
+async def test_photo_search_filters_by_person_and_returns_rows(
+    aiohttp_client, tmp_path, monkeypatch
+):
+    from solaris_chat import server as srv
+    from solaris_chat.engine.ingest.immich_client import ImmichAsset, ImmichPerson
+
+    assets = [
+        ImmichAsset(
+            id="a1",
+            file_name="strand.jpg",
+            when="2026-06-01T00:00:00",
+            checksum="c1",
+            people=[ImmichPerson(id="p1", name="Anna")],
+        ),
+        ImmichAsset(
+            id="a2",
+            file_name="auto.jpg",
+            when="2026-06-02T00:00:00",
+            checksum="c2",
+        ),
+    ]
+
+    class _FakeImmich:
+        def __init__(self, *a, **k):
+            pass
+
+        async def iter_assets(self, *, updated_after=""):
+            for a in assets:
+                yield a
+
+        def asset_uri(self, asset_id):
+            return f"http://immich/api/assets/{asset_id}"
+
+    monkeypatch.setattr(srv, "RestImmichClient", _FakeImmich)
+    db = _db(tmp_path)
+    client = await aiohttp_client(_photo_app(tmp_path, db))
+    r = await client.get("/api/photo?q=anna", headers={"Remote-User": "mdopp"})
+    assert r.status == 200
+    j = await r.json()
+    assert j["ok"] is True
+    ids = [p["id"] for p in j["photos"]]
+    # Only the asset tagged with Anna matches the person filter.
+    assert ids == ["a1"]
+    assert j["photos"][0]["people"] == ["Anna"]
