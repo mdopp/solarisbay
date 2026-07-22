@@ -859,12 +859,18 @@
       border-radius: 0 0 var(--radius) var(--radius); }
     .dot-card .dc-list-head { font-size: 11px; text-transform: uppercase;
       letter-spacing: .05em; color: var(--muted); margin-bottom: 8px; }
-    /* Inline edit form (create·find·edit, #967): the create fields reused in a row. */
-    .dot-card .dc-edit { flex-wrap: wrap; gap: 8px; }
-    .dot-card .dc-edit input { flex: 1 1 120px; min-width: 0; padding: 8px 10px; border-radius: 8px;
+    /* Inline edit form (create·find·edit, #967): a self-contained bordered block
+       — full-width Name/E-Mail/Telefon stacked, Speichern/Abbrechen on their own
+       row — so it reads clearly as "editing this contact", not a cramped row. */
+    .dot-card .dc-edit { flex-direction: column; align-items: stretch; gap: 8px;
+      background: rgba(255,255,255,0.04); border: 1px solid var(--line);
+      border-radius: 10px; padding: 10px; }
+    .dot-card .dc-edit input { width: 100%; flex: none; box-sizing: border-box;
+      padding: 8px 10px; border-radius: 8px;
       border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); }
-    .dot-card .dc-edit .dc-edit-title { flex-basis: 100%; font-weight: 600; }
-    .dot-card .dc-edit .ac-btn { flex: 0 0 auto; }
+    .dot-card .dc-edit .dc-edit-title { font-weight: 600; }
+    .dot-card .dc-edit-actions { display: flex; gap: 8px; }
+    .dot-card .dc-edit-actions .ac-btn { flex: 1 1 auto; }
     .task-row.task-check { justify-content: flex-start; gap: 10px; cursor: pointer; }
     .task-cb { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); margin: 0; }
     .task-row.resolved { opacity: .65; }
@@ -5136,8 +5142,11 @@
           items.slice(0, 8).forEach(function (c) {
             var rw = document.createElement("div"); rw.className = "task-row";
             var m = document.createElement("div"); m.className = "task-main";
-            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.name || c.email || c.phone; m.appendChild(tt);
-            var bits = []; if (c.phone) bits.push("📞 " + c.phone); if (c.email) bits.push("✉ " + c.email);
+            var title = c.name || c.email || c.phone;
+            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = title; m.appendChild(tt);
+            // Don't repeat a value that's already the title (a contact created
+            // from just an email shows the email once, not as title AND meta).
+            var bits = []; if (c.phone && c.phone !== title) bits.push("📞 " + c.phone); if (c.email && c.email !== title) bits.push("✉ " + c.email);
             if (bits.length) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = bits.join(" · "); m.appendChild(d); }
             // Tap a contact to correct it (create·find·edit, #967) via person.update.
             rw.style.cursor = "pointer";
@@ -5163,7 +5172,9 @@
           });
           cancel.addEventListener("click", close);
           [name, email, phone].forEach(function (i) { i.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); save.click(); } else if (e.key === "Escape") { e.preventDefault(); close(); } }); });
-          form.appendChild(name); form.appendChild(email); form.appendChild(phone); form.appendChild(save); form.appendChild(cancel);
+          var actions = document.createElement("div"); actions.className = "dc-edit-actions";
+          actions.appendChild(save); actions.appendChild(cancel);
+          form.appendChild(name); form.appendChild(email); form.appendChild(phone); form.appendChild(actions);
           row.parentNode.replaceChild(form, row); name.focus(); name.select();
         }
         function buildNoteCard(el) {
