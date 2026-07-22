@@ -3,8 +3,8 @@
 
 `document_deadlines_sync.sync_deadlines` reads each document's dated facts and
 each resident's dated OPEN tasks and PUTs one all-day, alarmed calendar object
-per item into that owner's own CalDAV collection under Solaris's principal
-(`{base}/solaris/{uid}/`, option B / #1010). These
+per item into a `solaris` calendar under the owner's OWN principal
+(`{base}/{uid}/solaris/`, option A / #1011). These
 tests mock `put_item`/`ensure_calendar` and prove the per-resident collection
 URLs, the event/alarm content, the stable overwrite UID, owner-scoping (a
 resident's task never reaches another's calendar), that non-deadline /
@@ -31,10 +31,10 @@ CREATE TABLE facts (
 
 _BASE = "https://caldav.example/dav"
 _SHARED = document_deadlines_sync.projection.SHARED_UID
-_PRINCIPAL = document_deadlines_sync._PRINCIPAL
-# Document deadlines are household data → the household collection under the
-# `solaris` principal (option B / #1010).
-_SHARED_URL = f"{_BASE}/{_PRINCIPAL}/{_SHARED}/"
+_CALENDAR = document_deadlines_sync._CALENDAR
+# Document deadlines are household data → the `solaris` calendar under the
+# household principal (option A / #1011).
+_SHARED_URL = f"{_BASE}/{_SHARED}/{_CALENDAR}/"
 
 
 def _doc(conn, eid, title, facts):
@@ -171,7 +171,7 @@ async def test_task_lands_in_owning_residents_calendar(tmp_path, monkeypatch):
     out = await sync_deadlines(db, _BASE, "solaris", "pw")
     assert out == {"written": 2, "skipped": 0, "failed": 0}
     by_uid = {c["uid"]: c for c in calls}
-    lena_url = f"{_BASE}/{_PRINCIPAL}/lena/"
+    lena_url = f"{_BASE}/lena/{_CALENDAR}/"
     # Lena's task → only Lena's calendar; the household task → only SHARED.
     assert by_uid["solaris-task-t-lena"]["url"] == lena_url
     assert by_uid["solaris-task-t-shared"]["url"] == _SHARED_URL

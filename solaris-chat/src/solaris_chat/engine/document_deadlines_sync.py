@@ -6,14 +6,15 @@ contract `end_date`. Rather than push notifications, we write each as an all-day
 event with an advance alarm into a calendar, where the calendar app itself
 reminds the resident (the passive, non-intrusive channel the plan chose).
 
-Solaris owns, the calendar mirrors (#997, option B / #1010): every resident's
-calendar lives under Solaris's OWN `solaris` principal tree —
-`{base}/solaris/{resident_uid}/` — one collection per resident, named by the
-resident uid. Because the `solaris` account owns all of `/solaris/*`, Radicale's
-`rights = owner_only` permits these writes with NO shared-auth change. A
-resident's private dated task lands only in their own `/solaris/{resident_uid}/`
-collection; household-scoped document deadlines and household tasks (`SHARED_UID`)
-go to `{base}/solaris/{SHARED_UID}/`.
+Solaris owns, the calendar mirrors (#997, option A / #1011): every resident's
+Solaris calendar lives under the RESIDENT's OWN principal tree —
+`{base}/{resident_uid}/solaris/` — a `solaris`-named calendar under each resident.
+The resident reads/writes their own tree as themselves (owner_only), so they
+subscribe on the phone with their OWN login — no shared service password. The
+`solaris` service account is granted a narrow Radicale rights rule to WRITE only
+`/<resident>/solaris/` (nothing else). A resident's private dated task lands only
+in their own `/{resident_uid}/solaris/` collection; household-scoped document
+deadlines and household tasks (`SHARED_UID`) go to `{base}/{SHARED_UID}/solaris/`.
 
 **Authenticated CalDAV PUT** as the dedicated `solaris` DAV account, not a
 filesystem mount: Radicale's rights scope it to the collections it may write.
@@ -47,10 +48,11 @@ _UID_PREFIX = "solaris-deadline-"
 _TASK_UID_PREFIX = "solaris-task-"
 # Days before the date the calendar app raises its alarm.
 _LEAD_DAYS = 14
-# The Solaris-owned principal every resident's calendar collection lives under:
-# `{base}/{_PRINCIPAL}/{resident_uid}/`. The `solaris` account owns all of
-# `/solaris/*`, so owner_only permits the write without any shared-auth change.
-_PRINCIPAL = "solaris"
+# The calendar name under each resident's own principal: `{base}/{resident_uid}/
+# {_CALENDAR}/` (option A / #1011). The resident owns their tree (subscribes as
+# themselves); a narrow Radicale rights rule lets the `solaris` account WRITE only
+# `/<resident>/solaris/`.
+_CALENDAR = "solaris"
 
 
 def _parse_iso(value: str) -> date | None:
@@ -94,12 +96,13 @@ def _facts(conn, entity_id: str) -> dict[str, str]:
 
 
 def _collection_url(base_url: str, resident_uid: str) -> str:
-    """The resident's Solaris calendar collection — `{base}/solaris/{uid}/`.
+    """The resident's Solaris calendar collection — `{base}/{uid}/solaris/`.
 
-    Under Solaris's own principal (option B / #1010): the `solaris` account owns
-    `/solaris/*`, so owner_only permits the PUT with no shared-auth change.
+    Under the RESIDENT's own principal (option A / #1011): the resident owns their
+    tree and subscribes as themselves; the `solaris` account writes here via a
+    narrow rights rule granting it `/<resident>/solaris/` only.
     """
-    return f"{base_url.rstrip('/')}/{_PRINCIPAL}/{resident_uid}/"
+    return f"{base_url.rstrip('/')}/{resident_uid}/{_CALENDAR}/"
 
 
 async def sync_deadlines(
