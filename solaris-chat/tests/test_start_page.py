@@ -831,8 +831,9 @@ def test_generic_card_renders_unavailable_entity_as_inactive():
 
 def test_colour_picker_suspends_live_rerender():
     # The colour <input type=color> sets hcColorPicking on focus and clears it on
-    # blur/change, and startRefreshBusy honours the flag — so an open native
-    # overlay isn't destroyed by an SSE/poll in-place card re-render.
+    # blur/change, and the busy guard honours the flag — so an open native overlay
+    # isn't destroyed by an SSE/poll in-place card re-render. #980: the guard moved
+    # into liveHostBusy (shared across every live host, not just the start page).
     assert "var hcColorPicking = false;" in _HTML
     focus = re.search(
         r'picker\.addEventListener\("focus", function \(\) \{(.*?)\}\);', _HTML, re.S
@@ -844,8 +845,8 @@ def test_colour_picker_suspends_live_rerender():
         re.S,
     )
     assert blur and "hcColorPicking = false;" in blur.group(1)
-    fn = re.search(r"function startRefreshBusy\(\) \{(.*?)\n      \}", _HTML, re.S)
-    assert fn, "startRefreshBusy not found"
+    fn = re.search(r"function liveHostBusy\(h\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "liveHostBusy not found"
     assert "hcColorPicking ||" in fn.group(1)
     # change must also clear the flag (belt-and-braces if blur didn't fire first)
     change = re.search(
@@ -943,3 +944,57 @@ def test_single_scope_renders_one_section_and_hides_move():
         in _HTML
     )
     assert "if (!page.singleScope) {" in _HTML
+
+
+# --- #980: generalized live-update engine (registry + SSE-gated poll) ---
+
+
+def test_live_host_registry_functions_exist():
+    # The single-startPageCard assumption is replaced by a registry of live hosts;
+    # register/unregister keep it, and apply/unavailable iterate ALL hosts.
+    assert "var liveHosts = [];" in _HTML
+    assert "function registerLiveHost(hostEl, entries, apply, unavail)" in _HTML
+    assert "function unregisterLiveHost(hostEl, keep)" in _HTML
+    assert "function applyCardState(entityId, card)" in _HTML
+    assert "function applyCardUnavailable(entityId)" in _HTML
+    # applyCardState loops every registered host and applies via the host's own
+    # render closure — no start-page-only branch.
+    body = re.search(
+        r"function applyCardState\(entityId, card\) \{(.*?)\n      \}", _HTML, re.S
+    ).group(1)
+    assert "liveHosts.forEach" in body
+    assert "h.apply(rec, card)" in body
+    # The stale-echo guard is kept for every host.
+    assert "if (hcPendingContradicts(entityId, card)) return;" in body
+
+
+def test_start_page_registers_itself_as_a_live_host():
+    # The start page registers with its startFavs as the entries, re-rendering a
+    # favorite in place via renderFavorite — it IS a live host now.
+    assert re.search(r"registerLiveHost\(\s*card,\s*card\.startFavs,", _HTML)
+    # Leaving the portal unregisters it (which tears down SSE when last).
+    assert "if (startPageCard) unregisterLiveHost(startPageCard);" in _HTML
+
+
+def test_periodic_poll_is_sse_down_fallback_only():
+    # The 12s poll is no longer armed unconditionally in loadStartPage; SSE
+    # open/error gate it. On open → mark connected + stop the poll; on error →
+    # mark disconnected + (re)start the poll.
+    assert (
+        'es.addEventListener("open", function () { sseConnected = true; stopPoll(); });'
+        in _HTML
+    )
+    err = re.search(
+        r'es\.addEventListener\("error", function \(\) \{(.*?)\}\);', _HTML, re.S
+    ).group(1)
+    assert "sseConnected = false;" in err
+    assert "startPoll();" in err
+    # startPoll refuses to arm while SSE is healthy.
+    poll = re.search(r"function startPoll\(\) \{(.*?)\n      \}", _HTML, re.S).group(1)
+    assert "if (sseConnected || startTimer || !startRefreshActive()) return;" in poll
+    assert "startTimer = setInterval(refreshStartPage, START_REFRESH_MS);" in poll
+    # loadStartPage no longer arms the timer directly.
+    load = re.search(
+        r"function loadStartPage\(card\) \{(.*?)\n      \}", _HTML, re.S
+    ).group(1)
+    assert "setInterval(refreshStartPage" not in load

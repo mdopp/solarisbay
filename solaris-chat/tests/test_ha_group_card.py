@@ -542,3 +542,23 @@ def test_last_known_brightness_cache_updates_on_every_render():
     )
     assert ms, "makeSlider not found (neutral arg)"
     assert 'val.textContent = neutral ? "–" : value + unit;' in ms.group(1)
+
+
+def test_per_action_reconcile_targets_the_acted_entity_across_hosts():
+    # #980: after a card action, reconcileStartPage(entityId) does a ONE-SHOT
+    # targeted refetch of the acted entity via /api/portal/state and applies it to
+    # ALL live hosts — so a non-pinned .home card confirms its own tap. Timing +
+    # stale-echo guard are kept (HC_PENDING_MS window).
+    body = re.search(
+        r"function reconcileStartPage\(entityId\) \{(.*?)\n      \}", _HTML, re.S
+    ).group(1)
+    assert "if (!liveHosts.length) return;" in body
+    assert (
+        'fetch("/api/portal/state?entity_id=" + encodeURIComponent(entityId))' in body
+    )
+    assert "applyCardState(entityId, j.card)" in body
+    # One-shot, past the pending window (not a periodic timer).
+    assert "HC_PENDING_MS + 300" in body
+    assert "setInterval" not in body
+    # Both action paths pass the acted entity_id.
+    assert _HTML.count("reconcileStartPage(c.entity_id);") == 2

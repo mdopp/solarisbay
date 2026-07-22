@@ -3596,17 +3596,32 @@
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (res) { if (res && res.ok && res.state != null) c.state = res.state; })
           .catch(function () {})
-          .finally(function () { card.classList.remove("busy"); reconcileStartPage(); });
+          .finally(function () { card.classList.remove("busy"); reconcileStartPage(c.entity_id); });
       }
 
-      // After an optimistic card action, reconcile the start page from HA a beat
-      // later (state settles async) — a no-op off the start page (#711). #726:
-      // the SSE stream now pushes the settled state, so this eager refetch waits
-      // long enough (past the pending window) to not re-read a not-yet-settled
-      // state and bounce the card; it stays as a fallback when SSE is closed.
-      function reconcileStartPage() {
-        if (!startRefreshActive()) return;
-        setTimeout(refreshStartPage, HC_PENDING_MS + 300);
+      // After an optimistic card action, reconcile the acted entity from HA a beat
+      // later (state settles async). #726: the SSE stream now pushes the settled
+      // state, so this eager refetch waits past the pending window so it doesn't
+      // re-read a not-yet-settled state and bounce the card; it stays as a fallback
+      // when SSE is closed. #980: a ONE-SHOT targeted refetch of the acted entity
+      // (via /api/portal/state) that applies to ALL live hosts — so a .home card
+      // confirms your own tap even though it isn't a pinned favorite. Falls back to
+      // the start-page whole-page poll when no entity id is known.
+      function reconcileStartPage(entityId) {
+        if (!liveHosts.length) return;
+        setTimeout(function () {
+          if (!liveHosts.length) return;
+          if (entityId) {
+            fetch("/api/portal/state?entity_id=" + encodeURIComponent(entityId))
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (j) {
+                if (j && j.ok && j.card) applyCardState(entityId, j.card);
+              })
+              .catch(function () {});
+          } else if (startRefreshActive()) {
+            refreshStartPage();
+          }
+        }, HC_PENDING_MS + 300);
       }
 
       // German status label for a read-only badge card, keyed off domain + state.
@@ -3680,7 +3695,7 @@
             }
           })
           .catch(function () { apply(was); hcExpect(c.entity_id, was ? "on" : "off"); })
-          .finally(function () { card.classList.remove("busy"); reconcileStartPage(); });
+          .finally(function () { card.classList.remove("busy"); reconcileStartPage(c.entity_id); });
       }
 
       function renderStepTrace(steps) {
@@ -4726,6 +4741,9 @@
 
         function closeMenu() { menu.hidden = true; menu.textContent = ""; items = []; active = -1; }
         function clearCard() {
+          // #980: a .home card registered its list as a live host — drop it so we
+          // don't hold a detached DOM node in the update registry.
+          if (card && card._list) unregisterLiveHost(card._list);
           if (card && card.parentNode) card.parentNode.removeChild(card);
           card = null; kind = "";
         }
@@ -4879,6 +4897,20 @@
             .catch(function () { if (card === el) { el._devices = []; renderHomeList(el, el._lastFilter); } });
           renderHomeList(el, "");
         }
+        // #980: register a .home list as a live host. Its widgets render via
+        // renderHaCard(c,false,{}); apply(rec,card) swaps one in place. No unavail
+        // handler — a .home widget already renders its own offline state from the
+        // card, and there's no card_unavailable favorite concept here. Called on
+        // every (re)render, so it replaces any prior registration for this list.
+        function registerHomeLiveHost(listEl, entries) {
+          if (!entries.length) { unregisterLiveHost(listEl); return; }
+          registerLiveHost(listEl, entries, function (rec, c) {
+            rec.c = c;
+            var fresh = renderHaCard(c, false, {});
+            rec.el.parentNode.replaceChild(fresh, rec.el);
+            rec.el = fresh;
+          });
+        }
         function renderHomeList(el, filter) {
           var listEl = el._list; if (!listEl) return;
           var f = (filter || "").trim();
@@ -4903,8 +4935,17 @@
           // hc-grid (columns:220px) so cards fill the width: one full-width column
           // on mobile, multiple on wider screens — matching the room/start grids.
           var wrap = document.createElement("div"); wrap.className = "hc-grid";
-          ordered.slice(0, 12).forEach(function (c) { wrap.appendChild(renderHaCard(c, false, {})); });
+          // #980: collect each card's node + entity_id and register the list as a
+          // live host, so SSE/poll/post-action reconcile updates .home widgets in
+          // place just like the start page.
+          var entries = [];
+          ordered.slice(0, 12).forEach(function (c) {
+            var cardEl = renderHaCard(c, false, {});
+            if (c.entity_id) entries.push({ entityId: c.entity_id, c: c, el: cardEl });
+            wrap.appendChild(cardEl);
+          });
           listEl.appendChild(wrap);
+          registerHomeLiveHost(listEl, entries);
         }
         // No-arg quick view: the resident's CURRENT personal favorites (entity
         // cards) as controllable widgets — not a dump of all devices.
@@ -4918,8 +4959,16 @@
               var h = document.createElement("div"); h.className = "dc-list-head"; h.textContent = "Meine Favoriten"; listEl.appendChild(h);
               if (!favs.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = "Noch keine Favoriten — tippe einen Gerätenamen."; listEl.appendChild(e); return; }
               var wrap = document.createElement("div"); wrap.className = "hc-grid";
-              favs.slice(0, 12).forEach(function (f) { wrap.appendChild(renderHaCard(f.card, false, {})); });
+              // #980: register the favorites list as a live host so its widget
+              // cards self-update from the SSE/poll stream.
+              var entries = [];
+              favs.slice(0, 12).forEach(function (f) {
+                var cardEl = renderHaCard(f.card, false, {});
+                if (f.card && f.card.entity_id) entries.push({ entityId: f.card.entity_id, c: f.card, el: cardEl });
+                wrap.appendChild(cardEl);
+              });
               listEl.appendChild(wrap);
+              registerHomeLiveHost(listEl, entries);
             })
             .catch(function () { if (card === el) { listEl.textContent = ""; var e = document.createElement("div"); e.className = "task-empty"; e.textContent = "Konnte Favoriten nicht laden."; listEl.appendChild(e); } });
         }
@@ -5958,38 +6007,66 @@
 
       // ---- Start-page live refresh (#711) ----
       function stopStartRefresh() {
-        if (startTimer) { clearInterval(startTimer); startTimer = null; }
-        stopStartEvents();
+        stopPoll();
+        // Unregistering the last host stops the SSE stream (#980).
+        if (startPageCard) unregisterLiveHost(startPageCard);
+        else stopStartEvents();
         startPageCard = null;
         stopCameraRefresh();
       }
-      // Swap one entity favorite's card in place by entity_id — shared by the
-      // 12s poll (#711) and the SSE event stream (#714).
-      function applyCardState(page, entityId, card) {
-        if (!card || page !== startPageCard || !page.isConnected || startRefreshBusy()) return;
+      // #980: the live-update engine tracks a REGISTRY of host elements, not just
+      // the start page — so a `.home` dot-card's widget cards self-update from the
+      // same SSE/poll stream. A live host is { el, entries, apply, unavail }: each
+      // entry is a { entityId, el } record, `apply(rec, card)` swaps that record's
+      // node for a fresh render of `card`, and `unavail(rec)` (optional) flips it
+      // to the greyed state. Keying by host el makes re-registration idempotent.
+      var liveHosts = [];
+      function registerLiveHost(hostEl, entries, apply, unavail) {
+        if (!hostEl) return;
+        unregisterLiveHost(hostEl, true);
+        liveHosts.push({ el: hostEl, entries: entries || [], apply: apply, unavail: unavail });
+        // #980: a live host needs the SSE stream — open it if it isn't already (the
+        // start page opens its own via loadStartPage; a .home card in a chat opens
+        // it here). Idempotent: startEventsSubscribe closes any prior stream first.
+        if (!startEvents) startEventsSubscribe();
+      }
+      // `keep` (an internal re-registration) leaves the SSE stream open even if the
+      // registry momentarily empties, so a re-render doesn't churn the connection.
+      function unregisterLiveHost(hostEl, keep) {
+        liveHosts = liveHosts.filter(function (h) { return h.el !== hostEl; });
+        if (!keep && !liveHosts.length) stopStartEvents();
+      }
+      // Drop hosts whose element left the DOM (a dot-card teardown that didn't
+      // unregister, or a start-page re-render) so we never touch stale nodes.
+      function pruneLiveHosts() {
+        liveHosts = liveHosts.filter(function (h) { return h.el && h.el.isConnected; });
+      }
+      // Swap one entity's card in place across EVERY registered host by entity_id
+      // — shared by the poll (#711) and the SSE event stream (#714/#980). The
+      // per-host busy/stale guards stay: a busy card or a stale echo is skipped.
+      function applyCardState(entityId, card) {
+        if (!card) return;
         // #726: drop a stale echo that still shows the pre-toggle state.
         if (hcPendingContradicts(entityId, card)) return;
-        (page.startFavs || []).forEach(function (rec) {
-          if (rec.entityId !== entityId || !rec.el.isConnected) return;
-          rec.f.card = card;
-          rec.f.card_unavailable = false;
-          var fresh = renderFavorite(page, rec.f);
-          rec.el.parentNode.replaceChild(fresh, rec.el);
-          rec.el = fresh;
+        pruneLiveHosts();
+        liveHosts.forEach(function (h) {
+          if (liveHostBusy(h)) return;
+          h.entries.forEach(function (rec) {
+            if (rec.entityId !== entityId || !rec.el.isConnected) return;
+            h.apply(rec, card);
+          });
         });
       }
-      // #729: flip an entity favorite into the greyed "nicht verfügbar" state
-      // when a poll reports it unreachable (HA dropped mid-session).
-      function applyCardUnavailable(page, entityId) {
-        if (page !== startPageCard || !page.isConnected || startRefreshBusy()) return;
-        (page.startFavs || []).forEach(function (rec) {
-          if (rec.entityId !== entityId || !rec.el.isConnected) return;
-          if (rec.f.card_unavailable) return;
-          rec.f.card = null;
-          rec.f.card_unavailable = true;
-          var fresh = renderFavorite(page, rec.f);
-          rec.el.parentNode.replaceChild(fresh, rec.el);
-          rec.el = fresh;
+      // #729: flip an entity into the greyed "nicht verfügbar" state across every
+      // host that supports it when a poll reports it unreachable (HA dropped).
+      function applyCardUnavailable(entityId) {
+        pruneLiveHosts();
+        liveHosts.forEach(function (h) {
+          if (!h.unavail || liveHostBusy(h)) return;
+          h.entries.forEach(function (rec) {
+            if (rec.entityId !== entityId || !rec.el.isConnected) return;
+            h.unavail(rec);
+          });
         });
       }
       // #729: lift or (re)show the HA-connection banner in place when the poll's
@@ -6005,25 +6082,46 @@
         if (head && head.nextSibling) page.insertBefore(banner, head.nextSibling);
         else page.appendChild(banner);
       }
-      // ---- Start-page live SSE (#714): instant card_state pushes ----
+      // ---- Live SSE (#714): instant card_state pushes ----
       // An EventSource on /api/events streams card_state events (the HA-WS
-      // watcher publishes them) so a pinned entity updates within ~1s instead
-      // of the 12s poll. The poll stays armed as a fallback for when SSE is
-      // unavailable or drops.
-      var startEvents = null;
+      // watcher publishes them) so a pinned entity updates within ~1s. #980: the
+      // periodic poll is now a FALLBACK for when SSE is down — on `open` we mark
+      // SSE healthy and STOP the poll; on `error`/close we mark it down and (re)arm
+      // the poll so cards still reconcile without a push.
+      var startEvents = null, sseConnected = false;
       function stopStartEvents() {
         if (startEvents) { try { startEvents.close(); } catch (e) {} startEvents = null; }
+        sseConnected = false;
       }
       function startEventsSubscribe() {
         stopStartEvents();
-        if (typeof EventSource === "undefined") return;
+        if (typeof EventSource === "undefined") { startPoll(); return; }
         var es = new EventSource("/api/events");
         startEvents = es;
-        es.addEventListener("card_state", function (e) {
-          if (!startRefreshActive()) return;
-          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
-          if (d.entity_id && d.card) applyCardState(startPageCard, d.entity_id, d.card);
+        es.addEventListener("open", function () { sseConnected = true; stopPoll(); });
+        es.addEventListener("error", function () {
+          // A dropped/failed connection: fall back to the poll until SSE recovers
+          // (EventSource auto-reconnects and fires `open` again on success).
+          sseConnected = false;
+          if (startRefreshActive()) startPoll();
         });
+        es.addEventListener("card_state", function (e) {
+          // #980: apply to EVERY live host — a .home card in a chat updates even
+          // when the start page isn't the visible view. applyCardState is a no-op
+          // when no host matches the entity, so an event off-view is harmless.
+          if (document.hidden || !liveHosts.length) return;
+          var d = {}; try { d = JSON.parse(e.data); } catch (x) {}
+          if (d.entity_id && d.card) applyCardState(d.entity_id, d.card);
+        });
+      }
+      // The 12s poll only runs while SSE is down (#980). Arming it is a no-op when
+      // SSE is healthy or a timer is already running; SSE `open` stops it.
+      function startPoll() {
+        if (sseConnected || startTimer || !startRefreshActive()) return;
+        startTimer = setInterval(refreshStartPage, START_REFRESH_MS);
+      }
+      function stopPoll() {
+        if (startTimer) { clearInterval(startTimer); startTimer = null; }
       }
       function startRefreshActive() {
         // Only refresh while #/p/start is the visible view and the page card is
@@ -6035,19 +6133,23 @@
           !document.hidden
         );
       }
-      function startRefreshBusy() {
-        // Don't yank the DOM out from under an interaction: edit mode, the card
-        // picker overlay, an active slider drag, an open colour picker (#736), or
-        // a card mid-call all suspend the in-place update. (window.confirm blocks
-        // JS, so a dialog can't race a tick.)
+      // True when an interaction on host `h` should suspend its in-place update:
+      // edit mode, an active slider drag, an open colour picker (#736), the card
+      // picker overlay, or a card mid-call. (window.confirm blocks JS, so a dialog
+      // can't race a tick.) The global drag/colour/picker guards apply to every
+      // host; edit-mode + busy are read off the host element.
+      function liveHostBusy(h) {
         return (
-          !startPageCard ||
-          startPageCard.classList.contains("editing") ||
+          !h.el ||
           hcSliderDragging ||
           hcColorPicking ||
           document.querySelector(".card-picker") != null ||
-          startPageCard.querySelector(".hc-row.busy, .ha-card.busy") != null
+          h.el.classList.contains("editing") ||
+          h.el.querySelector(".hc-row.busy, .ha-card.busy") != null
         );
+      }
+      function startRefreshBusy() {
+        return !startPageCard || liveHostBusy({ el: startPageCard });
       }
       function refreshStartPage() {
         if (!startRefreshActive() || startRefreshBusy()) return;
@@ -6062,8 +6164,8 @@
             var down = {};
             (j.unavailable || []).forEach(function (eid) { down[eid] = true; });
             (page.startFavs || []).forEach(function (rec) {
-              if (j.states[rec.entityId]) applyCardState(page, rec.entityId, j.states[rec.entityId]);
-              else if (down[rec.entityId]) applyCardUnavailable(page, rec.entityId);
+              if (j.states[rec.entityId]) applyCardState(rec.entityId, j.states[rec.entityId]);
+              else if (down[rec.entityId]) applyCardUnavailable(rec.entityId);
             });
           })
           .catch(function () {});
@@ -6900,12 +7002,11 @@
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (j) {
             if (!j || !j.ok) { card.textContent = "Startseite nicht verfügbar."; return; }
+            // #714/#980: renderStartPage registers the page as a live host, which
+            // opens the SSE stream. SSE pushes instant card updates; the 12s poll
+            // is armed only as a fallback when SSE is down (SSE `open` stops it,
+            // `error` starts it; if SSE is unavailable, subscribe arms the poll).
             renderStartPage(card, j);
-            // #711: arm the live-refresh timer once the page is mounted; a
-            // re-render (edit/reorder) reuses the single existing timer.
-            if (!startTimer) startTimer = setInterval(refreshStartPage, START_REFRESH_MS);
-            // #714: SSE pushes instant card updates; the poll above is fallback.
-            startEventsSubscribe();
           })
           .catch(function () { card.textContent = "Konnte die Startseite nicht laden."; });
       }
@@ -8939,6 +9040,29 @@
           });
           card.appendChild(fwrap);
         }
+
+        // #980: register the start page as a live host — its startFavs ARE the
+        // entries; apply/unavail re-render one favorite in place via renderFavorite
+        // (which carries the edit controls), sharing the registry with .home.
+        registerLiveHost(
+          card,
+          card.startFavs,
+          function (rec, c) {
+            rec.f.card = c;
+            rec.f.card_unavailable = false;
+            var fresh = renderFavorite(card, rec.f);
+            rec.el.parentNode.replaceChild(fresh, rec.el);
+            rec.el = fresh;
+          },
+          function (rec) {
+            if (rec.f.card_unavailable) return;
+            rec.f.card = null;
+            rec.f.card_unavailable = true;
+            var fresh = renderFavorite(card, rec.f);
+            rec.el.parentNode.replaceChild(fresh, rec.el);
+            rec.el = fresh;
+          }
+        );
       }
 
       // Card picker (#669): an edit-mode overlay listing the house's addable
