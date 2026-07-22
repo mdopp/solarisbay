@@ -42,6 +42,20 @@ def _doc(conn, eid, title, facts):
         )
 
 
+def _task(conn, eid, title, resident_uid, facts):
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES (?, 'task', ?, ?, 'todo', 'h')",
+        (eid, title, resident_uid),
+    )
+    for i, (pred, val) in enumerate(facts):
+        conn.execute(
+            "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate,"
+            " value, confidence, source) VALUES (?, ?, ?, ?, ?, 0.6, 't')",
+            (f"{eid}-{i}", eid, resident_uid, pred, val),
+        )
+
+
 def _db(tmp_path, facts):
     db = str(tmp_path / "solaris.db")
     conn = sqlite3.connect(db)
@@ -110,6 +124,35 @@ async def test_non_deadline_date_ignored(tmp_path, monkeypatch):
     out = await sync_deadlines(db, _URL, "solaris", "pw")
     assert out == {"written": 0, "skipped": 0, "failed": 0}
     assert calls == []
+
+
+async def test_per_resident_task_not_synced_to_shared_calendar(tmp_path, monkeypatch):
+    # Privacy boundary: a resident's private dated task must NOT reach the shared
+    # Fristen calendar, while a household-scoped task must.
+    calls = _capture(monkeypatch)
+    db = str(tmp_path / "solaris.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    _task(
+        conn,
+        "t-lena",
+        "Gynäkologe",
+        "lena",
+        [("status", "open"), ("due", "2026-09-01"), ("title_text", "Gynäkologe")],
+    )
+    _task(
+        conn,
+        "t-shared",
+        "Müll rausbringen",
+        document_deadlines_sync.projection.SHARED_UID,
+        [("status", "open"), ("due", "2026-09-02"), ("title_text", "Müll rausbringen")],
+    )
+    conn.commit()
+    conn.close()
+    out = await sync_deadlines(db, _URL, "solaris", "pw")
+    assert out == {"written": 1, "skipped": 0, "failed": 0}
+    assert [c["uid"] for c in calls] == ["solaris-task-t-shared"]
+    assert all("Gynäkologe" not in c["body"] for c in calls)
 
 
 async def test_disabled_when_unconfigured(tmp_path, monkeypatch):
