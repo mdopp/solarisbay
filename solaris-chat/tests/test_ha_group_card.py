@@ -103,7 +103,7 @@ def test_light_card_header_toggle_body_slider():
     assert "head.appendChild(pin)" in body
 
     lc = re.search(
-        r"function renderLightControls\(card, c, brightHost\) \{(.*?)\n      \}",
+        r"function renderLightControls\(card, c, brightHost, stateHost\) \{(.*?)\n      \}",
         _HTML,
         re.S,
     )
@@ -170,7 +170,7 @@ def test_all_controllable_cards_use_the_compact_one_row_layout():
 
     # cover open/stop/close ride the compact row (inline button row).
     cc = re.search(
-        r"function renderCoverControls\(card, c, host\) \{(.*?)\n      \}",
+        r"function renderCoverControls\(card, c, host, stateHost\) \{(.*?)\n      \}",
         _HTML,
         re.S,
     )
@@ -370,7 +370,7 @@ def test_off_light_shows_last_known_brightness_not_a_fake_100():
     # #733: HA reports brightness:null for an OFF light. The card must cache the
     # last-known % per entity_id and show it when off — never a hard-coded 100%.
     lc = re.search(
-        r"function renderLightControls\(card, c, brightHost\) \{(.*?)\n      \}",
+        r"function renderLightControls\(card, c, brightHost, stateHost\) \{(.*?)\n      \}",
         _HTML,
         re.S,
     )
@@ -396,20 +396,56 @@ def test_widget_climate_card_has_setpoint_stepper_and_mode_selector():
     assert fn, "renderHaWidget not found"
     body = fn.group(1)
     assert 'domain === "climate"' in body
-    assert "renderClimateControls(card, c, st)" in body
+    # The setpoint stepper mounts on the stateline right; the mode select wraps
+    # to a line below (climate may be one row taller than a light — see below).
+    assert "renderClimateControls(card, c, st, stateline)" in body
 
     cc = re.search(
-        r"function renderClimateControls\(card, c, st\) \{(.*?)\n      \}", _HTML, re.S
+        r"function renderClimateControls\(card, c, st, stateHost\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
     )
     assert cc, "renderClimateControls not found"
     ccb = cc.group(1)
-    # setpoint stepper gated on CLIMATE_TARGET_TEMP, styled as the widget hc-set.
+    # setpoint stepper gated on CLIMATE_TARGET_TEMP, styled as the widget hc-set,
+    # mounted onto the stateline right (setHost = stateHost || card).
     assert "feat & CLIMATE_TARGET_TEMP" in ccb
     assert 'set.className = "hc-set"' in ccb
+    assert "var setHost = stateHost || card;" in ccb
+    assert "setHost.appendChild(set);" in ccb
     assert 'haCall(card, c, "climate.set_temperature", { temperature: next })' in ccb
-    # HVAC mode selector routing through haCall.
+    # HVAC mode selector routing through haCall (appended to the card so it wraps
+    # below the stateline when it can't fit inline).
     assert 'sel.className = "hc-mode"' in ccb
     assert 'haCall(card, c, "climate.set_hvac_mode", { hvac_mode: sel.value })' in ccb
+
+
+def test_widget_card_merges_state_and_controls_onto_one_stateline():
+    # Compact widget (feat/compact-cards): the standalone card no longer stacks a
+    # big header icon + big state + a full-width controls row. It builds a
+    # .hc-stateline row that puts the state (small accent icon + value) on the
+    # LEFT and the domain controls on the RIGHT, with the thin level bar below.
+    fn = re.search(r"function renderHaWidget\(c, opts\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "renderHaWidget not found"
+    body = fn.group(1)
+    # A shared stateline row carries state + controls.
+    assert 'stateline.className = "hc-stateline"' in body
+    # State (small icon + big value) sits on the LEFT of the stateline.
+    assert 'left.className = "hc-state-left"' in body
+    assert "left.appendChild(icon)" in body
+    assert "left.appendChild(big)" in body
+    # The controls render into the SAME stateline row (right side).
+    assert "renderCoverControls(card, c, null, stateline)" in body
+    assert "renderLightControls(card, c, null, stateline)" in body
+    assert "renderSwitchControls(card, c, stateline)" in body
+    # The big 38px header icon is gone — no icon is appended to the header row.
+    assert "head.appendChild(icon)" not in body
+    # Compact padding + the stateline/icon styling exist.
+    assert "padding: 12px;" in _HTML
+    assert ".ha-card .hc-stateline {" in _HTML
+    assert (
+        ".ha-card .hc-icon {\n      flex: 0 0 auto; width: 20px; height: 20px;" in _HTML
+    )
 
 
 def test_last_known_brightness_cache_updates_on_every_render():

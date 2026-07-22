@@ -426,34 +426,47 @@
       text-decoration-style: dotted;
     }
     /* Device cards mirror the Solaris Android MEDIUM home-screen widget: a fixed
-       210px dark tile (gradient body, hairline border, 22px radius) that stacks
-       header → state block → controls. Dark-only, so literal hex not var()s. */
+       210px dark tile (gradient body, hairline border, 22px radius). A compact
+       two-row tile — header (name) → one stateline row that carries the state on
+       the LEFT and the controls on the RIGHT → a thin level bar. Dark-only, so
+       literal hex not var()s. */
     .ha-card {
       flex: 0 0 auto; width: 210px; min-width: 210px;
       box-sizing: border-box;
       border: 1px solid rgba(255,255,255,0.12); border-radius: 22px;
-      padding: 16px;
+      padding: 12px;
       background: linear-gradient(180deg, #17171D, #0D0D11);
     }
     /* Inside a grid / masonry a card grows to fill its column (border-box +
        min-width:0 keep its contents within the column edge). */
     .hc-grid > .ha-card, .start-favs > .ha-card { width: 100%; max-width: 100%; min-width: 0; }
-    /* Header: 38px accent icon + name (18px bold, may wrap 2 lines) + a
-       right-aligned 🔒 lock badge for sensitive/confirm-gated cards. */
+    /* Small accent domain icon that sits inline in the stateline (left of the
+       value); the old big 38px header icon is gone to reclaim vertical space. */
     .ha-card .hc-icon {
-      flex: 0 0 auto; width: 38px; height: 38px; color: #FFC107;
+      flex: 0 0 auto; width: 20px; height: 20px; color: #FFC107;
     }
     .ha-card .hc-icon svg { width: 100%; height: 100%; display: block; fill: currentColor; }
     .ha-card .hc-lock { flex: 0 0 auto; font-size: 20px; color: #B0BEC5; margin-left: auto; }
-    /* Big state label in the domain accent colour, sitting under the header. */
-    .ha-card .hc-big {
-      font-size: 22px; font-weight: 700; line-height: 1.15;
-      margin: 12px 0 0; color: #FFC107;
+    /* Stateline: state (small icon + value) on the LEFT, controls on the RIGHT,
+       one shared row. gap keeps them apart; the value can shrink so the controls
+       always fit. */
+    .ha-card .hc-stateline {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; margin-top: 8px; min-width: 0; flex-wrap: wrap;
     }
-    .ha-card .hc-big .hc-unit { font-size: 15px; font-weight: 400; color: #B0BEC5; margin-left: 4px; }
-    /* Level bar (brightness/position): track + accent fill. */
+    .ha-card .hc-stateline .hc-state-left {
+      display: flex; align-items: center; gap: 6px; min-width: 0;
+    }
+    /* State label in the domain accent colour, sized to sit inline in the row. */
+    .ha-card .hc-big {
+      font-size: 18px; font-weight: 700; line-height: 1.15;
+      margin: 0; color: #FFC107; min-width: 0;
+    }
+    .ha-card .hc-big .hc-unit { font-size: 13px; font-weight: 400; color: #B0BEC5; margin-left: 4px; }
+    /* Level bar (brightness/position): track + accent fill, full width under the
+       stateline. */
     .ha-card .hc-bar {
-      height: 8px; border-radius: 4px; margin-top: 10px;
+      height: 8px; border-radius: 4px; margin-top: 8px;
       background: rgba(255,255,255,0.15); overflow: hidden;
     }
     .ha-card .hc-bar > i { display: block; height: 100%; border-radius: 4px; background: #FFC107; }
@@ -465,11 +478,12 @@
     }
     .hc-head .hc-name { flex: 1 1 auto; min-width: 0; }
     .hc-head .hc-compact { flex: 0 0 auto; margin-top: 0; }
-    /* Widget card header: icon + name baseline-aligned at the top; the name is
-       the large device label (18px bold), wrapping at most two lines. */
-    .ha-card .hc-head { align-items: flex-start; gap: 10px; }
+    /* Widget card header: just the name (16px bold, may wrap two lines) with the
+       🔒 lock + ☆ pin right-aligned. No big icon — the accent icon moved inline
+       into the stateline. */
+    .ha-card .hc-head { align-items: flex-start; gap: 8px; }
     .ha-card .hc-name {
-      font-size: 18px; font-weight: 700; color: #F2F2F5; line-height: 1.2;
+      font-size: 16px; font-weight: 700; color: #F2F2F5; line-height: 1.2;
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
     }
     .ha-card .hc-state { font-size: 18px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
@@ -1016,15 +1030,16 @@
       border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08); color: inherit;
     }
     .hc-group .hc-set .hc-target { font-size: 16px; font-weight: 600; min-width: 52px; text-align: center; }
-    /* Widget controls row: a full-width row of large touch buttons at the card
-       foot (cover ▲■▼, light −/+, switch Umschalten). Big + clearly labelled so
-       a garage tap is unmissable on a phone (the old tiny ▲■▼ were unusable). */
+    /* Widget controls group: rides the RIGHT of the stateline (cover ▲■▼, light
+       −/+, switch Umschalten). Buttons stay finger-sized (≥34px hit area) so a
+       garage tap is unmissable on a phone — this is about reclaiming the dead
+       vertical row, not shrinking the controls. */
     .ha-card .hc-controls {
-      display: flex; gap: 8px; margin-top: 14px; width: 100%;
+      display: flex; gap: 6px; flex: 0 0 auto;
     }
     .ha-card .hc-controls > button {
-      flex: 1 1 0; min-width: 0; box-sizing: border-box;
-      height: 48px; border: none; border-radius: 10px;
+      flex: 0 0 auto; box-sizing: border-box;
+      min-width: 38px; height: 38px; padding: 0 10px; border: none; border-radius: 10px;
       background: rgba(255,255,255,0.12); color: #F2F2F5;
       font: inherit; font-size: 18px; font-weight: 600; line-height: 1; cursor: pointer;
     }
@@ -1053,6 +1068,16 @@
       border: 1px solid var(--line); border-radius: 6px; background: rgba(127,127,127,0.08); color: inherit;
     }
     .ha-card .hc-set .hc-target { font-size: 16px; font-weight: 600; min-width: 52px; text-align: center; }
+    /* Controls that ride the stateline right drop their own top margin (the
+       stateline owns the vertical rhythm). The climate stepper's buttons grow to
+       a finger-sized 34px hit target on the stateline. A climate hvac-mode select
+       that can't fit wraps to a compact line below the stateline — climate may be
+       one row taller than a light, which is fine. */
+    .ha-card .hc-stateline .hc-set { margin-top: 0; flex: 0 0 auto; }
+    .ha-card .hc-stateline .hc-set button { width: 34px; height: 34px; font-size: 18px; }
+    .ha-card .hc-mode {
+      flex: 1 1 100%; margin-top: 6px; min-width: 0; max-width: 100%; box-sizing: border-box;
+    }
 
     .md > :first-child { margin-top: 0; }
     .md > :last-child { margin-bottom: 0; }
@@ -2823,10 +2848,11 @@
       }
 
       // Standalone device card in the Solaris Android MEDIUM-widget style: a
-      // fixed 210px dark tile stacking header (accent icon + name + 🔒) → big
-      // accent state label + level bar → a full-width controls row. Every
-      // control still fires through haCall/haToggle (garage confirm intact);
-      // picker mode stays inert, offline entities stay greyed, ☆ pin preserved.
+      // fixed 210px dark tile — header (name + 🔒) → one stateline row that puts
+      // the state (small accent icon + value) on the LEFT and the controls on the
+      // RIGHT → a thin level bar below. Every control still fires through
+      // haCall/haToggle (garage confirm intact); picker mode stays inert, offline
+      // entities stay greyed, ☆ pin preserved.
       function renderHaWidget(c, opts) {
         var card = document.createElement("div");
         card.className = "ha-card";
@@ -2836,16 +2862,11 @@
         var st = String(c.state == null ? "" : c.state);
         var offline = st === "unavailable" || st === "unknown" || st === "";
 
-        // Header: accent-tinted domain icon + device name (may wrap 2 lines).
+        // Header: just the device name (may wrap 2 lines) + right-aligned badges.
         var head = document.createElement("div");
         head.className = "hc-head";
         card.appendChild(head);
         var accent = offline ? "#9E9E9E" : hcAccent(domain);
-        var icon = document.createElement("span");
-        icon.className = "hc-icon";
-        icon.style.color = accent;
-        icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + hcIconSvg(domain) + "</svg>";
-        head.appendChild(icon);
         var name = document.createElement("div");
         name.className = "hc-name";
         name.textContent = c.name || c.entity_id || "";
@@ -2890,9 +2911,21 @@
           return card;
         }
 
-        // Big state label in the domain accent colour.
+        // Stateline: state (small accent icon + value) on the LEFT, the domain
+        // controls on the RIGHT, one shared row.
         var onish = st === "on" || st === "open";
         card.classList.add(onish ? "on" : "off");
+        var stateline = document.createElement("div");
+        stateline.className = "hc-stateline";
+        card.appendChild(stateline);
+        var left = document.createElement("div");
+        left.className = "hc-state-left";
+        stateline.appendChild(left);
+        var icon = document.createElement("span");
+        icon.className = "hc-icon";
+        icon.style.color = accent;
+        icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + hcIconSvg(domain) + "</svg>";
+        left.appendChild(icon);
         var big = document.createElement("div");
         big.className = "hc-big";
         big.style.color = accent;
@@ -2906,9 +2939,19 @@
         } else {
           big.textContent = hcBigState(c, st);
         }
-        card.appendChild(big);
+        left.appendChild(big);
 
-        // Level bar (brightness/position) — hidden for switch/sensor/climate.
+        // Controls ride the stateline's right side (skipped in picker mode — an
+        // inert tile is state-only).
+        if (!inert) {
+          if (domain === "cover") renderCoverControls(card, c, null, stateline);
+          else if (domain === "light") renderLightControls(card, c, null, stateline);
+          else if (domain === "switch") renderSwitchControls(card, c, stateline);
+          else if (domain === "climate") renderClimateControls(card, c, st, stateline);
+        }
+
+        // Level bar (brightness/position) — full width under the stateline;
+        // hidden for switch/sensor/climate.
         var level = hcLevel(c);
         if (level != null) {
           var bar = document.createElement("div");
@@ -2919,23 +2962,17 @@
           bar.appendChild(fill);
           card.appendChild(bar);
         }
-
-        // Controls row (skipped in picker mode — an inert tile is state-only).
-        if (!inert) {
-          if (domain === "cover") renderCoverControls(card, c);
-          else if (domain === "light") renderLightControls(card, c);
-          else if (domain === "switch") renderSwitchControls(card, c);
-          else if (domain === "climate") renderClimateControls(card, c, st);
-        }
         return card;
       }
 
       // Climate widget controls (#974): the setpoint −/+ stepper + HVAC mode
       // picker on the widget card, restoring the control the group-row path keeps
       // via renderClimateCard. The current temp is already the card's big-state,
-      // so this renders only the target stepper + mode selector, routed through
-      // haCall like renderSwitchControls/renderCoverControls.
-      function renderClimateControls(card, c, st) {
+      // so this renders only the target stepper (onto the stateline right) + mode
+      // selector (wraps to a line below when it can't fit), routed through haCall
+      // like renderSwitchControls/renderCoverControls.
+      function renderClimateControls(card, c, st, stateHost) {
+        var setHost = stateHost || card;
         var feat = Number(c.supported_features || 0);
         if (feat & CLIMATE_TARGET_TEMP || c.temperature != null) {
           var step = Number(c.target_temp_step) || 0.5;
@@ -2959,7 +2996,7 @@
           plus.textContent = "+";
           plus.addEventListener("click", function () { apply(Number(label.textContent.replace("°", "")) + step); });
           set.appendChild(minus); set.appendChild(label); set.appendChild(plus);
-          card.appendChild(set);
+          setHost.appendChild(set);
         }
         var modes = c.hvac_modes || [];
         if (modes.length) {
@@ -3044,11 +3081,11 @@
 
       // Brightness slider (when the light is dimmable) + colour picker (when it
       // supports a colour mode). Acts via light.turn_on {brightness_pct|rgb_color}.
-      function renderLightControls(card, c, brightHost) {
+      function renderLightControls(card, c, brightHost, stateHost) {
         // Widget card (no brightHost): tapping the icon/state toggles the light
-        // (light.toggle via haToggle); a dimmable light gets big −/+ brightness
-        // buttons (light.turn_on {brightness_pct: current∓10}); a colour light
-        // keeps its picker on its own row below.
+        // (light.toggle via haToggle); a dimmable light gets −/+ brightness
+        // buttons on the stateline right (light.turn_on {brightness_pct:
+        // current∓10}); a colour light keeps its picker on its own row below.
         if (brightHost == null) {
           hcWireWidgetToggle(card, c);
           var dim = c.brightness != null ||
@@ -3072,7 +3109,7 @@
               });
               ctr.appendChild(btn);
             });
-            card.appendChild(ctr);
+            (stateHost || card).appendChild(ctr);
           }
           hcRenderColourPicker(card, c);
           return;
@@ -3196,9 +3233,9 @@
         });
       }
 
-      // Switch widget: tapping the icon/state toggles; a full-width Umschalten
-      // button at the foot mirrors it (switch.toggle through haCall).
-      function renderSwitchControls(card, c) {
+      // Switch widget: tapping the icon/state toggles; an Umschalten button on
+      // the stateline right mirrors it (switch.toggle through haCall).
+      function renderSwitchControls(card, c, stateHost) {
         hcWireWidgetToggle(card, c);
         var ctr = document.createElement("div");
         ctr.className = "hc-controls";
@@ -3220,19 +3257,19 @@
           haCall(card, c, "switch.toggle", {});
         });
         ctr.appendChild(btn);
-        card.appendChild(ctr);
+        (stateHost || card).appendChild(ctr);
       }
 
       // Position slider + open/close/stop. A garage cover is confirm-first.
       // #550: open/stop/close ride the compact badge row; the position slider
       // sits on its own line below when the cover supports set_position.
-      function renderCoverControls(card, c, host) {
+      function renderCoverControls(card, c, host, stateHost) {
         // A confirm-gated cover (garage/door/gate) is flagged `sensitive` by the
         // server (#702); moving it asks an explicit confirm and sends
         // confirmed=true so the server's gate lets the confirmed tap through.
         var sensitive = c.sensitive || c.device_class === "garage";
-        // Widget card (no host): three big equal-weight ▲ ■ ▼ buttons at the
-        // foot — ▲ greys out when already open (pos≥99), ▼ when closed (pos≤1),
+        // Widget card (no host): three ▲ ■ ▼ buttons on the stateline right —
+        // ▲ greys out when already open (pos≥99), ▼ when closed (pos≤1),
         // ■ always active. This is the garage's primary, unmissable control.
         if (host == null) {
           var pos = c.current_position != null ? Number(c.current_position) : null;
@@ -3258,7 +3295,7 @@
             });
             controls.appendChild(btn);
           });
-          card.appendChild(controls);
+          (stateHost || card).appendChild(controls);
           return;
         }
         makeButtons(host || card, [
