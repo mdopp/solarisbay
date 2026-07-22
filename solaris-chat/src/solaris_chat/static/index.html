@@ -1047,16 +1047,17 @@
     .ha-card .hc-controls > button.hc-off {
       color: #9E9E9E; pointer-events: none;
     }
-    /* Colour swatch button (#726 follow-up): sits in the −/+ group; its face is
-       a filled rounded square in the light's current colour (--swatch). */
+    /* Colour swatch button (#726 follow-up): leftmost in the −/+ group. Its face
+       is a bold round colour dot (the light's current colour) so it reads as a
+       colour picker, not another ▲■▼/−+ control button. */
     .ha-card .hc-controls > button.hc-swatch {
       min-width: 38px; padding: 0;
       display: flex; align-items: center; justify-content: center;
     }
     .ha-card .hc-controls > button.hc-swatch::before {
-      content: ""; width: 18px; height: 18px; border-radius: 5px;
+      content: ""; width: 24px; height: 24px; border-radius: 50%;
       background: var(--swatch, #FFC107);
-      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.25);
+      box-shadow: inset 0 0 0 2px rgba(255,255,255,0.30), 0 0 0 1px rgba(0,0,0,0.35);
     }
     /* Phase 3 (#477): slider / colour / climate controls on a card. */
     .ha-card .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
@@ -3115,6 +3116,9 @@
           // gets its swatch button next to nothing rather than a stray row.
           var ctr = document.createElement("div");
           ctr.className = "hc-controls";
+          // Colour swatch first (leftmost) so the −/+ buttons stay rightmost and
+          // line up across all lights, whether or not a light is colour-capable.
+          hcRenderColourPicker(card, c, ctr);
           if (dim) {
             if (c.brightness != null) hcLastBrightness[c.entity_id] = Math.round(c.brightness / 255 * 100);
             var curPct = c.brightness != null ? Math.round(c.brightness / 255 * 100)
@@ -3133,7 +3137,6 @@
               ctr.appendChild(btn);
             });
           }
-          hcRenderColourPicker(card, c, ctr);
           if (ctr.childNodes.length) (stateHost || card).appendChild(ctr);
           return;
         }
