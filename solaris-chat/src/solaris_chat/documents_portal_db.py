@@ -74,6 +74,37 @@ def categories(db_path: str, uid: str) -> dict[str, int] | None:
     return {r["category"]: r["n"] for r in rows}
 
 
+def search(db_path: str, uid: str, q: str) -> list[dict[str, Any]] | None:
+    """Documents (own ∪ shared) whose title or category matches `q` (LIKE),
+    for the `.doc` filter. Empty `q` → the full owner-scoped document list.
+    Each row is `{entity_id, title, category}` — the lightweight shape the
+    `.doc` list needs."""
+    conn = _connect(db_path)
+    if conn is None:
+        return None
+    scope, params = _scope(uid)
+    like = f"%{q.strip()}%"
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT e.id AS entity_id, e.canonical_name AS title,"
+            " (SELECT value FROM facts WHERE subject_entity_id = e.id"
+            "  AND predicate = 'category' LIMIT 1) AS category"
+            " FROM entities e"
+            " LEFT JOIN facts f ON f.subject_entity_id = e.id"
+            "  AND f.predicate = 'category'"
+            f" WHERE e.type = 'document' AND {scope}"  # noqa: S608
+            " AND (e.canonical_name LIKE ? OR f.value LIKE ?)"
+            " ORDER BY e.canonical_name",
+            [*params, like, like],
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {"entity_id": r["entity_id"], "title": r["title"], "category": r["category"]}
+        for r in rows
+    ]
+
+
 _CONTACT_PREDICATES = ("phone", "email", "address", "contact_person")
 
 

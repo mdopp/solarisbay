@@ -4699,6 +4699,9 @@
           el.appendChild(fi);
           var status = document.createElement("div"); status.className = "import-status"; status.hidden = true;
           el.appendChild(status);
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list; el._docs = null; el._docTimer = null;
+          searchDocs(el, "");
           function take(f) {
             if (!f) return;
             if (f.type === "application/zip" || f.type === "application/json" || /\.(zip|json)$/i.test(f.name || "")) {
@@ -4712,6 +4715,34 @@
           ["dragenter", "dragover"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); }); });
           ["dragleave", "dragend"].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.remove("over"); }); });
           drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
+        }
+        function searchDocs(el, q) {
+          // Debounced LIKE search over title/category — server-side (own ∪ shared).
+          if (el._docTimer) clearTimeout(el._docTimer);
+          el._docTimer = setTimeout(function () {
+            fetch("/api/portal/documents/search?q=" + encodeURIComponent(q))
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (j) { if (card === el) { el._docs = (j && j.ok && j.documents) || []; renderDocList(el, q); } })
+              .catch(function () { if (card === el) { el._docs = []; renderDocList(el, q); } });
+          }, 200);
+        }
+        function renderDocList(el, filter) {
+          var listEl = el._list; if (!listEl || el._docs == null) return;
+          listEl.textContent = "";
+          var f = (filter || "").trim();
+          var showAll = (f === "" || f.toLowerCase() === "list");
+          var items = el._docs;
+          var h = document.createElement("div"); h.className = "dc-list-head";
+          h.textContent = showAll ? "Dokumente (" + items.length + ")" : items.length + " Treffer für „" + f + "“";
+          listEl.appendChild(h);
+          if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = showAll ? "Noch keine Dokumente." : "Kein passendes Dokument."; listEl.appendChild(e); return; }
+          items.slice(0, 8).forEach(function (c) {
+            var rw = document.createElement("div"); rw.className = "task-row";
+            var m = document.createElement("div"); m.className = "task-main";
+            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.title || "(ohne Titel)"; m.appendChild(tt);
+            if (c.category) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = c.category; m.appendChild(d); }
+            rw.appendChild(m); listEl.appendChild(rw);
+          });
         }
         function uploadDoc(file, drop, status) {
           drop.classList.add("busy");
@@ -4968,6 +4999,10 @@
             else { var p3 = document.createElement("span"); p3.className = "placeholder"; p3.textContent = "Name, @E-Mail oder Telefon…"; t3.appendChild(p3); }
             card._lastFilter = v;
             renderPersonList(card, v);
+          } else if (cmd === "doc" && card && card._list) {
+            var vd = rest.trim();
+            card._lastFilter = vd;
+            searchDocs(card, vd);
           }
         }
 

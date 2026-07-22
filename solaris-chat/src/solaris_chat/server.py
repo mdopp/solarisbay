@@ -3809,6 +3809,16 @@ def build_app(
         )
         return web.json_response({"ok": True, "category": category, "rows": rows or []})
 
+    async def portal_documents_search(request: web.Request) -> web.Response:
+        """Documents matching `?q=` (title/category LIKE), owner-scoped, for the
+        `.doc` filter. Absent/empty `q` → the full owner-scoped list."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        q = request.query.get("q", "")
+        rows = await asyncio.to_thread(
+            documents_portal_db.search, solaris_db_path, uid, q
+        )
+        return web.json_response({"ok": True, "documents": rows or []})
+
     async def portal_contacts(request: web.Request) -> web.Response:
         """The phone-book (#doc-graph): every provider organization with its
         contact facts and the documents grouped under it, owner-scoped."""
@@ -5299,6 +5309,7 @@ def build_app(
     app.router.add_get("/api/portal/tasks", portal_tasks)
     app.router.add_get("/api/portal/persons", portal_persons)
     app.router.add_post("/api/portal/documents/correct", portal_documents_correct)
+    app.router.add_get("/api/portal/documents/search", portal_documents_search)
     app.router.add_get("/api/portal/documents/{category}", portal_documents_category)
     app.router.add_post("/api/favorites", favorites_create)
     app.router.add_delete("/api/favorites/{fav_id}", favorites_delete)
