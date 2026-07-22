@@ -109,13 +109,27 @@ def test_home_dot_command_wired(_html=_HTML):
     assert "pinned_entities" in _html
     assert re.search(r"favMatches\.concat\(rest\)", _html)
     assert re.search(r"ordered\.slice\(0, 12\)", _html)
-    # `.home energie` reuses the energy renderer inline with a calm fallback.
-    assert "function renderHomeEnergy(el)" in _html
-    assert "renderEnergyPage(listEl, j.energy)" in _html
-    assert "Energie ist nicht konfiguriert." in _html
+    # Energy is its OWN command now (.energy) — .home no longer carries it.
+    assert "renderHomeEnergy" not in _html
     # FIND-ONLY: home is never wired into submit()/freeze — no create/submit.
     assert 'kind !== "task" && kind !== "note" && kind !== "contacts"' in _html
     assert '=== "home"' not in re.search(
+        r"function submit\(\)[\s\S]*?\n        \}", _html
+    ).group(0)
+
+
+def test_energy_dot_command_wired(_html=_HTML):
+    # `.energy` (#980 follow-up) is its own display-only dot-command, split out
+    # of `.home` so each command does one thing.
+    assert re.search(r'\[".energy",', _html)
+    assert 'energy: "Energie & Stromfluss"' in _html
+    assert 'else if (cmd === "energy") buildEnergyCard(card);' in _html
+    assert "function buildEnergyCard(el)" in _html
+    # It reuses the standalone energy renderer inline with a calm fallback.
+    assert "renderEnergyPage(listEl, j.energy)" in _html
+    assert "Energie ist nicht konfiguriert." in _html
+    # Display-only: not wired into submit()/freeze.
+    assert '=== "energy"' not in re.search(
         r"function submit\(\)[\s\S]*?\n        \}", _html
     ).group(0)
 
