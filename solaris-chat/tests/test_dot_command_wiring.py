@@ -41,13 +41,12 @@ def test_task_create_find_edit_wired():
 
 
 def test_note_create_and_clickable_deduped_results():
-    # create → note.add; results are de-duplicated (one row per note path) and
-    # each row is CLICKABLE, opening the note viewer — not an inert label.
+    # create → note.add; results are de-duplicated by display LABEL (an upload's
+    # companion + its extracted OKF note share a title) and each row is CLICKABLE,
+    # opening the note viewer — not an inert label.
     assert _has(r'taskAction\(\s*"note\.add"')
-    assert "if (!key || seen[key]) return false;" in _HTML  # de-dupe by path
-    assert (
-        'a.addEventListener("click", function () { openNoteViewer(path); });' in _HTML
-    )
+    assert "byLabel[key]" in _HTML  # de-dupe by display label, not path
+    assert "openNoteViewer(u.path)" in _HTML
     # kept restrictive: every query word must appear in the hit.
     assert "words.every" in _HTML
 
