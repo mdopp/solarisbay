@@ -1,17 +1,23 @@
-"""Project document deadlines + dated to-do tasks into a calendar (#doc-graph /
-#todo).
+"""Project document deadlines + dated to-do tasks into PER-RESIDENT calendars
+(#doc-graph / #todo / #997).
 
 A document carries dated facts — a `cancellation_deadline`, a `hu_date`, a
 contract `end_date`. Rather than push notifications, we write each as an all-day
-event with an advance alarm into a shared "Solaris Fristen" calendar, where the
-calendar app itself reminds the household (the passive, non-intrusive channel the
-plan chose) and the layer is toggleable.
+event with an advance alarm into a calendar, where the calendar app itself
+reminds the resident (the passive, non-intrusive channel the plan chose).
+
+Solaris owns, the calendar mirrors (#997): each resident's dated OPEN tasks are
+written under THAT resident's own DAV context — `{base}/{resident_uid}/<cal>/` —
+so a resident's private task lands only in their own calendar and is never
+visible cross-resident. Household-scoped document deadlines and household tasks
+(`SHARED_UID`) go to the household principal's calendar
+`{base}/{SHARED_UID}/<cal>/`.
 
 **Authenticated CalDAV PUT** as the dedicated `solaris` DAV account, not a
-filesystem mount: Radicale's `owner_only` scopes it to its own calendar. The
-event UID is derived from `(entity_id, predicate)`, so a re-sync overwrites in
-place. Non-ISO / unparseable dates are skipped. Disabled (no-op) when the
-collection URL / credentials are unset.
+filesystem mount: Radicale's rights scope it to the collections it may write.
+The event UID is derived from `(entity_id, predicate)` / the task id, so a
+re-sync overwrites in place. Non-ISO / unparseable dates are skipped. Disabled
+(no-op) when the base URL / credentials are unset.
 """
 
 from __future__ import annotations
@@ -39,6 +45,10 @@ _UID_PREFIX = "solaris-deadline-"
 _TASK_UID_PREFIX = "solaris-task-"
 # Days before the date the calendar app raises its alarm.
 _LEAD_DAYS = 14
+# The stable Solaris-owned calendar name each resident's collection lives under:
+# `{base}/{resident_uid}/{_CALENDAR_NAME}/`. Named for the surface it backs
+# (Aufgaben/To-Do + Fristen) and kept stable so a re-sync overwrites in place.
+_CALENDAR_NAME = "solaris"
 
 
 def _parse_iso(value: str) -> date | None:
@@ -81,21 +91,37 @@ def _facts(conn, entity_id: str) -> dict[str, str]:
     return out
 
 
+def _collection_url(base_url: str, resident_uid: str) -> str:
+    """The resident's Solaris calendar collection — `{base}/{uid}/{cal}/`.
+
+    Same URL shape the Takeout calendar importer PUTs to (orchestrator
+    `{base}/{owner_uid}/{cal_name}/`), so both write paths agree.
+    """
+    return f"{base_url.rstrip('/')}/{resident_uid}/{_CALENDAR_NAME}/"
+
+
 async def sync_deadlines(
-    db_path: str, collection_url: str, username: str, password: str
+    db_path: str, base_url: str, username: str, password: str
 ) -> dict[str, int]:
-    """PUT an all-day alarmed event for every document deadline into the Solaris
-    Fristen calendar. Returns `{written, skipped, failed}`. Never raises."""
-    if not (collection_url and username and password):
+    """PUT each resident's dated OPEN tasks + the household's document deadlines
+    into their PER-RESIDENT Solaris calendar (`{base}/{resident_uid}/<cal>/`).
+
+    Returns `{written, skipped, failed}`. Never raises. Disabled (no-op) when the
+    base URL / credentials are unset.
+    """
+    if not (base_url and username and password):
         return {"written": 0, "skipped": 0, "failed": 0}
     client = HttpDavClient(caldav_username=username, caldav_password=password)
     written = skipped = failed = 0
+    # owner resident_uid → [(uid, ics)]; an event only ever lands under its own
+    # owner's key, so a resident's task can never cross into another's calendar.
+    per_resident: dict[str, list[tuple[str, str]]] = {}
     conn = projection.open_conn(db_path)
     try:
+        # Household document deadlines → the household principal's calendar.
         docs = conn.execute(
             "SELECT id, canonical_name FROM entities WHERE type = 'document'"
         ).fetchall()
-        events: list[tuple[str, str]] = []  # (uid, ics)
         for doc in docs:
             facts = _facts(conn, doc["id"])
             desc = " · ".join(
@@ -113,17 +139,16 @@ async def sync_deadlines(
                     continue
                 uid = f"{_UID_PREFIX}{doc['id']}-{pred}"
                 summary = f"{label}: {doc['canonical_name']}"
-                events.append((uid, _build_event(uid, summary, desc, day)))
-        # Dated to-do tasks (#todo) become calendar entries too: an OPEN task with
-        # an ISO `due`. A resolved task simply stops being written (its event
-        # lingers until the calendar is re-synced away — refined in a later slice).
-        # Only household-scoped tasks reach this SHARED calendar — a per-resident
-        # task must never become visible cross-resident (unlike documents, which
-        # are shared household data and are synced unscoped above).
+                per_resident.setdefault(projection.SHARED_UID, []).append(
+                    (uid, _build_event(uid, summary, desc, day))
+                )
+        # Dated to-do tasks (#todo, #997): an OPEN task with an ISO `due` becomes
+        # a calendar entry in ITS OWNER's calendar — a private resident's task
+        # under their own uid, a household task under SHARED_UID. A resolved task
+        # simply stops being written (its event lingers until re-synced away —
+        # refined by cascade-on-change, see the TODO below).
         tasks = conn.execute(
-            "SELECT id, canonical_name FROM entities"
-            " WHERE type = 'task' AND resident_uid = ?",
-            (projection.SHARED_UID,),
+            "SELECT id, canonical_name, resident_uid FROM entities WHERE type = 'task'"
         ).fetchall()
         for task in tasks:
             facts = _facts(conn, task["id"])
@@ -134,21 +159,35 @@ async def sync_deadlines(
                 continue
             uid = f"{_TASK_UID_PREFIX}{task['id']}"
             summary = f"Aufgabe: {facts.get('title_text', task['canonical_name'])}"
-            events.append((uid, _build_event(uid, summary, "", day)))
+            per_resident.setdefault(task["resident_uid"], []).append(
+                (uid, _build_event(uid, summary, "", day))
+            )
     finally:
         conn.close()
-    for uid, ics in events:
+    # TODO(#997): cascade-on-change — task.add/update/set_status should re-PUT the
+    # single affected event immediately, so the calendar isn't stale until night.
+    for resident_uid, events in per_resident.items():
+        collection_url = _collection_url(base_url, resident_uid)
         try:
-            await client.put_item(
-                collection_url,
-                uid,
-                ics,
-                suffix=".ics",
-                content_type="text/calendar; charset=utf-8",
+            await client.ensure_calendar(collection_url)
+        except Exception as e:  # noqa: BLE001 — a missing collection fails its PUTs below.
+            log.error(
+                "engine.deadlines_sync.ensure_failed",
+                resident=resident_uid,
+                error=str(e),
             )
-            written += 1
-        except Exception as e:  # noqa: BLE001 — one bad event must not stop the sync.
-            log.error("engine.deadlines_sync.event_failed", uid=uid, error=str(e))
-            failed += 1
+        for uid, ics in events:
+            try:
+                await client.put_item(
+                    collection_url,
+                    uid,
+                    ics,
+                    suffix=".ics",
+                    content_type="text/calendar; charset=utf-8",
+                )
+                written += 1
+            except Exception as e:  # noqa: BLE001 — one bad event mustn't stop the sync.
+                log.error("engine.deadlines_sync.event_failed", uid=uid, error=str(e))
+                failed += 1
     log.info("engine.deadlines_sync", written=written, skipped=skipped, failed=failed)
     return {"written": written, "skipped": skipped, "failed": failed}

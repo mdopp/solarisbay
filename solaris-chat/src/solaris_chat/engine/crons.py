@@ -515,12 +515,13 @@ class CronRunner:
             )
         except Exception as e:  # noqa: BLE001 — one bad step must not kill the run.
             log.error("engine.night.contacts_sync_failed", error=str(e))
-        # Document deadlines → the "Solaris Fristen" calendar (#doc-graph), where
-        # the calendar app raises the reminder — the passive, non-push channel.
+        # Document deadlines + dated tasks → each resident's PER-RESIDENT Solaris
+        # calendar (#doc-graph / #997), where the calendar app raises the reminder
+        # — the passive, non-push channel. No-op when the base URL/creds are unset.
         try:
             await document_deadlines_sync.sync_deadlines(
                 settings.solaris_db_path,
-                settings.deadlines_sync_url,
+                settings.deadlines_sync_url_base,
                 settings.sync_dav_username,
                 settings.sync_dav_password,
             )

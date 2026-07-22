@@ -176,6 +176,10 @@ class Settings:
     sync_dav_password: str
     contacts_sync_url: str
     deadlines_sync_url: str
+    # DAV base for the PER-RESIDENT calendar sync (#997): the deadlines/tasks sync
+    # writes `{deadlines_sync_url_base}/{resident_uid}/{calendar}/` — the same URL
+    # shape the Takeout calendar importer uses. Empty ⇒ per-resident sync disabled.
+    deadlines_sync_url_base: str
     # Where the interactive Takeout import (#869) reads library ownership from
     # (`music_dir`) and stores its scratch state / stored archives (`import_data_dir`,
     # also the ytmusicapi album cache). Defaults match the stack's data mounts.
@@ -357,6 +361,9 @@ class Settings:
             sync_dav_password=os.environ.get("SYNC_DAV_PASSWORD", "").strip(),
             contacts_sync_url=os.environ.get("CONTACTS_SYNC_URL", "").strip(),
             deadlines_sync_url=os.environ.get("DEADLINES_SYNC_URL", "").strip(),
+            deadlines_sync_url_base=os.environ.get(
+                "DEADLINES_SYNC_URL_BASE", ""
+            ).strip(),
             music_dir=os.environ.get("MUSIC_DIR", "/opt/data/music").strip(),
             import_data_dir=os.environ.get("IMPORT_DATA_DIR", "/data/imports").strip(),
             # The household Jellyfin server the music-ingest adapter reads
