@@ -4167,7 +4167,23 @@
         if (e.key.indexOf("Arrow") === 0 || e.key === "Home" || e.key === "End") mention.refresh();
       });
       input.addEventListener("click", function () { mention.refresh(); });
+      var lastEsc = 0;
       input.addEventListener("keydown", function (e) {
+        // Top-level double-Esc (#971): a second Esc within 600ms clears everything,
+        // regardless of which subsystem consumed the first one. Timestamp before the
+        // per-subsystem single-Esc handlers so both presses are tracked.
+        if (e.key === "Escape") {
+          var now = Date.now();
+          if (now - lastEsc < 600) {
+            lastEsc = 0;
+            e.preventDefault();
+            input.value = ""; autosize();
+            dotcmd.clearCard(); dotcmd.close(); slash.close(); mention.close();
+            attach.clear();
+            return;
+          }
+          lastEsc = now;
+        }
         if (slash.handleKey(e)) return;   // arrow/enter/tab/esc while the slash menu is open
         if (dotcmd.handleKey(e)) return;  // same nav while the dot menu / a dot card is active
         if (mention.handleKey(e)) return; // same nav while the mention menu is open
@@ -5034,7 +5050,7 @@
           if (!menu.hidden && e.target !== input && !menu.contains(e.target)) closeMenu();
         });
 
-        return { refresh: refresh, handleKey: handleKey, close: closeMenu, submitFromInput: submitFromInput };
+        return { refresh: refresh, handleKey: handleKey, close: closeMenu, clearCard: clearCard, submitFromInput: submitFromInput };
       })();
 
       // ---- #tag / @person mention autosuggest (#279) ----
@@ -5290,7 +5306,10 @@
           closeModal();
         });
 
-        return { take: function () { var out = images.slice(); images = []; renderTray(); return out; } };
+        return {
+          take: function () { var out = images.slice(); images = []; renderTray(); return out; },
+          clear: function () { if (images.length) { images = []; renderTray(); } }
+        };
       })();
 
       // ---- Voice input: browser-local STT into the message box (#184) ----
@@ -6632,11 +6651,26 @@
         var tem = document.createElement("span");
         tem.className = "nd-emoji";
         tem.textContent = "✅";
+        var tnum = document.createElement("span");
+        tnum.className = "nd-count";
+        tnum.textContent = "0";
         var tlab = document.createElement("span");
         tlab.className = "nd-label";
         tlab.textContent = "Aufgaben";
         todo.appendChild(tem);
+        todo.appendChild(tnum);
         todo.appendChild(tlab);
+        // /api/portal/tasks (no ?done=1) returns only OPEN tasks; count them for the badge.
+        fetch("/api/portal/tasks")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            var tasks = (j && j.ok && j.tasks) || [];
+            var open = tasks.filter(function (t) {
+              return t.status !== "done" && t.status !== "dismissed";
+            });
+            tnum.textContent = Number(open.length).toLocaleString("de-DE");
+          })
+          .catch(function () {});
         todo.addEventListener("click", function () { location.hash = "#/p/tasks"; });
         doors.insertBefore(todo, doors.firstChild);
         mem.appendChild(doors);
