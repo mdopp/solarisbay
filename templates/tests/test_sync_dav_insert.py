@@ -16,7 +16,11 @@ import pathlib
 import sys
 
 import pytest
-import yaml
+
+# PyYAML isn't installed in the templates CI env; the yaml-validity assertions
+# run where it IS present (locally + the pod image at runtime). Skip the module
+# when yaml is absent rather than fail collection.
+yaml = pytest.importorskip("yaml")
 
 TEMPLATES = pathlib.Path(__file__).resolve().parents[1]
 

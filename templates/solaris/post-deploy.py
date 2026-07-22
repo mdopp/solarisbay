@@ -51,8 +51,6 @@ import time
 import urllib.error
 import urllib.request
 
-import yaml
-
 # A ServiceBay-minted MCP token is `sb_<8-hex-id>_<base32-ish-secret>`. Only
 # this shape is accepted by ServiceBay's `/mcp` `verifyToken`; any other value
 # is a permanent 401 (#126).
@@ -1179,8 +1177,15 @@ def _insert_after_caldav_anchor(src: str, entries: list[tuple[str, str]]) -> str
         for name, value in entries
     )
     new = src[: m.end()] + block + src[m.end() :]
+    # Lazy import: PyYAML is present in the pod image (where this runs) but not in
+    # the templates CI env; skip the validity check there rather than fail import.
     try:
-        yaml.safe_load(new)
+        import yaml
+    except ImportError:
+        yaml = None
+    try:
+        if yaml is not None:
+            yaml.safe_load(new)
     except yaml.YAMLError as e:
         jlog(
             "warn",
