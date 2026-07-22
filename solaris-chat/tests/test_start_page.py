@@ -790,6 +790,22 @@ def test_start_page_renders_ha_notice_and_unavailable_card():
     assert "updateHaBanner(page, j.ha" in _HTML  # banner lifts on the live poll
 
 
+def test_play_favorite_shows_device_and_volume():
+    # #972: a play_radio/play_music action favorite renders subtitle lines with
+    # device + volume (+ station/query only when it isn't already the label),
+    # built from the stored payload.args — not just the bare button label.
+    assert "function playFavoriteSubtitle(f)" in _HTML
+    assert 'p.tool !== "play_radio" && p.tool !== "play_music"' in _HTML
+    # station/query is only re-shown when it differs from the label:
+    assert 'if (what && String(what) !== String(f.label || "")) parts.push' in _HTML
+    # device falls back across the keys that may exist:
+    assert "a.target || a.area || a.media_player || a.entity_id" in _HTML
+    # volume_level renders as a percentage:
+    assert 'Math.round(Number(a.volume_level) * 100) + "%"' in _HTML
+    # the action branch renders the subtitle via the helper:
+    assert "var sub = playFavoriteSubtitle(f);" in _HTML
+
+
 def test_generic_card_renders_unavailable_entity_as_inactive():
     # #732: an offline entity (unavailable/unknown/empty state) must render as an
     # explicit inactive .hc-unavailable tile with the offline label — NOT a normal

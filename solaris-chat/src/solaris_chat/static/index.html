@@ -8923,6 +8923,30 @@
         return box;
       }
 
+      // #972: subtitle lines for a play_radio/play_music action favorite, built
+      // from the already-stored payload.args. The label already carries the
+      // station/query/title (via _action_label), so only add those if the label
+      // is something else; device + volume are always new info. Reads only the
+      // keys that exist and degrades gracefully when one is absent.
+      function playFavoriteSubtitle(f) {
+        var p = f.payload || {};
+        if (p.tool !== "play_radio" && p.tool !== "play_music") return [];
+        var a = p.args || {};
+        var parts = [];
+        var what = a.station || a.query || a.title || a.artist || "";
+        if (what && String(what) !== String(f.label || "")) parts.push(String(what));
+        var device = a.target || a.area || a.media_player || a.entity_id || "";
+        device = String(device);
+        if (device) {
+          var dot = device.indexOf(".");
+          parts.push(dot >= 0 ? device.slice(dot + 1).replace(/_/g, " ") : device);
+        }
+        if (a.volume_level != null && a.volume_level !== "") {
+          parts.push(Math.round(Number(a.volume_level) * 100) + "%");
+        }
+        return parts;
+      }
+
       function renderFavorite(page, f) {
         var el;
         if (f.kind === "entity" && f.card) {
@@ -8935,8 +8959,21 @@
           el = document.createElement("button");
           el.className = "hc-row start-action";
           el.type = "button";
-          el.textContent = f.label || "Aktion";
           el.addEventListener("click", function () { runFavorite(el, f); });
+          var sub = playFavoriteSubtitle(f);
+          if (sub.length) {
+            // #972: a play_radio/play_music favorite is more than a bare station
+            // name — surface where it plays and how loud from the stored args.
+            var head = document.createElement("div");
+            head.textContent = f.label || "Aktion";
+            el.appendChild(head);
+            var meta = document.createElement("div");
+            meta.className = "hc-name";
+            meta.textContent = sub.join(" · ");
+            el.appendChild(meta);
+          } else {
+            el.textContent = f.label || "Aktion";
+          }
         } else if (f.kind === "link" && f.payload && f.payload.href) {
           el = document.createElement("a");
           el.className = "hc-row start-link";
