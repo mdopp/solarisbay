@@ -51,6 +51,8 @@ import time
 import urllib.error
 import urllib.request
 
+import yaml
+
 # A ServiceBay-minted MCP token is `sb_<8-hex-id>_<base32-ish-secret>`. Only
 # this shape is accepted by ServiceBay's `/mcp` `verifyToken`; any other value
 # is a permanent 401 (#126).
@@ -72,6 +74,11 @@ LLDAP_CONTAINER = os.environ.get("LLDAP_CONTAINER", "auth-lldap")
 LLDAP_ADMIN_USER = "admin"
 LLDAP_PORT = 17170
 JELLYFIN_SOLARIS_USER = "solaris"
+
+# The Radicale ROOT the per-resident calendar/contacts sync PUTs under (#997 /
+# #1010, option B). The engine pod is host-networked, so Radicale is the
+# box-local loopback root. DEADLINES_SYNC_URL_BASE overrides it.
+DEADLINES_SYNC_URL_BASE_DEFAULT = "http://127.0.0.1:5232/"
 
 PIPELINE_NAME = "Solaris"
 CONVERSATION_AGENT_NAME = "Solaris"
@@ -1136,21 +1143,96 @@ def apply_jellyfin_password_to_engine(password: str) -> bool:
     return True
 
 
-def _patched_sync_dav_yaml(src: str, password: str) -> tuple[str, int]:
-    """Stamp SYNC_DAV_USERNAME=solaris + SYNC_DAV_PASSWORD in the pod manifest
-    text (pure). Returns (new_text, n_replacements) — n is the SYNC_DAV_PASSWORD
-    hits (the username hit is incidental). Same `- name: …\\n value: …` patch
-    shape apply_jellyfin_password_to_engine uses."""
-    new, _ = re.subn(
-        r'(- name: SYNC_DAV_USERNAME\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
-        lambda m: m.group(1) + '"' + JELLYFIN_SOLARIS_USER + '"',
+def _patch_env_value(src: str, name: str, value: str) -> tuple[str, int]:
+    """PATCH a single `- name: NAME\\n value: …` env entry's value in place."""
+    return re.subn(
+        rf'(- name: {re.escape(name)}\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
+        lambda m: m.group(1) + '"' + value + '"',
         src,
     )
-    return re.subn(
-        r'(- name: SYNC_DAV_PASSWORD\n\s+value: )(?:"[^"\n]*"|[^\n]*)',
-        lambda m: m.group(1) + '"' + password + '"',
-        new,
+
+
+def _insert_after_caldav_anchor(src: str, entries: list[tuple[str, str]]) -> str:
+    """Insert `entries` (name, value) into the engine env list immediately after
+    the `- name: CALDAV_URL\\n <ind>  value: "…"` anchor, reusing the anchor's
+    OWN indentation (name-line + value-line indent captured, never assumed).
+    Returns src unchanged (with a warn) when the anchor is absent, so a missing
+    anchor never corrupts the manifest. Guards the result with a YAML parse — a
+    bad insert would crash-loop the pod."""
+    m = re.search(
+        r'\n(?P<ind>[ \t]*)- name: CALDAV_URL\n(?P<vind>[ \t]*)value: "[^"\n]*"',
+        src,
     )
+    if not m:
+        jlog(
+            "warn",
+            "sync-dav",
+            "CALDAV_URL anchor not found in solaris.yml — SYNC_DAV env NOT "
+            "inserted; the DAV sync stays dormant. Check the engine container's "
+            "env block in the rendered pod.",
+        )
+        return src
+    name_ind = m.group("ind")
+    value_ind = m.group("vind")
+    block = "".join(
+        f'\n{name_ind}- name: {name}\n{value_ind}value: "{value}"'
+        for name, value in entries
+    )
+    new = src[: m.end()] + block + src[m.end() :]
+    try:
+        yaml.safe_load(new)
+    except yaml.YAMLError as e:
+        jlog(
+            "warn",
+            "sync-dav",
+            "SYNC_DAV insert produced invalid YAML — abandoning it to avoid a "
+            "pod crash-loop",
+            error=str(e),
+        )
+        return src
+    return new
+
+
+def _patched_sync_dav_yaml(src: str, password: str) -> tuple[str, int]:
+    """Wire SYNC_DAV_USERNAME=solaris + SYNC_DAV_PASSWORD + DEADLINES_SYNC_URL_BASE
+    into the engine container's env list (pure). Returns (new_text, n) with n>0
+    when the manifest now carries the values.
+
+    On the box the rendered solaris.yml does NOT contain the SYNC_DAV_* entries
+    at all (the template.yml block isn't reaching the rendered pod, #997 / #1010
+    option B), so a PATCH-only pass found nothing and the sync stayed dormant.
+    So: PATCH the entries in place when SYNC_DAV_PASSWORD is present; otherwise
+    INSERT all three right after the `- name: CALDAV_URL` anchor confirmed
+    present in the rendered engine env. Idempotent (a re-deploy re-patches to the
+    same values). Returns (src, 0) when the anchor is absent — never corrupts."""
+    username = JELLYFIN_SOLARIS_USER
+    url_base = (
+        os.environ.get("DEADLINES_SYNC_URL_BASE") or DEADLINES_SYNC_URL_BASE_DEFAULT
+    )
+
+    if re.search(r"- name: SYNC_DAV_PASSWORD\n\s+value:", src):
+        # Present already — patch USERNAME + PASSWORD in place, and ensure the
+        # URL base is present/updated too (it may not be a sibling).
+        new, _ = _patch_env_value(src, "SYNC_DAV_USERNAME", username)
+        new, n = _patch_env_value(new, "SYNC_DAV_PASSWORD", password)
+        if re.search(r"- name: DEADLINES_SYNC_URL_BASE\n\s+value:", new):
+            new, _ = _patch_env_value(new, "DEADLINES_SYNC_URL_BASE", url_base)
+        else:
+            new = _insert_after_caldav_anchor(
+                new, [("DEADLINES_SYNC_URL_BASE", url_base)]
+            )
+        return new, n
+
+    # Absent — insert all three after the CALDAV_URL anchor.
+    new = _insert_after_caldav_anchor(
+        src,
+        [
+            ("SYNC_DAV_USERNAME", username),
+            ("SYNC_DAV_PASSWORD", password),
+            ("DEADLINES_SYNC_URL_BASE", url_base),
+        ],
+    )
+    return new, (1 if new != src else 0)
 
 
 def apply_sync_dav_credential_to_engine(password: str) -> bool:
@@ -1174,7 +1256,9 @@ def apply_sync_dav_credential_to_engine(password: str) -> bool:
         jlog(
             "warn",
             "sync-dav",
-            "SYNC_DAV_PASSWORD env entry not found in solaris.yml — not stamped",
+            "could not wire SYNC_DAV env into solaris.yml — neither a "
+            "SYNC_DAV_PASSWORD entry to patch nor a CALDAV_URL anchor to insert "
+            "after was found; the DAV sync stays dormant",
             path=pod_yml,
         )
         return False
