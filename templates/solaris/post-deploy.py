@@ -94,14 +94,17 @@ DEADLINES_SYNC_URL_BASE_DEFAULT = "http://127.0.0.1:5232/"
 # radicale exists.
 RADICALE_POD_YML = "~/.config/containers/systemd/radicale.yml"
 RADICALE_RIGHTS_FILE = "/config/rights"
-# The from_file body. `{0}` is Radicale's substitution for the matched user (a
-# literal token here, NOT a Python format field). Uppercase RrWw = full read/
-# write on the collection AND its children (so MKCALENDAR + PUT both pass).
+# The from_file body. Radicale substitutes `{0}` in a `collection` pattern with
+# the FIRST CAPTURING GROUP of that section's `user` regex (it calls
+# `pattern.format(*user_match.groups())`) — so the owner rule's user regex MUST
+# capture (`(.+)`, not a bare `.+`, which has no group 0 and raises IndexError →
+# every request 500s). Uppercase RrWw = full read/write on the collection AND its
+# children (so MKCALENDAR + PUT both pass).
 _RADICALE_RIGHTS_BODY = [
     "# Owner-only base: each authenticated user has full read/write over their",
     "# OWN principal subtree — and nothing else (equivalent to owner_only).",
     "[owner]",
-    "user: .+",
+    "user: (.+)",
     "collection: {0}(/.*)?",
     "permissions: RrWw",
     "",
@@ -1333,18 +1336,35 @@ def converge_jellyfin_credential(data_dir: str) -> str | None:
     return password
 
 
+def _radicale_rights_heredoc(ind: str) -> str:
+    """The `cat > /config/rights <<'EOF' … EOF` shell heredoc, every line at the
+    block scalar's `ind` (so YAML strips it to column 0 and the `EOF` delimiter
+    terminates)."""
+    return (
+        f"{ind}cat > {RADICALE_RIGHTS_FILE} <<'EOF'\n"
+        + "".join(
+            (f"{ind}{line}\n" if line else "\n") for line in _RADICALE_RIGHTS_BODY
+        )
+        + f"{ind}EOF\n"
+    )
+
+
 def _patched_radicale_rights_yaml(src: str) -> tuple[str, int]:
     """Converge the radicale pod manifest from `owner_only` to the `from_file`
     ruleset that also lets `solaris` write `<resident>/solaris` (pure).
 
     Two edits inside the `write-config` initContainer's `/config/config`
     heredoc: flip `[rights] type = owner_only` → `type = from_file` + `file =`,
-    and add a second `cat > /config/rights` heredoc carrying _RADICALE_RIGHTS_BODY.
-    Both reuse the heredoc's own indentation (the `| ` block scalar strips it, so
-    the emitted shell heredoc's `EOF` lands at column 0). Idempotent: a manifest
-    already carrying `from_file` + the rights heredoc returns (src, 0). Returns
-    (src, 0) unchanged when the anchors are absent or the result isn't valid YAML
-    — a bad edit would crash-loop radicale."""
+    and place a second `cat > /config/rights` heredoc carrying _RADICALE_RIGHTS_BODY.
+    Both reuse the config heredoc's own indentation (the `| ` block scalar strips
+    it, so the emitted shell heredoc's `EOF` lands at column 0).
+
+    CONTENT-aware, not just presence-aware: an existing rights heredoc whose body
+    DRIFTS from the desired one is rewritten, so a fix to the ruleset self-heals
+    on the next deploy. Idempotent: a manifest already carrying `from_file` + the
+    exact desired heredoc returns (src, 0). Returns (src, 0) when the config
+    heredoc anchor is absent or the result isn't valid YAML — a bad edit would
+    crash-loop radicale."""
     new, _ = re.subn(
         r"(\[rights\]\n([ \t]*))type = owner_only",
         lambda m: (
@@ -1352,22 +1372,25 @@ def _patched_radicale_rights_yaml(src: str) -> tuple[str, int]:
         ),
         src,
     )
-    if "cat > /config/rights" not in new:
-        m = re.search(
-            r"(?P<ind>[ \t]*)cat > /config/config <<'EOF'\n(?:.*\n)*?(?P=ind)EOF\n",
+    anchor = re.search(
+        r"(?P<ind>[ \t]*)cat > /config/config <<'EOF'\n(?:.*\n)*?(?P=ind)EOF\n",
+        new,
+    )
+    if anchor:
+        ind = anchor.group("ind")
+        desired = _radicale_rights_heredoc(ind)
+        existing = re.search(
+            re.escape(ind)
+            + r"cat > /config/rights <<'EOF'\n(?:.*\n)*?"
+            + re.escape(ind)
+            + r"EOF\n",
             new,
         )
-        if m:
-            ind = m.group("ind")
-            heredoc = (
-                f"{ind}cat > {RADICALE_RIGHTS_FILE} <<'EOF'\n"
-                + "".join(
-                    (f"{ind}{line}\n" if line else "\n")
-                    for line in _RADICALE_RIGHTS_BODY
-                )
-                + f"{ind}EOF\n"
-            )
-            new = new[: m.end()] + heredoc + new[m.end() :]
+        if existing:
+            if existing.group(0) != desired:  # drifted body → rewrite in place
+                new = new[: existing.start()] + desired + new[existing.end() :]
+        else:  # absent → insert right after the config heredoc
+            new = new[: anchor.end()] + desired + new[anchor.end() :]
     if new == src:
         return src, 0
     # PyYAML is present in the pod image (where this runs) but not in templates

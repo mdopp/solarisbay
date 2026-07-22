@@ -110,6 +110,9 @@ def test_inserts_rights_heredoc_and_body(pd):
     assert "cat > /config/rights <<'EOF'" in script
     # The owner base + the narrow solaris grant, verbatim.
     assert "[owner]" in script
+    # Radicale substitutes {0} with the user regex's first CAPTURING group, so the
+    # owner user MUST capture — a bare `.+` raises IndexError and 500s every call.
+    assert "user: (.+)" in script
     assert "collection: {0}(/.*)?" in script
     assert "[solaris-subcal]" in script
     assert "user: solaris" in script
@@ -137,6 +140,19 @@ def test_idempotent(pd):
     assert n1 == 1
     assert n2 == 0  # already converged — a re-deploy is a no-op
     assert twice == once
+
+
+def test_heals_drifted_rights_body(pd):
+    # A manifest already on from_file but carrying an OUTDATED rights body (here
+    # the bare `user: .+` that 500s) must be rewritten to the current desired
+    # body — presence alone isn't enough, or a ruleset fix never reaches the box.
+    once, _ = pd._patched_radicale_rights_yaml(_RADICALE_YML)
+    drifted = once.replace("user: (.+)", "user: .+")
+    assert drifted != once  # the drift is present
+    healed, n = pd._patched_radicale_rights_yaml(drifted)
+    assert n == 1
+    assert healed == once  # converged back to the desired body
+    assert "user: (.+)" in _init_script(healed)
 
 
 def test_no_anchor_leaves_file_untouched(pd):
