@@ -629,6 +629,8 @@
     }
     .hc-head .hc-pin { flex: 0 0 auto; }
     .hc-pin:hover { color: var(--fg); }
+    .hc-pin.hc-pinned { color: #FFC107; }
+    .hc-pin.hc-pinned:hover { color: #FFC107; }
     .start-edit {
       margin-left: auto; background: none; border: 1px solid var(--line);
       border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer;
@@ -2858,17 +2860,7 @@
         // header so the row reads [name] .... [toggle] [☆]. stopPropagation is
         // load-bearing: a light/switch card is itself a click-toggle.
         if (opts && opts.pin && c.entity_id) {
-          card.classList.add("hc-pinnable");
-          var pin = document.createElement("button");
-          pin.className = "hc-pin";
-          pin.type = "button";
-          pin.textContent = "☆";
-          pin.title = "Auf die Startseite pinnen";
-          pin.addEventListener("click", function (ev) {
-            ev.stopPropagation();
-            pinEntity(pin, c);
-          });
-          head.appendChild(pin);
+          attachPinButton(card, head, c);
         }
         return card;
       }
@@ -2907,16 +2899,10 @@
           lock.title = "Bestätigungspflichtig";
           head.appendChild(lock);
         }
-        // ☆ pin (chat renderers only, #646) sits last in the header.
+        // ★/☆ favourite toggle (#646) sits last in the header — reflects hcPins
+        // state and (un)favourites in place.
         if (opts && opts.pin && c.entity_id) {
-          card.classList.add("hc-pinnable");
-          var pin = document.createElement("button");
-          pin.className = "hc-pin";
-          pin.type = "button";
-          pin.textContent = "☆";
-          pin.title = "Auf die Startseite pinnen";
-          pin.addEventListener("click", function (ev) { ev.stopPropagation(); pinEntity(pin, c); });
-          head.appendChild(pin);
+          attachPinButton(card, head, c);
         }
 
         // #732: an offline/unreachable entity is greyed + inert (no controls),
@@ -4884,6 +4870,7 @@
             .then(function (j) {
               if (card !== el) return;
               el._favIds = new Set(((j && j.ok && j.pinned_entities) || []));
+              if (j && j.ok) setHcPins(j);
               renderHomeList(el, el._lastFilter);
             })
             .catch(function () { if (card === el) el._favIds = new Set(); });
@@ -4911,7 +4898,7 @@
           if (!entries.length) { unregisterLiveHost(listEl); return; }
           registerLiveHost(listEl, entries, function (rec, c) {
             rec.c = c;
-            var fresh = renderHaCard(c, false, {});
+            var fresh = renderHaCard(c, false, { pin: true });
             rec.el.parentNode.replaceChild(fresh, rec.el);
             rec.el = fresh;
           });
@@ -4945,7 +4932,7 @@
           // place just like the start page.
           var entries = [];
           ordered.slice(0, 12).forEach(function (c) {
-            var cardEl = renderHaCard(c, false, {});
+            var cardEl = renderHaCard(c, false, { pin: true });
             if (c.entity_id) entries.push({ entityId: c.entity_id, c: c, el: cardEl });
             wrap.appendChild(cardEl);
           });
@@ -4959,6 +4946,7 @@
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (j) {
               if (card !== el) return;
+              if (j && j.ok) setHcPins(j);
               listEl.textContent = "";
               var favs = ((j && j.ok && j.personal) || []).filter(function (f) { return f.kind === "entity" && f.card; });
               var h = document.createElement("div"); h.className = "dc-list-head"; h.textContent = "Meine Favoriten"; listEl.appendChild(h);
@@ -4968,7 +4956,7 @@
               // cards self-update from the SSE/poll stream.
               var entries = [];
               favs.slice(0, 12).forEach(function (f) {
-                var cardEl = renderHaCard(f.card, false, {});
+                var cardEl = renderHaCard(f.card, false, { pin: true });
                 if (f.card && f.card.entity_id) entries.push({ entityId: f.card.entity_id, c: f.card, el: cardEl });
                 wrap.appendChild(cardEl);
               });
@@ -5212,21 +5200,37 @@
                 var hay = (typeof hit === "string" ? hit : JSON.stringify(hit)).toLowerCase();
                 return words.every(function (w) { return hay.indexOf(w) !== -1; });
               });
+              // notes_search returns several chunk-hits per file; de-duplicate by
+              // note path so one note appears once (#note-dupes).
+              var seen = {};
+              var uniq = strict.filter(function (hit) {
+                var p = (typeof hit === "string" ? hit : (hit.path || hit.okf_path || hit.title || hit.name || ""));
+                var key = String(p).toLowerCase();
+                if (!key || seen[key]) return false;
+                seen[key] = 1; return true;
+              });
               var h = document.createElement("div"); h.className = "dc-list-head";
-              h.textContent = strict.length + " Notiz-Treffer für „" + q + "“";
+              h.textContent = uniq.length + " Notiz-Treffer für „" + q + "“";
               listEl.appendChild(h);
-              if (!strict.length) {
+              if (!uniq.length) {
                 var e = document.createElement("div"); e.className = "task-empty";
                 e.textContent = "Keine passende Notiz.";
                 listEl.appendChild(e); return;
               }
-              strict.slice(0, 6).forEach(function (hit) {
-                var label = hit.title || hit.name || hit.path || hit.okf_path || (typeof hit === "string" ? hit : "");
+              uniq.slice(0, 6).forEach(function (hit) {
+                var path = (typeof hit === "string" ? hit : (hit.path || hit.okf_path || ""));
+                var label = hit.title || hit.name || path || (typeof hit === "string" ? hit : "");
                 if (!label) return;
                 var a = document.createElement("div"); a.className = "task-row";
                 var m = document.createElement("div"); m.className = "task-main";
                 var t = document.createElement("span"); t.className = "task-title"; t.textContent = label;
-                m.appendChild(t); a.appendChild(m); listEl.appendChild(a);
+                m.appendChild(t); a.appendChild(m);
+                // Tap a note result to open it in the note viewer (#note-click).
+                if (path) {
+                  a.style.cursor = "pointer";
+                  a.addEventListener("click", function () { openNoteViewer(path); });
+                }
+                listEl.appendChild(a);
               });
             })
             .catch(function () {});
@@ -6824,7 +6828,7 @@
         if (c.ha_card) {
           var wrap = document.createElement("div");
           wrap.className = "ha-cards";
-          wrap.appendChild(renderHaCard(c.ha_card, false));
+          wrap.appendChild(renderHaCard(c.ha_card, false, { pin: true }));
           card.appendChild(wrap);
         }
         if (c.description) {
@@ -8948,27 +8952,97 @@
       // The resident can always move a favorite personal↔household in edit mode.
       var DEVICE_PIN_SCOPE = "household";
 
-      // Pin the last real action of a conversation is handled by the pin_favorite
-      // tool; here the ☆ on a chat card pins the ENTITY it renders (#646).
-      function pinEntity(btn, c) {
+      // Global pin registry (entity_id → favourite id): the truth for whether a
+      // ☆ on ANY card renders filled (★) and which favourite a card's un-pin
+      // deletes. Rebuilt from every /api/portal/start payload we consume so a
+      // card rendered outside the start page (chat, .home) still knows its
+      // membership. A truthy-but-non-id placeholder (see toggleHcPin) means
+      // "pinned, id pending" — enough to show ★, refetched for a real DELETE.
+      var hcPins = {};
+      function setHcPins(data) {
+        hcPins = {};
+        [].concat(data.personal || [], data.household || []).forEach(function (f) {
+          if (f && f.kind === "entity" && f.payload && f.payload.entity_id && f.id) {
+            hcPins[f.payload.entity_id] = f.id;
+          }
+        });
+      }
+      // Re-apply ★/☆ to every currently-rendered pin button for one entity, so a
+      // toggle on one card reflects on any duplicate card in the DOM (#646).
+      function refreshPinButtons(entityId) {
+        var sel = '.hc-pin[data-entity="' + (window.CSS && CSS.escape ? CSS.escape(entityId) : entityId) + '"]';
+        Array.prototype.forEach.call(document.querySelectorAll(sel), function (b) {
+          applyPinState(b, entityId);
+        });
+      }
+      function applyPinState(btn, entityId) {
+        var pinned = !!hcPins[entityId];
+        btn.classList.toggle("hc-pinned", pinned);
+        btn.textContent = pinned ? "★" : "☆";
+        btn.title = pinned ? "Favorit — tippen zum Entfernen" : "Als Favorit hinzufügen";
+      }
+      // Attach the ☆/★ favourite toggle to a card header. Reflects hcPins state
+      // and (un)favourites the entity in place — POST to add (server returns the
+      // new favourite's id), DELETE hcPins[entity_id] to remove. Replaces the
+      // old pin-only pinEntity: a card can now un-favourite too (#646).
+      function attachPinButton(card, head, c) {
+        card.classList.add("hc-pinnable");
+        var pin = document.createElement("button");
+        pin.className = "hc-pin";
+        pin.type = "button";
+        pin.setAttribute("data-entity", c.entity_id);
+        applyPinState(pin, c.entity_id);
+        pin.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          toggleHcPin(pin, c);
+        });
+        head.appendChild(pin);
+        return pin;
+      }
+      function toggleHcPin(btn, c) {
         if (btn.disabled) return;
         btn.disabled = true;
-        fetch("/api/favorites", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            kind: "entity",
-            label: c.name || c.entity_id || "",
-            scope: DEVICE_PIN_SCOPE,
-            payload: { entity_id: c.entity_id },
-          }),
-        })
-          .then(function (r) { return r.json().catch(function () { return {}; }); })
-          .then(function (res) {
-            if (res && res.ok) { btn.textContent = "★"; btn.title = "Auf der Startseite"; }
-            else { btn.disabled = false; }
+        var eid = c.entity_id;
+        var favId = hcPins[eid];
+        if (favId) {
+          fetch("/api/favorites/" + encodeURIComponent(favId), { method: "DELETE" })
+            .then(function (r) {
+              // A shared household pin the acting user can't remove fails here —
+              // keep ★ and re-enable rather than lying about the state.
+              if (r.ok) { delete hcPins[eid]; refreshPinButtons(eid); }
+              btn.disabled = false;
+              applyPinState(btn, eid);
+            })
+            .catch(function () { btn.disabled = false; });
+        } else {
+          fetch("/api/favorites", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              kind: "entity",
+              label: c.name || eid || "",
+              scope: DEVICE_PIN_SCOPE,
+              payload: { entity_id: eid },
+            }),
           })
-          .catch(function () { btn.disabled = false; });
+            .then(function (r) { return r.json().catch(function () { return {}; }); })
+            .then(function (res) {
+              if (res && res.ok) {
+                // POST returns {ok, id}; store the id so a later toggle un-pins.
+                hcPins[eid] = res.id || true;
+                if (!res.id) {
+                  fetch("/api/portal/start")
+                    .then(function (r) { return r.ok ? r.json() : null; })
+                    .then(function (j) { if (j && j.ok) { setHcPins(j); refreshPinButtons(eid); } })
+                    .catch(function () {});
+                }
+                refreshPinButtons(eid);
+              }
+              btn.disabled = false;
+              applyPinState(btn, eid);
+            })
+            .catch(function () { btn.disabled = false; });
+        }
       }
 
       // The start page (#646): the resident's own pins, the shared household
@@ -8988,6 +9062,9 @@
         (data.pinned_entities || []).forEach(function (eid) {
           card.pinnedEntities[eid] = true;
         });
+        // #646: feed the global registry so any ★/☆ (chat, .home) reflects and
+        // can un-favourite these pins by id.
+        setHcPins(data);
         var head = document.createElement("div");
         head.className = "concept-head";
         var add = document.createElement("button");

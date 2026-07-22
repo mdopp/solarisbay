@@ -99,8 +99,8 @@ def test_light_card_header_toggle_body_slider():
     assert "badgeHost.appendChild(badge)" in body
     # The brightness slider goes into the card BODY (host = card), not the header.
     assert "renderLightControls(card, c, card)" in body
-    # The ☆ pin is the last child of the header: [name] .... [toggle] [☆].
-    assert "head.appendChild(pin)" in body
+    # The ☆/★ favourite toggle is the last child of the header: [name] .... [toggle] [☆].
+    assert "attachPinButton(card, head, c)" in body
 
     lc = re.search(
         r"function renderLightControls\(card, c, brightHost, stateHost\) \{(.*?)\n      \}",
@@ -562,3 +562,63 @@ def test_per_action_reconcile_targets_the_acted_entity_across_hosts():
     assert "setInterval" not in body
     # Both action paths pass the acted entity_id.
     assert _HTML.count("reconcileStartPage(c.entity_id);") == 2
+
+
+def test_pin_button_reflects_hcpins_state():
+    # #646: the ☆/★ favourite button mirrors the global hcPins registry — ★ (gold,
+    # .hc-pinned) when the entity is a favourite, ☆ otherwise, with the matching
+    # add/remove titles.
+    body = re.search(
+        r"function applyPinState\(btn, entityId\) \{(.*?)\n      \}", _HTML, re.S
+    ).group(1)
+    assert "var pinned = !!hcPins[entityId];" in body
+    assert 'btn.classList.toggle("hc-pinned", pinned);' in body
+    assert 'btn.textContent = pinned ? "★" : "☆";' in body
+    assert "Favorit — tippen zum Entfernen" in body
+    assert "Als Favorit hinzufügen" in body
+    # Gold ★ is styled.
+    assert ".hc-pin.hc-pinned { color: #FFC107; }" in _HTML
+
+
+def test_pin_button_toggles_via_post_and_delete():
+    # #646: not-a-favourite POSTs /api/favorites (same body as before, household
+    # scope); an existing favourite DELETEs /api/favorites/<id> from hcPins.
+    body = re.search(
+        r"function toggleHcPin\(btn, c\) \{(.*?)\n      \}", _HTML, re.S
+    ).group(1)
+    assert "var favId = hcPins[eid];" in body
+    assert (
+        'fetch("/api/favorites/" + encodeURIComponent(favId), { method: "DELETE" })'
+        in body
+    )
+    assert "delete hcPins[eid];" in body
+    assert 'fetch("/api/favorites", {' in body
+    assert '          method: "POST",' in body
+    assert "scope: DEVICE_PIN_SCOPE," in body
+    # POST returns {ok, id}; store the id so a later toggle can un-pin.
+    assert "hcPins[eid] = res.id || true;" in body
+
+
+def test_set_hc_pins_builds_registry_from_start_payload():
+    # #646: setHcPins rebuilds hcPins from a /api/portal/start payload — each
+    # personal/household entity favourite with an id maps entity_id → id.
+    body = re.search(
+        r"function setHcPins\(data\) \{(.*?)\n      \}", _HTML, re.S
+    ).group(1)
+    assert "hcPins = {};" in body
+    assert "[].concat(data.personal || [], data.household || [])" in body
+    assert 'f.kind === "entity"' in body
+    assert "hcPins[f.payload.entity_id] = f.id;" in body
+    # Fed everywhere a start payload is consumed: the start page (setHcPins(data)),
+    # both .home fetches + the POST-fallback refetch in toggleHcPin (setHcPins(j)).
+    assert _HTML.count("setHcPins(data);") == 1
+    assert _HTML.count("setHcPins(j);") == 3
+
+
+def test_home_and_chat_cards_render_with_pin():
+    # #646: .home list/favorites, the .home live re-render, and the chat concept
+    # HA card all pass { pin: true } so the ★/☆ shows there too.
+    assert "renderHaCard(c.ha_card, false, { pin: true })" in _HTML
+    # No .home card renders WITHOUT the pin flag anymore.
+    assert "renderHaCard(c, false, {})" not in _HTML
+    assert "renderHaCard(f.card, false, {})" not in _HTML

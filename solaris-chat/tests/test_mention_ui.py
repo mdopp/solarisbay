@@ -100,9 +100,10 @@ def test_home_dot_command_wired(_html=_HTML):
     assert "function buildHomeCard(el)" in _html
     assert re.search(r'cmd === "home"[\s\S]*?renderHomeList\(card, vh\)', _html)
     # It reuses the picker's addable-device endpoint as the full device source
-    # and renders matches as controllable widget cards (renderHaCard row=false).
+    # and renders matches as controllable widget cards with the ★/☆ favourite
+    # toggle (#646, renderHaCard row=false, { pin: true }).
     assert '"/api/portal/start/addable"' in _html
-    assert re.search(r"renderHaCard\(c, false, \{\}\)", _html)
+    assert re.search(r"renderHaCard\(c, false, \{ pin: true \}\)", _html)
     # Filtered matches rank the resident's favorites first: a stable partition
     # on pinned_entities, applied BEFORE the render cap so favorites aren't
     # dropped in favour of non-favorites.
@@ -128,9 +129,10 @@ def test_home_cards_register_a_live_host(_html=_HTML):
         _html,
         re.S,
     ).group(1)
-    # apply(rec, card) re-renders one widget in place via renderHaCard.
+    # apply(rec, card) re-renders one widget in place via renderHaCard — with the
+    # ★/☆ toggle so a live update doesn't strip it (#646).
     assert "registerLiveHost(listEl, entries" in reg
-    assert re.search(r"renderHaCard\(c, false, \{\}\)", reg)
+    assert re.search(r"renderHaCard\(c, false, \{ pin: true \}\)", reg)
     # An empty result unregisters so we don't hold a detached node.
     assert "if (!entries.length) { unregisterLiveHost(listEl); return; }" in reg
     # renderHomeList collects each card's entity_id and registers the list.
