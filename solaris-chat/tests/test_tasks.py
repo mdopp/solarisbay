@@ -7,6 +7,7 @@ import sqlite3
 
 from solaris_chat.engine import document_deadlines_sync as deadlines
 from solaris_chat.engine import tasks
+from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools.tasks_tools import build_tasks_tools
 
 # entities/facts/concepts/ingest_log are what write_concept + the reads touch.
@@ -146,10 +147,17 @@ async def test_chat_tools_roundtrip(tmp_path):
 
 async def test_dated_task_becomes_calendar_event(tmp_path, monkeypatch):
     db, notes = _env(tmp_path)
+    # Household-scoped: only shared tasks reach the shared Fristen calendar.
     tid = tasks.create_task(
-        db_path=db, notes_dir=notes, uid="mdopp", title="TÜV Termin", due="2026-09-15"
+        db_path=db,
+        notes_dir=notes,
+        uid=projection.SHARED_UID,
+        title="TÜV Termin",
+        due="2026-09-15",
     )
-    tasks.create_task(db_path=db, notes_dir=notes, uid="mdopp", title="ohne Datum")
+    tasks.create_task(
+        db_path=db, notes_dir=notes, uid=projection.SHARED_UID, title="ohne Datum"
+    )
 
     put: list[tuple[str, str]] = []
 
