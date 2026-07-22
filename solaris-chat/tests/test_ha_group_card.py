@@ -112,14 +112,19 @@ def test_light_card_header_toggle_body_slider():
     # Brightness slider mounts on the given body host as an inline control.
     assert "makeSlider(brightHost || card, pct" in lcb
     assert ", true, " in lcb  # inline flag
-    # #726: tapping the colour swatch must not bubble to the card's power toggle
-    # (which would flip the light + re-render the picker away). The colour row
-    # stops click + pointerdown propagation — now in the shared hcRenderColourPicker.
+    # #726: tapping the colour picker must not bubble to the card's power toggle
+    # (which would flip the light + re-render the picker away). Both the hidden
+    # native input's row and the compact swatch button stop click + pointerdown
+    # propagation — now in the shared hcRenderColourPicker.
     assert (
         'row.addEventListener("click", function (e) { e.stopPropagation(); });' in _HTML
     )
     assert (
         'row.addEventListener("pointerdown", function (e) { e.stopPropagation(); });'
+        in _HTML
+    )
+    assert (
+        'swatch.addEventListener("click", function (e) { e.stopPropagation(); picker.click(); });'
         in _HTML
     )
 
@@ -384,6 +389,82 @@ def test_off_light_shows_last_known_brightness_not_a_fake_100():
     assert "var pct = known ? cached : (cached != null ? cached : 0);" in lcb
     # A never-seen-on light renders the slider neutral (the 6th makeSlider arg).
     assert "!known && cached == null);" in lcb
+
+
+def test_widget_light_colour_button_sits_in_the_controls_group():
+    # feat/card-color-state: the widget colour picker is no longer a separate
+    # full-width row — it's a compact swatch BUTTON mounted into the same
+    # .hc-controls group as the −/+ brightness buttons, opening the hidden native
+    # <input type=color> via picker.click(). A colour-only light still gets the
+    # button (the group is always built), gated on colour modes as before.
+    lc = re.search(
+        r"function renderLightControls\(card, c, brightHost, stateHost\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
+    )
+    assert lc, "renderLightControls not found"
+    lcb = lc.group(1)
+    # The widget path builds one shared controls group and passes it to the
+    # colour picker, mounting it only when it has children.
+    assert 'ctr.className = "hc-controls";' in lcb
+    assert "hcRenderColourPicker(card, c, ctr);" in lcb
+    assert "if (ctr.childNodes.length) (stateHost || card).appendChild(ctr);" in lcb
+
+    cp = re.search(
+        r"function hcRenderColourPicker\(card, c, ctrlHost\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
+    )
+    assert cp, "hcRenderColourPicker not found"
+    cpb = cp.group(1)
+    # Colour gate is preserved (only colour-capable lights get the button).
+    assert "COLOUR_MODES.indexOf(m) !== -1" in cpb
+    # With a controls host it builds a swatch button and hides the native input;
+    # without one it keeps the legacy full-width row.
+    assert 'swatch.className = "hc-swatch";' in cpb
+    assert 'swatch.style.setProperty("--swatch", rgbToHex(c.rgb_color));' in cpb
+    assert "if (ctrlHost) picker.style.display" in cpb
+    assert "ctrlHost.appendChild(swatch);" in cpb
+    assert "card.appendChild(row);" in cpb  # legacy row still available
+    # The swatch button styling reuses the −/+ group's button style.
+    assert ".ha-card .hc-controls > button.hc-swatch" in _HTML
+
+
+def test_light_icon_and_state_colour_follow_on_off_via_hc_state_color():
+    # feat/card-color-state: the widget icon + big state word share a colour that
+    # reads the light's on/off (grey when off) and its real bulb colour when on.
+    cf = re.search(
+        r"function hcStateColor\(c, domain, offline\) \{(.*?)\n      \}",
+        _HTML,
+        re.S,
+    )
+    assert cf, "hcStateColor not found"
+    cfb = cf.group(1)
+    assert 'if (offline) return "#9E9E9E";' in cfb
+    # Off light → grey; on light with rgb → its real colour; else the accent.
+    assert 'if (String(c.state) !== "on") return "#9E9E9E";' in cfb
+    assert "return rgbToHex(c.rgb_color);" in cfb
+    assert "return hcAccent(domain);" in cfb
+
+    fn = re.search(r"function renderHaWidget\(c, opts\) \{(.*?)\n      \}", _HTML, re.S)
+    assert fn, "renderHaWidget not found"
+    body = fn.group(1)
+    # Icon + big share the state colour (not the raw accent).
+    assert "var stateColor = hcStateColor(c, domain, offline);" in body
+    assert "icon.style.color = stateColor;" in body
+    assert "big.style.color = stateColor;" in body
+    # The level bar stays on the accent (brightness bar visible when off).
+    assert "fill.style.background = accent;" in body
+
+    # The optimistic toggle recolours immediately (tap off → grey before SSE).
+    tg = re.search(
+        r"function hcWireWidgetToggle\(card, c\) \{(.*?)\n      \}", _HTML, re.S
+    )
+    assert tg, "hcWireWidgetToggle not found"
+    tgb = tg.group(1)
+    assert "var col = hcStateColor(c, c.domain, false);" in tgb
+    assert "if (icon) icon.style.color = col;" in tgb
+    assert "if (big) big.style.color = col;" in tgb
 
 
 def test_widget_climate_card_has_setpoint_stepper_and_mode_selector():

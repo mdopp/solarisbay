@@ -1047,6 +1047,17 @@
     .ha-card .hc-controls > button.hc-off {
       color: #9E9E9E; pointer-events: none;
     }
+    /* Colour swatch button (#726 follow-up): sits in the −/+ group; its face is
+       a filled rounded square in the light's current colour (--swatch). */
+    .ha-card .hc-controls > button.hc-swatch {
+      min-width: 38px; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .ha-card .hc-controls > button.hc-swatch::before {
+      content: ""; width: 18px; height: 18px; border-radius: 5px;
+      background: var(--swatch, #FFC107);
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.25);
+    }
     /* Phase 3 (#477): slider / colour / climate controls on a card. */
     .ha-card .hc-ctrl { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
     .ha-card .hc-ctrl input[type="range"] { flex: 1 1 auto; min-width: 0; max-width: 100%; }
@@ -2657,6 +2668,18 @@
         climate: "#FF8A65", sensor: "#FFC107",
       };
       function hcAccent(domain) { return HC_ACCENT[domain] || "#FFC107"; }
+      // Icon + big-state colour: greyed when offline; a light additionally reads
+      // its on/off (grey when off) and its real bulb colour when on (rgb_color →
+      // the accent yellow as the no-colour fallback). Other domains keep the
+      // reachable-accent colour. The level bar stays on the accent regardless.
+      function hcStateColor(c, domain, offline) {
+        if (offline) return "#9E9E9E";
+        if (domain === "light") {
+          if (String(c.state) !== "on") return "#9E9E9E";
+          if (Array.isArray(c.rgb_color) && c.rgb_color.length >= 3) return rgbToHex(c.rgb_color);
+        }
+        return hcAccent(domain);
+      }
       // Inline domain icon (24-grid path, tinted via currentColor). Reuses the
       // sprite's bolt for switch; simple glyphs for the others.
       var HC_ICON = {
@@ -2921,14 +2944,15 @@
         var left = document.createElement("div");
         left.className = "hc-state-left";
         stateline.appendChild(left);
+        var stateColor = hcStateColor(c, domain, offline);
         var icon = document.createElement("span");
         icon.className = "hc-icon";
-        icon.style.color = accent;
+        icon.style.color = stateColor;
         icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + hcIconSvg(domain) + "</svg>";
         left.appendChild(icon);
         var big = document.createElement("div");
         big.className = "hc-big";
-        big.style.color = accent;
+        big.style.color = stateColor;
         if (domain === "sensor") {
           big.textContent = fmtNum(st) || "—";
           if (c.unit) {
@@ -3090,12 +3114,15 @@
           hcWireWidgetToggle(card, c);
           var dim = c.brightness != null ||
             (c.supported_color_modes || []).some(function (m) { return m !== "onoff"; });
+          // A single controls group on the stateline right holds −/+ (dimmable)
+          // and the colour button (colour-capable), so a colour-only light still
+          // gets its swatch button next to nothing rather than a stray row.
+          var ctr = document.createElement("div");
+          ctr.className = "hc-controls";
           if (dim) {
             if (c.brightness != null) hcLastBrightness[c.entity_id] = Math.round(c.brightness / 255 * 100);
             var curPct = c.brightness != null ? Math.round(c.brightness / 255 * 100)
               : (hcLastBrightness[c.entity_id] != null ? hcLastBrightness[c.entity_id] : 0);
-            var ctr = document.createElement("div");
-            ctr.className = "hc-controls";
             [["−", -10, "Dunkler"], ["+", 10, "Heller"]].forEach(function (b) {
               var btn = document.createElement("button");
               btn.type = "button";
@@ -3109,9 +3136,9 @@
               });
               ctr.appendChild(btn);
             });
-            (stateHost || card).appendChild(ctr);
           }
-          hcRenderColourPicker(card, c);
+          hcRenderColourPicker(card, c, ctr);
+          if (ctr.childNodes.length) (stateHost || card).appendChild(ctr);
           return;
         }
         var dimmable = c.brightness != null ||
@@ -3135,9 +3162,11 @@
         hcRenderColourPicker(card, c);
       }
 
-      // Colour picker row (shared by the legacy row + the widget card). Acts via
-      // light.turn_on {rgb_color}; #738 infers cancel to revert on dismiss.
-      function hcRenderColourPicker(card, c) {
+      // Colour picker (shared by the legacy group row + the widget card). Acts
+      // via light.turn_on {rgb_color}; #738 infers cancel to revert on dismiss.
+      // With a controls host it mounts as a compact swatch button in the −/+
+      // group (widget stateline); without one it keeps the legacy full-width row.
+      function hcRenderColourPicker(card, c, ctrlHost) {
         var hasColour = (c.supported_color_modes || []).some(function (m) {
           return COLOUR_MODES.indexOf(m) !== -1;
         });
@@ -3148,6 +3177,9 @@
           picker.type = "color";
           picker.value = rgbToHex(c.rgb_color);
           picker.title = "Farbe";
+          // In the widget the native swatch is hidden; a sibling button next to
+          // −/+ shows the current colour and opens the overlay via picker.click().
+          if (ctrlHost) picker.style.display = "none";
           // #738: <input type=color> has no native cancel event — infer it. On
           // open (focus) record the device's original rgb and clear a committed
           // flag; each `input` previews live on the device; `change` (Festlegen)
@@ -3203,7 +3235,22 @@
           row.addEventListener("click", function (e) { e.stopPropagation(); });
           row.addEventListener("pointerdown", function (e) { e.stopPropagation(); });
           row.appendChild(picker);
-          card.appendChild(row);
+          if (ctrlHost) {
+            // Compact swatch button styled like the −/+ buttons; its face shows
+            // the current colour and it forwards taps to the hidden native input.
+            var swatch = document.createElement("button");
+            swatch.type = "button";
+            swatch.title = "Farbe";
+            swatch.className = "hc-swatch";
+            swatch.style.setProperty("--swatch", rgbToHex(c.rgb_color));
+            swatch.addEventListener("click", function (e) { e.stopPropagation(); picker.click(); });
+            swatch.addEventListener("pointerdown", function (e) { e.stopPropagation(); });
+            row.style.display = "contents";
+            ctrlHost.appendChild(swatch);
+            ctrlHost.appendChild(row);
+          } else {
+            card.appendChild(row);
+          }
         }
       }
 
@@ -3223,6 +3270,11 @@
           card.classList.toggle("off", !nowOn);
           c.state = nowOn ? "on" : "off";
           if (big) big.textContent = hcBigState(c, c.state);
+          // Recolour the icon + state word immediately so tapping a light off
+          // greys it before SSE/poll reconciles (a light on relights yellow/rgb).
+          var col = hcStateColor(c, c.domain, false);
+          if (icon) icon.style.color = col;
+          if (big) big.style.color = col;
           hcExpect(c.entity_id, nowOn ? "on" : "off");
           haCall(card, c, c.domain + ".toggle", {});
         };
