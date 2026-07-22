@@ -202,6 +202,77 @@ def test_search_missing_projection_returns_none(tmp_path):
     assert documents_portal_db.search(str(tmp_path / "nope.db"), "mdopp", "x") is None
 
 
+# --- person_directory (ADR 0010: all person entities, own ∪ shared) ----------
+
+
+def _person(conn, eid, name, resident, aliases=(), facts=()):
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES (?, 'person', ?, ?, 'contact', 'h')",
+        (eid, name, resident),
+    )
+    # the writer records the canonical name as a self-alias; mirror that.
+    for alias in (name, *aliases):
+        conn.execute(
+            "INSERT OR IGNORE INTO entity_aliases (entity_id, alias) VALUES (?, ?)",
+            (eid, alias),
+        )
+    for i, (pred, val) in enumerate(facts):
+        conn.execute(
+            "INSERT INTO facts (id, subject_entity_id, resident_uid, predicate,"
+            " value, confidence, source) VALUES (?, ?, ?, ?, ?, 1.0, 'contact')",
+            (f"{eid}-p{i}", eid, resident, pred, val),
+        )
+
+
+def test_person_directory_includes_aliases_and_contact_facts(tmp_path):
+    db = _seed(tmp_path)
+    conn = sqlite3.connect(db)
+    _person(
+        conn,
+        "p-mike",
+        "Michael",
+        "household",
+        aliases=("mike",),
+        facts=[("email", "m@ex.de")],
+    )
+    conn.commit()
+    conn.close()
+    people = documents_portal_db.person_directory(db, "mdopp")
+    mike = next(p for p in people if p["name"] == "Michael")
+    # The canonical name is not duplicated into aliases; the real alias is present.
+    assert mike["aliases"] == ["mike"]
+    assert mike["email"] == "m@ex.de"
+
+
+def test_person_directory_includes_contactless_person(tmp_path):
+    # A person with no email/phone still appears (unlike person_contacts).
+    db = _seed(tmp_path)
+    conn = sqlite3.connect(db)
+    _person(conn, "p-oma", "Erika", "household")
+    conn.commit()
+    conn.close()
+    names = {p["name"] for p in documents_portal_db.person_directory(db, "mdopp")}
+    assert "Erika" in names
+
+
+def test_person_directory_owner_scoped(tmp_path):
+    # A resident's private person is not visible to another resident.
+    db = _seed(tmp_path)
+    conn = sqlite3.connect(db)
+    _person(conn, "p-priv", "Lenas Freundin", "lena")
+    _person(conn, "p-shared", "Nachbar", "household")
+    conn.commit()
+    conn.close()
+    names = {p["name"] for p in documents_portal_db.person_directory(db, "mdopp")}
+    assert "Nachbar" in names
+    assert "Lenas Freundin" not in names
+
+
+def test_person_directory_missing_projection_returns_none(tmp_path):
+    assert documents_portal_db.person_directory(str(tmp_path / "nope.db"), "x") is None
+
+
 # --- correction endpoint -----------------------------------------------------
 
 

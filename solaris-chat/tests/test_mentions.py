@@ -396,6 +396,154 @@ async def test_ephemeral_chat_persists_no_mentions(aiohttp_client, tmp_path):
     assert mentions_store.list_session_mentions(db, sid, "mdopp") == []
 
 
+# ---- person entities feed the people surfaces (ADR 0010, #993) ----
+
+# The OKF projection tables the surfaces now read, replayed alongside `mentions`.
+_ENTITY_SCHEMA = """
+CREATE TABLE entities (
+  id TEXT PRIMARY KEY, type TEXT NOT NULL, canonical_name TEXT NOT NULL,
+  resident_uid TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL,
+  updated TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE TABLE entity_aliases (
+  entity_id TEXT NOT NULL, alias TEXT NOT NULL, PRIMARY KEY (entity_id, alias));
+CREATE TABLE facts (
+  id TEXT PRIMARY KEY, subject_entity_id TEXT, resident_uid TEXT NOT NULL,
+  predicate TEXT NOT NULL, value TEXT NOT NULL, confidence REAL,
+  source TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')));
+"""
+
+
+def _db_with_entities(tmp_path) -> str:
+    path = str(tmp_path / "solaris.db")
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA + _ENTITY_SCHEMA)
+    conn.close()
+    return path
+
+
+def _add_person(db, eid, name, resident, aliases=()):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO entities (id, type, canonical_name, resident_uid, source,"
+        " content_hash) VALUES (?, 'person', ?, ?, 'contact', 'h')",
+        (eid, name, resident),
+    )
+    for alias in (name, *aliases):
+        conn.execute(
+            "INSERT OR IGNORE INTO entity_aliases (entity_id, alias) VALUES (?, ?)",
+            (eid, alias),
+        )
+    conn.commit()
+    conn.close()
+
+
+async def test_persons_endpoint_includes_contact_person(aiohttp_client, tmp_path):
+    # A `.contacts` person (entity) is suggested even with no chat history.
+    db = _db_with_entities(tmp_path)
+    _add_person(db, "p-mike", "Michael", "household", aliases=("mike",))
+    client = await aiohttp_client(_app(db))
+    resp = await client.get("/api/mentions/persons", headers={"Remote-User": "mdopp"})
+    values = {p["value"] for p in (await resp.json())["persons"]}
+    # Both the canonical name and its alias are offered.
+    assert "michael" in values and "mike" in values
+
+
+async def test_chat_turn_resolves_alias_to_canonical_person(aiohttp_client, tmp_path):
+    # `@mike` in a turn resolves to the Michael entity's canonical name.
+    db = _db_with_entities(tmp_path)
+    _add_person(db, "p-mike", "Michael", "household", aliases=("mike",))
+    app = build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        attachments_dir=str(tmp_path / "att"),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat", json={"input": "Frag @mike"}, headers={"Remote-User": "mdopp"}
+    )
+    sid = (await resp.json())["session_id"]
+    persons = {
+        i["value"]
+        for i in mentions_store.list_session_mentions(db, sid, "mdopp")
+        if i["kind"] == "person"
+    }
+    # Linked to the canonical entity spelling, not the free-text "mike".
+    assert persons == {"Michael"}
+
+
+async def test_chat_turn_keeps_unmatched_person_free_text(aiohttp_client, tmp_path):
+    # A `@token` matching no entity keeps its free-text value (mentions fallback).
+    db = _db_with_entities(tmp_path)
+    _add_person(db, "p-mike", "Michael", "household", aliases=("mike",))
+    app = build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        attachments_dir=str(tmp_path / "att"),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.post(
+        "/api/chat", json={"input": "Frag @xaver"}, headers={"Remote-User": "mdopp"}
+    )
+    sid = (await resp.json())["session_id"]
+    persons = {
+        i["value"]
+        for i in mentions_store.list_session_mentions(db, sid, "mdopp")
+        if i["kind"] == "person"
+    }
+    assert persons == {"xaver"}
+
+
+async def test_browse_persons_unions_entity_and_mentions_deduped(
+    aiohttp_client, tmp_path
+):
+    # The Personen doorway merges entity names with chat-mention names, de-duped
+    # case-insensitively; the entity's canonical spelling wins.
+    db = _db_with_entities(tmp_path)
+    _add_person(db, "p-mike", "Michael", "household")
+    _add_person(db, "p-oma", "Erika", "household")  # contactless, no mentions
+    # A chat mention of "michael" (lower-case) must collapse onto the entity.
+    mentions_store.record_mentions(db, "s1", "mdopp", [], ["michael"])
+    app = build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path / "notes"),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get(
+        "/api/portal/notes/browse?by=person", headers={"Remote-User": "mdopp"}
+    )
+    body = await resp.json()
+    groups = {g["group"] for g in body["groups"]}
+    # "Michael" (canonical) appears once (not also "michael"); "Erika" appears too.
+    assert "Michael" in groups and "michael" not in groups
+    assert "Erika" in groups
+
+
+async def test_browse_persons_owner_scoped(aiohttp_client, tmp_path):
+    # Another resident's private person is not in the caller's doorway.
+    db = _db_with_entities(tmp_path)
+    _add_person(db, "p-priv", "Lenas Freundin", "lena")
+    app = build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        solaris_db_path=db,
+        notes_dir=str(tmp_path / "notes"),
+    )
+    client = await aiohttp_client(app)
+    resp = await client.get(
+        "/api/portal/notes/browse?by=person", headers={"Remote-User": "mdopp"}
+    )
+    groups = {g["group"] for g in (await resp.json())["groups"]}
+    assert "Lenas Freundin" not in groups
+
+
 @pytest.mark.parametrize("path", ["/api/mentions/tags", "/api/mentions/persons"])
 async def test_autosuggest_degrades_when_db_missing(aiohttp_client, tmp_path, path):
     app = build_app(

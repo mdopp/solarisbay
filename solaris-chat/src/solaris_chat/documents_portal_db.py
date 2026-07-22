@@ -216,6 +216,68 @@ def person_contacts(db_path: str, uid: str) -> list[dict[str, Any]] | None:
     return out
 
 
+def person_directory(db_path: str, uid: str) -> list[dict[str, Any]] | None:
+    """Every `person` entity in scope (own ∪ shared household), for the people
+    surfaces (Personen doorway + `@`-mention autocomplete/resolution) — ADR 0010.
+
+    Unlike `person_contacts` (persons *with* an email/phone fact, for `.contacts`),
+    this returns ALL person entities, so a person with no contact facts and no chat
+    mentions still shows up. Each row is
+    `{id, name (canonical_name), aliases: [...], email, phone}`.
+
+    Aliases come from the `entity_aliases` table (the resolve/dedup mechanism);
+    an `alias` predicate fact is also folded in if one exists — none do yet, so
+    that arm is defensive (ADR 0010 §3 target, no writer this slice)."""
+    conn = _connect(db_path)
+    if conn is None:
+        return None
+    scope, params = _scope(uid)
+    try:
+        rows = conn.execute(
+            "SELECT e.id AS id, e.canonical_name AS name"
+            f" FROM entities e WHERE e.type = 'person' AND {scope}"  # noqa: S608
+            " ORDER BY e.canonical_name",
+            params,
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            aliases: list[str] = [
+                a["alias"]
+                for a in conn.execute(
+                    "SELECT alias FROM entity_aliases WHERE entity_id = ?"
+                    " ORDER BY alias",
+                    (r["id"],),
+                ).fetchall()
+                # the canonical name is stored as a self-alias; drop it here.
+                if a["alias"] != r["name"]
+            ]
+            contact: dict[str, str] = {}
+            for f in conn.execute(
+                "SELECT predicate, value FROM facts WHERE subject_entity_id = ?"
+                " ORDER BY confidence DESC",
+                (r["id"],),
+            ).fetchall():
+                if f["predicate"] == "alias" and f["value"] not in aliases:
+                    aliases.append(f["value"])
+                elif (
+                    f["predicate"] in ("email", "phone")
+                    and f["predicate"] not in contact
+                ):
+                    contact[f["predicate"]] = f["value"]
+            out.append(
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "aliases": aliases,
+                    "email": contact.get("email", ""),
+                    "phone": contact.get("phone", ""),
+                }
+            )
+    finally:
+        conn.close()
+    return out
+
+
 def category_view(db_path: str, uid: str, category: str) -> list[dict[str, Any]] | None:
     """The table rows for one category: per document, its title + fact map.
 

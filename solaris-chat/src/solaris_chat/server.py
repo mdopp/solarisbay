@@ -1546,7 +1546,24 @@ def build_app(
         if ephemeral:
             return
         tags, persons = parse_mentions(text)
+        persons = _resolve_persons(uid, persons)
         mentions_store.record_mentions(solaris_db_path, session_id, uid, tags, persons)
+
+    def _resolve_persons(uid: str, persons: list[str]) -> list[str]:
+        """Resolve each parsed `@token` to a `person` entity (ADR 0010).
+
+        A token matching a person's canonical_name or an alias (case-insensitive)
+        is recorded under the entity's canonical name — so `@mike` and `@Michael`
+        collapse to the one `Michael` entity. Unmatched tokens keep their free-text
+        value (the mentions_store fallback), and no entity is auto-created."""
+        directory = documents_portal_db.person_directory(solaris_db_path, uid) or []
+        if not directory:
+            return persons
+        by_name: dict[str, str] = {}
+        for p in directory:
+            for label in [p["name"], *p["aliases"]]:
+                by_name.setdefault(label.lower(), p["name"])
+        return _dedup(by_name.get(v.lower(), v) for v in persons)
 
     def record_anchors(
         uid: str,
@@ -3608,10 +3625,19 @@ def build_app(
                     {"path": rel, "title": _note_title(text, path.stem)}
                 )
         elif by == "person":
+            # ADR 0010: union the `person` entities (own ∪ shared, canonical name
+            # + aliases) with the chat-mention names, de-duped case-insensitively.
+            # The entity's canonical spelling wins; a `.contacts` person with no
+            # chat mentions still appears (count 0).
+            directory = documents_portal_db.person_directory(solaris_db_path, uid) or []
+            seen: dict[str, tuple[str, list[str]]] = {}
+            for p in directory:
+                seen[p["name"].lower()] = (p["name"], p["aliases"])
             for name in mentions_store.known_persons_for(solaris_db_path, uid):
-                hits = notes_search.notes_mentioning(notes_dir, [name], uid)
-                if hits:
-                    groups[name] = hits
+                seen.setdefault(name.lower(), (name, []))
+            for name, aliases in seen.values():
+                hits = notes_search.notes_mentioning(notes_dir, [name, *aliases], uid)
+                groups[name] = hits
         else:
             return None
         return groups
@@ -5100,7 +5126,14 @@ def build_app(
         prefix = request.rel_url.query.get("q", "").strip().lstrip("@").lower()
         seed = seeded_persons([uid, *resident_uids])
         used = mentions_store.known_persons_for(solaris_db_path, uid)
-        merged = _dedup([*used, *seed])
+        # ADR 0010: also suggest the `person` entities (canonical names + aliases),
+        # so a `.contacts` person is offered even before it's been chat-mentioned.
+        directory = documents_portal_db.person_directory(solaris_db_path, uid) or []
+        entity_names = [p["name"] for p in directory]
+        entity_aliases = [a for p in directory for a in p["aliases"]]
+        merged = _dedup(
+            v.lower() for v in [*used, *seed, *entity_names, *entity_aliases]
+        )
         if prefix:
             merged = [v for v in merged if v.startswith(prefix)]
         merged.sort()
