@@ -4378,7 +4378,8 @@
         [".doc", "Dokument/Takeout hochladen + einsortieren"],
         [".contacts", "Kontakt anlegen + suchen — .contacts <Name|@Mail|Tel>"],
         [".photo", "Foto hochladen + suchen — .photo <Person|Text>"],
-        [".home", "Geräte filtern + steuern — .home <Name|Raum|Text>"]
+        [".home", "Geräte filtern + steuern — .home <Name|Raum|Text>"],
+        [".energy", "Energie / Stromfluss anzeigen — .energy"]
       ];
       // Starter category list for a .doc upload (key → German label).
       var DOC_CATEGORIES = [
@@ -4679,7 +4680,7 @@
           closeMenu(); autosize(); input.focus(); refresh();
         }
 
-        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen", home: "Geräte & Bereiche" };
+        var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen", home: "Geräte & Bereiche", energy: "Energie & Stromfluss" };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
           clearCard(); kind = cmd;
@@ -4694,6 +4695,7 @@
           else if (cmd === "contacts") buildContactsCard(card);
           else if (cmd === "photo") buildPhotoCard(card);
           else if (cmd === "home") buildHomeCard(card);
+          else if (cmd === "energy") buildEnergyCard(card);
           log.appendChild(card); scrollDown(true);
         }
         function buildDocCard(el) {
@@ -4759,7 +4761,7 @@
         // full device source and renders matches as controllable widget cards.
         function buildHomeCard(el) {
           var hint = document.createElement("div"); hint.className = "dc-hint";
-          hint.textContent = "Tippe einen Geräte- oder Raumnamen · „energie“ zeigt den Stromfluss";
+          hint.textContent = "Tippe einen Geräte- oder Raumnamen — Favoriten zuerst";
           el.appendChild(hint);
           var list = document.createElement("div"); list.className = "dc-list";
           el.appendChild(list); el._list = list; el._devices = null; el._lastFilter = ""; el._favIds = null;
@@ -4792,8 +4794,6 @@
           var listEl = el._list; if (!listEl) return;
           var f = (filter || "").trim();
           var low = f.toLowerCase();
-          if (low.indexOf("energie") === 0 || low.indexOf("energy") === 0) { renderHomeEnergy(el); return; }
-          if (el._energy) { el._energy = false; }
           listEl.textContent = "";
           if (!f || low === "list") { renderHomeFavorites(el, listEl); return; }
           if (el._devices == null) { var l = document.createElement("div"); l.className = "task-empty"; l.textContent = "Lade Geräte…"; listEl.appendChild(l); return; }
@@ -4834,22 +4834,28 @@
             })
             .catch(function () { if (card === el) { listEl.textContent = ""; var e = document.createElement("div"); e.className = "task-empty"; e.textContent = "Konnte Favoriten nicht laden."; listEl.appendChild(e); } });
         }
-        // `.home energie` renders the energy view inline by reusing the standalone
-        // page renderers (flow/trend/totals/circuits). Calm fallback when HA/energy
-        // is unconfigured (non-ok / 503) instead of throwing.
-        function renderHomeEnergy(el) {
+        // .energy: a display-only dot-card that renders the energy view
+        // (flow/trend/totals/circuits) inline by reusing the standalone page
+        // renderer. Split out of .home (was `.home energie`) so each command does
+        // one thing. Calm fallback when HA/energy is unconfigured (non-ok / 503).
+        function buildEnergyCard(el) {
+          var list = document.createElement("div"); list.className = "dc-list";
+          el.appendChild(list); el._list = list;
+          renderEnergyView(el);
+        }
+        function renderEnergyView(el) {
           var listEl = el._list; if (!listEl) return;
-          el._energy = true;
           listEl.textContent = "";
+          var loading = document.createElement("div"); loading.className = "task-empty"; loading.textContent = "Lade Energie…"; listEl.appendChild(loading);
           fetch("/api/portal/energy")
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (j) {
-              if (card !== el || !el._energy) return;
+              if (card !== el) return;
               listEl.textContent = "";
               if (!j || !j.ok) { var n = document.createElement("div"); n.className = "task-empty"; n.textContent = "Energie ist nicht konfiguriert."; listEl.appendChild(n); return; }
               renderEnergyPage(listEl, j.energy);
             })
-            .catch(function () { if (card === el && el._energy) { listEl.textContent = ""; var n = document.createElement("div"); n.className = "task-empty"; n.textContent = "Energie ist nicht konfiguriert."; listEl.appendChild(n); } });
+            .catch(function () { if (card === el) { listEl.textContent = ""; var n = document.createElement("div"); n.className = "task-empty"; n.textContent = "Energie ist nicht konfiguriert."; listEl.appendChild(n); } });
         }
         function buildPhotoCard(el) {
           // Same shape as buildDocCard (#961): a dropzone that uploads to Immich +
