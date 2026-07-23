@@ -2522,9 +2522,14 @@ def build_app(
             return web.json_response(
                 {"ok": False, "reason": "unknown_kind"}, status=404
             )
-        return web.json_response(
-            {"ok": True, "kind": kind, "defs": skills.list_defs(skills_dir, kind)}
+        # A tool-kind def carries its declarative plugin surface (dot-command,
+        # cell-schema, action ids) — serve the richer row (#1004, ADR 0011).
+        defs = (
+            skills.list_tool_defs(skills_dir)
+            if kind == "tool"
+            else skills.list_defs(skills_dir, kind)
         )
+        return web.json_response({"ok": True, "kind": kind, "defs": defs})
 
     async def get_def(request: web.Request) -> web.Response:
         kind = _valid_kind(request)
@@ -4592,15 +4597,38 @@ def build_app(
     # generic browser confirm() is just friction.
     action_cards.register(import_flow.CONFIRM_ACTION, _import_confirm)
     action_cards.register(import_flow.CANCEL_ACTION, _import_cancel)
-    # Aufgaben doorway actions (#todo): tap to complete/dismiss/add — not
-    # destructive (a task is the resident's own to-do, additive + reversible).
-    action_cards.register("task.set_status", _task_set_status)
-    action_cards.register("task.add", _task_add)
-    action_cards.register("task.update", _task_update)
-    action_cards.register("note.add", _note_add)
-    action_cards.register("doc.classify", _doc_classify)
-    action_cards.register("contact.add", _contact_add)
-    action_cards.register("person.update", _person_update)
+    # Every `.tool` action handler, keyed by its action id — the pool a `kind:
+    # tool` def's `tool-actions` auto-registers from (#1004, ADR 0011), so a new
+    # tool wires its actions by naming them in one SKILL.md, not by hand here.
+    # None of these is destructive (a task/note/contact is the resident's own,
+    # additive + reversible).
+    _TOOL_ACTION_HANDLERS: dict[str, action_cards.Handler] = {
+        "task.set_status": _task_set_status,
+        "task.add": _task_add,
+        "task.update": _task_update,
+        "note.add": _note_add,
+        "doc.classify": _doc_classify,
+        "contact.add": _contact_add,
+        "person.update": _person_update,
+    }
+
+    # Auto-register the actions each tool def declares, from the pool above.
+    # A def naming an unknown action id is skipped (the handler may not have
+    # shipped yet); its own endpoint stays a separate concern.
+    _registered_by_tool: set[str] = set()
+    for _tool in skills.list_tool_defs(skills_dir):
+        for _action_id in _tool["tool-actions"]:
+            handler = _TOOL_ACTION_HANDLERS.get(_action_id)
+            if handler is None:
+                continue
+            action_cards.register(_action_id, handler)
+            _registered_by_tool.add(_action_id)
+
+    # The existing `.tools` not yet migrated to a def (#1006) keep their inline
+    # wiring — register any handler a tool def didn't already claim.
+    for _action_id, handler in _TOOL_ACTION_HANDLERS.items():
+        if _action_id not in _registered_by_tool:
+            action_cards.register(_action_id, handler)
 
     async def napi_upload(request: web.Request) -> web.Response:
         """Store a camera capture / PDF / Takeout `.zip` into the vault (#826/#869).

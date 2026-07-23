@@ -19,6 +19,7 @@ a path separator in an id, so a request can't escape the pack.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -55,7 +56,9 @@ def _is_valid_id(skill_id: str) -> bool:
 
 # A definition's `kind` (#480): only `skill` belongs in the model-selectable
 # pool; the other three fire deterministically (user `/`, the clock, an event).
-KINDS = ("skill", "command", "hook", "scheduler")
+# `tool` (#1004, ADR 0011) is a declarative `.`-command plugin — a dot-command,
+# a list cell-schema, and the action ids the server auto-registers on load.
+KINDS = ("skill", "command", "hook", "scheduler", "tool")
 # A definition without an explicit `kind:` frontmatter is a skill — the legacy
 # default before the taxonomy split, so the existing pack stays valid.
 _DEFAULT_KIND = "skill"
@@ -107,6 +110,53 @@ def list_defs(skills_dir: str | Path, kind: str) -> list[dict[str, str]]:
                 # The lifecycle event a hook-kind entry binds to; drives the
                 # `/hooks` card's event selector, empty for the rest.
                 "event": meta.get("event", ""),
+            }
+        )
+    out.sort(key=lambda s: s["name"].lower())
+    return out
+
+
+def _tool_fields(meta: dict[str, str]) -> dict[str, Any]:
+    """The declarative `.tool` plugin surface (#1004, ADR 0011) read off a
+    tool-kind def's flat frontmatter.
+
+    `tool-actions` is a comma-separated action-id list; `tool-cell-schema` is a
+    one-line JSON object (title/meta/buttons) — both stay within the pack's
+    no-PyYAML flat parser. The client (#1005) dispatches on these instead of the
+    hardcoded `DOT_COMMANDS`/`ensureCard`; the server auto-registers the actions.
+    """
+    actions = [a.strip() for a in meta.get("tool-actions", "").split(",") if a.strip()]
+    schema_raw = meta.get("tool-cell-schema", "").strip()
+    try:
+        cell_schema = json.loads(schema_raw) if schema_raw else {}
+    except json.JSONDecodeError:
+        cell_schema = {}
+    return {
+        "tool-id": meta.get("tool-id", ""),
+        "tool-label": meta.get("tool-label", ""),
+        "command": meta.get("command", ""),
+        "tool-api-path": meta.get("tool-api-path", ""),
+        "tool-search-path": meta.get("tool-search-path", ""),
+        "tool-actions": actions,
+        "tool-cell-schema": cell_schema,
+    }
+
+
+def list_tool_defs(skills_dir: str | Path) -> list[dict[str, Any]]:
+    """List the tool-kind registry with each entry's declarative surface —
+    the shape `/api/defs/tool` serves and the server auto-registers from."""
+    out: list[dict[str, Any]] = []
+    for def_id, meta, _body, _file in _iter_defs(skills_dir):
+        if def_kind(meta) != "tool":
+            continue
+        out.append(
+            {
+                "id": def_id,
+                "name": meta.get("name") or def_id,
+                "description": meta.get("description", ""),
+                "kind": "tool",
+                "scope": meta.get("scope") or _DEFAULT_SCOPE,
+                **_tool_fields(meta),
             }
         )
     out.sort(key=lambda s: s["name"].lower())

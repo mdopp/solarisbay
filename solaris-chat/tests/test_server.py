@@ -1923,6 +1923,36 @@ def test_list_defs_surfaces_the_hook_event(tmp_path):
     assert skills.list_defs(tmp_path, "skill")[0]["event"] == ""
 
 
+def test_list_tool_defs_surfaces_the_declarative_plugin_surface(tmp_path):
+    # #1004 (ADR 0011): a kind:tool def carries its dot-command, api path, the
+    # action ids the server auto-registers, and a cell-schema — parsed off the
+    # flat frontmatter (actions comma-split, cell-schema one-line JSON).
+    _write_def(
+        tmp_path,
+        "task-tool",
+        name="solaris-task-tool",
+        kind="tool",
+        extra=(
+            "tool-id: task\n"
+            "tool-label: Aufgabe\n"
+            "command: .task\n"
+            "tool-api-path: /api/portal/tasks?done=1\n"
+            "tool-actions: task.set_status, task.add, task.update\n"
+            'tool-cell-schema: {"title": "title", "meta": ["due"]}'
+        ),
+    )
+    _write_def(tmp_path, "status", name="solaris-status")  # skill: not a tool
+    tools = skills.list_tool_defs(tmp_path)
+    assert [t["id"] for t in tools] == ["task-tool"]
+    tool = tools[0]
+    assert tool["kind"] == "tool"
+    assert tool["tool-id"] == "task"
+    assert tool["command"] == ".task"
+    assert tool["tool-api-path"] == "/api/portal/tasks?done=1"
+    assert tool["tool-actions"] == ["task.set_status", "task.add", "task.update"]
+    assert tool["tool-cell-schema"] == {"title": "title", "meta": ["due"]}
+
+
 def test_shipped_pack_groups_into_the_four_kinds():
     # The #484 reorg sorts the household pack by frontmatter kind; admin-soul
     # (admin-act/diagnose/logs) is a sibling pack, so it isn't walked here.
@@ -1957,6 +1987,8 @@ def test_shipped_pack_groups_into_the_four_kinds():
         "media",
     }
     assert by_kind["command"] == {"debug-set"}
+    # #1004: the shipped pack now carries the reference kind:tool plugin.
+    assert by_kind["tool"] == {"task-tool"}
     # list_skills stays the skill-kind view — no scheduler/hook/command leaks in.
     assert {d["id"] for d in skills.list_skills(pack)} == by_kind["skill"]
 
@@ -2069,6 +2101,65 @@ async def test_defs_endpoints(aiohttp_client, tmp_path):
     resp = await client.delete("/api/defs/command/greet", headers=admin)
     assert resp.status == 200
     assert (await client.get("/api/defs/command/greet")).status == 404
+
+
+async def test_defs_tool_endpoint_serves_the_declarative_surface(
+    aiohttp_client, tmp_path
+):
+    # #1004 (ADR 0011): /api/defs/tool mirrors /api/defs/command, but each row
+    # carries the plugin surface (dot-command, api path, actions, cell-schema).
+    _write_def(
+        tmp_path,
+        "task-tool",
+        name="solaris-task-tool",
+        kind="tool",
+        extra=(
+            "tool-id: task\n"
+            "command: .task\n"
+            "tool-api-path: /api/portal/tasks?done=1\n"
+            "tool-actions: task.set_status, task.add\n"
+            'tool-cell-schema: {"title": "title", "meta": ["due"]}'
+        ),
+    )
+    fake = _FakeEngine()
+    app = build_app(
+        engine=fake,
+        remote_user_header="Remote-User",
+        default_uid="household",
+        skills_dir=str(tmp_path),
+    )
+    client = await aiohttp_client(app)
+
+    resp = await client.get("/api/defs/tool")
+    body = await resp.json()
+    assert resp.status == 200 and body["kind"] == "tool"
+    assert [d["id"] for d in body["defs"]] == ["task-tool"]
+    tool = body["defs"][0]
+    assert tool["command"] == ".task"
+    assert tool["tool-actions"] == ["task.set_status", "task.add"]
+    assert tool["tool-cell-schema"] == {"title": "title", "meta": ["due"]}
+
+
+async def test_build_app_auto_registers_a_tool_defs_actions(tmp_path):
+    # #1004: build_app auto-registers a tool def's declared actions from the
+    # handler pool — the same registry the callback endpoint dispatches over.
+    from solaris_chat.engine import action_cards
+
+    _write_def(
+        tmp_path,
+        "task-tool",
+        name="solaris-task-tool",
+        kind="tool",
+        extra="command: .task\ntool-actions: task.set_status, task.add, task.update",
+    )
+    build_app(
+        engine=_FakeEngine(),
+        remote_user_header="Remote-User",
+        default_uid="household",
+        skills_dir=str(tmp_path),
+    )
+    for action_id in ("task.set_status", "task.add", "task.update"):
+        assert action_cards.get(action_id) is not None
 
 
 async def test_skills_endpoints(aiohttp_client, tmp_path):
