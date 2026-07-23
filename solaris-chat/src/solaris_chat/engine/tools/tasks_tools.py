@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 from solaris_chat.engine import tasks
+from solaris_chat.engine.document_deadlines_sync import cascade_task_event_configured
 from solaris_chat.engine.knowledge import projection
 from solaris_chat.engine.tools import Tool
 
@@ -36,6 +37,7 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
             due=due,
             task_source="chat",
         )
+        await cascade_task_event_configured(db_path, tid)
         return json.dumps(
             {"ok": True, "id": tid, "title": title, "due": due}, ensure_ascii=False
         )
@@ -72,6 +74,8 @@ def build_tasks_tools(db_path: str, uid_getter, *, notes_dir: str) -> list[Tool]
         ok = await asyncio.to_thread(
             tasks.set_status, db_path=db_path, uid=uid, entity_id=tid, status=status
         )
+        if ok:
+            await cascade_task_event_configured(db_path, tid)
         return json.dumps({"ok": ok, "status": status})
 
     return [

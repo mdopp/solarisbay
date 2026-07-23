@@ -105,6 +105,14 @@ def _collection_url(base_url: str, resident_uid: str) -> str:
     return f"{base_url.rstrip('/')}/{resident_uid}/{_CALENDAR}/"
 
 
+def _task_target(owner_uid: str, household_uid: str) -> str:
+    """Which resident's calendar a task lands in: its own owner, except a
+    household task (`SHARED_UID`) which routes to the primary resident when set."""
+    if owner_uid == projection.SHARED_UID:
+        return household_uid or projection.SHARED_UID
+    return owner_uid
+
+
 async def sync_deadlines(
     db_path: str,
     base_url: str,
@@ -179,16 +187,12 @@ async def sync_deadlines(
             summary = f"Aufgabe: {facts.get('title_text', task['canonical_name'])}"
             # A private task lands in its owner's calendar; a household task
             # (SHARED_UID) is routed to the primary resident like the deadlines.
-            owner = task["resident_uid"]
-            if owner == projection.SHARED_UID:
-                owner = shared_target
+            owner = _task_target(task["resident_uid"], shared_target)
             per_resident.setdefault(owner, []).append(
                 (uid, _build_event(uid, summary, "", day))
             )
     finally:
         conn.close()
-    # TODO(#997): cascade-on-change — task.add/update/set_status should re-PUT the
-    # single affected event immediately, so the calendar isn't stale until night.
     for resident_uid, events in per_resident.items():
         collection_url = _collection_url(base_url, resident_uid)
         try:
@@ -214,3 +218,75 @@ async def sync_deadlines(
                 failed += 1
     log.info("engine.deadlines_sync", written=written, skipped=skipped, failed=failed)
     return {"written": written, "skipped": skipped, "failed": failed}
+
+
+async def cascade_task_event(
+    db_path: str,
+    entity_id: str,
+    base_url: str,
+    username: str,
+    password: str,
+    household_uid: str = "",
+) -> None:
+    """Re-sync the SINGLE calendar event for one task, immediately (#997).
+
+    Called on task add/update/set_status so the calendar isn't stale until the
+    nightly `sync_deadlines`. Reads the task's current facts and either PUTs its
+    `solaris-task-<id>` event (still OPEN with a parseable ISO `due`) or DELETEs it
+    (resolved, or the due date removed/unparseable, or the task gone). Routing +
+    the deterministic UID match the nightly full sync exactly, so a re-PUT
+    overwrites in place. Never raises. Disabled (no-op) when the base URL /
+    credentials are unset.
+    """
+    if not (base_url and username and password):
+        return
+    client = HttpDavClient(caldav_username=username, caldav_password=password)
+    conn = projection.open_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT canonical_name, resident_uid FROM entities"
+            " WHERE id = ? AND type = 'task'",
+            (entity_id,),
+        ).fetchone()
+        facts = _facts(conn, entity_id) if row is not None else {}
+    finally:
+        conn.close()
+    uid = f"{_TASK_UID_PREFIX}{entity_id}"
+    day = None
+    if row is not None and facts.get("status", "open") == "open":
+        day = _parse_iso(facts.get("due", ""))
+    target = _task_target(
+        row["resident_uid"] if row is not None else projection.SHARED_UID,
+        household_uid,
+    )
+    collection_url = _collection_url(base_url, target)
+    try:
+        if day is None:
+            await client.delete_item(collection_url, uid, suffix=".ics")
+        else:
+            summary = f"Aufgabe: {facts.get('title_text', row['canonical_name'])}"
+            await client.ensure_calendar(collection_url)
+            await client.put_item(
+                collection_url,
+                uid,
+                _build_event(uid, summary, "", day),
+                suffix=".ics",
+                content_type="text/calendar; charset=utf-8",
+            )
+    except Exception as e:  # noqa: BLE001 — a stale event self-heals at the nightly sync.
+        log.error("engine.deadlines_sync.cascade_failed", uid=uid, error=str(e))
+
+
+async def cascade_task_event_configured(db_path: str, entity_id: str) -> None:
+    """`cascade_task_event` with the DAV config drawn from the running settings —
+    the one-liner the task write paths call after a DB change. No-op when unset."""
+    from solaris_chat.config import settings
+
+    await cascade_task_event(
+        db_path,
+        entity_id,
+        settings.deadlines_sync_url_base,
+        settings.sync_dav_username,
+        settings.sync_dav_password,
+        settings.household_calendar_uid,
+    )

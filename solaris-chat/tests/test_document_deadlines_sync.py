@@ -16,7 +16,10 @@ from __future__ import annotations
 import sqlite3
 
 from solaris_chat.engine import document_deadlines_sync
-from solaris_chat.engine.document_deadlines_sync import sync_deadlines
+from solaris_chat.engine.document_deadlines_sync import (
+    cascade_task_event,
+    sync_deadlines,
+)
 
 _SCHEMA = """
 CREATE TABLE entities (
@@ -247,3 +250,111 @@ async def test_disabled_when_unconfigured(tmp_path, monkeypatch):
         "failed": 0,
     }
     assert calls == [] and ensured == []
+
+
+def _capture_cascade(monkeypatch):
+    """Record PUT/DELETE/ensure so cascade tests can assert the single-event op."""
+    puts, deletes, ensured = [], [], []
+
+    async def fake_put(self, collection_url, uid, body, *, suffix, content_type):
+        puts.append({"url": collection_url, "uid": uid, "body": body})
+        return collection_url + uid
+
+    async def fake_delete(self, collection_url, uid, *, suffix=".ics"):
+        deletes.append({"url": collection_url, "uid": uid})
+
+    async def fake_ensure(self, collection_url):
+        ensured.append(collection_url)
+
+    monkeypatch.setattr(document_deadlines_sync.HttpDavClient, "put_item", fake_put)
+    monkeypatch.setattr(
+        document_deadlines_sync.HttpDavClient, "delete_item", fake_delete
+    )
+    monkeypatch.setattr(
+        document_deadlines_sync.HttpDavClient, "ensure_calendar", fake_ensure
+    )
+    return puts, deletes, ensured
+
+
+def _one_task(tmp_path, resident_uid, facts):
+    db = str(tmp_path / "solaris.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    _task(conn, "t1", "Zahnarzt", resident_uid, facts)
+    conn.commit()
+    conn.close()
+    return db
+
+
+async def test_cascade_add_with_due_puts(tmp_path, monkeypatch):
+    # add-with-due → single PUT of the task's deterministic UID into its owner's
+    # calendar, ensured first.
+    puts, deletes, ensured = _capture_cascade(monkeypatch)
+    db = _one_task(
+        tmp_path,
+        "lena",
+        [("status", "open"), ("due", "2026-09-01"), ("title_text", "Zahnarzt")],
+    )
+    await cascade_task_event(db, "t1", _BASE, "solaris", "pw")
+    lena_url = f"{_BASE}/lena/{_CALENDAR}/"
+    assert deletes == []
+    assert len(puts) == 1
+    assert puts[0]["url"] == lena_url and puts[0]["uid"] == "solaris-task-t1"
+    assert "SUMMARY:Aufgabe: Zahnarzt" in puts[0]["body"]
+    assert "DTSTART;VALUE=DATE:20260901" in puts[0]["body"]
+    assert lena_url in ensured
+
+
+async def test_cascade_status_done_deletes(tmp_path, monkeypatch):
+    # status→done → the event is DELETEd, not written, even though it still has a
+    # due date.
+    puts, deletes, _ = _capture_cascade(monkeypatch)
+    db = _one_task(
+        tmp_path,
+        "lena",
+        [("status", "done"), ("due", "2026-09-01"), ("title_text", "Zahnarzt")],
+    )
+    await cascade_task_event(db, "t1", _BASE, "solaris", "pw")
+    assert puts == []
+    assert len(deletes) == 1
+    assert deletes[0]["url"] == f"{_BASE}/lena/{_CALENDAR}/"
+    assert deletes[0]["uid"] == "solaris-task-t1"
+
+
+async def test_cascade_due_change_reputs(tmp_path, monkeypatch):
+    # due-change → re-PUT under the SAME UID so the calendar app overwrites in place.
+    puts, deletes, _ = _capture_cascade(monkeypatch)
+    db = _one_task(
+        tmp_path,
+        "lena",
+        [("status", "open"), ("due", "2026-10-15"), ("title_text", "Zahnarzt")],
+    )
+    await cascade_task_event(db, "t1", _BASE, "solaris", "pw")
+    assert deletes == []
+    assert len(puts) == 1 and puts[0]["uid"] == "solaris-task-t1"
+    assert "DTSTART;VALUE=DATE:20261015" in puts[0]["body"]
+
+
+async def test_cascade_household_task_routes_to_primary(tmp_path, monkeypatch):
+    # A household task cascades to the primary resident's calendar (#1011 routing),
+    # matching the nightly sync.
+    puts, _, _ = _capture_cascade(monkeypatch)
+    db = _one_task(
+        tmp_path,
+        _SHARED,
+        [("status", "open"), ("due", "2026-09-01"), ("title_text", "Müll")],
+    )
+    await cascade_task_event(db, "t1", _BASE, "solaris", "pw", household_uid="mdopp")
+    assert len(puts) == 1
+    assert puts[0]["url"] == f"{_BASE}/mdopp/{_CALENDAR}/"
+
+
+async def test_cascade_disabled_when_unconfigured(tmp_path, monkeypatch):
+    puts, deletes, ensured = _capture_cascade(monkeypatch)
+    db = _one_task(
+        tmp_path,
+        "lena",
+        [("status", "open"), ("due", "2026-09-01"), ("title_text", "Zahnarzt")],
+    )
+    await cascade_task_event(db, "t1", "", "solaris", "pw")
+    assert puts == [] and deletes == [] and ensured == []

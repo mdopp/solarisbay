@@ -357,6 +357,21 @@ class HttpDavClient:
                 resp.raise_for_status()
         return resource_url
 
+    async def delete_item(
+        self, collection_url: str, uid: str, *, suffix: str = ".ics"
+    ) -> None:
+        """DELETE one UID-named object from a collection. A 404 (already gone) is
+        not an error, so removing an event that was never written is a no-op."""
+        resource_url = urljoin(
+            collection_url if collection_url.endswith("/") else collection_url + "/",
+            f"{_dav_name(uid)}{suffix}",
+        )
+        auth = self._carddav_auth if suffix == ".vcf" else self._caldav_auth
+        async with aiohttp.ClientSession(timeout=self._timeout, auth=auth) as session:
+            async with session.delete(resource_url) as resp:
+                if resp.status != 404:
+                    resp.raise_for_status()
+
     async def ensure_calendar(self, collection_url: str) -> None:
         """MKCALENDAR the collection so a following PUT lands (RFC 4791 §5.3.1).
 

@@ -58,6 +58,7 @@ from solaris_chat.engine import (
     updates,
 )
 from solaris_chat.engine import sb_companion as sb_companion_module
+from solaris_chat.engine.document_deadlines_sync import cascade_task_event_configured
 from solaris_chat.engine.importers.google_takeout import orchestrator as import_flow
 from solaris_chat.engine.client import (
     EngineClient,
@@ -3927,6 +3928,8 @@ def build_app(
             entity_id=entity_id,
             status=status,
         )
+        if ok:
+            await cascade_task_event_configured(solaris_db_path, entity_id)
         return {"ok": ok}
 
     async def _task_add(body: dict[str, Any]) -> dict[str, Any]:
@@ -3945,6 +3948,7 @@ def build_app(
             )
         except ValueError:
             return {"ok": False, "reason": "bad_title"}
+        await cascade_task_event_configured(solaris_db_path, tid)
         return {"ok": True, "id": tid}
 
     async def _task_update(body: dict[str, Any]) -> dict[str, Any]:
@@ -3965,6 +3969,8 @@ def build_app(
             )
         except ValueError:
             return {"ok": False, "reason": "bad_title"}
+        if ok:
+            await cascade_task_event_configured(solaris_db_path, entity_id)
         return {"ok": ok}
 
     def _write_quick_note(uid: str, text: str) -> str:
