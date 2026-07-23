@@ -104,10 +104,14 @@ spec:
     - name: PAPERLESS_HTTP_REMOTE_USER_HEADER_NAME
       value: "HTTP_REMOTE_USER"
     # DO NOT let paperless re-OCR: its Tesseract regresses rotated German
-    # scans to garble (PoC #929). skip = index whatever text the document
-    # already carries (the gemma4 text #931 PATCHes in), never run Tesseract.
+    # scans to garble (PoC #929). The beta image dropped OCR_MODE=skip, so the
+    # equivalent is OCR_MODE=auto + ARCHIVE_FILE_GENERATION=never: Tesseract
+    # never runs an archive/OCR pass, and paperless indexes whatever text the
+    # document already carries (the gemma4 text #931 PATCHes in).
     - name: PAPERLESS_OCR_MODE
-      value: "skip"
+      value: "auto"
+    - name: PAPERLESS_ARCHIVE_FILE_GENERATION
+      value: "never"
     # German UI + OCR language hints (harmless with OCR skipped; used for
     # date parsing + the UI locale).
     - name: PAPERLESS_OCR_LANGUAGE
