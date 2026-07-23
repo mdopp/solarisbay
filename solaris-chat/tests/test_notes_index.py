@@ -131,6 +131,46 @@ def test_backfill_covers_note_beyond_the_20k_walk_budget(tmp_path):
         conn.close()
 
 
+def test_backfill_excludes_upload_companion(tmp_path):
+    """A backfill indexes the derived OKF note but NOT the upload companion, so
+    `.note` search returns one hit, not the pre-#998 duplicate."""
+    root = tmp_path / "notes"
+    _note(root, "users/mdopp/uploads/scan.md", "# Scan\n\neinzigartigwort\n")
+    _note(root, "okf/notes/scan.md", "# Scan\n\neinzigartigwort\n")
+    db = str(tmp_path / "solaris.db")
+    notes_index.backfill(db, str(root))
+    conn = sqlite3.connect(db)
+    try:
+        assert notes_index.search(conn, "einzigartigwort") == ["okf/notes/scan.md"]
+    finally:
+        conn.close()
+
+
+def test_backfill_sweeps_pre_existing_companion_row(tmp_path):
+    """A companion indexed by a pre-#998 backfill is swept on the next pass, so an
+    already-duplicated `.note` search self-heals to one hit."""
+    root = tmp_path / "notes"
+    db = str(tmp_path / "solaris.db")
+    _note(root, "users/mdopp/uploads/scan.md", "# Scan\n\neinzigartigwort\n")
+    # Simulate the pre-#998 index state: the companion is already in the table.
+    conn = sqlite3.connect(db)
+    notes_index.ensure_schema(conn)
+    notes_index.index_note(conn, root, "users/mdopp/uploads/scan.md")
+    conn.commit()
+    assert notes_index.search(conn, "einzigartigwort") == [
+        "users/mdopp/uploads/scan.md"
+    ]
+    conn.close()
+
+    _note(root, "okf/notes/scan.md", "# Scan\n\neinzigartigwort\n")
+    notes_index.backfill(db, str(root))
+    conn = sqlite3.connect(db)
+    try:
+        assert notes_index.search(conn, "einzigartigwort") == ["okf/notes/scan.md"]
+    finally:
+        conn.close()
+
+
 def test_search_ignores_fts_operator_tokens(tmp_path):
     """A raw query with FTS operators/punctuation must not raise a syntax error."""
     root = tmp_path / "notes"

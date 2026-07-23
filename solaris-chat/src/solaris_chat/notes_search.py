@@ -41,13 +41,23 @@ SHARED_UID = "household"
 # A note under `users/<uid>/...` is private to `<uid>`, whatever its frontmatter.
 _USER_PATH_RE = re.compile(r"^users/([^/]+)/")
 
+# An upload companion: the raw extraction scratch beside an uploaded file, at the
+# shared `uploads/<file>.md` or per-user `users/<uid>/uploads/<file>.md`. The
+# obsidian ingest projects its text into a derived OKF note; the companion itself
+# is not a note (#998).
+_UPLOAD_COMPANION_RE = re.compile(r"(?:^|/)uploads/[^/]+\.md$")
+
 # The vault is a Syncthing folder: it carries a `.stversions/` tree with tens of
 # thousands of historical file copies, plus `.stfolder`, and other tool droppings
 # (`.git`, `.obsidian`, `.trash`). None are notes; recursing into them made an
 # `rglob("*.md")` walk of the real vault never finish (#705). `processed/` holds
-# already-consolidated inbox exports, also not browsable notes. Prune these whole
-# subtrees at the directory boundary — an `rglob` cannot prune, `os.walk` can.
-_PRUNE_DIRS = frozenset({"processed", "exports"})
+# already-consolidated inbox exports, also not browsable notes. `uploads/` holds
+# the raw upload companions — extraction scratch whose text the obsidian ingest
+# projects into a derived OKF note; the companion itself is NOT a note, so keeping
+# it out of the note walk stops it colliding with its own OKF note on `.note`
+# search (#998). Prune these whole subtrees at the directory boundary — an `rglob`
+# cannot prune, `os.walk` can.
+_PRUNE_DIRS = frozenset({"processed", "exports", "uploads"})
 
 
 # Cap the vault walk so a pathological (Syncthing-runaway) vault can never wedge
@@ -114,6 +124,14 @@ def canonical_journal_path(relpath: str) -> str | None:
     if date is None:
         return None
     return f"journal/{date[:4]}/{date}.md"
+
+
+def is_upload_companion(relpath: str) -> bool:
+    """True when a vault-relative path is an upload companion (#998).
+
+    The companion is extraction scratch, not a note: excluded from the note walk
+    and swept from the FTS index so it can't collide with its derived OKF note."""
+    return _UPLOAD_COMPANION_RE.search(relpath.replace("\\", "/")) is not None
 
 
 def resident_for_path(relpath: str) -> str | None:

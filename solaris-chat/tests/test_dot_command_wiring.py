@@ -23,12 +23,65 @@ def _has(pattern: str) -> bool:
 
 
 def test_all_dot_commands_registered_and_dispatched():
-    # Every `.tool` is offered, has a head label, and dispatches to a builder.
-    for cmd in ("task", "note", "doc", "contacts", "home", "energy"):
+    # Every `.tool` is offered, has a head label, and dispatches to a builder
+    # through the client tool-registry (#1006): `ensureCard` looks the tool-id up
+    # in `toolBuilders` instead of a hardcoded if/else chain.
+    assert "var toolBuilders = {" in _HTML
+    assert "var build = toolBuilders[cmd];" in _HTML
+    for cmd in ("task", "note", "doc", "contacts", "photo", "home", "energy"):
         assert _has(r'\["\.' + cmd + r'",'), f".{cmd} missing from DOT_COMMANDS"
-        assert _has(r'(?:else )?if \(cmd === "' + cmd + r'"\) build'), (
-            f".{cmd} not dispatched in ensureCard"
+        assert _has(r"\b" + cmd + r": (?:build|function)"), (
+            f".{cmd} not registered in toolBuilders"
         )
+    # `.task` is the reference tool: its builder runs the generic schema-driven
+    # card off its /api/defs/tool def, not an inline buildTaskCard.
+    assert _has(
+        r"task: function \(el\) \{ buildGenericToolCard\(el, toolRegistry\.task"
+    ), ".task not dispatched through the generic tool card"
+
+
+def test_migrated_tools_carry_declarative_kind_tool_defs():
+    # #1006: every existing .tool now ships a declarative `kind: tool` SKILL.md so
+    # the server auto-registers its actions and it joins /api/defs/tool. The head
+    # label falls back to the def's tool-label when the registry has loaded.
+    from pathlib import Path
+
+    from solaris_chat.skills import list_tool_defs
+
+    pack = Path(__file__).resolve().parents[2] / "templates/solaris/skills/household"
+    by_id = {d["tool-id"]: d for d in list_tool_defs(pack)}
+    for tid in ("task", "note", "doc", "contacts", "photo", "home", "energy"):
+        assert tid in by_id, f".{tid} has no kind:tool def"
+        assert by_id[tid]["command"] == "." + tid
+        assert by_id[tid]["tool-label"], f".{tid} def has no tool-label"
+    # The list/edit tools declare their card actions; the widget/upload tools
+    # (photo/home/energy post to their own endpoints) declare none.
+    assert by_id["task"]["tool-actions"] == [
+        "task.set_status",
+        "task.add",
+        "task.update",
+    ]
+    assert by_id["note"]["tool-actions"] == ["note.add"]
+    assert by_id["doc"]["tool-actions"] == ["doc.classify"]
+    assert by_id["contacts"]["tool-actions"] == ["contact.add", "person.update"]
+    assert by_id["home"]["tool-actions"] == []
+    assert _has(r'def && def\["tool-label"\]')
+
+
+def test_task_dispatches_through_the_generic_tool_registry_card():
+    # #1005: the client fetches the tool registry (/api/defs/tool) into
+    # toolRegistry at init and dispatches .task through buildGenericToolCard.
+    assert '"/api/defs/tool"' in _HTML  # registry fetched at init
+    assert "var toolRegistry = {}" in _HTML
+    assert "function loadToolRegistry()" in _HTML
+    assert 'if (d["tool-id"]) toolRegistry[d["tool-id"]] = d;' in _HTML
+    assert "function buildGenericToolCard(el, def)" in _HTML
+    # The generic card is schema-driven: list/search off the def's tool-api-path,
+    # rows off its tool-cell-schema resolved against the item.
+    assert 'var apiPath = (el._tool && el._tool["tool-api-path"])' in _HTML
+    assert 'var schema = (el._tool && el._tool["tool-cell-schema"])' in _HTML
+    assert "function resolveCell(item, cellSchema)" in _HTML
+    assert "renderListCell(t, resolveCell(t, schema))" in _HTML
 
 
 def test_task_create_find_edit_wired():

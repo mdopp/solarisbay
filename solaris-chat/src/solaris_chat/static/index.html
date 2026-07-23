@@ -4471,7 +4471,7 @@
         [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"],
         [".note", "Notiz anlegen + Notizen suchen — .note <Text>"],
         [".doc", "Dokument/Takeout hochladen + einsortieren"],
-        [".contacts", "Kontakt anlegen + suchen — .contacts <Name|@Mail|Tel>"],
+        [".contacts", "Person (Kontakt) anlegen + suchen — .contacts <Name|@Mail|Tel>"],
         [".photo", "Foto hochladen + suchen — .photo <Person|Text>"],
         [".home", "Geräte filtern + steuern — .home <Name|Raum|Text>"],
         [".energy", "Energie / Stromfluss anzeigen — .energy"]
@@ -4641,6 +4641,27 @@
       }
       loadCommandPool();
 
+      // ---- .tool registry (#1005, ADR 0011) ----
+      // The client-side dispatch table for `.tools` served declaratively at
+      // /api/defs/tool (a kind:tool SKILL.md carries its dot-command, api path,
+      // cell-schema and action ids). The generic schema-driven card renders +
+      // dispatches off a def here instead of the hardcoded DOT_COMMANDS/ensureCard
+      // path. This slice migrates the reference tool (.task) ONLY — the remaining
+      // .tools stay on their inline builders until #1006. `toolRegistry` maps a
+      // tool-id ("task") to its def; the registry AUGMENTS the inline path.
+      var toolRegistry = {};
+      function loadToolRegistry() {
+        return fetch("/api/defs/tool")
+          .then(function (r) { return r.ok ? r.json() : { defs: [] }; })
+          .catch(function () { return { defs: [] }; })
+          .then(function (j) {
+            ((j && j.defs) || []).forEach(function (d) {
+              if (d["tool-id"]) toolRegistry[d["tool-id"]] = d;
+            });
+          });
+      }
+      loadToolRegistry();
+
       // ---- Slash-command autocomplete (#181) ----
       // Built-in browser commands plus the typeable user/inline commands
       // (#482), so typing "/" surfaces what the panel can do plus the templates
@@ -4779,21 +4800,36 @@
         }
 
         var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen", home: "Geräte & Bereiche", energy: "Energie & Stromfluss" };
+        // Client tool-registry dispatch (#1006, ADR 0011): each `.tool` maps its
+        // tool-id to the builder that renders its card. `.task` is the reference —
+        // it runs through the fully generic schema-driven card off its
+        // /api/defs/tool def. The other six carry declarative kind:tool defs too
+        // (server auto-registers their actions, they populate `toolRegistry`), but
+        // keep a specialised builder: an upload dropzone (.doc/.photo), fuzzy
+        // deduped note search (.note), split-field person edit (.contacts), and the
+        // hc-grid WIDGET cards (.home/.energy — live SSE, state colour, favourite)
+        // aren't a plain create/list row the generic card expresses.
+        var toolBuilders = {
+          task: function (el) { buildGenericToolCard(el, toolRegistry.task || { "tool-id": "task" }); },
+          note: buildNoteCard,
+          doc: buildDocCard,
+          contacts: buildContactsCard,
+          photo: buildPhotoCard,
+          home: buildHomeCard,
+          energy: buildEnergyCard,
+        };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
+          var build = toolBuilders[cmd];
+          if (!build) return;
           clearCard(); kind = cmd;
           card = document.createElement("div");
           card.className = "msg sol dot-card dot-" + cmd;
           var head = document.createElement("div"); head.className = "dc-head";
-          head.textContent = DC_HEAD[cmd] || cmd;
+          var def = toolRegistry[cmd];
+          head.textContent = DC_HEAD[cmd] || (def && def["tool-label"]) || cmd;
           card.appendChild(head);
-          if (cmd === "task") buildTaskCard(card);
-          else if (cmd === "note") buildNoteCard(card);
-          else if (cmd === "doc") buildDocCard(card);
-          else if (cmd === "contacts") buildContactsCard(card);
-          else if (cmd === "photo") buildPhotoCard(card);
-          else if (cmd === "home") buildHomeCard(card);
-          else if (cmd === "energy") buildEnergyCard(card);
+          build(card);
           log.appendChild(card); scrollDown(true);
         }
         function buildDocCard(el) {
@@ -4826,6 +4862,34 @@
           ["dragleave", "dragend"].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.remove("over"); }); });
           drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
         }
+        // Single source of truth for a .tool list ROW (#1003, ADR 0011): a
+        // task-main cell with the item's title + optional meta lines. The schema
+        // is {title, meta:[string]} — each renderer supplies the strings, the
+        // interaction (checkbox/edit/open) stays on the caller's row wrapper.
+        function renderListCell(item, schema) {
+          var main = document.createElement("div"); main.className = "task-main";
+          var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = schema.title; main.appendChild(tt);
+          (schema.meta || []).forEach(function (text) {
+            if (!text) return;
+            var d = document.createElement("span"); d.className = "task-meta"; d.textContent = text; main.appendChild(d);
+          });
+          return main;
+        }
+        // Resolve a tool def's cell-schema ({title:<field>, meta:[<field>…]}, from
+        // /api/defs/tool) against an item into the {title, meta:[string]} shape
+        // renderListCell wants — mapping field names to the item's values (#1005).
+        // `due` carries the same 📅 prefix the inline .task card used, so a
+        // schema-driven row is byte-identical to the hardcoded one.
+        function resolveCell(item, cellSchema) {
+          var s = cellSchema || {};
+          var title = item[s.title] != null ? String(item[s.title]) : (item.title || "");
+          var meta = (s.meta || []).map(function (field) {
+            var v = item[field];
+            if (v == null || v === "") return "";
+            return field === "due" ? "📅 " + v : String(v);
+          });
+          return { title: title, meta: meta };
+        }
         function searchDocs(el, q) {
           // Debounced LIKE search over title/category — server-side (own ∪ shared).
           if (el._docTimer) clearTimeout(el._docTimer);
@@ -4848,10 +4912,8 @@
           if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = showAll ? "Noch keine Dokumente." : "Kein passendes Dokument."; listEl.appendChild(e); return; }
           items.slice(0, 8).forEach(function (c) {
             var rw = document.createElement("div"); rw.className = "task-row";
-            var m = document.createElement("div"); m.className = "task-main";
-            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.title || "(ohne Titel)"; m.appendChild(tt);
-            if (c.category) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = c.category; m.appendChild(d); }
-            rw.appendChild(m); listEl.appendChild(rw);
+            rw.appendChild(renderListCell(c, { title: c.title || "(ohne Titel)", meta: [c.category] }));
+            listEl.appendChild(rw);
           });
         }
         // .home (#980): a FIND/CONTROL-only dot-card — no create, no submit, no
@@ -5046,11 +5108,9 @@
           if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = f ? "Kein passendes Foto." : "Noch keine Fotos."; listEl.appendChild(e); return; }
           items.slice(0, 8).forEach(function (c) {
             var rw = document.createElement("div"); rw.className = "task-row";
-            var m = document.createElement("div"); m.className = "task-main";
-            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.name || "(ohne Namen)"; m.appendChild(tt);
             var who = (c.people && c.people.length) ? c.people.join(", ") : "";
-            if (who) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = who; m.appendChild(d); }
-            rw.appendChild(m); listEl.appendChild(rw);
+            rw.appendChild(renderListCell(c, { title: c.name || "(ohne Namen)", meta: [who] }));
+            listEl.appendChild(rw);
           });
         }
         function uploadDoc(file, drop, status) {
@@ -5121,7 +5181,7 @@
           var f = (filter || "").trim().toLowerCase();
           var showAll = (f === "" || f === "list");
           var items = el._persons.filter(function (c) {
-            return showAll || (c.name + " " + c.email + " " + c.phone).toLowerCase().indexOf(f) !== -1;
+            return showAll || (c.name + " " + (c.aliases || []).join(" ") + " " + c.email + " " + c.phone).toLowerCase().indexOf(f) !== -1;
           });
           var h = document.createElement("div"); h.className = "dc-list-head";
           h.textContent = showAll ? "Kontakte (" + items.length + ")" : items.length + " Treffer für „" + filter.trim() + "“";
@@ -5129,17 +5189,15 @@
           if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = showAll ? "Noch keine Kontakte." : "Kein passender Kontakt."; listEl.appendChild(e); return; }
           items.slice(0, 8).forEach(function (c) {
             var rw = document.createElement("div"); rw.className = "task-row";
-            var m = document.createElement("div"); m.className = "task-main";
             var title = c.name || c.email || c.phone;
-            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = title; m.appendChild(tt);
             // Don't repeat a value that's already the title (a contact created
             // from just an email shows the email once, not as title AND meta).
             var bits = []; if (c.phone && c.phone !== title) bits.push("📞 " + c.phone); if (c.email && c.email !== title) bits.push("✉ " + c.email);
-            if (bits.length) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = bits.join(" · "); m.appendChild(d); }
+            rw.appendChild(renderListCell(c, { title: title, meta: [bits.length ? bits.join(" · ") : ""] }));
             // Tap a contact to correct it (create·find·edit, #967) via person.update.
             rw.style.cursor = "pointer";
             rw.addEventListener("click", function () { beginPersonEdit(el, rw, c); });
-            rw.appendChild(m); listEl.appendChild(rw);
+            listEl.appendChild(rw);
           });
         }
         // The .contacts create fields (name/email/phone) reused in EDIT mode: swap
@@ -5234,9 +5292,7 @@
               uniq.slice(0, 6).forEach(function (u) {
                 if (!u.label) return;
                 var a = document.createElement("div"); a.className = "task-row";
-                var m = document.createElement("div"); m.className = "task-main";
-                var t = document.createElement("span"); t.className = "task-title"; t.textContent = u.label;
-                m.appendChild(t); a.appendChild(m);
+                a.appendChild(renderListCell(u, { title: u.label }));
                 // Tap a note result to open it in the note viewer (#note-click).
                 if (u.path) {
                   a.style.cursor = "pointer";
@@ -5247,7 +5303,16 @@
             })
             .catch(function () {});
         }
-        function buildTaskCard(el) {
+        // Generic schema-driven .tool card (#1005, ADR 0011): builds the create
+        // form + live list off a tool def from /api/defs/tool — the def's
+        // tool-api-path (list/search), tool-actions (add/update/set_status), and
+        // tool-cell-schema drive it instead of the hardcoded path. The reference
+        // tool (.task) runs through here; it stays visually/behaviourally
+        // identical to the former inline buildTaskCard (renders the same date
+        // input, checkbox-toggle rows, tap-to-edit form). Other .tools keep their
+        // inline builders until #1006.
+        function buildGenericToolCard(el, def) {
+          el._tool = def;
           var title = document.createElement("div"); title.className = "dc-title";
           el.appendChild(title); el._title = title;
           var row = document.createElement("div"); row.className = "dc-row";
@@ -5267,7 +5332,8 @@
         }
         function loadTaskList(el) {
           // Fetch open AND resolved; the view keeps open + resolved-in-last-week.
-          fetch("/api/portal/tasks?done=1")
+          var apiPath = (el._tool && el._tool["tool-api-path"]) || "/api/portal/tasks?done=1";
+          fetch(apiPath)
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (j) {
               el._tasks = (j && j.ok && j.tasks) || [];
@@ -5296,6 +5362,7 @@
             e.textContent = showAll ? "Noch keine Aufgaben." : "Keine passende Aufgabe.";
             listEl.appendChild(e); return;
           }
+          var schema = (el._tool && el._tool["tool-cell-schema"]) || { title: "title", meta: ["due"] };
           items.slice(0, 8).forEach(function (t) {
             var done = t.status !== "open";
             var row = document.createElement("label"); row.className = "task-row task-check" + (done ? " resolved" : "");
@@ -5304,10 +5371,7 @@
               taskAction("task.set_status", { entity_id: t.id, status: cb.checked ? "done" : "open" })
                 .then(function () { loadTaskList(el); });
             });
-            var main = document.createElement("div"); main.className = "task-main";
-            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = t.title;
-            main.appendChild(tt);
-            if (t.due) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = "📅 " + t.due; main.appendChild(d); }
+            var main = renderListCell(t, resolveCell(t, schema));
             // Tap the title (not the checkbox) to edit — the third leg of the
             // create·find·edit pattern (#967). Prevent the label toggling the box.
             main.addEventListener("click", function (e) { e.preventDefault(); beginTaskEdit(el, row, t); });
@@ -7479,17 +7543,18 @@
 
             var doors = document.createElement("div");
             doors.className = "notes-doorways";
-            // A phone-book doorway first: every provider as a contact, with all
-            // its documents grouped (#doc-graph).
+            // A phone-book doorway first: every provider organization (company),
+            // with all its documents grouped (#doc-graph). Labelled „Anbieter" so
+            // it never collides with „Kontakte"/„Personen" (people) — ADR 0010.
             var kb = document.createElement("button");
             kb.type = "button";
             kb.className = "notes-door";
             var kem = document.createElement("span");
             kem.className = "nd-emoji";
-            kem.textContent = "📇";
+            kem.textContent = "🏢";
             var klab = document.createElement("span");
             klab.className = "nd-label";
-            klab.textContent = "Kontakte";
+            klab.textContent = "Anbieter";
             kb.appendChild(kem);
             kb.appendChild(klab);
             kb.addEventListener("click", function () { renderContactsView(card); });
@@ -7523,8 +7588,8 @@
           .catch(function () { card.textContent = "Konnte die Dokumente nicht laden."; });
       }
 
-      // The phone-book: each provider organization as a card with its contact
-      // details and the documents grouped under it (#doc-graph).
+      // The Anbieter phone-book: each provider organization (company) as a card
+      // with its contact details and the documents grouped under it (#doc-graph).
       var CONTACT_FIELD = {
         contact_person: ["👤", null],
         phone: ["☎", "tel:"],
@@ -7550,19 +7615,19 @@
             head.appendChild(back);
             var title = document.createElement("span");
             title.className = "concept-title";
-            title.textContent = "Kontakte";
+            title.textContent = "Anbieter";
             head.appendChild(title);
             card.appendChild(head);
 
-            if (!j || !j.ok) { card.appendChild(errLine("Kontakte nicht verfügbar.")); return; }
+            if (!j || !j.ok) { card.appendChild(errLine("Anbieter nicht verfügbar.")); return; }
             var contacts = j.contacts || [];
-            if (!contacts.length) { card.appendChild(errLine("Noch keine Kontakte")); return; }
+            if (!contacts.length) { card.appendChild(errLine("Noch keine Anbieter")); return; }
             var list = document.createElement("div");
             list.className = "contact-list";
             contacts.forEach(function (c) { list.appendChild(buildContactCard(c)); });
             card.appendChild(list);
           })
-          .catch(function () { card.textContent = "Konnte die Kontakte nicht laden."; });
+          .catch(function () { card.textContent = "Konnte die Anbieter nicht laden."; });
       }
 
       // ---- Aufgaben (to-do) doorway (#todo) --------------------------------

@@ -947,7 +947,7 @@ async def test_napi_upload_without_bearer_is_401(aiohttp_client, tmp_path):
     assert not (tmp_path / "users").exists()
 
 
-async def test_napi_upload_jpeg_lands_in_vault_and_is_searchable(
+async def test_napi_upload_jpeg_lands_in_vault_as_extraction_scratch(
     aiohttp_client, tmp_path
 ):
     import aiohttp
@@ -972,15 +972,16 @@ async def test_napi_upload_jpeg_lands_in_vault_and_is_searchable(
     # The raw file landed in lena's uploads subtree.
     stored = _find_upload_file(tmp_path, "lena", ".jpg")
     assert stored is not None and stored.read_bytes() == b"\xff\xd8\xff-jpeg-bytes"
-    # A referencing markdown note embeds it and carries the chosen name.
+    # A companion markdown embeds it and carries the chosen name.
     note = stored.with_suffix(".md")
     assert note.is_file()
     note_text = note.read_text()
     assert f"![[{stored.name}]]" in note_text
     assert "added_by: lena" in note_text
-    # notes_search finds it by the user-chosen filename (markdown, not the binary).
+    # The companion is extraction scratch, not a note (#998): notes_search never
+    # returns the uploads/ companion — only the derived OKF note is a note.
     hits = await _search_notes(tmp_path, "lena", "Rechnung")
-    assert any(h["path"] == str(note.relative_to(tmp_path)) for h in hits)
+    assert not any(h["path"] == str(note.relative_to(tmp_path)) for h in hits)
 
 
 async def test_napi_upload_pdf_works(aiohttp_client, tmp_path):

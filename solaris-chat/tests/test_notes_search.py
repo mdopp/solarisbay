@@ -95,6 +95,26 @@ def test_empty_when_vault_missing_or_no_match(tmp_path):
     assert notes_search.notes_for_topic(vault, "", "mdopp") == []
 
 
+def test_is_upload_companion(tmp_path):
+    # An upload companion at either location; a note elsewhere is not one (#998).
+    assert notes_search.is_upload_companion("users/mdopp/uploads/scan.md")
+    assert notes_search.is_upload_companion("uploads/scan.md")
+    assert not notes_search.is_upload_companion("okf/notes/scan.md")
+    assert not notes_search.is_upload_companion("users/mdopp/uploads/nested/x.md")
+
+
+def test_walk_excludes_upload_companions(tmp_path):
+    """The note walk skips upload companions — they're extraction scratch, not
+    notes, so they can't collide with their derived OKF note (#998)."""
+    root = tmp_path / "notes"
+    _note(root / "users/mdopp/uploads/scan.md", "# Scan\n\nOCR text.\n")
+    _note(root / "uploads/shared.md", "# Shared\n\nOCR text.\n")
+    _note(root / "okf/notes/scan.md", "# Scan\n\nExtracted note.\n")
+    _note(root / "loose.md", "# Loose\n\nA real note.\n")
+    walked = {p.relative_to(root).as_posix() for p in notes_search.iter_vault_md(root)}
+    assert walked == {"okf/notes/scan.md", "loose.md"}
+
+
 # ---- Endpoint ----
 
 

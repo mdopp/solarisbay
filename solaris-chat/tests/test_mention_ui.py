@@ -84,7 +84,8 @@ def test_photo_dot_command_wired(_html=_HTML):
     # … and builds a card following buildDocCard's shape: an upload dropzone that
     # POSTs to /api/photo, plus a dc-list filtered by a debounced GET /api/photo?q=.
     assert "function buildPhotoCard(el)" in _html
-    assert 'else if (cmd === "photo") buildPhotoCard(card);' in _html
+    # Dispatched through the client tool-registry (#1006): toolBuilders[cmd].
+    assert "photo: buildPhotoCard," in _html
     assert '"/api/photo"' in _html
     assert '"/api/photo?q=" + encodeURIComponent(q)' in _html
     # Typing `.photo <text>` live-filters via searchPhotos in updateCard.
@@ -95,8 +96,9 @@ def test_home_dot_command_wired(_html=_HTML):
     # `.home` (#980) is offered in the dot-command menu with a head label …
     assert re.search(r'\[".home",', _html)
     assert 'home: "Geräte & Bereiche"' in _html
-    # … dispatched to buildHomeCard and updated live in updateCard.
-    assert 'else if (cmd === "home") buildHomeCard(card);' in _html
+    # … dispatched to buildHomeCard (via toolBuilders, #1006) and updated live in
+    # updateCard.
+    assert "home: buildHomeCard," in _html
     assert "function buildHomeCard(el)" in _html
     assert re.search(r'cmd === "home"[\s\S]*?renderHomeList\(card, vh\)', _html)
     # It reuses the picker's addable-device endpoint as the full device source
@@ -149,7 +151,7 @@ def test_energy_dot_command_wired(_html=_HTML):
     # of `.home` so each command does one thing.
     assert re.search(r'\[".energy",', _html)
     assert 'energy: "Energie & Stromfluss"' in _html
-    assert 'else if (cmd === "energy") buildEnergyCard(card);' in _html
+    assert "energy: buildEnergyCard," in _html
     assert "function buildEnergyCard(el)" in _html
     # It reuses the standalone energy renderer inline with a calm fallback.
     assert "renderEnergyPage(listEl, j.energy)" in _html

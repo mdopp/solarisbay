@@ -180,40 +180,15 @@ def contacts(db_path: str, uid: str) -> list[dict[str, Any]] | None:
 
 def person_contacts(db_path: str, uid: str) -> list[dict[str, Any]] | None:
     """Personal contacts (`person` entities carrying an email/phone fact — created
-    via the `.contacts` command), owner-scoped, for the `.contacts` filter."""
-    conn = _connect(db_path)
-    if conn is None:
+    via the `.contacts` command), for the `.contacts` filter.
+
+    A view over `person_directory` (the single person + alias model, ADR 0010):
+    the same rows — carrying `aliases` — narrowed to persons that have an email or
+    phone, so `.contacts` and `@`-mentions resolve against one alias→person path."""
+    directory = person_directory(db_path, uid)
+    if directory is None:
         return None
-    scope, params = _scope(uid)
-    try:
-        rows = conn.execute(
-            "SELECT DISTINCT e.id AS id, e.canonical_name AS name"
-            " FROM entities e JOIN facts f ON f.subject_entity_id = e.id"
-            f" WHERE e.type = 'person' AND f.predicate IN ('email', 'phone') AND {scope}"  # noqa: S608
-            " ORDER BY e.canonical_name",
-            params,
-        ).fetchall()
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            facts: dict[str, str] = {}
-            for f in conn.execute(
-                "SELECT predicate, value FROM facts WHERE subject_entity_id = ?"
-                " ORDER BY confidence DESC",
-                (r["id"],),
-            ).fetchall():
-                if f["predicate"] in ("email", "phone") and f["predicate"] not in facts:
-                    facts[f["predicate"]] = f["value"]
-            out.append(
-                {
-                    "id": r["id"],
-                    "name": r["name"],
-                    "email": facts.get("email", ""),
-                    "phone": facts.get("phone", ""),
-                }
-            )
-    finally:
-        conn.close()
-    return out
+    return [p for p in directory if p["email"] or p["phone"]]
 
 
 def person_directory(db_path: str, uid: str) -> list[dict[str, Any]] | None:

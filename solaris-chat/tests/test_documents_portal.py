@@ -273,6 +273,37 @@ def test_person_directory_missing_projection_returns_none(tmp_path):
     assert documents_portal_db.person_directory(str(tmp_path / "nope.db"), "x") is None
 
 
+# --- person_contacts (a view over person_directory: same aliases, .contacts) --
+
+
+def test_person_contacts_carries_aliases_and_filters_contactless(tmp_path):
+    # `.contacts` shares the person_directory alias model (unified @-mention path):
+    # a contact-bearing person carries its aliases; a contactless one is dropped.
+    db = _seed(tmp_path)
+    conn = sqlite3.connect(db)
+    _person(
+        conn,
+        "p-mike",
+        "Michael",
+        "household",
+        aliases=("mike",),
+        facts=[("phone", "0123")],
+    )
+    _person(conn, "p-oma", "Erika", "household")
+    conn.commit()
+    conn.close()
+    contacts = documents_portal_db.person_contacts(db, "mdopp")
+    names = {c["name"] for c in contacts}
+    assert names == {"Michael"}
+    mike = next(c for c in contacts if c["name"] == "Michael")
+    assert mike["aliases"] == ["mike"]
+    assert mike["phone"] == "0123"
+
+
+def test_person_contacts_missing_projection_returns_none(tmp_path):
+    assert documents_portal_db.person_contacts(str(tmp_path / "nope.db"), "x") is None
+
+
 # --- correction endpoint -----------------------------------------------------
 
 
