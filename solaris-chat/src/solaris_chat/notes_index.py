@@ -29,7 +29,7 @@ import sqlite3
 from pathlib import Path
 
 from solaris_chat.logging import log
-from solaris_chat.notes_search import iter_vault_md
+from solaris_chat.notes_search import is_upload_companion, iter_vault_md
 
 _MAX_BYTES = 256 * 1024  # skip pathological files; matches notes_search readers
 
@@ -142,6 +142,12 @@ def backfill(db_path: str, notes_dir: str) -> int:
     conn.execute("PRAGMA journal_mode = WAL")
     try:
         ensure_schema(conn)
+        # Drop any upload companion left in the index by a pre-#998 backfill: the
+        # walk no longer yields them, so they'd otherwise linger and keep
+        # colliding with their derived OKF note on `.note` search.
+        for (rel,) in conn.execute("SELECT path FROM fts_notes_meta").fetchall():
+            if is_upload_companion(rel):
+                _delete_row(conn, rel)
         seen = 0
         changed = 0
         # No budget: the whole vault. iter_vault_md(budget=None) still prunes the
