@@ -72,7 +72,7 @@ from solaris_chat.engine.ingest.upload_extract import extract_into_companion
 from solaris_chat.engine.facade import add_facade_routes
 from solaris_chat.engine.notify import emit_chat, inject
 from solaris_chat.engine.ollama import OllamaChat, OllamaError
-from solaris_chat.engine.knowledge import okf, projection
+from solaris_chat.engine.knowledge import okf, person_dedup, projection
 from solaris_chat.engine.knowledge.records import ConceptRecord
 from solaris_chat.engine.knowledge.writer import write_concept
 from solaris_chat.engine.tools.favorites import PINNABLE_TOOLS
@@ -4153,6 +4153,89 @@ def build_app(
         )
         return web.json_response({"ok": True, "contacts": rows or []})
 
+    def _merge_candidates(uid: str) -> list[dict[str, Any]]:
+        conn = projection.open_conn(solaris_db_path)
+        try:
+            return person_dedup.find_merge_candidates(conn, uid)
+        finally:
+            conn.close()
+
+    async def person_merge_candidates(request: web.Request) -> web.Response:
+        """Likely-duplicate person pairs to CONFIRM (own ∪ shared, #994). Read-only
+        — merging two humans is destructive, so the UI surfaces these for review
+        and only commits on the resident's explicit confirmation."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        rows = await asyncio.to_thread(_merge_candidates, uid)
+        return web.json_response({"ok": True, "candidates": rows})
+
+    def _merge_preview(uid: str, primary: str, secondary: str) -> dict[str, Any] | None:
+        conn = projection.open_conn(solaris_db_path)
+        try:
+            return person_dedup.preview_merge(conn, primary, secondary, uid)
+        finally:
+            conn.close()
+
+    async def person_merge_preview(request: web.Request) -> web.Response:
+        """A no-write dry-run of a proposed person merge (#994) — what the merged
+        person would carry — for the confirmation card to show before committing."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        p = request.rel_url.query.get("primary", "").strip()
+        s = request.rel_url.query.get("secondary", "").strip()
+        if not (p and s):
+            return web.json_response({"ok": False, "reason": "bad_params"}, status=400)
+        prev = await asyncio.to_thread(_merge_preview, uid, p, s)
+        if prev is None:
+            return web.json_response({"ok": False, "reason": "not_found"}, status=404)
+        return web.json_response({"ok": True, "preview": prev})
+
+    def _do_merge(uid: str, primary: str, secondary: str) -> str | None:
+        conn = projection.open_conn(solaris_db_path)
+        try:
+            mid = person_dedup.merge_persons(
+                conn, primary_id=primary, secondary_id=secondary, uid=uid
+            )
+            if mid is not None:
+                conn.commit()
+            return mid
+        finally:
+            conn.close()
+
+    async def person_merge(request: web.Request) -> web.Response:
+        """Commit a person merge on the resident's EXPLICIT confirmation (#994).
+        Owner-gated (own ∪ shared) so it can't reach across residents; records an
+        undo trail so a false-merge is recoverable."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        body = await request.json()
+        p = str(body.get("primary") or "").strip()
+        s = str(body.get("secondary") or "").strip()
+        if not (p and s):
+            return web.json_response({"ok": False, "reason": "bad_params"}, status=400)
+        mid = await asyncio.to_thread(_do_merge, uid, p, s)
+        if mid is None:
+            return web.json_response({"ok": False, "reason": "refused"}, status=409)
+        return web.json_response({"ok": True, "merge_id": mid})
+
+    def _do_undo(uid: str, merge_id: str) -> bool:
+        conn = projection.open_conn(solaris_db_path)
+        try:
+            ok = person_dedup.undo_merge(conn, merge_id, uid)
+            if ok:
+                conn.commit()
+            return ok
+        finally:
+            conn.close()
+
+    async def person_merge_undo(request: web.Request) -> web.Response:
+        """Reverse a person merge from its audit trail (#994) — restores the
+        secondary as a distinct entity, so a mistaken merge isn't data loss."""
+        uid = resolve_uid(request, remote_user_header, default_uid, solaris_db_path)
+        body = await request.json()
+        mid = str(body.get("merge_id") or "").strip()
+        if not mid:
+            return web.json_response({"ok": False, "reason": "bad_params"}, status=400)
+        ok = await asyncio.to_thread(_do_undo, uid, mid)
+        return web.json_response({"ok": ok}, status=200 if ok else 409)
+
     def _document_confirm_fact(
         uid: str, entity_id: str, predicate: str, value: str
     ) -> bool:
@@ -5583,6 +5666,10 @@ def build_app(
     app.router.add_get("/api/portal/contacts", portal_contacts)
     app.router.add_get("/api/portal/tasks", portal_tasks)
     app.router.add_get("/api/portal/persons", portal_persons)
+    app.router.add_get("/api/portal/persons/merge-candidates", person_merge_candidates)
+    app.router.add_get("/api/portal/persons/merge-preview", person_merge_preview)
+    app.router.add_post("/api/portal/persons/merge", person_merge)
+    app.router.add_post("/api/portal/persons/merge/undo", person_merge_undo)
     app.router.add_post("/api/portal/documents/correct", portal_documents_correct)
     app.router.add_get("/api/portal/documents/search", portal_documents_search)
     app.router.add_get("/api/portal/documents/{category}", portal_documents_category)
