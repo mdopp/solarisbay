@@ -4641,6 +4641,27 @@
       }
       loadCommandPool();
 
+      // ---- .tool registry (#1005, ADR 0011) ----
+      // The client-side dispatch table for `.tools` served declaratively at
+      // /api/defs/tool (a kind:tool SKILL.md carries its dot-command, api path,
+      // cell-schema and action ids). The generic schema-driven card renders +
+      // dispatches off a def here instead of the hardcoded DOT_COMMANDS/ensureCard
+      // path. This slice migrates the reference tool (.task) ONLY — the remaining
+      // .tools stay on their inline builders until #1006. `toolRegistry` maps a
+      // tool-id ("task") to its def; the registry AUGMENTS the inline path.
+      var toolRegistry = {};
+      function loadToolRegistry() {
+        return fetch("/api/defs/tool")
+          .then(function (r) { return r.ok ? r.json() : { defs: [] }; })
+          .catch(function () { return { defs: [] }; })
+          .then(function (j) {
+            ((j && j.defs) || []).forEach(function (d) {
+              if (d["tool-id"]) toolRegistry[d["tool-id"]] = d;
+            });
+          });
+      }
+      loadToolRegistry();
+
       // ---- Slash-command autocomplete (#181) ----
       // Built-in browser commands plus the typeable user/inline commands
       // (#482), so typing "/" surfaces what the panel can do plus the templates
@@ -4787,7 +4808,12 @@
           var head = document.createElement("div"); head.className = "dc-head";
           head.textContent = DC_HEAD[cmd] || cmd;
           card.appendChild(head);
-          if (cmd === "task") buildTaskCard(card);
+          // The reference .tool (.task) dispatches through the generic
+          // schema-driven card off its /api/defs/tool def (#1005). The remaining
+          // .tools stay on their inline builders until #1006. Fall back to the
+          // inline task builder only if the registry hasn't loaded yet.
+          if (cmd === "task" && toolRegistry.task) buildGenericToolCard(card, toolRegistry.task);
+          else if (cmd === "task") buildGenericToolCard(card, { "tool-id": "task" });
           else if (cmd === "note") buildNoteCard(card);
           else if (cmd === "doc") buildDocCard(card);
           else if (cmd === "contacts") buildContactsCard(card);
@@ -4838,6 +4864,21 @@
             var d = document.createElement("span"); d.className = "task-meta"; d.textContent = text; main.appendChild(d);
           });
           return main;
+        }
+        // Resolve a tool def's cell-schema ({title:<field>, meta:[<field>…]}, from
+        // /api/defs/tool) against an item into the {title, meta:[string]} shape
+        // renderListCell wants — mapping field names to the item's values (#1005).
+        // `due` carries the same 📅 prefix the inline .task card used, so a
+        // schema-driven row is byte-identical to the hardcoded one.
+        function resolveCell(item, cellSchema) {
+          var s = cellSchema || {};
+          var title = item[s.title] != null ? String(item[s.title]) : (item.title || "");
+          var meta = (s.meta || []).map(function (field) {
+            var v = item[field];
+            if (v == null || v === "") return "";
+            return field === "due" ? "📅 " + v : String(v);
+          });
+          return { title: title, meta: meta };
         }
         function searchDocs(el, q) {
           // Debounced LIKE search over title/category — server-side (own ∪ shared).
@@ -5252,7 +5293,16 @@
             })
             .catch(function () {});
         }
-        function buildTaskCard(el) {
+        // Generic schema-driven .tool card (#1005, ADR 0011): builds the create
+        // form + live list off a tool def from /api/defs/tool — the def's
+        // tool-api-path (list/search), tool-actions (add/update/set_status), and
+        // tool-cell-schema drive it instead of the hardcoded path. The reference
+        // tool (.task) runs through here; it stays visually/behaviourally
+        // identical to the former inline buildTaskCard (renders the same date
+        // input, checkbox-toggle rows, tap-to-edit form). Other .tools keep their
+        // inline builders until #1006.
+        function buildGenericToolCard(el, def) {
+          el._tool = def;
           var title = document.createElement("div"); title.className = "dc-title";
           el.appendChild(title); el._title = title;
           var row = document.createElement("div"); row.className = "dc-row";
@@ -5272,7 +5322,8 @@
         }
         function loadTaskList(el) {
           // Fetch open AND resolved; the view keeps open + resolved-in-last-week.
-          fetch("/api/portal/tasks?done=1")
+          var apiPath = (el._tool && el._tool["tool-api-path"]) || "/api/portal/tasks?done=1";
+          fetch(apiPath)
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (j) {
               el._tasks = (j && j.ok && j.tasks) || [];
@@ -5301,6 +5352,7 @@
             e.textContent = showAll ? "Noch keine Aufgaben." : "Keine passende Aufgabe.";
             listEl.appendChild(e); return;
           }
+          var schema = (el._tool && el._tool["tool-cell-schema"]) || { title: "title", meta: ["due"] };
           items.slice(0, 8).forEach(function (t) {
             var done = t.status !== "open";
             var row = document.createElement("label"); row.className = "task-row task-check" + (done ? " resolved" : "");
@@ -5309,7 +5361,7 @@
               taskAction("task.set_status", { entity_id: t.id, status: cb.checked ? "done" : "open" })
                 .then(function () { loadTaskList(el); });
             });
-            var main = renderListCell(t, { title: t.title, meta: [t.due ? "📅 " + t.due : ""] });
+            var main = renderListCell(t, resolveCell(t, schema));
             // Tap the title (not the checkbox) to edit — the third leg of the
             // create·find·edit pattern (#967). Prevent the label toggling the box.
             main.addEventListener("click", function (e) { e.preventDefault(); beginTaskEdit(el, row, t); });

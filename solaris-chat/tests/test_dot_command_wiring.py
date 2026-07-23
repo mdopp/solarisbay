@@ -24,11 +24,34 @@ def _has(pattern: str) -> bool:
 
 def test_all_dot_commands_registered_and_dispatched():
     # Every `.tool` is offered, has a head label, and dispatches to a builder.
-    for cmd in ("task", "note", "doc", "contacts", "home", "energy"):
+    # `.task` is the reference tool: it dispatches through the generic
+    # schema-driven card off its /api/defs/tool def (#1005), not an inline
+    # buildTaskCard; the others keep their inline builders until #1006.
+    for cmd in ("note", "doc", "contacts", "home", "energy"):
         assert _has(r'\["\.' + cmd + r'",'), f".{cmd} missing from DOT_COMMANDS"
         assert _has(r'(?:else )?if \(cmd === "' + cmd + r'"\) build'), (
             f".{cmd} not dispatched in ensureCard"
         )
+    assert _has(r'\["\.task",'), ".task missing from DOT_COMMANDS"
+    assert _has(
+        r'if \(cmd === "task" && toolRegistry\.task\) buildGenericToolCard\(card, toolRegistry\.task\)'
+    ), ".task not dispatched through the generic tool card"
+
+
+def test_task_dispatches_through_the_generic_tool_registry_card():
+    # #1005: the client fetches the tool registry (/api/defs/tool) into
+    # toolRegistry at init and dispatches .task through buildGenericToolCard.
+    assert '"/api/defs/tool"' in _HTML  # registry fetched at init
+    assert "var toolRegistry = {}" in _HTML
+    assert "function loadToolRegistry()" in _HTML
+    assert 'if (d["tool-id"]) toolRegistry[d["tool-id"]] = d;' in _HTML
+    assert "function buildGenericToolCard(el, def)" in _HTML
+    # The generic card is schema-driven: list/search off the def's tool-api-path,
+    # rows off its tool-cell-schema resolved against the item.
+    assert 'var apiPath = (el._tool && el._tool["tool-api-path"])' in _HTML
+    assert 'var schema = (el._tool && el._tool["tool-cell-schema"])' in _HTML
+    assert "function resolveCell(item, cellSchema)" in _HTML
+    assert "renderListCell(t, resolveCell(t, schema))" in _HTML
 
 
 def test_task_create_find_edit_wired():
