@@ -2531,6 +2531,19 @@ def build_app(
         )
         return web.json_response({"ok": True, "kind": kind, "defs": defs})
 
+    async def napi_tool_defs(request: web.Request) -> web.Response:
+        """The tool catalog for native/device-token consumers (#1021, ADR 0011).
+
+        Same payload `GET /api/defs/tool` serves — `tool-id`, `tool-label`,
+        `tool-api-path`, `tool-search-path`, `tool-actions`, `tool-cell-schema` —
+        but on the proxy-bypassed `/napi/` surface (device-token-ONLY, wrapped in
+        `native(...)`), so an Android home-screen widget can consume a new `.tool`
+        with zero native code. Only the tool kind is mirrored here: the native
+        widget surface consumes tools, not the authoring kinds (command/hook/…)."""
+        return web.json_response(
+            {"ok": True, "kind": "tool", "defs": skills.list_tool_defs(skills_dir)}
+        )
+
     async def get_def(request: web.Request) -> web.Response:
         kind = _valid_kind(request)
         if kind is None:
@@ -5643,6 +5656,18 @@ def build_app(
     )
     app.router.add_get("/napi/device-tokens", native(device_token_list))
     app.router.add_delete("/napi/device-tokens/{id}", native(device_token_revoke))
+    # `.tool` plugin system on the native/device-token surface (#1021, ADR 0011):
+    # the catalog, each list-tool's declared `tool-api-path`, and the tool actions
+    # — all the same handlers as `/api/`, wrapped in `native(...)` so a device
+    # token alone authenticates and `resolve_uid` scopes to its owner. This lets a
+    # new `.tool` show up as an Android widget with no native code. `home`/`energy`
+    # already have their `/napi/portal/*` twins above; these add the rest.
+    app.router.add_get("/napi/defs/tool", native(napi_tool_defs))
+    app.router.add_get("/napi/portal/tasks", native(portal_tasks))
+    app.router.add_get("/napi/portal/persons", native(portal_persons))
+    app.router.add_get("/napi/portal/documents/search", native(portal_documents_search))
+    app.router.add_get("/napi/photo", native(photo_search))
+    app.router.add_post("/napi/action-callback", native(action_callback))
     app.router.add_get("/p/{type}", portal_page)
     app.router.add_post("/api/anchors/resolve", anchors_resolve)
     app.router.add_get("/api/anchors/aliases", anchors_aliases)
