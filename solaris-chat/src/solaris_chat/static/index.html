@@ -4826,6 +4826,19 @@
           ["dragleave", "dragend"].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.remove("over"); }); });
           drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); });
         }
+        // Single source of truth for a .tool list ROW (#1003, ADR 0011): a
+        // task-main cell with the item's title + optional meta lines. The schema
+        // is {title, meta:[string]} — each renderer supplies the strings, the
+        // interaction (checkbox/edit/open) stays on the caller's row wrapper.
+        function renderListCell(item, schema) {
+          var main = document.createElement("div"); main.className = "task-main";
+          var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = schema.title; main.appendChild(tt);
+          (schema.meta || []).forEach(function (text) {
+            if (!text) return;
+            var d = document.createElement("span"); d.className = "task-meta"; d.textContent = text; main.appendChild(d);
+          });
+          return main;
+        }
         function searchDocs(el, q) {
           // Debounced LIKE search over title/category — server-side (own ∪ shared).
           if (el._docTimer) clearTimeout(el._docTimer);
@@ -4848,10 +4861,8 @@
           if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = showAll ? "Noch keine Dokumente." : "Kein passendes Dokument."; listEl.appendChild(e); return; }
           items.slice(0, 8).forEach(function (c) {
             var rw = document.createElement("div"); rw.className = "task-row";
-            var m = document.createElement("div"); m.className = "task-main";
-            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.title || "(ohne Titel)"; m.appendChild(tt);
-            if (c.category) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = c.category; m.appendChild(d); }
-            rw.appendChild(m); listEl.appendChild(rw);
+            rw.appendChild(renderListCell(c, { title: c.title || "(ohne Titel)", meta: [c.category] }));
+            listEl.appendChild(rw);
           });
         }
         // .home (#980): a FIND/CONTROL-only dot-card — no create, no submit, no
@@ -5046,11 +5057,9 @@
           if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = f ? "Kein passendes Foto." : "Noch keine Fotos."; listEl.appendChild(e); return; }
           items.slice(0, 8).forEach(function (c) {
             var rw = document.createElement("div"); rw.className = "task-row";
-            var m = document.createElement("div"); m.className = "task-main";
-            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = c.name || "(ohne Namen)"; m.appendChild(tt);
             var who = (c.people && c.people.length) ? c.people.join(", ") : "";
-            if (who) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = who; m.appendChild(d); }
-            rw.appendChild(m); listEl.appendChild(rw);
+            rw.appendChild(renderListCell(c, { title: c.name || "(ohne Namen)", meta: [who] }));
+            listEl.appendChild(rw);
           });
         }
         function uploadDoc(file, drop, status) {
@@ -5129,17 +5138,15 @@
           if (!items.length) { var e = document.createElement("div"); e.className = "task-empty"; e.textContent = showAll ? "Noch keine Kontakte." : "Kein passender Kontakt."; listEl.appendChild(e); return; }
           items.slice(0, 8).forEach(function (c) {
             var rw = document.createElement("div"); rw.className = "task-row";
-            var m = document.createElement("div"); m.className = "task-main";
             var title = c.name || c.email || c.phone;
-            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = title; m.appendChild(tt);
             // Don't repeat a value that's already the title (a contact created
             // from just an email shows the email once, not as title AND meta).
             var bits = []; if (c.phone && c.phone !== title) bits.push("📞 " + c.phone); if (c.email && c.email !== title) bits.push("✉ " + c.email);
-            if (bits.length) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = bits.join(" · "); m.appendChild(d); }
+            rw.appendChild(renderListCell(c, { title: title, meta: [bits.length ? bits.join(" · ") : ""] }));
             // Tap a contact to correct it (create·find·edit, #967) via person.update.
             rw.style.cursor = "pointer";
             rw.addEventListener("click", function () { beginPersonEdit(el, rw, c); });
-            rw.appendChild(m); listEl.appendChild(rw);
+            listEl.appendChild(rw);
           });
         }
         // The .contacts create fields (name/email/phone) reused in EDIT mode: swap
@@ -5234,9 +5241,7 @@
               uniq.slice(0, 6).forEach(function (u) {
                 if (!u.label) return;
                 var a = document.createElement("div"); a.className = "task-row";
-                var m = document.createElement("div"); m.className = "task-main";
-                var t = document.createElement("span"); t.className = "task-title"; t.textContent = u.label;
-                m.appendChild(t); a.appendChild(m);
+                a.appendChild(renderListCell(u, { title: u.label }));
                 // Tap a note result to open it in the note viewer (#note-click).
                 if (u.path) {
                   a.style.cursor = "pointer";
@@ -5304,10 +5309,7 @@
               taskAction("task.set_status", { entity_id: t.id, status: cb.checked ? "done" : "open" })
                 .then(function () { loadTaskList(el); });
             });
-            var main = document.createElement("div"); main.className = "task-main";
-            var tt = document.createElement("span"); tt.className = "task-title"; tt.textContent = t.title;
-            main.appendChild(tt);
-            if (t.due) { var d = document.createElement("span"); d.className = "task-meta"; d.textContent = "📅 " + t.due; main.appendChild(d); }
+            var main = renderListCell(t, { title: t.title, meta: [t.due ? "📅 " + t.due : ""] });
             // Tap the title (not the checkbox) to edit — the third leg of the
             // create·find·edit pattern (#967). Prevent the label toggling the box.
             main.addEventListener("click", function (e) { e.preventDefault(); beginTaskEdit(el, row, t); });
