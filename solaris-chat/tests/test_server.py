@@ -1987,8 +1987,17 @@ def test_shipped_pack_groups_into_the_four_kinds():
         "media",
     }
     assert by_kind["command"] == {"debug-set"}
-    # #1004: the shipped pack now carries the reference kind:tool plugin.
-    assert by_kind["tool"] == {"task-tool"}
+    # #1006: every existing .tool now ships as a declarative kind:tool plugin
+    # (task is the reference; the rest joined in slice 4).
+    assert by_kind["tool"] == {
+        "task-tool",
+        "note-tool",
+        "doc-tool",
+        "contacts-tool",
+        "photo-tool",
+        "home-tool",
+        "energy-tool",
+    }
     # list_skills stays the skill-kind view — no scheduler/hook/command leaks in.
     assert {d["id"] for d in skills.list_skills(pack)} == by_kind["skill"]
 

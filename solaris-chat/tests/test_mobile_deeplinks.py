@@ -25,7 +25,8 @@ def test_energie_standalone_page_removed():
     # Renderers reused by `.energy` remain.
     assert "function renderEnergyPage(card, e)" in _HTML
     assert "function drawEnergyChart(body, series)" in _HTML
-    assert 'else if (cmd === "energy") buildEnergyCard(card);' in _HTML
+    # Dispatched through the client tool-registry (#1006): toolBuilders[cmd].
+    assert "energy: buildEnergyCard," in _HTML
 
 
 def test_chats_page_nav_deduped_on_mobile_only():

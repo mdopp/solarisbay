@@ -4800,26 +4800,36 @@
         }
 
         var DC_HEAD = { task: "Neue Aufgabe", note: "Neue Notiz", doc: "Dokument hochladen", contacts: "Neuer Kontakt", photo: "Foto hochladen", home: "Geräte & Bereiche", energy: "Energie & Stromfluss" };
+        // Client tool-registry dispatch (#1006, ADR 0011): each `.tool` maps its
+        // tool-id to the builder that renders its card. `.task` is the reference —
+        // it runs through the fully generic schema-driven card off its
+        // /api/defs/tool def. The other six carry declarative kind:tool defs too
+        // (server auto-registers their actions, they populate `toolRegistry`), but
+        // keep a specialised builder: an upload dropzone (.doc/.photo), fuzzy
+        // deduped note search (.note), split-field person edit (.contacts), and the
+        // hc-grid WIDGET cards (.home/.energy — live SSE, state colour, favourite)
+        // aren't a plain create/list row the generic card expresses.
+        var toolBuilders = {
+          task: function (el) { buildGenericToolCard(el, toolRegistry.task || { "tool-id": "task" }); },
+          note: buildNoteCard,
+          doc: buildDocCard,
+          contacts: buildContactsCard,
+          photo: buildPhotoCard,
+          home: buildHomeCard,
+          energy: buildEnergyCard,
+        };
         function ensureCard(cmd) {
           if (kind === cmd && card) return;
+          var build = toolBuilders[cmd];
+          if (!build) return;
           clearCard(); kind = cmd;
           card = document.createElement("div");
           card.className = "msg sol dot-card dot-" + cmd;
           var head = document.createElement("div"); head.className = "dc-head";
-          head.textContent = DC_HEAD[cmd] || cmd;
+          var def = toolRegistry[cmd];
+          head.textContent = DC_HEAD[cmd] || (def && def["tool-label"]) || cmd;
           card.appendChild(head);
-          // The reference .tool (.task) dispatches through the generic
-          // schema-driven card off its /api/defs/tool def (#1005). The remaining
-          // .tools stay on their inline builders until #1006. Fall back to the
-          // inline task builder only if the registry hasn't loaded yet.
-          if (cmd === "task" && toolRegistry.task) buildGenericToolCard(card, toolRegistry.task);
-          else if (cmd === "task") buildGenericToolCard(card, { "tool-id": "task" });
-          else if (cmd === "note") buildNoteCard(card);
-          else if (cmd === "doc") buildDocCard(card);
-          else if (cmd === "contacts") buildContactsCard(card);
-          else if (cmd === "photo") buildPhotoCard(card);
-          else if (cmd === "home") buildHomeCard(card);
-          else if (cmd === "energy") buildEnergyCard(card);
+          build(card);
           log.appendChild(card); scrollDown(true);
         }
         function buildDocCard(el) {
