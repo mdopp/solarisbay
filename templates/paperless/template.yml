@@ -122,6 +122,18 @@ spec:
       value: "{{PAPERLESS_GID}}"
     - name: PAPERLESS_SECRET_KEY
       value: "{{PAPERLESS_SECRET_KEY}}"
+    # Managed superuser (#1034): paperless is SSO-only (Authelia remote-user,
+    # no native login), so it had no API-token-bearing user and the #931
+    # ingest handoff no-op'd. paperless-ngx creates this superuser on first
+    # boot from PAPERLESS_ADMIN_USER/PASSWORD; the solaris post-deploy mints
+    # that user's DRF API token and stamps PAPERLESS_URL/TOKEN into the engine.
+    # The password is a managed secret persisted host-side (like the jellyfin
+    # solaris credential) — the render-time value is a placeholder the
+    # post-deploy reconciles against its persisted managed password.
+    - name: PAPERLESS_ADMIN_USER
+      value: "{{PAPERLESS_ADMIN_USER}}"
+    - name: PAPERLESS_ADMIN_PASSWORD
+      value: "{{PAPERLESS_ADMIN_PASSWORD}}"
     - name: PAPERLESS_TIME_ZONE
       value: "{{TZ}}"
     ports:
