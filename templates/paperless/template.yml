@@ -116,6 +116,8 @@ spec:
       value: "{{PAPERLESS_UID}}"
     - name: USERMAP_GID
       value: "{{PAPERLESS_GID}}"
+    - name: PAPERLESS_SECRET_KEY
+      value: "{{PAPERLESS_SECRET_KEY}}"
     - name: PAPERLESS_TIME_ZONE
       value: "{{TZ}}"
     ports:

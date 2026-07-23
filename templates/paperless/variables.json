@@ -34,6 +34,10 @@
     "description": "Host gid paperless owns its files as. Default 1000, matching the file-share share group.",
     "default": "1000"
   },
+  "PAPERLESS_SECRET_KEY": {
+    "type": "secret",
+    "description": "Django secret key for cryptographic signing. Auto-generated at install; never the paperless default 'change-me' value (which causes the webserver to refuse to start in recent paperless-ngx beta releases)."
+  },
   "PAPERLESS_SUBDOMAIN": {
     "type": "subdomain",
     "description": "Subdomain for the paperless Web-UI + REST API. Internal exposure — gets a cert and a LAN-only access list, plus Authelia forward-auth on top: paperless trusts the forwarded Remote-User header (PAPERLESS_ENABLE_HTTP_REMOTE_USER) so there's no second login. The #931 PaperlessIngest adapter does NOT go through this route — it reaches the API on the host loopback (127.0.0.1:PAPERLESS_PORT), bypassing forward-auth with a paperless API token.",
