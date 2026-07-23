@@ -1616,6 +1616,115 @@ def converge_radicale_rights() -> bool:
     return True
 
 
+# ── durable rights self-heal (#1023) ─────────────────────────────────────────
+# converge_radicale_rights() runs only on a solaris deploy, but radicale is a
+# ServiceBay-registry service: a radicale RE-RENDER / autoupdate regenerates
+# radicale.yml back to stock `owner_only` and wipes /config/rights, so `solaris`
+# 403s on PUT /<uid>/solaris/ and the calendar feature breaks until the next
+# `install_template solaris`. The engine (host-networked but IN a container)
+# can DETECT the revert via the DAV API, but re-patching radicale.yml on the
+# HOST and restarting the radicale systemd unit is a host operation the engine
+# can't do. So the self-heal is a host-side systemd `.timer` the post-deploy
+# installs, which periodically re-runs THIS SAME script in converge-only mode
+# (SOLARIS_CONVERGE_ONLY=1 → main() calls just converge_radicale_rights() and
+# exits). converge_radicale_rights() is already idempotent + drift-aware, so a
+# stock owner_only is re-converged and radicale restarted; an already-converged
+# manifest is a no-op. No second copy of the patch logic → no drift.
+RADICALE_RIGHTS_SERVICE = "solaris-radicale-rights"
+RADICALE_RIGHTS_CONVERGE_SCRIPT = "radicale-rights-converge.py"
+RADICALE_RIGHTS_TIMER_INTERVAL = "15min"
+
+
+def render_radicale_rights_service(script_path: str) -> str:
+    """Render the oneshot `.service` that re-runs the post-deploy in converge-
+    only mode (pure). SOLARIS_CONVERGE_ONLY=1 short-circuits main() to just the
+    radicale-rights converge."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Radicale rights self-heal (#1023)\n"
+        "After=radicale.service\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "Environment=SOLARIS_CONVERGE_ONLY=1\n"
+        f"ExecStart=/usr/bin/env python3 {script_path}\n"
+    )
+
+
+def render_radicale_rights_timer() -> str:
+    """Render the `.timer` that fires the rights-converge service on a fixed
+    cadence and shortly after boot (pure). Persistent= re-fires a missed run
+    after the box was off."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris Radicale rights self-heal timer (#1023)\n"
+        "\n"
+        "[Timer]\n"
+        "OnBootSec=2min\n"
+        f"OnUnitActiveSec={RADICALE_RIGHTS_TIMER_INTERVAL}\n"
+        "Persistent=true\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+
+
+def install_radicale_rights_timer(data_dir: str) -> bool:
+    """Install the host-side self-heal timer (#1023): copy THIS script to a
+    durable data-dir path and write a `.service` + `.timer` that re-run it in
+    converge-only mode. Idempotent (rewrites only on drift) + best-effort — a
+    failure never blocks the deploy. Returns True when the timer is active."""
+    systemd_dir = os.path.expanduser("~/.config/systemd/user")
+    script_dst = os.path.join(data_dir, "solarisbay", RADICALE_RIGHTS_CONVERGE_SCRIPT)
+    try:
+        with open(os.path.realpath(__file__), encoding="utf-8") as f:
+            self_src = f.read()
+    except OSError as e:
+        jlog("warn", "radicale-rights", "could not read self for timer", error=str(e))
+        return False
+    try:
+        os.makedirs(os.path.dirname(script_dst), exist_ok=True)
+        with open(script_dst, "w", encoding="utf-8") as f:
+            f.write(self_src)
+        os.chmod(script_dst, 0o755)
+        os.makedirs(systemd_dir, exist_ok=True)
+        with open(
+            os.path.join(systemd_dir, f"{RADICALE_RIGHTS_SERVICE}.service"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write(render_radicale_rights_service(script_dst))
+        with open(
+            os.path.join(systemd_dir, f"{RADICALE_RIGHTS_SERVICE}.timer"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write(render_radicale_rights_timer())
+    except OSError as e:
+        jlog(
+            "warn", "radicale-rights", "could not install self-heal timer", error=str(e)
+        )
+        return False
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    started = subprocess.run(
+        ["systemctl", "--user", "enable", "--now", f"{RADICALE_RIGHTS_SERVICE}.timer"],
+        capture_output=True,
+        text=True,
+    )
+    if started.returncode != 0:
+        jlog(
+            "warn",
+            "radicale-rights",
+            "could not enable self-heal timer",
+            error=started.stderr[:300],
+        )
+        return False
+    jlog("info", "radicale-rights", "installed rights self-heal timer", path=script_dst)
+    return True
+
+
 # ── voice pipeline ───────────────────────────────────────────────────────────
 
 
@@ -2586,6 +2695,13 @@ def restart_solaris(sb_api: str) -> bool:
 
 
 def main() -> int:
+    # Converge-only mode (#1023): the self-heal timer re-runs THIS script to
+    # re-apply the radicale rights converge if a radicale re-render reverted them.
+    # Do just that and exit — none of the deploy-time HA/token/restart wiring.
+    if _truthy(env("SOLARIS_CONVERGE_ONLY")):
+        converge_radicale_rights()
+        return 0
+
     data_dir = env("DATA_DIR", "/mnt/data")
     sb_api = env("SB_API_URL", "http://localhost:3000").rstrip("/")
     host = env("HOST", "<server-ip>")
@@ -2622,6 +2738,11 @@ def main() -> int:
     # keeps owner_only's guarantee and additionally lets `solaris` write only the
     # per-resident `solaris` calendar. Restarts radicale itself on drift.
     converge_radicale_rights()
+    # Durable self-heal (#1023): a radicale re-render/autoupdate reverts the
+    # rights to stock owner_only until the next solaris deploy. Install a
+    # host-side timer that periodically re-runs this converge so the calendar
+    # feature heals without a full re-install.
+    install_radicale_rights_timer(data_dir)
     # Route household-wide dated items to the primary resident's calendar (#1011):
     # stamp HOUSEHOLD_CALENDAR_UID (persisted operator choice) into the pod env,
     # which the renderer otherwise prunes. The restart below picks it up.
