@@ -5181,7 +5181,7 @@
           var f = (filter || "").trim().toLowerCase();
           var showAll = (f === "" || f === "list");
           var items = el._persons.filter(function (c) {
-            return showAll || (c.name + " " + c.email + " " + c.phone).toLowerCase().indexOf(f) !== -1;
+            return showAll || (c.name + " " + (c.aliases || []).join(" ") + " " + c.email + " " + c.phone).toLowerCase().indexOf(f) !== -1;
           });
           var h = document.createElement("div"); h.className = "dc-list-head";
           h.textContent = showAll ? "Kontakte (" + items.length + ")" : items.length + " Treffer für „" + filter.trim() + "“";
