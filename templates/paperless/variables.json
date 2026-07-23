@@ -1,0 +1,51 @@
+{
+  "PAPERLESS_PORT": {
+    "type": "text",
+    "description": "Host loopback port the paperless webserver (Web-UI + REST API) binds on. NPM proxies the public `paperless.<publicDomain>` down to this port behind Authelia forward-auth; the #931 PaperlessIngest adapter reaches the REST API on it via host loopback (127.0.0.1:<port>). Default 8000. NB: the servicebay.healthcheck annotation uses the literal 8000 — change it there too if you change this.",
+    "default": "8000"
+  },
+  "PAPERLESS_REDIS_PORT": {
+    "type": "text",
+    "description": "Loopback port the bundled redis task broker binds on. Only reachable inside the shared host netns; change only if it collides with another loopback service.",
+    "default": "6389"
+  },
+  "PAPERLESS_DB_PORT": {
+    "type": "text",
+    "description": "Loopback port the bundled postgres binds on. Only reachable inside the shared host netns; the default is offset from the stock 5432 so it doesn't collide with any other postgres on the box.",
+    "default": "5442"
+  },
+  "PAPERLESS_DB_PASSWORD": {
+    "type": "text",
+    "description": "Password for the bundled postgres `paperless` user, shared between the postgres and webserver containers. Postgres binds loopback-only inside the shared host netns, so this is an intra-pod namespace boundary rather than an internet-facing secret — but change the default to your own value on a shared box.",
+    "default": "paperless"
+  },
+  "PAPERLESS_OCR_LANGUAGE": {
+    "type": "text",
+    "description": "OCR / date-parsing language hint (Tesseract lang codes, `+`-joined). Default `deu+eng`. NOTE: paperless's own OCR is DISABLED (PAPERLESS_OCR_MODE=skip in template.yml) because its Tesseract regresses rotated German scans to garble (PoC #929) — Solaris's gemma4:12b vision extractor stays the text source and the #931 adapter PATCHes that clean text into paperless. This value only affects date parsing + the UI locale, not OCR.",
+    "default": "deu+eng"
+  },
+  "PAPERLESS_UID": {
+    "type": "text",
+    "description": "Host uid paperless runs its worker + owns the consume/media/data files as. Default 1000 matches the file-share Syncthing share owner so scans dropped into the shared consume dir are readable.",
+    "default": "1000"
+  },
+  "PAPERLESS_GID": {
+    "type": "text",
+    "description": "Host gid paperless owns its files as. Default 1000, matching the file-share share group.",
+    "default": "1000"
+  },
+  "PAPERLESS_SUBDOMAIN": {
+    "type": "subdomain",
+    "description": "Subdomain for the paperless Web-UI + REST API. Internal exposure — gets a cert and a LAN-only access list, plus Authelia forward-auth on top: paperless trusts the forwarded Remote-User header (PAPERLESS_ENABLE_HTTP_REMOTE_USER) so there's no second login. The #931 PaperlessIngest adapter does NOT go through this route — it reaches the API on the host loopback (127.0.0.1:PAPERLESS_PORT), bypassing forward-auth with a paperless API token.",
+    "default": "paperless",
+    "exposure": "internal",
+    "proxyPort": "PAPERLESS_PORT",
+    "loopbackOnly": true,
+    "proxyConfig": {
+      "allow_websocket_upgrade": true,
+      "block_exploits": true,
+      "ssl_forced": true,
+      "advanced_config": "__authelia_forward_auth__"
+    }
+  }
+}
