@@ -4471,7 +4471,7 @@
         [".task", "Aufgabe anlegen + Liste filtern — .task <Text|list>"],
         [".note", "Notiz anlegen + Notizen suchen — .note <Text>"],
         [".doc", "Dokument/Takeout hochladen + einsortieren"],
-        [".contacts", "Kontakt anlegen + suchen — .contacts <Name|@Mail|Tel>"],
+        [".contacts", "Person (Kontakt) anlegen + suchen — .contacts <Name|@Mail|Tel>"],
         [".photo", "Foto hochladen + suchen — .photo <Person|Text>"],
         [".home", "Geräte filtern + steuern — .home <Name|Raum|Text>"],
         [".energy", "Energie / Stromfluss anzeigen — .energy"]
@@ -7479,17 +7479,18 @@
 
             var doors = document.createElement("div");
             doors.className = "notes-doorways";
-            // A phone-book doorway first: every provider as a contact, with all
-            // its documents grouped (#doc-graph).
+            // A phone-book doorway first: every provider organization (company),
+            // with all its documents grouped (#doc-graph). Labelled „Anbieter" so
+            // it never collides with „Kontakte"/„Personen" (people) — ADR 0010.
             var kb = document.createElement("button");
             kb.type = "button";
             kb.className = "notes-door";
             var kem = document.createElement("span");
             kem.className = "nd-emoji";
-            kem.textContent = "📇";
+            kem.textContent = "🏢";
             var klab = document.createElement("span");
             klab.className = "nd-label";
-            klab.textContent = "Kontakte";
+            klab.textContent = "Anbieter";
             kb.appendChild(kem);
             kb.appendChild(klab);
             kb.addEventListener("click", function () { renderContactsView(card); });
@@ -7523,8 +7524,8 @@
           .catch(function () { card.textContent = "Konnte die Dokumente nicht laden."; });
       }
 
-      // The phone-book: each provider organization as a card with its contact
-      // details and the documents grouped under it (#doc-graph).
+      // The Anbieter phone-book: each provider organization (company) as a card
+      // with its contact details and the documents grouped under it (#doc-graph).
       var CONTACT_FIELD = {
         contact_person: ["👤", null],
         phone: ["☎", "tel:"],
@@ -7550,19 +7551,19 @@
             head.appendChild(back);
             var title = document.createElement("span");
             title.className = "concept-title";
-            title.textContent = "Kontakte";
+            title.textContent = "Anbieter";
             head.appendChild(title);
             card.appendChild(head);
 
-            if (!j || !j.ok) { card.appendChild(errLine("Kontakte nicht verfügbar.")); return; }
+            if (!j || !j.ok) { card.appendChild(errLine("Anbieter nicht verfügbar.")); return; }
             var contacts = j.contacts || [];
-            if (!contacts.length) { card.appendChild(errLine("Noch keine Kontakte")); return; }
+            if (!contacts.length) { card.appendChild(errLine("Noch keine Anbieter")); return; }
             var list = document.createElement("div");
             list.className = "contact-list";
             contacts.forEach(function (c) { list.appendChild(buildContactCard(c)); });
             card.appendChild(list);
           })
-          .catch(function () { card.textContent = "Konnte die Kontakte nicht laden."; });
+          .catch(function () { card.textContent = "Konnte die Anbieter nicht laden."; });
       }
 
       // ---- Aufgaben (to-do) doorway (#todo) --------------------------------
