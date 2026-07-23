@@ -43,6 +43,15 @@
     "type": "secret",
     "description": "Django secret key for cryptographic signing. Auto-generated at install; never the paperless default 'change-me' value (which causes the webserver to refuse to start in recent paperless-ngx beta releases)."
   },
+  "PAPERLESS_ADMIN_USER": {
+    "type": "text",
+    "description": "Username of the managed paperless superuser (#1034). paperless-ngx creates this superuser on first boot from PAPERLESS_ADMIN_USER/PASSWORD. Paperless is otherwise SSO-only (Authelia remote-user), so this managed admin is the only API-token-bearing account: the solaris post-deploy mints its DRF API token and wires it into the engine so the #931 ingest handoff runs for real. Default `solaris`.",
+    "default": "solaris"
+  },
+  "PAPERLESS_ADMIN_PASSWORD": {
+    "type": "secret",
+    "description": "Password for the managed paperless superuser (PAPERLESS_ADMIN_USER). The solaris post-deploy owns the authoritative value: it persists a managed password host-side (like the jellyfin `solaris` credential) and reconciles it on paperless, then mints the admin's DRF API token from it. Auto-generated at install."
+  },
   "PAPERLESS_SUBDOMAIN": {
     "type": "subdomain",
     "description": "Subdomain for the paperless Web-UI + REST API. Internal exposure — gets a cert and a LAN-only access list, plus Authelia forward-auth on top: paperless trusts the forwarded Remote-User header (PAPERLESS_ENABLE_HTTP_REMOTE_USER) so there's no second login. The #931 PaperlessIngest adapter does NOT go through this route — it reaches the API on the host loopback (127.0.0.1:PAPERLESS_PORT), bypassing forward-auth with a paperless API token.",

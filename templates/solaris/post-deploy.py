@@ -1498,6 +1498,185 @@ def apply_caldav_read_to_engine(data_dir: str, password: str) -> bool:
     return True
 
 
+# ── Paperless managed admin + DRF token converge (#1034) ─────────────────────
+# The #931 PaperlessIngest handoff no-op'd on the box: paperless is SSO-only
+# (Authelia remote-user, no native login), so there was no API-token-bearing
+# user and PAPERLESS_URL/TOKEN were empty in the engine. Option A (maintainer
+# 2026-07-23): provision a MANAGED paperless superuser (PAPERLESS_ADMIN_USER/
+# PASSWORD, template.yml) whose password we own host-side, then MINT that
+# admin's DRF API token via /api/token/ and STAMP PAPERLESS_URL + PAPERLESS_TOKEN
+# into the engine pod (the renderer prunes empty env, so we insert/patch like the
+# SYNC_DAV wiring). Persist the token too so it survives a render that prunes it.
+# Idempotent + best-effort + a clean no-op when paperless isn't installed.
+PAPERLESS_ADMIN_PASSWORD_FILE = ".paperless-admin-password"
+PAPERLESS_TOKEN_FILE = ".paperless-token"
+PAPERLESS_URL_DEFAULT = "http://127.0.0.1:8000"
+PAPERLESS_ADMIN_USER_DEFAULT = "solaris"
+
+
+def _persisted_paperless_password(data_dir: str) -> str | None:
+    """Read/mint the managed paperless admin password, persisted at
+    <data_dir>/solarisbay/.paperless-admin-password (0600).
+
+    Generates a strong URL-safe value once if absent, reuses it afterwards (so
+    every later deploy reconciles the SAME password). Returns None only when the
+    dir can't be written. Never logs the value. Mirrors
+    _persisted_jellyfin_password."""
+    path = os.path.join(data_dir, "solarisbay", PAPERLESS_ADMIN_PASSWORD_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            existing = f.read().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    password = _secrets.token_urlsafe(24)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(password + "\n")
+        os.chmod(path, 0o600)
+    except OSError as e:
+        jlog(
+            "warn",
+            "paperless",
+            "could not persist paperless admin password",
+            error=str(e),
+        )
+        return None
+    jlog("info", "paperless", "minted managed paperless admin password")
+    return password
+
+
+def _persist_paperless_token(data_dir: str, token: str) -> None:
+    """Persist the minted paperless DRF token at
+    <data_dir>/solarisbay/.paperless-token (0600) so it survives a render that
+    prunes PAPERLESS_TOKEN from the pod env. Best-effort; never logs the value."""
+    path = os.path.join(data_dir, "solarisbay", PAPERLESS_TOKEN_FILE)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(token + "\n")
+        os.chmod(path, 0o600)
+    except OSError as e:
+        jlog("warn", "paperless", "could not persist paperless token", error=str(e))
+
+
+def _read_persisted_paperless_token(data_dir: str) -> str:
+    path = os.path.join(data_dir, "solarisbay", PAPERLESS_TOKEN_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def mint_paperless_token(
+    paperless_url: str, username: str, password: str
+) -> str | None:
+    """Mint the paperless admin's DRF API token by POSTing the managed admin
+    credentials to paperless `/api/token/` (DRF obtain_auth_token), which returns
+    {"token": "…"}. Returns the token, or None when paperless isn't reachable or
+    the credentials aren't (yet) accepted. Best-effort — never raises."""
+    status, body = post_json(
+        f"{paperless_url.rstrip('/')}/api/token/",
+        {"username": username, "password": password},
+        timeout=15,
+    )
+    token = body.get("token") if isinstance(body, dict) else None
+    if status == 200 and isinstance(token, str) and token:
+        return token
+    jlog(
+        "info",
+        "paperless",
+        "paperless token mint did not return a token",
+        status=status,
+    )
+    return None
+
+
+def _patch_or_insert_paperless_env(src: str, url: str, token: str) -> tuple[str, int]:
+    """Wire PAPERLESS_URL + PAPERLESS_TOKEN into the engine container's env list
+    (pure). PATCH in place when present; else INSERT after the CALDAV_URL anchor
+    (the renderer prunes empty env). Returns (new_text, n) with n>0 when the
+    manifest now carries the token. Returns (src, 0) when the anchor is absent."""
+    new = _patch_or_insert_env(src, "PAPERLESS_URL", url)
+    if re.search(r"- name: PAPERLESS_TOKEN\n\s+value:", new):
+        new, n = _patch_env_value(new, "PAPERLESS_TOKEN", token)
+    else:
+        after = _insert_after_caldav_anchor(new, [("PAPERLESS_TOKEN", token)])
+        n = 1 if after != new else 0
+        new = after
+    return new, n
+
+
+def apply_paperless_credential_to_engine(data_dir: str, url: str, token: str) -> bool:
+    """Stamp PAPERLESS_URL + PAPERLESS_TOKEN into the deployed solaris.yml so the
+    #931 ingest handoff runs for real (#1034) — the renderer prunes empty env, so
+    we insert/patch like the SYNC_DAV wiring. Best-effort; returns True when the
+    manifest now carries the token."""
+    pod_yml = os.path.expanduser("~/.config/containers/systemd/solaris.yml")
+    if not os.path.exists(pod_yml):
+        jlog(
+            "warn", "paperless", "solaris.yml not found at expected path", path=pod_yml
+        )
+        return False
+    try:
+        with open(pod_yml, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        jlog("warn", "paperless", "could not read solaris.yml", error=str(e))
+        return False
+    new, n = _patch_or_insert_paperless_env(src, url, token)
+    if n == 0:
+        jlog(
+            "warn",
+            "paperless",
+            "could not wire PAPERLESS env into solaris.yml — no PAPERLESS_TOKEN "
+            "entry to patch nor a CALDAV_URL anchor to insert after",
+            path=pod_yml,
+        )
+        return False
+    if new == src:
+        return True
+    try:
+        with open(pod_yml, "w", encoding="utf-8") as f:
+            f.write(new)
+    except OSError as e:
+        jlog("warn", "paperless", "could not write patched solaris.yml", error=str(e))
+        return False
+    jlog(
+        "info", "paperless", "stamped PAPERLESS_URL + PAPERLESS_TOKEN into solaris.yml"
+    )
+    return True
+
+
+def converge_paperless_credential(data_dir: str) -> bool:
+    """Make the #931 paperless-ingest handoff run for real (#1034, option A):
+    persist a managed paperless admin password, mint that admin's DRF API token
+    once paperless is reachable, and stamp PAPERLESS_URL + PAPERLESS_TOKEN into
+    the deployed solaris.yml (persisting the token so a later render can't prune
+    it). Idempotent + best-effort + a clean no-op when paperless isn't installed
+    or reachable. Returns True when the engine now carries a paperless token."""
+    password = _persisted_paperless_password(data_dir)
+    if not password:
+        return False
+    paperless_url = env("PAPERLESS_URL", PAPERLESS_URL_DEFAULT)
+    admin_user = env("PAPERLESS_ADMIN_USER", PAPERLESS_ADMIN_USER_DEFAULT)
+    token = mint_paperless_token(paperless_url, admin_user, password)
+    if not token:
+        # paperless not installed / not up yet / creds not accepted — fall back
+        # to a previously persisted token so a transient outage doesn't drop the
+        # engine's paperless wiring; otherwise no-op cleanly.
+        token = _read_persisted_paperless_token(data_dir)
+        if not token:
+            jlog("info", "paperless", "no paperless token — ingest wiring stays off")
+            return False
+    else:
+        _persist_paperless_token(data_dir, token)
+    return apply_paperless_credential_to_engine(data_dir, paperless_url, token)
+
+
 def _radicale_rights_heredoc(ind: str) -> str:
     """The `cat > /config/rights <<'EOF' … EOF` shell heredoc, every line at the
     block scalar's `ind` (so YAML strips it to column 0 and the `EOF` delimiter
@@ -2752,6 +2931,11 @@ def main() -> int:
     # fills, reusing the managed `solaris` DAV password. Renderer prunes these env
     # entries, so we stamp them; the restart below picks them up.
     apply_caldav_read_to_engine(data_dir, jellyfin_password)
+    # Make the #931 paperless-ingest handoff run for real (#1034, option A):
+    # persist a managed paperless admin password, mint that admin's DRF API token
+    # once paperless is reachable, and stamp PAPERLESS_URL + PAPERLESS_TOKEN into
+    # the pod env (the renderer prunes empty env). No-op when paperless is absent.
+    converge_paperless_credential(data_dir)
     ha_token = adopt_ha_long_lived_token(data_dir)
     if ha_token:
         ensure_ha_jellyfin_integration(
