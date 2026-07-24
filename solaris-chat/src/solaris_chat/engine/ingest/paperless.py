@@ -33,6 +33,7 @@ document store whose search is not latency-critical.
 
 from __future__ import annotations
 
+import traceback
 from pathlib import Path
 
 from solaris_chat.logging import log
@@ -134,10 +135,15 @@ async def push_uploads(
             if await push_companion(companion, notes_dir, ollama, client):
                 pushed += 1
         except Exception as e:  # noqa: BLE001 — one bad file must not stop the pass.
+            # repr() + traceback, not str(): many failures here (aiohttp
+            # ClientResponseError, a bare TimeoutError) stringify to "" or a lone
+            # number, hiding the real cause — repr keeps the type + args and the
+            # traceback pins the failing call.
             log.error(
                 "engine.ingest.paperless_companion_failed",
                 path=str(companion),
-                error=str(e),
+                error=repr(e),
+                traceback=traceback.format_exc(),
             )
     log.info("engine.ingest.paperless", companions=len(companions), pushed=pushed)
     return pushed
