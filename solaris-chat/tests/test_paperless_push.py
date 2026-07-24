@@ -151,6 +151,39 @@ def test_push_uploads_globs_resident_and_shared(tmp_path):
     assert len(client.posted) == 2
 
 
+def test_companion_failure_logs_exception_type_and_traceback(tmp_path, monkeypatch):
+    # #1046: a raising client failed silently — str(exc) on a TimeoutError/aiohttp
+    # error stringified to "" or "0", so the real cause never surfaced. The pass
+    # must keep going AND log the exception repr + a traceback.
+    _companion(tmp_path, "users/mdopp/uploads/a.md")
+
+    class BoomClient:
+        async def post_document(self, file_bytes, filename):
+            raise TimeoutError()  # str() == "" — the failure the issue reproduced.
+
+        async def patch_content(self, document_id, content):  # pragma: no cover
+            pass
+
+    records: list[dict] = []
+    monkeypatch.setattr(
+        paperless.log, "error", lambda msg, **kw: records.append({"msg": msg, **kw})
+    )
+    orig = paperless.downscaled_vision_image
+    paperless.downscaled_vision_image = lambda *_: "IMG"
+    try:
+        pushed = asyncio.run(push_uploads(str(tmp_path), FakeOllama(), BoomClient()))
+    finally:
+        paperless.downscaled_vision_image = orig
+
+    assert pushed == 0
+    failed = [
+        r for r in records if r["msg"] == "engine.ingest.paperless_companion_failed"
+    ]
+    assert len(failed) == 1
+    assert failed[0]["error"] == "TimeoutError()"  # repr keeps the type
+    assert "TimeoutError" in failed[0]["traceback"]
+
+
 def test_run_paperless_no_op_when_unconfigured(monkeypatch):
     for key in ("PAPERLESS_URL", "PAPERLESS_TOKEN"):
         monkeypatch.delenv(key, raising=False)

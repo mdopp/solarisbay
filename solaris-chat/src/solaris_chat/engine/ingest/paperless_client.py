@@ -26,6 +26,24 @@ from ...logging import log
 _TASK_POLL_BACKOFF = (0.5, 1.0, 2.0, 3.0, 5.0)  # seconds — ~11.5s total.
 
 
+async def _raise_for_status(resp: aiohttp.ClientResponse) -> None:
+    """Like `resp.raise_for_status()`, but attach the response body to the error.
+
+    aiohttp's own `raise_for_status` drops the body, so a paperless 4xx/5xx
+    surfaces only as "400, message=Bad Request" — the body (which says *why*
+    paperless rejected the push) is exactly what the failure log needs."""
+    if resp.status < 400:
+        return
+    body = (await resp.text())[:500]
+    raise aiohttp.ClientResponseError(
+        resp.request_info,
+        resp.history,
+        status=resp.status,
+        message=f"{resp.reason}: {body}",
+        headers=resp.headers,
+    )
+
+
 class PaperlessClient(Protocol):
     """The paperless write path the adapter needs. Injectable for tests."""
 
@@ -59,7 +77,7 @@ class RestPaperlessClient:
                 data=form,
                 headers=self._headers,
             ) as resp:
-                resp.raise_for_status()
+                await _raise_for_status(resp)
                 task_id = (
                     (await resp.json()) if resp.content_length else await resp.text()
                 )
@@ -79,7 +97,7 @@ class RestPaperlessClient:
                 params={"task_id": task_id},
                 headers=self._headers,
             ) as resp:
-                resp.raise_for_status()
+                await _raise_for_status(resp)
                 tasks = await resp.json()
             task = tasks[0] if tasks else {}
             status = task.get("status")
@@ -100,4 +118,4 @@ class RestPaperlessClient:
                 json=body,
                 headers=self._headers,
             ) as resp:
-                resp.raise_for_status()
+                await _raise_for_status(resp)
