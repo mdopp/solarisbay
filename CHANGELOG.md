@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.36.0](https://github.com/mdopp/solarisbay/compare/v0.35.0...v0.36.0) (2026-07-24)
+
+
+### Features
+
+* **chat:** calendar cascade, note dual-file, .tool plugin system, contacts alias unify ([#1024](https://github.com/mdopp/solarisbay/issues/1024)) ([be0ee68](https://github.com/mdopp/solarisbay/commit/be0ee68860707e7d7a08ee0db66c9bf0e3434289))
+* **chat:** paperless push adapter + tool plugins on /napi with renderer-agnostic cell-schema ([#1033](https://github.com/mdopp/solarisbay/issues/1033)) ([6215395](https://github.com/mdopp/solarisbay/commit/62153955526e4305353b556c559218643358c7ec))
+* **chat:** read-only Dokumente portal + paperless push-timing decision ([6588b97](https://github.com/mdopp/solarisbay/commit/6588b971774cbdc5e354f1e12bafcd546a374467))
+* **chat:** read-only Dokumente portal linking into the paperless UI ([ff70e15](https://github.com/mdopp/solarisbay/commit/ff70e151c76f10cb68df35fcc1d23beafaa20705)), closes [#1043](https://github.com/mdopp/solarisbay/issues/1043) [#1044](https://github.com/mdopp/solarisbay/issues/1044)
+* **template:** managed paperless admin + auto-mint DRF token wired into engine ([#1035](https://github.com/mdopp/solarisbay/issues/1035)) ([e94ae4b](https://github.com/mdopp/solarisbay/commit/e94ae4b6c0432e17f9b460cdc8db9d57ea48e261)), closes [#1034](https://github.com/mdopp/solarisbay/issues/1034)
+* **template:** paperless-ngx document store + durable radicale-rights self-heal ([#1027](https://github.com/mdopp/solarisbay/issues/1027)) ([053be26](https://github.com/mdopp/solarisbay/commit/053be26bf156a2389b6c3635ac266e0266bd3df0))
+
+
+### Bug Fixes
+
+* **chat:** surface the real paperless push error instead of "0"/empty ([8ed8b66](https://github.com/mdopp/solarisbay/commit/8ed8b66e60835684aa241367cfac1861606a3a76))
+* **chat:** surface the real paperless push error instead of "0"/empty ([5c78748](https://github.com/mdopp/solarisbay/commit/5c787488816a0892c165e598304d40264527688e)), closes [#1046](https://github.com/mdopp/solarisbay/issues/1046)
+* **template:** create paperless superuser when DRF token mint fails ([57d0370](https://github.com/mdopp/solarisbay/commit/57d03702247127970e6ae61555c0feb7126bd521)), closes [#1036](https://github.com/mdopp/solarisbay/issues/1036)
+* **template:** inject PAPERLESS_SECRET_KEY in paperless template ([#1030](https://github.com/mdopp/solarisbay/issues/1030)) ([ca13c46](https://github.com/mdopp/solarisbay/commit/ca13c46aab203c8555b8b169619675e6e9b95e72))
+* **template:** paperless timezone default + OCR mode for the beta image ([570f1c8](https://github.com/mdopp/solarisbay/commit/570f1c8d41c8f782a21585bce2f5c8f4aec90c6e))
+* **template:** paperless timezone default + OCR mode for the beta image ([1d199a7](https://github.com/mdopp/solarisbay/commit/1d199a75eb38702afd272baa580bc540cc7528d2)), closes [#1031](https://github.com/mdopp/solarisbay/issues/1031)
+
 ## [0.35.0](https://github.com/mdopp/solarisbay/compare/v0.34.0...v0.35.0) (2026-07-22)
 
 
