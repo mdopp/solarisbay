@@ -17,6 +17,18 @@ Result: paperless owns the store/UI/search; Solaris's gemma4 stays the fact +
 text source. Disabled (no-op) when `PAPERLESS_URL`/`PAPERLESS_TOKEN` are unset.
 A `<!-- paperless -->` marker in the companion is the idempotency guard so a
 re-run neither re-uploads nor re-transcribes.
+
+Push timing is deliberately LAZY-via-cron, not eager-at-upload (#1042). The
+push is gated on `EXTRACTED_MARKER`, so it can only run once the upload's text
+has been extracted — and `napi_upload` already runs that extraction
+fire-and-forget off the request path (pdftotext/OCR is too slow to block the
+HTTP response). Since the push depends on that deferred step AND itself runs a
+multi-second gemma4:12b vision transcription per document, it stays off the
+upload path too: `run_ingest`/`push_uploads` drives it on the periodic ingest
+cycle, marker-gated and idempotent, so a document lost to a restart is simply
+picked up on the next pass. Eager-at-upload would buy a shorter store-to-search
+lag at the cost of a slow, vision-heavy upload request — not worth it for a
+document store whose search is not latency-critical.
 """
 
 from __future__ import annotations

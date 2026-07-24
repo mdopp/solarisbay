@@ -728,11 +728,12 @@
       text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent);
       border: 1px solid var(--accent); border-radius: 20px; padding: 0 7px;
     }
-    .doc-edit {
-      margin-left: 6px; color: var(--muted); cursor: pointer; font: inherit;
-      background: none; border: none; padding: 0;
+    /* Outbound link into the paperless Web-UI for search + corrections (#1043). */
+    .paperless-link {
+      display: inline-flex; align-items: center; gap: 6px; margin: 6px 0 10px;
+      color: var(--accent); font-weight: 600; text-decoration: none;
     }
-    .doc-edit:hover { color: var(--accent); }
+    .paperless-link:hover { text-decoration: underline; }
     /* Mobile card path (renderCategoryTable): one document = one card, values
        stacked, matching .notes-card tokens. The table is desktop-only. */
     .doc-card {
@@ -6712,6 +6713,9 @@
       // ---- Identity (footer + admin affordances) ----
       var isAdmin = false;
       var contextWindow = 131072;
+      // The public paperless Web-UI URL (#1043); empty ⇒ the read-only Dokumente
+      // portal hides its "In Paperless öffnen" link (no dead link).
+      var paperlessUiUrl = "";
       function loadWhoami() {
         return fetch("/api/whoami")
           .then(function (r) { return r.ok ? r.json() : {}; })
@@ -6726,6 +6730,7 @@
               lo.href = j.logout_url; lo.hidden = false;
             }
             isAdmin = !!(j && j.is_admin);
+            paperlessUiUrl = (j && j.paperless_ui_url) || "";
             if (j && j.household_session_id) householdSessionId = j.household_session_id;
             wartungSessionId = (j && j.wartung_session_id) || "";
             document.getElementById("whoami-sub").textContent = isAdmin ? "Admin" : "Resident";
@@ -7503,6 +7508,21 @@
         "start_date", "renewal_date", "cancellation_deadline",
       ];
 
+      // An outbound link into the paperless Web-UI (#1043) — full-text search +
+      // corrections live there now (paperless owns storage/UI/search). Returns
+      // null when no public paperless URL is configured, so the portal simply
+      // omits the link rather than rendering a dead one.
+      function paperlessLink(label) {
+        if (!paperlessUiUrl) return null;
+        var a = document.createElement("a");
+        a.className = "paperless-link";
+        a.href = paperlessUiUrl;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = label;
+        return a;
+      }
+
       // The Dokumente overview: one tappable doorway per non-empty category,
       // count shown, most-populated first — mirrors renderNotesPage's Card 1.
       function renderDocumentsPage(card) {
@@ -7538,8 +7558,11 @@
             lead.className = "notes-card-lead";
             lead.textContent =
               "Deine Dokumente — nach Art geordnet. Tippe eine Kachel an, um die " +
-              "erfassten Angaben zu sehen und zu korrigieren.";
+              "erfassten Angaben zu sehen. Zum Suchen im Volltext oder Korrigieren " +
+              "öffne das Dokumentenarchiv.";
             mem.appendChild(lead);
+            var pl = paperlessLink("📂 Dokumentenarchiv öffnen");
+            if (pl) mem.appendChild(pl);
 
             var doors = document.createElement("div");
             doors.className = "notes-doorways";
@@ -7856,6 +7879,9 @@
             var rows = j.rows || [];
             if (!rows.length) { card.appendChild(errLine("Keine Einträge")); return; }
 
+            var pl = paperlessLink("📂 Im Dokumentenarchiv suchen & korrigieren");
+            if (pl) card.appendChild(pl);
+
             // Column set = union of predicates across rows, excluding the two
             // non-column facts, ordered by DOCUMENT_FIELD_ORDER then alphabetical.
             var seen = {};
@@ -7976,11 +8002,10 @@
         return p;
       }
 
-      // One value cell: shows the fact value, an "unbestätigt" badge when the
-      // fact was agent-extracted (confidence < 1.0), and a "✎" quick-edit that
-      // POSTs a confirmed value then re-renders the whole table (clearing badges).
-      // The inline editor is a prompt() for now — a nicer in-cell editor is a
-      // follow-up.
+      // One value cell: shows the fact value and an "unbestätigt" badge when the
+      // fact was agent-extracted (confidence < 1.0). Read-only (#1043) — paperless
+      // now owns storage/UI/search, so corrections happen in the paperless Web-UI
+      // (the "In Paperless öffnen" link), not inline here.
       function docCell(card, category, row, predicate, label) {
         var td = document.createElement("td");
         td.setAttribute("data-label", label || DOCUMENT_FIELD_LABEL[predicate] || predicate);
@@ -7988,10 +8013,9 @@
         return td;
       }
 
-      // The value + "unbestätigt" badge + "✎" quick-edit for one fact, as a
-      // fragment shared by the table cell and the mobile card field. The ✎ POSTs
-      // a confirmed value then re-renders (clearing badges). The inline editor is
-      // a prompt() for now — a nicer in-cell editor is a follow-up.
+      // The value + "unbestätigt" badge for one fact, as a fragment shared by the
+      // table cell and the mobile card field. Read-only (#1043): no inline edit —
+      // corrections are made in the paperless Web-UI.
       function docFieldValue(card, category, row, predicate) {
         var frag = document.createDocumentFragment();
         var fact = (row.facts || {})[predicate];
@@ -8005,30 +8029,6 @@
           badge.textContent = "unbestätigt";
           frag.appendChild(badge);
         }
-        var edit = document.createElement("button");
-        edit.type = "button";
-        edit.className = "doc-edit";
-        edit.title = "Korrigieren";
-        edit.setAttribute("aria-label", "Korrigieren");
-        edit.textContent = "✎";
-        edit.addEventListener("click", function () {
-          var next = window.prompt(
-            (DOCUMENT_FIELD_LABEL[predicate] || predicate) + " korrigieren:",
-            value == null ? "" : String(value));
-          if (next == null) return;
-          fetch("/api/portal/documents/correct", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ entity_id: row.entity_id, predicate: predicate, value: next }),
-          })
-            .then(function (r) { return r.ok ? r.json() : null; })
-            .then(function (res) {
-              if (res && res.ok) renderCategoryTable(card, category);
-              else window.alert("Korrektur fehlgeschlagen.");
-            })
-            .catch(function () { window.alert("Korrektur fehlgeschlagen."); });
-        });
-        frag.appendChild(edit);
         return frag;
       }
 
