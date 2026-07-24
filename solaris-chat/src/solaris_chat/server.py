@@ -1252,6 +1252,7 @@ def build_app(
     import_data_dir: str = "/data/imports",
     immich_base_url: str = "",
     immich_api_key: str = "",
+    paperless_ui_url: str = "",
 ) -> web.Application:
     # Known resident uids feeding the `@person` autosuggest seed (#279), beyond
     # the manual list in seeded_persons. The caller's own uid is always folded
@@ -2201,6 +2202,10 @@ def build_app(
                 # subscribe. Empty ⇒ Web Push is unconfigured, so the UI hides
                 # the notification bell.
                 "vapid_public_key": vapid_public_key,
+                # The public paperless Web-UI URL (#1043): the read-only
+                # Dokumente portal links here for full-text search + corrections.
+                # Empty ⇒ the portal hides the outbound link (no dead link).
+                "paperless_ui_url": paperless_ui_url,
             }
         )
 
@@ -5978,6 +5983,7 @@ async def serve(
     import_data_dir: str = "/data/imports",
     immich_base_url: str = "",
     immich_api_key: str = "",
+    paperless_ui_url: str = "",
 ) -> None:
     if isinstance(context_window, int):
         context_window = ContextWindow.static(context_window)
@@ -6038,6 +6044,7 @@ async def serve(
         import_data_dir=import_data_dir,
         immich_base_url=immich_base_url,
         immich_api_key=immich_api_key,
+        paperless_ui_url=paperless_ui_url,
     )
     runner = web.AppRunner(app)
     await runner.setup()

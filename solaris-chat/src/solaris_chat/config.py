@@ -167,6 +167,12 @@ class Settings:
     # paperless indexes clean text for full-text search. Empty url ⇒ push disabled.
     paperless_url: str
     paperless_token: str
+    # The PUBLIC paperless Web-UI URL residents click through to for full-text
+    # search + corrections (the Dokumente portal is read-only, #1043). This is
+    # the operator's `https://paperless.<domain>` host behind Authelia — NOT
+    # `paperless_url`, which is the loopback REST endpoint the ingest adapter
+    # PATCHes. Empty ⇒ the portal hides the outbound link (no dead link).
+    paperless_ui_url: str
     caldav_url: str
     caldav_username: str
     caldav_password: str
@@ -362,6 +368,7 @@ class Settings:
             immich_api_key=os.environ.get("IMMICH_API_KEY", "").strip(),
             paperless_url=os.environ.get("PAPERLESS_URL", "").strip(),
             paperless_token=os.environ.get("PAPERLESS_TOKEN", "").strip(),
+            paperless_ui_url=os.environ.get("PAPERLESS_UI_URL", "").strip(),
             # The household CalDAV calendar + CardDAV address book the
             # calendar/contacts-ingest adapter reads (read-only, #207) to map
             # events/contacts into OKF event/person concepts. An empty url
