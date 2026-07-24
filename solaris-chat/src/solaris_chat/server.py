@@ -4735,7 +4735,9 @@ def build_app(
             # Extract the document's text into the companion body off the request
             # path: pdftotext/OCR is slow, so run it in a thread and don't
             # await it — the HTTP response returns immediately; the nightly ingest
-            # re-runs it idempotently if this one is lost to a restart.
+            # re-runs it idempotently if this one is lost to a restart. The
+            # paperless push is deliberately NOT fired here — it's lazy-via-cron
+            # by design (#1042); see engine/ingest/paperless.py.
             companion = Path(notes_dir).resolve() / note_rel
             asyncio.get_event_loop().run_in_executor(
                 None, extract_into_companion, companion
