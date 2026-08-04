@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.38.0](https://github.com/mdopp/solarisbay/compare/v0.37.0...v0.38.0) (2026-08-04)
+
+
+### Features
+
+* **chat:** add calendar_create writing straight to Radicale via dav_client ([3a356dc](https://github.com/mdopp/solarisbay/commit/3a356dc6d8b414ab124e58c97cb024579c103859)), closes [#1125](https://github.com/mdopp/solarisbay/issues/1125) [#1126](https://github.com/mdopp/solarisbay/issues/1126)
+* **chat:** attribute the prefill to tools, soul, registry and scaffold ([544c0dd](https://github.com/mdopp/solarisbay/commit/544c0dd6f2526f5cd467300c8d547677c692ea5a)), closes [#1138](https://github.com/mdopp/solarisbay/issues/1138)
+* **chat:** hold every number and date in an answer against the retrieved record ([a0f286a](https://github.com/mdopp/solarisbay/commit/a0f286a69abcda929a3a334b79701e663c38b703)), closes [#1129](https://github.com/mdopp/solarisbay/issues/1129)
+* **chat:** remove the web-search path and the dead prompt text it fed ([7c26dbd](https://github.com/mdopp/solarisbay/commit/7c26dbd81c80772afec03ffcdcc254bc8cd3816b)), closes [#1122](https://github.com/mdopp/solarisbay/issues/1122) [#1123](https://github.com/mdopp/solarisbay/issues/1123)
+* **chat:** retire solaris-deep and the web-search path, add calendar_create and a grounding checker ([930a8ea](https://github.com/mdopp/solarisbay/commit/930a8ea695f156bbb358ceff213d3beb1f211035))
+* **chat:** retire the solaris-deep profile and run the night jobs on household ([35c1ad6](https://github.com/mdopp/solarisbay/commit/35c1ad6e850e36120a597e9a5dfedd09bc8cbbca)), closes [#1121](https://github.com/mdopp/solarisbay/issues/1121)
+* **chat:** sync personal .contacts persons back to a per-resident CardDAV book ([#1118](https://github.com/mdopp/solarisbay/issues/1118)) ([a1b207b](https://github.com/mdopp/solarisbay/commit/a1b207b4e90a78c459b1713ed89383aead92668a))
+
+
+### Bug Fixes
+
+* **autoloop:** keep park and verify-set from corrupting the queue.py cache ([feeffa3](https://github.com/mdopp/solarisbay/commit/feeffa31ae76bdc6396b5ace3d4f734b5380db88)), closes [#1139](https://github.com/mdopp/solarisbay/issues/1139) [#1140](https://github.com/mdopp/solarisbay/issues/1140)
+* **chat:** make calendar_create survive an already-existing collection ([#1137](https://github.com/mdopp/solarisbay/issues/1137)) ([0543361](https://github.com/mdopp/solarisbay/commit/05433611e4d0c5347798340ae120302a732cf47f))
+* **ci:** disable the metadata-action latest flavor so only the raw rule moves latest ([#1116](https://github.com/mdopp/solarisbay/issues/1116)) ([14af723](https://github.com/mdopp/solarisbay/commit/14af72352bf6fe7ccc5c6ceaecebe66f6fe2e433)), closes [#1110](https://github.com/mdopp/solarisbay/issues/1110)
+
 ## [0.37.0](https://github.com/mdopp/solarisbay/compare/v0.36.1...v0.37.0) (2026-08-02)
 
 
