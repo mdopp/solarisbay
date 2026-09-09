@@ -30,6 +30,7 @@ gone within the hour anyway (ADR 0014).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -125,7 +126,12 @@ def render_skill(assist_id: str, text: str) -> str | None:
     return (
         "---\n"
         f"name: {skill_name(assist_id)}\n"
-        f"description: {description}\n"
+        # A JSON string is a valid double-quoted YAML 1.2 scalar; the catalog's
+        # descriptions carry colons, quotes and backslashes that plain or hand-quoted
+        # output turns into frontmatter no parser accepts. Clipping stays in
+        # `skill_description`, ahead of this — escaping first lets a clip cut an
+        # escape sequence in half.
+        f"description: {json.dumps(description, ensure_ascii=False)}\n"
         "---\n"
         f"<!-- Generated from the ServiceBay assist catalog: assists/{assist_id}.md.\n"
         "     Edit it in mdopp/servicebay; this copy is rewritten on every pod"

@@ -65,6 +65,52 @@ App templates drop `hostNetwork` and publish a `hostPort` instead.
 """
 
 
+# The delivered catalog does not live in this repo — ServiceBay delivers it to
+# the box — so the frontmatter classes the generator has to tolerate are pinned
+# here verbatim from mdopp/servicebay: a colon inside the value, embedded
+# quotes, and a backslash. Each pair is the raw right-hand side, quoted exactly
+# as the assist writes it, so `parse_frontmatter` reads here what it reads there.
+CATALOG = {
+    "adr-0009-service-tokens-and-trust": (
+        '"ADR 0009 — Tokens & trust between services"',
+        '"You are giving one component authority to act on another: minting or scoping an API token, adding a service-to-service call, an exec allow-list entry, a pairing or reconnect bootstrap, or deciding what must survive a wipe-config reinstall — this names the trust layer each credential belongs in and why nothing gets ambient authority."',
+    ),
+    "adr-0012-repair-is-reconciliation-not-reinstallation": (
+        '"ADR 0012 — Repair is reconciliation, not reinstallation — with hard guardrails against a reconciler hell"',
+        '"A drifted config, credential or registration is about to be \\"fixed\\" by reinstalling or redeploying, or you are adding a reconciler, a self-heal action, a desired-state loop or a background repair timer — this sets the guardrails: idempotent, diff-first and visible, explicitly triggered, and no controller fabric."',
+    ),
+    "adr-0015-template-deletions-need-a-delivered-files-manifest": (
+        "ADR 0015 — A template deletes only what it demonstrably delivered; the record is a delivered-files manifest",
+        'You are about to make a deploy, sync or reconcile pass remove files from a box — a mirroring sync, an rsync --delete, a "clean up what the template no longer ships", a stale-file cleanup — and need the rule for what may be deleted; or you are wondering why a file removed from a template\'s source tree is still on the node, or why an existing install did not converge after the fix.',
+    ),
+    "footgun-journal-is-a-buffer-not-an-archive": (
+        "The systemd journal is a rotating buffer, not an archive — a service that must reconstruct its own past writes its own log",
+        'You are about to rely on `journalctl` as the record of something that happened more than a few days ago (a failed run, an audit trail, "what happened to my request last week"), or you are sizing/quoting a journal retention window before you\'ve checked the actual knobs.',
+    ),
+    "recipe-walk-a-human-through-a-manual-acceptance": (
+        "Walking a human through a manual acceptance",
+        'A person has to confirm something on a device, a phone or an installation that you cannot check yourself — a release check, a device test, an on-site observation. Read this before you write "please check whether it works".',
+    ),
+    "footgun-vaultwarden-personal-vault-write": (
+        "You cannot write into a personal Vaultwarden/Bitwarden vault with an API key",
+        'You are about to build automation that pushes credentials into Vaultwarden (or Bitwarden) — a sync job, an install hook, a "store this password for the user" feature.',
+    ),
+}
+
+
+def assist(title: str, when: str) -> str:
+    """One catalog entry in the shape the generator reads it off the mount."""
+    return f"---\ntitle: {title}\nwhenToUse: {when}\nkind: adr\ntags: [adr, decision]\n---\n\n# body\n"
+
+
+def frontmatter(skill: str) -> dict:
+    """The generated `SKILL.md` head as a real YAML parser sees it — which is how
+    Pi sees it, and the whole point of #1410."""
+    lines = skill.splitlines()
+    assert lines[0] == "---"
+    return yaml.safe_load("\n".join(lines[1 : lines.index("---", 1)]))
+
+
 def _load(name: str, path: pathlib.Path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec and spec.loader
@@ -235,6 +281,45 @@ def test_generated_names_and_descriptions_stay_inside_pis_limits(kit):
 
     fields = {"title": "T" * 900, "whenToUse": "W" * 900}
     assert len(kit.skill_description(fields)) <= kit.DESCRIPTION_MAX
+
+
+def test_every_catalog_frontmatter_renders_as_parseable_yaml(kit, tmp_path):
+    """Every assist has to survive the round trip, not two hand-picked ones.
+
+    17 of the catalog's 55 assists rendered a head no YAML parser accepts
+    (#1410) and were silently never loaded: 8 over a `: ` in the value, 10 over
+    an embedded quote, one of those with a backslash too. Wrapping the value in
+    quotes fixes the first class and breaks the other two, so what is asserted
+    here is the parse and the round-trip, never the punctuation.
+    """
+    (tmp_path / "assists").mkdir()
+    for assist_id, (title, when) in CATALOG.items():
+        (tmp_path / "assists" / f"{assist_id}.md").write_text(
+            assist(title, when), encoding="utf-8"
+        )
+    report = kit.generate_skills(str(tmp_path / "assists"), str(tmp_path / "skills"))
+    assert report["skills"] == len(CATALOG)
+
+    for assist_id, (title, when) in CATALOG.items():
+        skill = tmp_path / "skills" / "servicebay" / assist_id / "SKILL.md"
+        head = frontmatter(skill.read_text(encoding="utf-8"))
+        fields, _ = kit.parse_frontmatter(assist(title, when))
+        assert head["name"] == assist_id
+        assert head["description"] == kit.skill_description(fields)
+
+
+def test_a_clipped_description_stays_valid_yaml(kit):
+    """The clip runs on the description, so it has to run before the escaping: a
+    cut through an escape sequence gives the same unloadable skill by another
+    route. The tail puts a backslash, a quote or a `: ` on every candidate cut
+    point."""
+    tail = '\\"x: ' * 12
+    for pad in range(12):
+        title = "T" * (kit.DESCRIPTION_MAX - 4 - pad)
+        head = frontmatter(kit.render_skill("clipped", assist(title, tail)))
+        expected = kit.skill_description({"title": title, "whenToUse": tail})
+        assert head["description"] == expected
+        assert expected.endswith("…") and len(expected) <= kit.DESCRIPTION_MAX
 
 
 def test_the_generator_writes_nothing_into_the_read_only_kit(kit):
