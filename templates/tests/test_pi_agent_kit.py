@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 
@@ -33,6 +34,8 @@ PI_WEB = TEMPLATES / "pi-web"
 ROOT = TEMPLATES.parent
 KIT = ROOT / "pi-web" / "pi_agent_kit.py"
 WRAPPER = ROOT / "pi-web" / "pi_servicebay.py"
+PROJECT = ROOT / "pi-web" / "pi_web_project.py"
+DOCKERFILE = ROOT / "pi-web" / "Dockerfile"
 
 MOUNT_ROOT = "/opt/servicebay"
 # What ServiceBay delivers to on the box, written out in the pod spec as a
@@ -101,6 +104,35 @@ CATALOG = {
 def assist(title: str, when: str) -> str:
     """One catalog entry in the shape the generator reads it off the mount."""
     return f"---\ntitle: {title}\nwhenToUse: {when}\nkind: adr\ntags: [adr, decision]\n---\n\n# body\n"
+
+
+# Every ASCII punctuation mark — the ones YAML gives a meaning to (`:` `#` `-`
+# `?` `,` `[` `]` `{` `}` `&` `*` `!` `|` `>` `'` `"` `%` `@` `` ` ``) and the
+# ones it does not, because which is which is exactly what nobody should have
+# to get right by hand.
+PUNCTUATION = "".join(chr(c) for c in range(0x21, 0x7F) if not chr(c).isalnum())
+
+
+def hostile_values():
+    """One frontmatter value per way a real title or `whenToUse` can be shaped.
+
+    A value is a single line — the catalog's heads are flat `key: value` — so a
+    newline is the one thing not generated here; everything else a keyboard can
+    produce is.
+    """
+    for mark in PUNCTUATION:
+        yield f"{mark}leading"
+        yield f"inside{mark}value"
+        yield f"trailing{mark}"
+        yield f"spaced{mark} then more"
+    yield 'he said "no" and left'
+    yield 'a \\"quoted\\" phrase'
+    yield '"fully quoted with a \\"phrase\\" inside"'
+    yield "'single quoted with an '' escape'"
+    yield "a trailing backslash \\"
+    yield "tab\tseparated"
+    yield "ADR 0009 — Tokens & trust: nothing gets ambient authority"
+    yield "Umlaute, Gedankenstriche — und ein Doppelpunkt: hier"
 
 
 def frontmatter(skill: str) -> dict:
@@ -322,6 +354,60 @@ def test_a_clipped_description_stays_valid_yaml(kit):
         assert expected.endswith("…") and len(expected) <= kit.DESCRIPTION_MAX
 
 
+def test_every_frontmatter_the_catalog_can_hold_renders_as_parseable_yaml(
+    kit, tmp_path
+):
+    """The class, not six instances of it.
+
+    The delivered catalog is 55 files today and its next entry is written in
+    another repository, so pinning those 55 strings verbatim would still leave
+    #1410's real hole open: one new title with a punctuation mark nobody thought
+    of. What is pinned instead is the character space every entry is drawn from
+    — each ASCII punctuation mark leading, embedded and trailing the value, the
+    `: ` that broke 8 of them, the embedded quotes that broke 10, the backslash
+    that came with one of those, a tab and an em dash. Every one is rendered by
+    the real generator, and every head goes through a real YAML parser.
+    """
+    values = list(hostile_values())
+    assert any(": " in value for value in values)
+    assert any('"' in value for value in values)
+    assert any("\\" in value for value in values)
+
+    (tmp_path / "assists").mkdir()
+    sources = {}
+    for index, value in enumerate(values):
+        assist_id = f"generated-{index:04d}"
+        sources[assist_id] = assist(f"Title {value}", value)
+        (tmp_path / "assists" / f"{assist_id}.md").write_text(
+            sources[assist_id], encoding="utf-8"
+        )
+    report = kit.generate_skills(str(tmp_path / "assists"), str(tmp_path / "skills"))
+    assert report["skills"] == len(sources)
+
+    for assist_id, source in sources.items():
+        skill = tmp_path / "skills" / kit.SKILL_GROUP / assist_id / "SKILL.md"
+        head = frontmatter(skill.read_text(encoding="utf-8"))
+        fields, _ = kit.parse_frontmatter(source)
+        assert head["name"] == assist_id, assist_id
+        assert head["description"] == kit.skill_description(fields), assist_id
+
+
+def test_a_quoted_value_reaches_pi_as_its_text_and_not_as_its_escapes(kit):
+    """`adr-0012` quotes a phrase inside a double-quoted frontmatter value.
+    Stripping the delimiters and stopping there carried the `\\"` escapes through
+    into the description Pi shows, so the one entry about not reinstalling to
+    repair read as if the generator had mangled it."""
+    source = assist(
+        '"ADR 0012 — Repair is reconciliation, not reinstallation"',
+        '"A drifted config is about to be \\"fixed\\" by reinstalling."',
+    )
+    head = frontmatter(kit.render_skill("adr-0012", source))
+    assert head["description"] == (
+        "ADR 0012 — Repair is reconciliation, not reinstallation — "
+        'A drifted config is about to be "fixed" by reinstalling.'
+    )
+
+
 def test_the_generator_writes_nothing_into_the_read_only_kit(kit):
     """The mount is read-only and refreshed hourly; a write there would fail on
     the box and reach nobody if it did not."""
@@ -384,6 +470,142 @@ def test_a_missing_handbook_still_leaves_the_box_prelude(kit, tmp_path):
     assert "PI WEB container" in (tmp_path / "agent" / "AGENTS.md").read_text(
         encoding="utf-8"
     )
+
+
+# ── the chain: a session in a project folder ────────────────────────────────
+
+
+def dockerfile_env() -> dict[str, str]:
+    """The environment the shipped image sets, read out of the Dockerfile.
+
+    The two ends of the chain must not be the same constant typed twice. This is
+    where `PI_CODING_AGENT_DIR` is actually set for `sessiond`, so the test that
+    joins them reads it from here rather than repeating it.
+    """
+    text = DOCKERFILE.read_text(encoding="utf-8").replace("\\\n", " ")
+    env: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.startswith("ENV "):
+            continue
+        for token in line[4:].split():
+            key, sep, value = token.partition("=")
+            if sep:
+                env[key] = value
+    return env
+
+
+def context_files(cwd: str, agent_dir: str) -> list[str]:
+    """The context files a Pi session loads, in the order it concatenates them.
+
+    Pi's documented rule (its `docs/usage.md`, *Context Files*): the global file
+    in the agent directory, then the ancestors of the working directory from the
+    root down, then the working directory itself — the first of the candidate
+    names found in each, and never the same path twice. The candidate list is
+    `pi_web_project.CONTEXT_FILES`, which this repo already keeps in step with
+    Pi's own `loadContextFileFromDir`.
+    """
+    project = _load("pi_web_project", PROJECT)
+
+    def first(directory: str) -> str:
+        for candidate in project.CONTEXT_FILES:
+            path = os.path.join(directory, candidate)
+            if os.path.isfile(path):
+                return path
+        return ""
+
+    found = [first(agent_dir)]
+    ancestors, current = [], os.path.abspath(cwd)
+    while True:
+        ancestors.insert(0, current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    found += [first(directory) for directory in ancestors]
+    seen, ordered = set(), []
+    for path in found:
+        if path and path not in seen:
+            seen.add(path)
+            ordered.append(path)
+    return ordered
+
+
+def test_a_session_in_a_project_folder_has_the_global_guidance_in_context(
+    kit, tmp_path, monkeypatch
+):
+    """#1413, end to end — the chain, not the file.
+
+    The file existed, all 10 kB of it, while a session two directories away
+    answered a deploy request with "I have no access to ServiceBay" and then
+    invented CLI verbs. So asserting its existence proves nothing: what has to
+    hold is that the directory the generator writes to is the directory that
+    session reads, and the only thing tying those together is the agent-dir
+    environment variable the image sets.
+
+    The claim in the project pointer file — that Pi loads the global one
+    *alongside* it — is asserted here next to the behaviour that makes it true,
+    so a change that ends the behaviour cannot leave the sentence standing.
+    """
+    project = _load("pi_web_project", PROJECT)
+    assert "loads alongside" in project.PROJECT_AGENTS_MD
+
+    image = dockerfile_env()
+    box = tmp_path
+    mount = box / "opt" / "servicebay"
+    (mount / "agent-docs").mkdir(parents=True)
+    (mount / "assists").mkdir()
+    (mount / "agent-docs" / "AGENTS.md").write_text(
+        "# Working on a ServiceBay box\n\nRun `servicebay assists` to list them.\n",
+        encoding="utf-8",
+    )
+    (mount / "assists" / "adr-0007-network.md").write_text(ASSIST, encoding="utf-8")
+
+    agent_dir = box / image["PI_CODING_AGENT_DIR"].lstrip("/")
+    folder = box / "workspace" / "kitchen-lights"
+    folder.mkdir(parents=True)
+
+    # The session's environment is the image's, with the paths moved into the
+    # sandbox — including HOME, because the fallback is Pi's `~/.pi/agent`.
+    monkeypatch.delenv("PI_WEB_AGENT_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(box / image["HOME"].lstrip("/")))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+    monkeypatch.setenv("SERVICEBAY_AGENT_KIT", str(mount))
+
+    assert kit.main([]) == 0
+    project.ensure_project_agents_md(str(folder), "kitchen-lights")
+
+    loaded = context_files(str(folder), str(agent_dir))
+    assert loaded[0] == str(agent_dir / "AGENTS.md")
+    assert loaded[-1] == str(folder / "AGENTS.md")
+
+    context = "\n".join(
+        pathlib.Path(path).read_text(encoding="utf-8") for path in loaded
+    )
+    assert "`servicebay` is on `$PATH`" in context
+    assert "Run `servicebay assists` to list them." in context
+
+    # And #1413's hypothesis, made falsifiable: the walk up from the project
+    # folder never reaches the global file — it does not have to.
+    assert str(agent_dir) not in {str(pathlib.Path(path).parent) for path in loaded[1:]}
+
+
+def test_the_generator_resolves_the_agent_dir_the_way_pi_web_does(kit, monkeypatch):
+    """PI WEB reads `PI_WEB_AGENT_DIR` ahead of `PI_CODING_AGENT_DIR` and falls
+    back to Pi's `~/.pi/agent`. A default of this repo's own would put the
+    handbook and every skill in a directory no session reads, and the init
+    container would still print `55 assists as skills` and exit 0."""
+    monkeypatch.delenv("PI_WEB_AGENT_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    monkeypatch.setenv("HOME", "/data/home")
+    assert kit.agent_dir_from_env() == "/data/home/.pi/agent"
+
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", "/data/pi-agent")
+    assert kit.agent_dir_from_env() == "/data/pi-agent"
+
+    monkeypatch.setenv("PI_WEB_AGENT_DIR", "/data/elsewhere")
+    assert kit.agent_dir_from_env() == "/data/elsewhere"
+
+    assert set(dockerfile_env()) & set(kit.AGENT_DIR_ENV)
 
 
 # ── `servicebay` on PATH ────────────────────────────────────────────────────
