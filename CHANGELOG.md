@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.67.2](https://github.com/mdopp/solarisbay/compare/v0.67.1...v0.67.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* **pi-web:** escape the skill description as a YAML scalar so every assist loads ([b3246d6](https://github.com/mdopp/solarisbay/commit/b3246d66188152dbe0c091626c9f985936356388)), closes [#1410](https://github.com/mdopp/solarisbay/issues/1410)
+
 ## [0.67.1](https://github.com/mdopp/solarisbay/compare/v0.67.0...v0.67.1) (2026-09-09)
 
 
