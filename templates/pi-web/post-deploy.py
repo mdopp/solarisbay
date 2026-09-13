@@ -13,9 +13,12 @@ Two responsibilities:
      (rootless podman refuses it), and never the `llama.<domain>` route, which
      is Authelia-gated and exists for a human with a browser.
 
-     Whatever llama-server currently serves is what PI WEB answers on: the
-     coding alias while somebody holds the coding lease, the household alias
-     otherwise. PI WEB never asks for the swap itself.
+     llama-server is a router since #1416: one port, several presets, the
+     client picks one with the `model` field. So `models.json` lists the
+     presets a session here may ask for — coding first, because that is what a
+     session starts with — and each one carries its own thinking switch. PI WEB
+     still never asks for a lease; the lease only sets which presets the
+     standing mode allows.
 
   2. **Retire the host-side lease unit (#1392).** Until now PI WEB took the
      coding lease by simply being started: `pi-web-model-lease.service` was
@@ -66,14 +69,14 @@ QUADLET_DIR = "~/.config/containers/systemd"
 KUBE_UNIT = "pi-web.kube"
 BOOT_INSTALL = "[Install]\nWantedBy=default.target\n"
 
-# The aliases llama-server reports (`--alias`) for the two profiles this box
-# runs: the coding lease's Qwen, and the household Gemma that answers before
-# and after the window. They are pinned in templates/llama/post-deploy.py —
-# constants here rather than variables, because a knob that let them drift
-# from that file would only ever produce a model list naming something the
-# server does not serve.
+# The router presets a session here may pick (#1416). They are pinned in
+# templates/llama/post-deploy.py — constants here rather than variables,
+# because a knob that let them drift from that file would only ever produce a
+# model list naming something the server does not serve.
 CODING_ALIAS = "qwen3.8-27b"
 CODING_CONTEXT = 81920
+THINKING_ALIAS = "qwen3.6-35b-a3b"
+THINKING_CONTEXT = 131072
 HOUSEHOLD_ALIAS = "gemma-4-e4b"
 HOUSEHOLD_CONTEXT = 32768
 
@@ -177,13 +180,24 @@ def add_boot_install(kube_text: str) -> str:
 
 
 def models_document(llama_port: str) -> dict:
-    """The Pi agent's `models.json`: one OpenAI-compatible provider, the two
-    aliases this box's llama-server actually answers to.
+    """The Pi agent's `models.json`: one OpenAI-compatible provider and the
+    three router presets a session here may pick.
 
-    Both are listed on purpose. llama-server runs one model at a time, so the
-    coding alias is what answers while the lease is held and the household one
-    is what answers otherwise; a list with only one of them would name a model
-    that is absent for half the day.
+    Since #1416 llama-server is a router — one port, four presets, the client
+    picks with the `model` field — so all three are served at once and the
+    order in this list is the choice a session starts with: with no saved
+    default Pi takes the first model of the first provider that has auth
+    configured, and that is the coding preset. `/model` inside the session
+    switches to the thinking MoE for a reading or reasoning job.
+
+    Thinking is the client's switch now that one server serves four models:
+    `--reasoning off` is gone from the server (#1321 was a server-wide setting
+    and would decide for all four), so a client that sends nothing gets a
+    reasoning trace and no tool call. Pi only sends `chat_template_kwargs` for
+    a model it has been told can reason, so both Qwen presets are declared
+    `reasoning: true` and each pins the literal value it wants — false for
+    coding, true for thinking, where the trace is the point. Gemma has no
+    thinking mode and stays `reasoning: false`.
     """
     return {
         "providers": {
@@ -192,20 +206,37 @@ def models_document(llama_port: str) -> dict:
                 "api": "openai-completions",
                 "apiKey": LLAMA_PLACEHOLDER_KEY,
                 # llama-server takes neither the `developer` role nor
-                # `reasoning_effort`, and the coding profile is loaded with
-                # thinking off (#1321) — asking for either turns every request
-                # into a 400.
+                # `reasoning_effort` — asking for either turns every request
+                # into a 400. `chat-template` is the thinking dialect
+                # llama.cpp speaks: `chat_template_kwargs.enable_thinking`.
                 "compat": {
                     "supportsDeveloperRole": False,
                     "supportsReasoningEffort": False,
+                    "thinkingFormat": "chat-template",
                 },
                 "models": [
                     {
                         "id": CODING_ALIAS,
-                        "name": "Qwen 3.8 27B (Coding-Lease)",
-                        "reasoning": False,
+                        "name": "Qwen 3.8 27B (Programmieren)",
+                        "reasoning": True,
+                        "compat": {"chatTemplateKwargs": {"enable_thinking": False}},
                         "input": ["text"],
                         "contextWindow": CODING_CONTEXT,
+                        "maxTokens": 16384,
+                        "cost": {
+                            "input": 0,
+                            "output": 0,
+                            "cacheRead": 0,
+                            "cacheWrite": 0,
+                        },
+                    },
+                    {
+                        "id": THINKING_ALIAS,
+                        "name": "Qwen 3.6 35B-A3B (Denken)",
+                        "reasoning": True,
+                        "compat": {"chatTemplateKwargs": {"enable_thinking": True}},
+                        "input": ["text"],
+                        "contextWindow": THINKING_CONTEXT,
                         "maxTokens": 16384,
                         "cost": {
                             "input": 0,
@@ -271,7 +302,7 @@ def write_models_json(data_dir: str, llama_port: str) -> bool:
         "models.json written",
         path=path,
         provider=PROVIDER_ID,
-        models=[CODING_ALIAS, HOUSEHOLD_ALIAS],
+        models=[CODING_ALIAS, THINKING_ALIAS, HOUSEHOLD_ALIAS],
     )
     return True
 

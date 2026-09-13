@@ -2,12 +2,15 @@
 """
 post-deploy hook for the `llama` template.
 
-Six responsibilities:
+Seven responsibilities:
 
-  1. **Download the GGUFs.** llama-server serves a file, not a registry —
-     nothing pulls on first start. The weights, Google's MTP drafter and the
-     multimodal projector are fetched from Hugging Face into
-     ${DATA_DIR}/llama/models before the server is expected to come up.
+  1. **Download the GGUFs and write the presets file.** llama-server serves a
+     file, not a registry — nothing pulls on first start. The weights, the MTP
+     drafters and the multimodal projector of all four presets are fetched
+     from Hugging Face into ${DATA_DIR}/llama/models before the server is
+     expected to come up, and `presets.ini` beside them is what the router
+     reads (#1416): one process, one port, four models, the client picks with
+     the `model` field of its request.
 
   2. **Get the container onto the GPU.** `podman kube play` drops
      `resources.limits.nvidia.com/gpu`, and on rootless FCoS the CDI device
@@ -20,17 +23,22 @@ Six responsibilities:
      job Ollama still had. Its own `llama-embed.container` Quadlet, loopback
      bind, ~300 MB of VRAM.
 
-  4. **Register an HTTP health check** against `/health`, which returns 200
-     only once both the model and the drafter are loaded.
+  4. **Serve the mode policy on LLAMA_PORT** (#1416). The router enforces
+     nothing — asked for a preset, it loads it, evicting whatever was resident.
+     So the router moved to LLAMA_ROUTER_PORT on loopback and this script's
+     `proxy` verb took its place on LLAMA_PORT: it reads the lease's `allowed`
+     set per request, refuses a preset outside it with 409 and forwards
+     everything else to the router, chunk by chunk. Plus an HTTP health check
+     against `/health`, which passes through it.
 
   5. **Install the GPU lease** (#1320, #1319, #1325). A copy of this script
      lands at `${DATA_DIR}/solarisbay/gpu-lease.py`; run with `acquire
      <holder>` it hands the whole card to another job, with `release` it gives
      it back. Self-copy, like ollama-warm (#1236), so the unit list cannot
-     drift from a second copy of itself. `--model coding` and `--model
-     foundry` take the softer path: llama-server is reloaded with that
-     profile's model instead of stopped, and Solaris answers the household
-     from it.
+     drift from a second copy of itself. `--model foundry`, `--model thinking`
+     and `--model coding` take the softer path: llama-server keeps serving all
+     four presets, and the mode only sets the environment and the presets a
+     client may ask for (#1416).
 
   6. **Install the lease broker** (#1333). A neighbour *container* cannot run
      any of that, so it asks the Engine over HTTP instead; the Engine writes
@@ -53,6 +61,8 @@ contract.
 from __future__ import annotations
 
 import datetime
+import http.client
+import http.server
 import json
 import os
 import subprocess
@@ -63,6 +73,10 @@ import urllib.request
 
 PROGRESS_LOG_INTERVAL_SEC = 15
 DOWNLOAD_CHUNK = 1024 * 1024
+
+# The router's preset file (#1416), written beside the weights so the one
+# volume the container already mounts carries it too.
+PRESETS_FILE = "presets.ini"
 
 
 def env(key: str, default: str = "") -> str:
@@ -197,6 +211,41 @@ def download_model(repo: str, filename: str, models_dir: str, stall_sec: int) ->
     return True
 
 
+def ensure_preset_weights(data_dir: str, presets: tuple[str, ...] | list[str]) -> bool:
+    """Fetch every file the named presets serve from, unless it is there.
+
+    The thinking preset's 14 GB are already on the box (#1418), but a preset
+    the router lists and cannot load is a 500 on the resident's turn, so the
+    files are declared here like every other one.
+    """
+    profiles = preset_profiles()
+    models_dir = os.path.join(data_dir, "llama", "models")
+    stall_sec = int(env("LLAMA_DOWNLOAD_STALL_SECONDS", "600"))
+    complete = True
+    for name in presets:
+        profile = profiles[name]
+        for repo_key, file_key in (
+            ("model_repo", "model_file"),
+            ("draft_repo", "draft_file"),
+            ("model_repo", "mmproj_file"),
+        ):
+            filename = profile[file_key]
+            repo = profile[repo_key] or profile["model_repo"]
+            if not filename:
+                continue
+            if not download_model(repo, filename, models_dir, stall_sec):
+                jlog(
+                    "warn",
+                    "llama:models",
+                    "model file missing — the preset that needs it cannot load. Download it manually into %s from https://huggingface.co/%s"
+                    % (models_dir, repo),
+                    preset=name,
+                    file=filename,
+                )
+                complete = False
+    return complete
+
+
 def wait_for_ready(llama_url: str, deadline_sec: int) -> bool:
     """Poll /health until llama-server answers 200 (model + drafter loaded)."""
     started = time.time()
@@ -262,82 +311,141 @@ def env_profile() -> dict[str, str]:
         "mmproj_file": env("LLAMA_MMPROJ_FILE", ""),
         "context_length": env("LLAMA_CONTEXT_LENGTH", "32768"),
         "draft_n_max": env("LLAMA_DRAFT_N_MAX", "4"),
-        "cache_type": "",
+        "cache_type_k": "",
+        "cache_type_v": "",
+        "ubatch": "",
         "parallel": "",
-        "reasoning": "",
         "alias": env("LLAMA_MODEL_ALIAS", "gemma-4-e4b"),
         "label": "Gemma 4 E4B",
     }
 
 
-def server_args(
-    port: str, models_dir_in_container: str, profile: dict[str, str] | None = None
-) -> list[str]:
-    """The llama-server argv, shared by the Quadlet render and the log line.
+def server_args(port: str, models_dir_in_container: str) -> list[str]:
+    """The llama-server argv, shared by the Quadlet render and template.yml.
 
-    Mirrors template.yml's `args`. `--spec-type draft-mtp` is mandatory for
-    the MTP drafter and `--draft-max` no longer exists — the current image
-    refuses to start on it ("the argument has been removed").
+    `port` is LLAMA_ROUTER_PORT, not LLAMA_PORT.
+
+    Router mode (#1416): one process, one port, four presets, and the client
+    picks with the `model` field of its request. Everything a model needs —
+    weights, window, KV types, drafter, projector — lives in the presets file
+    below, so nothing model-shaped may appear here: a command-line argument
+    outranks a preset option (llama.cpp `docs/preset.md`) and would silently
+    apply one model's window to all four. A child instance inherits the rest
+    of this argv, which is how `--jinja` reaches every preset.
     """
-    profile = profile or env_profile()
-    model_file = profile["model_file"]
-    draft_file = profile["draft_file"]
-    mmproj_file = profile["mmproj_file"]
-    context_length = profile["context_length"]
-    draft_n_max = profile["draft_n_max"]
-    args = [
-        # 0.0.0.0, not loopback (#1344): pasta maps `host.containers.internal`
-        # to the host's LAN address, so an isolated sibling pod cannot reach a
-        # loopback bind. LLAMA_PORT's `blockLanAccess` flag keeps the LAN out.
+    return [
+        # Loopback, and the router's own port. The wide bind #1344 needed for
+        # `host.containers.internal` moved to the policy proxy, which is what
+        # holds LLAMA_PORT now: the router will load any preset it is asked
+        # for, so nothing but the proxy may be able to ask it (#1416).
         "--host",
-        "0.0.0.0",
+        "127.0.0.1",
         "--port",
         port,
-        "-m",
-        f"{models_dir_in_container}/{model_file}",
-        "-ngl",
-        "99",
-        "-c",
-        context_length,
+        "--models-preset",
+        f"{models_dir_in_container}/{PRESETS_FILE}",
+        # One model resident at a time: the card holds exactly one of these
+        # (#1415/#1418). The router evicts the idle LRU child and loads the
+        # asked-for preset in 9-19 s rather than OOMing on both.
+        "--models-max",
+        "1",
         "--jinja",
-        # The `model` field of every /v1 response, and what a neighbour service
-        # reads back to name the model it was answered by (#1333). Without it
-        # llama-server reports the GGUF path.
-        "--alias",
-        profile["alias"],
     ]
-    # Both only appear for a profile that measured as needing them: the coding
-    # model's 64 recurrent layers cost 748 MiB of state PER SEQUENCE, so with
-    # llama-server's stock 4 slots the drafter OOMs before it loads, and f16 KV
-    # at 65k costs the 910 MiB the drafter needs (#1318, cell H1).
-    if profile["cache_type"]:
-        args += ["-ctk", profile["cache_type"], "-ctv", profile["cache_type"]]
+
+
+def preset_profiles() -> dict[str, dict[str, str]]:
+    """The four presets the router offers, keyed by the name a client asks for.
+
+    The key is the section name in the presets file, which is what `GET
+    /v1/models` lists and what the `model` field of a request has to carry.
+    """
+    return {
+        profile["alias"]: profile
+        for profile in (
+            env_profile(),
+            FOUNDRY_PROFILE,
+            THINKING_PROFILE,
+            CODING_PROFILE,
+        )
+    }
+
+
+def preset_lines(profile: dict[str, str], models_dir_in_container: str) -> list[str]:
+    """One preset's options, in the only syntax the router parses.
+
+    Box-verified on image b10920 (#1415): `long-option=value`, no leading
+    dashes, hyphens rather than underscores. Short flags, a whole command line
+    on one line and `ctx_size=` all fail — two of them with a message that
+    does not name the offending line.
+    """
+    lines = [
+        f"model={models_dir_in_container}/{profile['model_file']}",
+        f"ctx-size={profile['context_length']}",
+        "n-gpu-layers=99",
+        f"alias={profile['alias']}",
+    ]
+    if profile["cache_type_k"]:
+        lines.append(f"cache-type-k={profile['cache_type_k']}")
+    if profile["cache_type_v"]:
+        lines.append(f"cache-type-v={profile['cache_type_v']}")
+    if profile["ubatch"]:
+        lines.append(f"ubatch-size={profile['ubatch']}")
     if profile["parallel"]:
-        args += ["--parallel", profile["parallel"]]
-    if draft_file:
-        args += [
-            "--spec-type",
-            "draft-mtp",
-            "--spec-draft-model",
-            f"{models_dir_in_container}/{draft_file}",
-            "--spec-draft-ngl",
-            "99",
-            "--spec-draft-n-max",
-            draft_n_max,
+        lines.append(f"parallel={profile['parallel']}")
+    if profile["draft_file"]:
+        lines += [
+            "spec-type=draft-mtp",
+            f"spec-draft-model={models_dir_in_container}/{profile['draft_file']}",
+            "spec-draft-ngl=99",
+            f"spec-draft-n-max={profile['draft_n_max']}",
         ]
-    if mmproj_file:
-        args += ["--mmproj", f"{models_dir_in_container}/{mmproj_file}"]
-    if profile["reasoning"]:
-        args += ["--reasoning", profile["reasoning"]]
-    return args
+    if profile["mmproj_file"]:
+        lines.append(f"mmproj={models_dir_in_container}/{profile['mmproj_file']}")
+    return lines
 
 
-def render_gpu_container_unit(
-    port: str, data_dir: str, profile: dict[str, str] | None = None
-) -> str:
+def render_presets(models_dir_in_container: str) -> str:
+    """The whole presets file the router loads at start."""
+    blocks = []
+    for name, profile in preset_profiles().items():
+        body = "\n".join(preset_lines(profile, models_dir_in_container))
+        blocks.append(f"[{name}]\n{body}\n")
+    return "\n".join(blocks)
+
+
+def write_presets(data_dir: str) -> bool:
+    """Put the presets file next to the weights, where the container sees it
+    as `/models/presets.ini`."""
+    path = presets_file(data_dir)
+    text = render_presets("/models")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(path, 0o644)
+    except OSError as e:
+        jlog(
+            "error",
+            "llama:presets",
+            "could not write the presets file; llama-server has no model to serve",
+            path=path,
+            error=str(e),
+        )
+        return False
+    jlog(
+        "info",
+        "llama:presets",
+        "presets written",
+        path=path,
+        presets=list(preset_profiles()),
+    )
+    return True
+
+
+def render_gpu_container_unit(port: str, data_dir: str) -> str:
     """Render the `.container` Quadlet text for the GPU fixup. Pure, so the
     needs-rewrite comparison and the write share one source of truth."""
-    exec_args = " ".join(server_args(port, "/models", profile))
+    exec_args = " ".join(server_args(port, "/models"))
     return (
         "[Unit]\n"
         "Description=llama.cpp llama-server (household model, GPU passthrough)\n"
@@ -678,6 +786,11 @@ def embed_reachable(port: str) -> bool:
 # release is the same in reverse, with the file removed last — while it is
 # there `solaris_chat.gpu_lease` makes the Engine say it is busy instead of
 # talking into a dead socket.
+#
+# Since #1416 a *named* mode stops none of that on the llama side: the router
+# holds all four presets and loads one at a time, so the mode sets the
+# environment and writes `allowed` — the presets a client may ask for while it
+# stands. Only the exclusive lease still empties the card.
 LEASE_SCRIPT = "gpu-lease.py"
 LEASE_FILE = "gpu_lease.json"
 PROFILE_FILE = "llama-profile.json"
@@ -695,18 +808,22 @@ LEASE_STATUS_FILE = "gpu_lease_status.json"
 BROKER_UNIT = "solaris-gpu-lease-broker"
 SYSTEMD_USER_DIR = "~/.config/systemd/user"
 
-# The embeddings server (#1332) is listed here rather than left alone: the
-# coding profile peaks at 15 700 MiB of 16 380, so its 300 MB is the
-# difference between the drafter loading and not. A foundry lease leaves it
-# up — 9 636 MiB plus the voice stack still has room, and the household would
-# otherwise lose its semantic vault search for the whole window.
+# The batch transcriber and the wakeword trainer are background GPU jobs with
+# no resident waiting on them, so a focus mode stops them for its window.
+#
+# The embeddings server (#1332) is NOT among them any more (operator,
+# 2026-09-13). It costs ~300 MiB and both focus peaks leave more than that:
+# the MoE at 131k takes 15 620 of 16 380 MiB, and the 27B with `-ctv q4_0
+# -ub 256` at 82k about 15 300 — its 104k cell fitted in 15 724. Stopping it
+# cost the household its semantic vault search for the whole window, which is
+# a worse trade than 300 MiB.
 #
 # The two voice units are listed apart because the coding lease (#1319) keeps
 # them RUNNING, on the CPU: the operator ruled on 2026-09-05 that the house can
-# still be spoken to during a coding window, slower rather than not at all. A
-# foundry lease (#1325) stops none of the five and leaves them all on the GPU.
+# still be spoken to during a coding window, slower rather than not at all. The
+# thinking mode (#1416) is the same shape. A foundry lease (#1325) stops
+# nothing at all and leaves everything on the GPU.
 LEASE_GPU_UNITS = (
-    EMBED_UNIT,
     "solaris-whisper-batch.service",
     "solaris-wakeword-trainer.service",
 )
@@ -714,7 +831,9 @@ LEASE_VOICE_UNITS = (
     "solaris-whisper.service",
     "solaris-tts.service",
 )
-LEASED_UNITS = LEASE_GPU_UNITS + LEASE_VOICE_UNITS + ("llama.service",)
+# Only the exclusive lease empties the card, and that one takes the embeddings
+# server with it.
+LEASED_UNITS = LEASE_GPU_UNITS + LEASE_VOICE_UNITS + (EMBED_UNIT, "llama.service")
 
 # Which execution provider the two voice units use, read from this file by
 # their Quadlets (`EnvironmentFile=`). The other half of this contract is
@@ -727,18 +846,19 @@ VOICE_DEVICE_ENV = {
     "cpu": "WHISPER_DEVICE=cpu\nKOKORO_ONNX_PROVIDER=cpu\n",
 }
 
-# The coding-lease server profile (#1319). Box-measured 2026-09-04 (#1318,
-# cell H1): 15 004 of 16 380 MiB, 32.6 tok/s, tool calls 12/12, no thinking
-# leak, drafter acceptance 71.4%. `--parallel 1` and q8 KV are not tuning —
-# with llama-server's stock 4 slots or f16 KV the drafter never loads at all.
+# The coding preset (#1319, re-measured #1415). Box-measured 2026-09-13 on
+# image b10920: `-ctv q4_0` costs 3% of prompt processing rather than the
+# 5-8x #1321 measured on the older image, and the 640 MiB it frees pay for
+# `--spec-draft-n-max 8` — 44.7 tok/s against 38.7 at the unchanged 82k
+# window, 12/12 tool calls, 15 652 of 16 380 MiB. `-ub 256` takes another
+# 168 MiB for 5% of prefill. `--parallel 1` and q8 K are not tuning: with
+# llama-server's stock 4 slots or f16 KV the drafter never loads at all.
 #
-# 80k is the top of the ladder, re-measured 2026-09-06 (#1321): 15 700 MiB,
-# 33.6 tok/s, 12/12, and a 76 530-token prompt prefilled at 286 tok/s without
-# an OOM. 96k does not exist — with q8 KV the cache allocation fails and the
-# drafter never loads, and the `-ctv q4_0` that would make it fit drops prompt
-# processing to 47-96 tok/s, so a full window would take half an hour to read.
-# `--fit-target` is not the lever #1321 guessed it was: `--fit` gives up as
-# soon as `-ngl` is set by hand, which this profile does.
+# No `--reasoning off` any more (#1416): thinking is a per-request switch the
+# client sends (`chat_template_kwargs.enable_thinking`), box-verified to work
+# per request in router mode. A client that sends nothing gets a thinking
+# trace and no tool call — that is now the client's setting to make, not the
+# server's, because one server serves four presets at once.
 CODING_PROFILE = {
     "model_repo": "unsloth/Qwen3.8-27B-GGUF",
     "model_file": "Qwen3.8-27B-UD-IQ3_XXS.gguf",
@@ -746,47 +866,98 @@ CODING_PROFILE = {
     "draft_file": "mtp-Qwen3.8-27B-Q4_0.gguf",
     "mmproj_file": "",
     "context_length": "81920",
-    "draft_n_max": "4",
-    "cache_type": "q8_0",
+    "draft_n_max": "8",
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q4_0",
+    "ubatch": "256",
     "parallel": "1",
-    # Box-measured 2026-09-06 (#1321): with tools in the request and no flag,
-    # Qwen puts 200 of 222 generated tokens into a `reasoning_content` trace
-    # the caller never sees, and goose aborts the whole run when one reply
-    # runs into its output-token limit. The household never noticed because
-    # solaris-chat sends this per request (#1318); a leased server is driven
-    # by aider/goose/Continue, which do not.
-    "reasoning": "off",
     "alias": "qwen3.8-27b",
     "label": "Qwen 3.8 27B",
 }
 
-# The foundry-lease server profile (#1325). Box-measured 2026-09-04 (#1318,
-# cell K2): 9 626 MiB steady / 9 636 peak with four slots and f16 KV at 32k,
-# 36.6 tok/s, 1.53 s per finished answer, tool calls 6/6, no thinking leak.
-# Beside the voice stack under load (4 508 MiB, #1260) that is 14 144 of
-# 16 380 — which only holds because llama-server runs the 12B *instead of* the
-# household e4b (3 872 MiB): all three together are 18 016 and do not fit.
+# The thinking preset (#1416, measured on #1418): Qwen 3.6 35B-A3B, a MoE with
+# 3 of 35 B parameters active and only 10 of its 40 layers carrying KV. At
+# 131 072 with q8 K+V it peaks at 15 620 of 16 380 MiB and runs 105 tok/s with
+# 83.5% drafter acceptance, 12/12 tool calls, and found a planted sentence in
+# an 85 287-token prompt. That is +171% generation and 3.3x prefill against
+# the 27B, which is why reading and thinking moved here.
+#
+# No mmproj: vision was measured only to 98k and the operator scoped this
+# preset to the 131k text window (#1416). `--parallel 1` as for the 27B.
+THINKING_PROFILE = {
+    "model_repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+    "model_file": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+    "draft_repo": "ggml-org/Qwen3.6-35B-A3B-GGUF",
+    "draft_file": "mtp-Qwen3.6-35B-A3B-Q4_0.gguf",
+    "mmproj_file": "",
+    "context_length": "131072",
+    "draft_n_max": "4",
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "ubatch": "",
+    "parallel": "1",
+    "alias": "qwen3.6-35b-a3b",
+    "label": "Qwen 3.6 35B-A3B",
+}
+
+# The foundry preset (#1325, window re-measured #1415). 131 072 with q8 K+V
+# fits in 10 156 MiB — 520 MiB more than the 32k f16 cell #1318 measured, and
+# it carried a 85k prompt at 686 tok/s with 12/12 tool calls.
 # No mmproj: the 12B repo's vision projector has never been fetched or
-# measured on this box, and a file that turns out not to exist would refuse
-# the lease outright. A photo reaches the 12B as text for the window.
+# measured on this box. A photo reaches the 12B as text for the window.
 FOUNDRY_PROFILE = {
     "model_repo": "ggml-org/gemma-4-12B-it-GGUF",
     "model_file": "gemma-4-12B-it-Q4_0.gguf",
     "draft_repo": "ggml-org/gemma-4-12B-it-GGUF",
     "draft_file": "mtp-gemma-4-12B-it-Q8_0.gguf",
     "mmproj_file": "",
-    "context_length": "32768",
+    "context_length": "131072",
     "draft_n_max": "4",
-    "cache_type": "",
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "ubatch": "",
     "parallel": "",
-    "reasoning": "",
     "alias": "gemma-4-12b",
     "label": "Gemma 4 12B",
 }
 
-# The profiles that swap llama-server instead of emptying the card. Without
-# `--model` the lease is exclusive: everything stops and nothing answers.
-LEASE_PROFILES = {"coding": CODING_PROFILE, "foundry": FOUNDRY_PROFILE}
+# What the household may ask the router for when no lease is held.
+HOUSEHOLD_PRESETS = ("gemma-4-e4b",)
+
+# The lease modes (#1416). Since the router serves all four presets, a lease no
+# longer swaps the server: it sets the ENVIRONMENT the mode needs — the voice
+# stack's device and the background GPU jobs — and the set of presets a client
+# may ask for while it stands. `presets` is written into the lease file as
+# `allowed`, and that is what the policy proxy on LLAMA_PORT refuses a foreign
+# preset against. The embeddings server stays up in every mode (operator,
+# 2026-09-13). Without `--model` the lease is still exclusive: everything stops
+# and nothing answers.
+#
+# `alias`/`label` name the model the holder is answered by, unchanged from
+# #1333 so foundry-chronicle#321 keeps reading the same two fields.
+LEASE_PROFILES = {
+    "foundry": {
+        "presets": ("gemma-4-e4b", "gemma-4-12b"),
+        "alias": "gemma-4-12b",
+        "label": "Gemma 4 12B",
+        "voice": "gpu",
+        "stop_gpu_units": False,
+    },
+    "thinking": {
+        "presets": ("qwen3.6-35b-a3b",),
+        "alias": "qwen3.6-35b-a3b",
+        "label": "Qwen 3.6 35B-A3B",
+        "voice": "cpu",
+        "stop_gpu_units": True,
+    },
+    "coding": {
+        "presets": ("qwen3.8-27b",),
+        "alias": "qwen3.8-27b",
+        "label": "Qwen 3.8 27B",
+        "voice": "cpu",
+        "stop_gpu_units": True,
+    },
+}
 
 # How long `release` waits for the household model to answer /health again.
 # Cold e4b was ~38 s in the night measurements; this is the give-up point,
@@ -822,6 +993,10 @@ def lease_file(data_dir: str) -> str:
 
 def profile_file(data_dir: str) -> str:
     return os.path.join(data_dir, "solarisbay", PROFILE_FILE)
+
+
+def presets_file(data_dir: str) -> str:
+    return os.path.join(data_dir, "llama", "models", PRESETS_FILE)
 
 
 def request_file(data_dir: str) -> str:
@@ -957,33 +1132,41 @@ def set_voice_device(data_dir: str, device: str) -> None:
     )
 
 
-def apply_llama_profile(port: str, data_dir: str, profile: dict[str, str]) -> None:
-    """Reload llama-server on `profile` — rewrite its Quadlet and restart it."""
-    container_path = os.path.expanduser("~/.config/containers/systemd/llama.container")
-    try:
-        with open(container_path, "w", encoding="utf-8") as f:
-            f.write(render_gpu_container_unit(port, data_dir, profile))
-        os.chmod(container_path, 0o644)
-    except OSError as e:
-        jlog(
-            "error",
-            "llama:lease",
-            "could not rewrite llama.container",
-            path=container_path,
-            error=str(e),
+def warm_preset(llama_url: str, preset: str, deadline_sec: int) -> bool:
+    """Ask the router for one token from `preset`, so it is loaded.
+
+    The router loads on demand and a cold preset costs 9-19 s (#1415) — after
+    a release that wait would land on the next resident instead of here. This
+    doubles as the readiness probe: it only answers once the child process
+    serving `preset` is up, which `/health` on the router does not say.
+    """
+    started = time.time()
+    last_beat = 0.0
+    while time.time() - started < deadline_sec:
+        status, _ = http_request(
+            f"{llama_url}/v1/chat/completions",
+            payload={
+                "model": preset,
+                "messages": [{"role": "user", "content": "ok"}],
+                "max_tokens": 1,
+            },
+            method="POST",
+            timeout=120,
         )
-        return
-    subprocess.run(
-        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
-    )
-    systemctl("restart", ("llama.service",))
-    jlog(
-        "info",
-        "llama:lease",
-        "llama-server reloading",
-        model=profile["label"],
-        model_file=profile["model_file"],
-    )
+        if status == 200:
+            return True
+        elapsed = time.time() - started
+        if elapsed - last_beat >= 10:
+            jlog(
+                "info",
+                "llama:warm",
+                "still waiting for the preset to load",
+                preset=preset,
+                elapsed_sec=int(elapsed),
+            )
+            last_beat = elapsed
+        time.sleep(3)
+    return False
 
 
 def renew_after(ttl: int) -> int:
@@ -1011,7 +1194,7 @@ def schedule_expiry(data_dir: str, port: str, seconds: int) -> None:
             f"--on-active={expiry_wake(seconds)}",
             "--description=Solaris GPU lease expiry (#1319)",
             f"--setenv=DATA_DIR={data_dir}",
-            f"--setenv=LLAMA_PORT={port}",
+            f"--setenv=LLAMA_ROUTER_PORT={port}",
             sys.executable,
             os.path.realpath(__file__),
             "release",
@@ -1048,20 +1231,22 @@ def cancel_expiry() -> None:
 def lease_acquire(
     data_dir: str,
     holder: str,
-    port: str = "11435",
+    port: str = "11434",
     model: str = "",
     duration_sec: int = LEASE_DEFAULT_DURATION_SEC,
 ) -> int:
-    """Hand the card to `holder`: claim, then stop.
+    """Hand the card to `holder`: claim, then set the environment.
 
-    `model=coding` (#1319) and `model=foundry` (#1325) are the softer variants:
-    llama-server is reloaded on that profile's model instead of stopped and
-    Solaris answers the household from it for the window. A coding lease also
-    stops the embeddings server, the batch transcriber and the trainer and
-    moves the voice stack to the CPU; a foundry lease leaves all five units
-    alone on the GPU, because foundry transcribes through
-    `solaris-whisper-batch` while it runs and the household keeps its semantic
-    vault search. Without `--model` the card is emptied outright.
+    `model=foundry` (#1325), `model=thinking` and `model=coding` (#1319) are
+    the softer variants, and since #1416 they no longer touch llama-server at
+    all: the router serves all four presets and the mode only decides what the
+    environment looks like and which presets a client may ask for. A coding or
+    thinking lease stops the batch transcriber and the wakeword trainer and
+    moves the voice stack to the CPU; a foundry lease stops nothing and leaves
+    everything on the GPU. The embeddings server keeps running in all three —
+    its 300 MiB fits under both focus peaks and the household would otherwise
+    lose its semantic vault search for the window. Without `--model` the card
+    is emptied outright.
     """
     current = read_lease(data_dir)
     if current and current.get("holder") != holder:
@@ -1102,34 +1287,15 @@ def lease_acquire(
         )
         return 0
     if profile:
-        if not gpu_container_is_live_source():
-            # The swap rewrites llama.container. If llama.service is still the
-            # deployed .kube unit, that file is inert and the restart would
-            # quietly bring the household model back up instead.
+        # Before anything stops: 13 GB over a household line is not something
+        # to do with the house muted, and a second acquire finds the files.
+        if not ensure_preset_weights(data_dir, profile["presets"]):
             jlog(
                 "error",
                 "llama:lease",
-                f"llama.service is not the GPU .container unit, so the {model} profile cannot be swapped in; nothing was stopped",
+                f"the {model} weights are not on the box; nothing was stopped",
             )
             return 1
-        # Before anything stops: 12.6 GB over a household line is not something
-        # to do with the house muted, and a second acquire finds the files.
-        models_dir = os.path.join(data_dir, "llama", "models")
-        stall_sec = int(env("LLAMA_DOWNLOAD_STALL_SECONDS", "600"))
-        for repo_key, file_key in (
-            ("model_repo", "model_file"),
-            ("draft_repo", "draft_file"),
-        ):
-            if not download_model(
-                profile[repo_key], profile[file_key], models_dir, stall_sec
-            ):
-                jlog(
-                    "error",
-                    "llama:lease",
-                    f"the {model} weights are not on the box; nothing was stopped",
-                    file=profile[file_key],
-                )
-                return 1
     now = time.time()
     if not write_lease(
         data_dir,
@@ -1147,8 +1313,14 @@ def lease_acquire(
             # What llama-server answers as for the window — solaris-chat hands
             # this straight to the lease holder (#1333).
             "alias": profile["alias"] if profile else "",
-            # Flipped once the leased model answers /health. Until then the
-            # card is in the swap and the Engine still says it is busy.
+            # The mode policy (#1416): the presets a client may ask the router
+            # for while this lease stands. The router itself has no policy —
+            # this is what the Engine and the HTTP lease layer refuse against,
+            # so a request for a preset outside the mode is answered with the
+            # mode's name instead of evicting the household model.
+            "allowed": list(profile["presets"]) if profile else [],
+            # Flipped once the mode's environment is set. An exclusive lease
+            # leaves it false: nothing is serving, and the Engine says so.
             "ready": False,
         },
     ):
@@ -1167,57 +1339,50 @@ def lease_acquire(
             until_sec=int(now + duration_sec),
         )
         return 0
-    if model == "coding":
+    if profile["stop_gpu_units"]:
         systemctl("stop", LEASE_GPU_UNITS)
+    if profile["voice"] == "cpu":
         set_voice_device(data_dir, "cpu")
-    apply_llama_profile(port, data_dir, profile)
-    llama_url = f"http://127.0.0.1:{port}"
-    if not wait_for_ready(llama_url, deadline_sec=LEASE_WARM_DEADLINE_SEC):
-        jlog(
-            "error",
-            "llama:lease",
-            "the leased model did not answer /health; releasing the card again",
-            model=profile["label"],
-            url=llama_url,
-        )
-        lease_release(data_dir, port)
-        return 1
-    if not speculative_active(llama_url):
-        jlog(
-            "warn",
-            "llama:lease",
-            "the leased model is up but /slots reports no speculative decoding — check the drafter; answers will be about a third slower",
-        )
+    # No restart: llama-server keeps serving every preset and loads the one the
+    # holder asks for on its first request (#1416). The card is free of the
+    # household model as soon as that happens — the router evicts the idle LRU
+    # child rather than holding two.
     current = read_lease(data_dir)
     current["ready"] = True
     write_lease(data_dir, current)
     jlog(
         "info",
         "llama:lease",
-        f"GPU leased for {model} — Solaris keeps answering, from the leased model",
+        f"GPU leased for {model} — Solaris keeps answering, from the presets this mode allows",
         holder=holder,
         model=profile["label"],
-        voice="cpu" if model == "coding" else "gpu",
+        allowed=list(profile["presets"]),
+        voice=profile["voice"],
         until_sec=int(now + duration_sec),
     )
     return 0
 
 
 def lease_release(data_dir: str, port: str) -> int:
-    """Give the card back: start everything, wait for the household model, drop
+    """Give the card back: start everything, warm the household preset, drop
     the lease last so nobody is told "ready" while e4b is still loading."""
     mode = read_lease(data_dir).get("mode")
     cancel_expiry()
-    if mode == "coding":
-        systemctl("start", LEASE_GPU_UNITS)
-        set_voice_device(data_dir, "gpu")
-        apply_llama_profile(port, data_dir, household_profile(data_dir))
-    elif mode == "foundry":
-        apply_llama_profile(port, data_dir, household_profile(data_dir))
+    profile = LEASE_PROFILES.get(str(mode))
+    if profile:
+        if profile["stop_gpu_units"]:
+            systemctl("start", LEASE_GPU_UNITS)
+        if profile["voice"] == "cpu":
+            set_voice_device(data_dir, "gpu")
     else:
         systemctl("start", LEASED_UNITS)
+    # The router still has the leased preset resident. Asking it for the
+    # household one now pays the 9-19 s load here instead of on the next
+    # resident's turn (#1415).
     llama_url = f"http://127.0.0.1:{port}"
-    warm = wait_for_ready(llama_url, deadline_sec=LEASE_WARM_DEADLINE_SEC)
+    warm = warm_preset(
+        llama_url, household_profile(data_dir)["alias"], LEASE_WARM_DEADLINE_SEC
+    )
     try:
         os.unlink(lease_file(data_dir))
     except OSError:
@@ -1226,16 +1391,10 @@ def lease_release(data_dir: str, port: str) -> int:
         jlog(
             "warn",
             "llama:lease",
-            "units restarted but llama-server did not answer /health; the lease is cleared anyway so Solaris stops saying it is busy. Check `journalctl --user -u llama.service`.",
+            "units restarted but the household preset did not answer; the lease is cleared anyway so Solaris stops saying it is busy. Check `journalctl --user -u llama.service`.",
             url=llama_url,
         )
         return 1
-    if not speculative_active(llama_url):
-        jlog(
-            "warn",
-            "llama:lease",
-            "household model is back but /slots reports no speculative decoding — answers will take about twice as long",
-        )
     jlog("info", "llama:lease", "GPU released — household model warm again")
     return 0
 
@@ -1360,7 +1519,7 @@ def render_broker_units(data_dir: str, port: str, script: str) -> tuple[str, str
         "[Service]\n"
         "Type=oneshot\n"
         f"Environment=DATA_DIR={data_dir}\n"
-        f"Environment=LLAMA_PORT={port}\n"
+        f"Environment=LLAMA_ROUTER_PORT={port}\n"
         # The first foundry lease downloads 8 GB before it swaps anything.
         "TimeoutStartSec=3600\n"
         f"ExecStart={sys.executable} {script} broker\n"
@@ -1402,7 +1561,10 @@ def install_broker_units(data_dir: str, port: str, script: str) -> None:
 
 def lease_cli(argv: list[str]) -> int:
     data_dir = env("DATA_DIR", "/mnt/data/stacks")
-    port = env("LLAMA_PORT", "11435")
+    # The router, not the door: `release` warms the household preset while the
+    # lease file still stands, which the policy proxy on LLAMA_PORT would be
+    # right to refuse (#1416).
+    port = env("LLAMA_ROUTER_PORT", "11434")
     if argv[0] != "acquire":
         return lease_release(data_dir, port)
     holder, model, duration = "", "", LEASE_DEFAULT_DURATION_SEC
@@ -1421,7 +1583,7 @@ def lease_cli(argv: list[str]) -> int:
         jlog(
             "error",
             "llama:lease",
-            "usage: gpu-lease.py acquire <holder> [--model coding|foundry] [--duration 4h]",
+            "usage: gpu-lease.py acquire <holder> [--model foundry|thinking|coding] [--duration 4h]",
         )
         return 2
     return lease_acquire(data_dir, holder, port, model, duration)
@@ -1450,6 +1612,344 @@ def install_lease_script(data_dir: str) -> str:
         return ""
     jlog("info", "llama:lease", "gpu-lease installed", path=dst)
     return dst
+
+
+# --- The mode policy proxy (#1416) ----------------------------------------
+#
+# The router polices nothing: asked for a preset, it loads it. With
+# `--models-max 1` that evicts whatever was resident, so one client on
+# LLAMA_PORT asking for the 27B during a household evening costs the next
+# resident turn a 10-20 s reload — precisely what the operator took the mode
+# for. The Engine refusing it on its own side does not help, because the
+# clients that do this (PI WEB, aider, goose, Continue) never pass through the
+# Engine.
+#
+# So the router moved to LLAMA_ROUTER_PORT on loopback and this proxy holds
+# LLAMA_PORT instead, with the same wide bind and the same `blockLanAccess`
+# firewall rule the router used to have. Per request it reads the lease's
+# `allowed` set, answers 409 for a preset outside it, filters `/v1/models` to
+# the same set and forwards everything else verbatim.
+#
+# It is a verb of this script rather than a file of its own: the copy
+# `install_lease_script` already puts on the box carries the preset table, the
+# lease reader and the household default, and a second copy of those is
+# exactly what drifts.
+POLICY_UNIT = "solaris-llama-policy"
+
+# Big enough that a whole SSE frame usually arrives in one write, small enough
+# that a long answer is never held back waiting to fill it.
+PROXY_CHUNK = 64 * 1024
+
+# Between the router's slowest honest answer (a 51 s cold load plus a long
+# generation) and a hung socket. The Engine gives up at 300 s of its own.
+PROXY_TIMEOUT_SEC = 600
+
+# RFC 9110: these describe the one hop and must not be relayed. `content-length`
+# is re-derived rather than copied, because the body may be rewritten.
+HOP_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
+
+MODELS_PATHS = ("/v1/models", "/models")
+
+
+def proxy_policy(data_dir: str) -> tuple[list[str], str]:
+    """`(presets a client may ask for, the mode that says so)`.
+
+    Read from the lease file on every request rather than cached: the mode is
+    taken and dropped from the phone, and the next request has to see it.
+    """
+    lease = read_lease(data_dir)
+    if not lease:
+        return [household_profile(data_dir)["alias"]], "household"
+    allowed = [
+        name.strip()
+        for name in lease.get("allowed") or []
+        if isinstance(name, str) and name.strip()
+    ]
+    return allowed, str(lease.get("mode") or "exclusive")
+
+
+def requested_model(body: bytes) -> str:
+    """The `model` field of a `/v1` request, `""` when it carries none."""
+    try:
+        request = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    if not isinstance(request, dict):
+        return ""
+    model = request.get("model")
+    return model.strip() if isinstance(model, str) else ""
+
+
+def denial(model: str, mode: str, allowed: list[str]) -> dict[str, object]:
+    """The 409 body: what was refused, which mode refused it, and what may be
+    asked for instead. German, because the operator is who reads it — in PI
+    WEB's ticket protocol, in aider's error line, in a log someone scrolls."""
+    if not allowed:
+        say = "Die Grafikkarte ist exklusiv vergeben; es antwortet gerade kein Modell."
+    elif len(allowed) == 1:
+        say = f"Erlaubt ist: {allowed[0]}."
+    else:
+        say = f"Erlaubt sind: {', '.join(allowed)}."
+    return {
+        "error": {
+            "message": f"Modell {model} ist im Modus {mode} nicht erlaubt. {say} "
+            "Den Modus in der Modell-Kachel in Solaris umschalten.",
+            "mode": mode,
+            "allowed": allowed,
+        }
+    }
+
+
+def filter_models(body: bytes, allowed: list[str]) -> bytes:
+    """`/v1/models` with everything the mode forbids taken out, so a client
+    that picks from the catalogue cannot pick a preset it may not have."""
+    try:
+        listing = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return body
+    if not isinstance(listing, dict) or not isinstance(listing.get("data"), list):
+        return body
+    listing["data"] = [
+        entry
+        for entry in listing["data"]
+        if isinstance(entry, dict) and entry.get("id") in allowed
+    ]
+    return json.dumps(listing).encode("utf-8")
+
+
+def make_proxy_server(
+    data_dir: str, listen_port: int, router_port: int
+) -> http.server.ThreadingHTTPServer:
+    """The policy proxy, bound and ready to serve. Returned rather than run so
+    the test drives the very object the `proxy` verb runs."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            """A refusal gets a jlog line; a token stream does not get 400."""
+
+        def do_GET(self) -> None:
+            if self.path.split("?")[0] in MODELS_PATHS:
+                self._catalogue()
+                return
+            self._forward(b"")
+
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            allowed, mode = proxy_policy(data_dir)
+            wanted = requested_model(body)
+            # A request naming no model is forwarded: the router answers it
+            # from the preset it already has resident, which cannot be one
+            # outside the mode, so there is nothing here to refuse.
+            if wanted and wanted not in allowed:
+                jlog(
+                    "info",
+                    "llama:policy",
+                    "refused a preset the standing mode does not allow",
+                    model=wanted,
+                    mode=mode,
+                    allowed=allowed,
+                )
+                self._answer(
+                    409, json.dumps(denial(wanted, mode, allowed)).encode("utf-8")
+                )
+                return
+            self._forward(body)
+
+        def _upstream(self) -> dict[str, str]:
+            return {
+                key: value
+                for key, value in self.headers.items()
+                if key.lower() not in HOP_HEADERS
+            }
+
+        def _answer(self, status: int, payload: bytes) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            self.wfile.write(payload)
+
+        def _catalogue(self) -> None:
+            allowed, _ = proxy_policy(data_dir)
+            conn = http.client.HTTPConnection(
+                "127.0.0.1", router_port, timeout=PROXY_TIMEOUT_SEC
+            )
+            try:
+                conn.request("GET", self.path, headers=self._upstream())
+                response = conn.getresponse()
+                status, body = response.status, response.read()
+            except OSError:
+                self._answer(502, self._unreachable())
+                return
+            finally:
+                conn.close()
+            self._answer(
+                status, filter_models(body, allowed) if status == 200 else body
+            )
+
+        def _forward(self, body: bytes) -> None:
+            headers = self._upstream()
+            if self.command == "POST":
+                headers["Content-Length"] = str(len(body))
+            conn = http.client.HTTPConnection(
+                "127.0.0.1", router_port, timeout=PROXY_TIMEOUT_SEC
+            )
+            try:
+                conn.request(
+                    self.command, self.path, body=body or None, headers=headers
+                )
+                response = conn.getresponse()
+            except OSError:
+                conn.close()
+                self._answer(502, self._unreachable())
+                return
+            try:
+                self.send_response(response.status)
+                for key, value in response.getheaders():
+                    if (
+                        key.lower() not in HOP_HEADERS
+                        and key.lower() != "content-length"
+                    ):
+                        self.send_header(key, value)
+                length = response.getheader("Content-Length")
+                if length is not None:
+                    self.send_header("Content-Length", length)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                while True:
+                    # read1, not read: `read(n)` on a chunked response keeps
+                    # pulling chunks until it has n bytes, which would hold an
+                    # SSE stream back until the whole answer is finished.
+                    chunk = response.read1(PROXY_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except OSError:
+                self.close_connection = True
+            finally:
+                conn.close()
+
+        def _unreachable(self) -> bytes:
+            allowed, mode = proxy_policy(data_dir)
+            return json.dumps(
+                {
+                    "error": {
+                        "message": "llama-server antwortet nicht. "
+                        "`journalctl --user -u llama.service` sagt warum.",
+                        "mode": mode,
+                        "allowed": allowed,
+                    }
+                }
+            ).encode("utf-8")
+
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", listen_port), Handler)
+    server.daemon_threads = True
+    return server
+
+
+def proxy_run(data_dir: str, listen_port: str, router_port: str) -> int:
+    server = make_proxy_server(data_dir, int(listen_port), int(router_port))
+    jlog(
+        "info",
+        "llama:policy",
+        "mode policy proxy serving",
+        listen=int(listen_port),
+        router=int(router_port),
+    )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+def render_policy_unit(
+    data_dir: str, listen_port: str, router_port: str, script: str
+) -> str:
+    """The proxy's unit, pure so the test can read it."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris llama mode policy proxy (#1416)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        f"Environment=DATA_DIR={data_dir}\n"
+        f"Environment=LLAMA_PORT={listen_port}\n"
+        f"Environment=LLAMA_ROUTER_PORT={router_port}\n"
+        f"ExecStart={sys.executable} {script} proxy\n"
+        "Restart=always\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def install_policy_unit(
+    data_dir: str, listen_port: str, router_port: str, script: str
+) -> None:
+    """Write, enable and restart the proxy.
+
+    Restarted unconditionally rather than only on a changed unit file: the
+    script it runs is rewritten by this same install, and a proxy still
+    executing the previous copy would police the previous table.
+    """
+    if not script:
+        jlog(
+            "error",
+            "llama:policy",
+            "no lease script on the box, so no policy proxy — nothing would answer on LLAMA_PORT at all",
+        )
+        return
+    unit_dir = os.path.expanduser(SYSTEMD_USER_DIR)
+    path = os.path.join(unit_dir, f"{POLICY_UNIT}.service")
+    try:
+        os.makedirs(unit_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(render_policy_unit(data_dir, listen_port, router_port, script))
+        os.chmod(path, 0o644)
+    except OSError as e:
+        jlog(
+            "error",
+            "llama:policy",
+            "could not install the policy proxy; nothing would answer on LLAMA_PORT",
+            path=path,
+            error=str(e),
+        )
+        return
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    systemctl("enable", ("--now", f"{POLICY_UNIT}.service"))
+    systemctl("restart", (f"{POLICY_UNIT}.service",))
+    jlog(
+        "info",
+        "llama:policy",
+        "mode policy proxy installed",
+        unit=f"{POLICY_UNIT}.service",
+        listen=listen_port,
+        router=router_port,
+    )
 
 
 def register_http_check(
@@ -1500,17 +2000,29 @@ def main() -> int:
     # the Engine writes a request for a neighbour service.
     if len(sys.argv) > 1 and sys.argv[1] == "broker":
         return broker_run(
-            env("DATA_DIR", "/mnt/data/stacks"), env("LLAMA_PORT", "11435")
+            env("DATA_DIR", "/mnt/data/stacks"), env("LLAMA_ROUTER_PORT", "11434")
+        )
+    # The mode policy on LLAMA_PORT (#1416), run by solaris-llama-policy.service
+    # from the copy install_lease_script puts on the box.
+    if len(sys.argv) > 1 and sys.argv[1] == "proxy":
+        return proxy_run(
+            env("DATA_DIR", "/mnt/data/stacks"),
+            env("LLAMA_PORT", "11435"),
+            env("LLAMA_ROUTER_PORT", "11434"),
         )
 
     port = env("LLAMA_PORT", "11435")
+    router_port = env("LLAMA_ROUTER_PORT", "11434")
     repo = env("LLAMA_MODEL_REPO", "ggml-org/gemma-4-E4B-it-GGUF")
     stall_sec = int(env("LLAMA_DOWNLOAD_STALL_SECONDS", "600"))
     sb_api = env("SB_API_URL", "http://localhost:3000")
     sb_token = env("SB_API_TOKEN", "")
     data_dir = env("DATA_DIR", "/mnt/data/stacks")
     models_dir = os.path.join(data_dir, "llama", "models")
-    llama_url = f"http://127.0.0.1:{port}"
+    # post-deploy talks to the router itself: it warms the household preset,
+    # which the policy proxy is entitled to refuse mid-lease.
+    llama_url = f"http://127.0.0.1:{router_port}"
+    policy_url = f"http://127.0.0.1:{port}"
 
     _gpu = env("LLAMA_GPU_PASSTHROUGH", "").strip().lower()
     if _gpu in ("yes", "true", "1"):
@@ -1534,21 +2046,10 @@ def main() -> int:
 
     # Weights first: the container crash-loops until they exist, and the GPU
     # fixup below restarts it once — so a first install converges without
-    # anyone waiting on a restart loop.
-    wanted = [
-        env("LLAMA_MODEL_FILE", "gemma-4-E4B-it-Q4_0.gguf"),
-        env("LLAMA_DRAFT_FILE", "mtp-gemma-4-E4B-it-Q8_0.gguf"),
-        env("LLAMA_MMPROJ_FILE", ""),
-    ]
-    for filename in [f for f in wanted if f]:
-        if not download_model(repo, filename, models_dir, stall_sec):
-            jlog(
-                "warn",
-                "llama:models",
-                "model file missing — llama-server will not start until it is there. Download it manually into %s from https://huggingface.co/%s"
-                % (models_dir, repo),
-                file=filename,
-            )
+    # anyone waiting on a restart loop. All four presets (#1416), because the
+    # router lists every one of them from the first start.
+    ensure_preset_weights(data_dir, list(preset_profiles()))
+    write_presets(data_dir)
 
     embed = embed_profile()
     if embed["port"] and not download_model(
@@ -1562,9 +2063,9 @@ def main() -> int:
             file=embed["model_file"],
         )
 
-    # A deploy in the middle of a lease must not take the card back: rewriting
-    # the Quadlet would restart llama-server into a card foundry or the coding
-    # run is using, and then wait 15 minutes for a /health that cannot come.
+    # A deploy in the middle of a lease must not take the card back: restarting
+    # llama-server would drop the preset the holder has loaded and cost it the
+    # cold load again, mid-run.
     leased = os.path.exists(lease_file(data_dir))
 
     if leased:
@@ -1575,7 +2076,7 @@ def main() -> int:
             holder=str(read_lease(data_dir).get("holder", "")),
         )
     elif gpu_requested:
-        install_gpu_quadlet_fallback(port, data_dir)
+        install_gpu_quadlet_fallback(router_port, data_dir)
         install_embed_unit(data_dir, gpu=True)
     else:
         install_embed_unit(data_dir, gpu=False)
@@ -1588,7 +2089,10 @@ def main() -> int:
     # Before the wait, not after: a first install that is still loading weights
     # must not be the reason the lease script is missing when foundry asks.
     lease_script = install_lease_script(data_dir)
-    install_broker_units(data_dir, port, lease_script)
+    install_broker_units(data_dir, router_port, lease_script)
+    # Before the leased early-return: the proxy is the only thing listening on
+    # LLAMA_PORT, so a deploy during a window must not leave it on old code.
+    install_policy_unit(data_dir, port, router_port, lease_script)
     save_household_profile(data_dir)
 
     if leased:
@@ -1596,19 +2100,25 @@ def main() -> int:
         print(f"   GPU lease: python3 {lease_script} release")
         return 0
 
+    household_preset = env_profile()["alias"]
     jlog(
         "info",
         "llama:bootstrap",
         "waiting for llama-server",
         url=llama_url,
+        preset=household_preset,
         deadline_sec=min(stall_sec, 900),
     )
-    if not wait_for_ready(llama_url, deadline_sec=min(stall_sec, 900)):
+    # The router answers before any model is loaded, so the household preset is
+    # asked for a token: that is both the readiness signal and the warm-up the
+    # first resident turn would otherwise pay for (#1416).
+    if not warm_preset(llama_url, household_preset, min(stall_sec, 900)):
         jlog(
             "warn",
             "llama:bootstrap",
-            "llama-server did not answer /health. Check `journalctl --user -u llama.service` — a missing or truncated GGUF is the usual cause.",
+            "llama-server did not serve the household preset. Check `journalctl --user -u llama.service` — a missing or truncated GGUF, or a presets file it could not parse, is the usual cause.",
             url=llama_url,
+            preset=household_preset,
         )
         return 0
 
@@ -1621,7 +2131,9 @@ def main() -> int:
             "llama-server is up but /slots reports no speculative decoding — the drafter is not in play and answers will take about twice as long. Check LLAMA_DRAFT_FILE.",
         )
 
-    register_http_check(sb_api, sb_token, llama_url)
+    # Against the proxy, not the router: LLAMA_PORT is the door every consumer
+    # uses, so a dead proxy has to read as a dead service.
+    register_http_check(sb_api, sb_token, policy_url)
 
     if embed["port"]:
         embed_url = f"http://127.0.0.1:{embed['port']}"
@@ -1646,9 +2158,15 @@ def main() -> int:
                 url=embed_url,
             )
 
-    print(f"✅ llama-server is running on 127.0.0.1:{port}.")
+    print(f"✅ llama-server is running on 127.0.0.1:{router_port} in router mode.")
     print(f"   Models in {models_dir} (from https://huggingface.co/{repo}).")
-    print("   The Solaris Engine reaches it via LLAMA_SERVER_URL.")
+    print(f"   Presets: {', '.join(preset_profiles())} (pick one per request).")
+    print(
+        f"   Clients use :{port} — the mode policy proxy "
+        f"({POLICY_UNIT}.service), which refuses a preset the standing "
+        "lease mode does not allow. The Solaris Engine reaches it via "
+        "LLAMA_SERVER_URL."
+    )
     if embed["port"]:
         print(
             f"   Embeddings on 127.0.0.1:{embed['port']} ({embed['alias']}), "
@@ -1657,8 +2175,8 @@ def main() -> int:
     if lease_script:
         print(f"   GPU lease: python3 {lease_script} acquire <name> | release")
         print(
-            f"   Coding window: python3 {lease_script} acquire coding "
-            "--model coding --duration 4h"
+            f"   Modes: python3 {lease_script} acquire <name> "
+            "--model foundry|thinking|coding --duration 4h"
         )
     return 0
 

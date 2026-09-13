@@ -42,10 +42,22 @@ _SELECTOR_VALUES = {FAST, LOW, HIGH}
 # Explicit "please think harder" cues, German + English (mirrors the voice
 # path's list). Word-boundaried, case-insensitive, intentionally narrow — tune
 # by adding a phrase, not by widening into heuristics.
+#
+# Since #1416 this list has a second reader: in the `thinking` lease window it
+# also decides whether the turn carries a reasoning trace at all. Same
+# question either way ("did the resident ask to be thought about"), so the
+# phrases the operator named on 2026-09-13 — überleg, gründlich, Schritt für
+# Schritt, rechne, Logik — live here rather than in a second list that would
+# answer it differently.
 _THINK_CUES = re.compile(
     r"\b("
-    r"denk(e)? (mal )?(scharf |gut |genau )?nach|"
-    r"denk(e)? (gr[üu]ndlich|sorgf[äa]ltig)|"
+    r"denk(e|en|st)? (mal )?(scharf |gut |genau |bitte )?nach|"
+    r"nachdenken|"
+    r"[üu]berleg(e|en|st|s)?|"
+    r"gr[üu]ndlich|sorgf[äa]ltig|"
+    r"schritt f[üu]r schritt|"
+    r"rechne(n)?|"
+    r"logik|logisch|"
     r"erkl[äa]r(e)? (mir |das |es |mir das )*genau|"
     r"begr[üu]nde( das)?|"
     r"think (it |this )?(through|hard|carefully|step by step)|"

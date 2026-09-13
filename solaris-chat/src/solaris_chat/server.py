@@ -3214,12 +3214,19 @@ def build_app(
         if current["state"] != "none" and (
             current["model"] != model or current["holder"] != holder
         ):
+            # The mode policy (#1416): the router serves every preset at once,
+            # so a refused window is no longer a dead end — the caller is told
+            # which mode stands and which presets it may ask the router for.
+            # Additive on mdopp/foundry-chronicle#321: every field the contract
+            # names is unchanged.
             return web.json_response(
                 {
                     "ok": False,
                     "reason": "held",
                     "holder": current["holder"] or current["model"],
                     "expires_at": current["expires_at"],
+                    "mode": current["model"],
+                    "allowed": gpu_lease.allowed(gpu_lease.lease_path(solaris_db_path)),
                 },
                 status=409,
             )

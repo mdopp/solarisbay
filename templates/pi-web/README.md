@@ -34,9 +34,11 @@ it by arguing its case, and Decision 3 says explicitly that needing to reach a
 loopback-bound sibling is not a reason either. So the pod runs in its own
 network namespace, publishes 8504 as a `hostPort`, and addresses llama-server
 as `http://host.containers.internal:11435/v1`. That path answers because the
-sibling half already landed in #1344: llama-server binds `0.0.0.0` and
-`LLAMA_PORT` carries `blockLanAccess: true`, so the LAN is refused at the host
-firewall while loopback — where the pasta-proxied pod path arrives — is not.
+sibling half already landed in #1344: the process on `LLAMA_PORT` binds
+`0.0.0.0` and the port carries `blockLanAccess: true`, so the LAN is refused at
+the host firewall while loopback — where the pasta-proxied pod path arrives —
+is not. Since #1416 that process is the llama template's mode policy proxy and
+llama-server itself sits behind it on loopback 11434.
 
 `PI_WEB_PORT` carries the same `blockLanAccess: true` flag, for the same
 reason one step further out: PI WEB has no login of its own (upstream states
@@ -62,43 +64,110 @@ agent directory's `models.json`. The post-deploy writes that file into
       "baseUrl": "http://host.containers.internal:11435/v1",
       "api": "openai-completions",
       "apiKey": "llama",
-      "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false },
-      "models": [{ "id": "qwen3.8-27b" }, { "id": "gemma-4-e4b" }]
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "thinkingFormat": "chat-template"
+      },
+      "models": [
+        { "id": "qwen3.8-27b", "reasoning": true,
+          "compat": { "chatTemplateKwargs": { "enable_thinking": false } } },
+        { "id": "qwen3.6-35b-a3b", "reasoning": true,
+          "compat": { "chatTemplateKwargs": { "enable_thinking": true } } },
+        { "id": "gemma-4-e4b", "reasoning": false }
+      ]
     }
   }
 }
 ```
 
-Three details that are not obvious:
+Four details that are not obvious:
 
-- **`api: "openai-completions"`, not Pi's built-in `llama.cpp` provider.** That
-  built-in speaks to llama.cpp's *router* mode, which discovers models in a
-  directory and loads them on demand. This box runs llama-server in
-  single-model mode (`-m <weights>`), where the router endpoints do not exist
-  but `/v1` does.
+- **`api: "openai-completions"`, not Pi's built-in `llama.cpp` provider.** The
+  built-in one discovers models in a directory of its own; this box runs the
+  router off a pinned presets file, so the model ids are declared here and the
+  list stays exactly what `templates/llama/post-deploy.py` serves.
 - **`apiKey` is a placeholder.** llama-server ships no authentication and there
   is no key to hold; Pi hides models whose provider has no auth configured at
   all, so a dummy value is what makes them appear. Upstream's own Ollama
   example does the same.
-- **Both aliases are listed.** llama-server serves one model at a time: the
-  coding alias answers while the lease is held from the model tile, the
-  household alias otherwise. A list with only one of them would name a model
-  that is absent for half the day.
+- **The order is the default.** With nothing saved, Pi starts a session on the
+  first model of the first provider that has auth configured — the coding
+  preset. Everything else is one `/model` away.
+- **Both Qwen presets say `reasoning: true`, and each pins its own value.** Pi
+  only sends `chat_template_kwargs` for a model it has been told can reason,
+  and that is the only way to send `enable_thinking: false` at all — see the
+  next section.
 
-## The model it answers on, and how Qwen is requested
+## Which model in which mode
 
-The household model stays Gemma 4 E4B (#1318/#1325). Qwen 3.8 27B is what the
-**coding lease** loads, and that lease is an endpoint of the Solaris Engine.
-PI WEB does not ask for it: **Qwen über die Modell-Kachel anfordern; pi läuft
-sonst auf dem Haushaltsmodell.** The tile is the model widget in Solaris
-(#1374/#1381) — reachable from the phone's home screen, without a development
-tool running — and it holds the window under its own holder.
+llama-server is a **router** since #1416: one process, several presets, and
+the client picks one with the `model` field of its request. The GPU lease no
+longer swaps the server — it sets the **mode**: the voice stack's device and
+the set of presets a client may ask for while it stands, which a policy proxy
+on 11435 enforces. **The model widget in Solaris (the Modell-Kachel,
+#1374/#1381) is what selects that mode** — from the phone, without a
+development tool running.
 
-So PI WEB simply talks to `http://host.containers.internal:11435/v1` and uses
-whatever llama-server currently serves: the coding alias while somebody holds
-the lease, the household alias otherwise. Both are listed in `models.json` for
-exactly that reason; picking the one that is not loaded is a request llama-server
-answers with the model it has.
+The tile's names, as a resident reads them (operator, 2026-09-13):
+
+| Mode (lease) | Presets allowed | What a PI WEB session should pick |
+|---|---|---|
+| Haushalt + Schnell (no lease) | `gemma-4-e4b` | Gemma answers; Qwen needs a mode first |
+| Haushalt + Denken (`foundry`) | `gemma-4-e4b`, `gemma-4-12b` | neither is a coding model |
+| **Fokus Denken** (`thinking`) | `qwen3.6-35b-a3b` | `/model` → *Qwen 3.6 35B-A3B* |
+| **Fokus Programmieren** (`coding`) | `qwen3.8-27b` | the session default, nothing to do |
+
+So: a coding session needs **Fokus Programmieren** from the tile, a reading or
+reasoning session **Fokus Denken** plus `/model` inside Pi. That `/model`
+picker is the whole switch — there is no PI WEB setting to change and no
+environment variable to redeploy.
+
+The first turn after a mode change pays a 10–20 s load, because the router
+loads a preset on demand. That is a slow answer, not an error.
+
+### Thinking is the client's switch now
+
+The server used to be told once (`--reasoning off` in the coding profile,
+#1321, after goose aborted on reasoning traces). One router serving four models
+cannot carry that setting for all of them, so it is gone and **the client sends
+it per request**: `chat_template_kwargs.enable_thinking`.
+
+Pi sends that field only for a model declared `reasoning: true`, which is why
+both Qwen presets are — the coding preset then pins the literal `false` (no
+trace, tool calls work) and the Denken preset the literal `true`, because in a
+Denken window the trace is the point. Gemma has no thinking mode and stays
+`reasoning: false`.
+
+Every client on this box must now do the same. Solaris' own Engine does
+(#1416); **aider, goose, Continue and anything else pointed at 11435 send
+nothing by default and will get a reasoning trace from the 27B** — they need
+the same `chat_template_kwargs` in their own provider configuration.
+
+### Take the mode — 11435 will make you
+
+Since #1416 what answers on 11435 is not the router but a **mode policy
+proxy** in front of it (the router itself moved to loopback 11434 and has no
+policy at all). It reads the lease's `allowed` set on every request: a session
+here asking for `qwen3.8-27b` during a household evening is **refused with
+409**, not served, and `GET /v1/models` shows only the presets the standing
+mode allows — so Pi's `/model` picker lists what is actually available.
+
+That is deliberate rather than tidy: served, the request would load 15.6 GiB
+of weights, evict the household Gemma and leave the next resident waiting
+10–20 s for a light to come on. Taking the mode in the Modell-Kachel first is
+now the only way in.
+
+A 409 is handled rather than crashing anything:
+
+- **In a browser session** Pi shows the provider error in the conversation and
+  the session stays open — pick an allowed model with `/model`, or set the mode
+  in the Modell-Kachel.
+- **In the autoloop** the run would end without changing anything, which on its
+  own reads as "Pi found nothing to do". So the loop recognises the 409 and
+  writes it in the protocol in plain German: *Modell qwen3.8-27b ist im Modus
+  household nicht erlaubt. In der Modell-Kachel in Solaris den Modus
+  Programmieren wählen* — and picks the ticket up again by itself next pass.
 
 ### The retired lease unit (#1392)
 
@@ -421,9 +490,10 @@ Minuten nachsehen):
    nie nach demselben Ticket.
 2. Das Repository wird nach `/workspace/autoloop/<besitzer>/<repo>/<nummer>`
    geklont.
-3. `pi --mode json` bekommt das Ticket als Auftrag, mit dem Modell, das
-   llama-server **gerade** geladen hat. Der Loop fordert **keine** GPU an; Qwen
-   kommt weiterhin über die Modell-Kachel in Solaris.
+3. `pi --mode json` bekommt das Ticket als Auftrag, mit dem Preset
+   `qwen3.8-27b`. Der Loop fordert **keine** GPU an — der Modus kommt aus der
+   Modell-Kachel in Solaris (dort „Fokus Programmieren"). Wird das Preset doch einmal abgelehnt (409), steht
+   der Grund im Klartext im Protokoll, statt dass der Lauf still nichts tut.
 4. Danach laufen die Prüfungen des Zielrepositories — was es selbst mitbringt
    (`ruff`, `pytest`, `npm run lint`, `npm test`). Ein Werkzeug, das dieser
    Container nicht hat, steht im Protokoll als *übersprungen* und gilt nie als
@@ -463,8 +533,16 @@ service. PI WEB is a developer tool that happens to live on the same box, like
 
 - `https://pi.<publicDomain>/` unauthenticated → **302** to Authelia; after
   login the UI loads over WebSocket.
-- The model picker lists the alias llama-server currently reports
-  (`curl http://127.0.0.1:11435/v1/models`).
+- The model picker lists the presets the standing mode allows — with the card
+  at Haushalt that is `gemma-4-e4b` alone, and `curl
+  http://127.0.0.1:11435/v1/models` names the same ids. With **Fokus
+  Programmieren** held it lists `qwen3.8-27b`.
+- With **Fokus Programmieren** held from the Modell-Kachel, a coding answer
+  carries no reasoning trace (the client sent `enable_thinking: false`); after
+  `/model` → *Qwen 3.6 35B-A3B* in **Fokus Denken** it does.
+- With no lease held, asking for a Qwen preset is **refused with 409** by the
+  policy proxy and the session stays usable — the loop names the mode in its
+  protocol and takes the ticket again next pass.
 - `systemctl --user status pi-web-model-lease` reports **not-found** and
   `grep -c Install ~/.config/containers/systemd/pi-web.kube` is 1 — the
   service is up now and comes back after a reboot.

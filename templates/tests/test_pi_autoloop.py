@@ -383,9 +383,74 @@ def test_the_autoloop_runs_as_its_own_container_on_the_shared_volumes(
     )
 
 
+def test_the_loop_asks_the_router_for_the_coding_preset(loop):
+    """`/v1/models` is a catalogue since #1416, not "what is loaded": taking the
+    first entry would have the coding loop work tickets on the household model
+    whenever the router happens to list e4b first."""
+    catalogue = {"data": [{"id": "gemma-4-e4b"}, {"id": "qwen3.8-27b"}]}
+    assert loop.preset_to_use("u", lambda url, method: (200, catalogue)) == (
+        "qwen3.8-27b"
+    )
+
+
+def test_a_router_that_does_not_offer_it_still_gets_the_ticket_worked(loop):
+    """A renamed preset must not stop the loop dead with a model name nothing
+    answers to — but an unreachable router leaves the choice to Pi's own
+    default."""
+    listed = {"data": [{"id": "gemma-4-e4b"}]}
+    assert loop.preset_to_use("u", lambda url, method: (200, listed)) == "gemma-4-e4b"
+    assert loop.preset_to_use("u", lambda url, method: (0, {})) == ""
+    assert loop.preset_to_use("u", lambda url, method: (200, {"data": []})) == ""
+
+
+def test_a_preset_the_mode_refuses_is_named_instead_of_looking_like_idleness(loop):
+    """409 means the standing mode does not allow this preset (#1416). Pi then
+    changes nothing, which in the protocol is indistinguishable from a ticket
+    that needed no change — so the protocol has to say what happened and what
+    the operator can do about it."""
+    event = json.dumps(
+        {
+            "type": "error",
+            "error": '409 {"error":"preset not allowed","mode":"Haushalt",'
+            '"allowed":["gemma-4-e4b"]}',
+        }
+    )
+    note = loop.refusal_note([event], "qwen3.8-27b")
+    assert "qwen3.8-27b" in note and "Haushalt" in note
+    assert "Modell-Kachel" in note and "Programmieren" in note
+    assert loop.refusal_note(['{"type":"done"}'], "qwen3.8-27b") == ""
+
+
+def test_a_refusal_reaches_the_protocol_and_not_only_the_container_log(
+    loop, monkeypatch, tmp_path
+):
+    """run_pi hands the note out, and the protocol is where it lands — the
+    operator reads that file, not the pod's stdout."""
+
+    class Result:
+        stdout = ""
+        stderr = '{"type":"error","error":"409 mode Haushalt"}'
+
+    monkeypatch.setattr(loop.subprocess, "run", lambda *a, **k: Result())
+    _, capped, note = loop.run_pi("ticket", "qwen3.8-27b", tmp_path, 60)
+    assert not capped and note
+    protocol = loop.format_protocol(
+        "mdopp/solarisbay",
+        7,
+        "qwen3.8-27b",
+        1.0,
+        [],
+        loop.summarise_events([]),
+        "pi/7-x",
+        "",
+        note,
+    )
+    assert "Hinweis:  Modell qwen3.8-27b" in protocol
+
+
 def test_the_autoloop_takes_no_gpu_lease(loop):
-    """#1392: the coding lease belongs to the Solaris model tile. The loop reads
-    which alias is loaded and proceeds — it never asks for a swap."""
+    """#1392: the mode belongs to the Solaris model tile. The loop asks the
+    router for the preset it needs and proceeds — it never asks for a swap."""
     source = LOOP.read_text(encoding="utf-8")
     assert "model-lease" not in source
     cfg = loop.config_from_env({"LLAMA_PORT": "11435"})

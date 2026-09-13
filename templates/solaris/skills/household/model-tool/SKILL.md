@@ -1,6 +1,6 @@
 ---
 name: solaris-model-tool
-description: The .model dot-command — welches Modell gerade läuft, und die Grafikkarte für eine gewählte Zeit auf Programmieren oder Foundry umschalten.
+description: The .model dot-command — welches Modell gerade läuft, und die Grafikkarte für eine gewählte Zeit auf Haushalt + Denken, Fokus Denken oder Fokus Programmieren umschalten.
 kind: tool
 scope: household
 tool-id: model
@@ -11,7 +11,7 @@ tool-item-id-field: id
 tool-actions: model.set, model.lease, model.release
 tool-cell-schema: {"id": "id", "title": "title", "subtitle": "status_text", "meta": ["detail"], "badge": "badge", "actions": ["model.set"]}
 tool-action-params: {"model.set": {"profile": "$profile", "hours": "$hours"}}
-version: 2.1.0
+version: 2.3.0
 author: Solaris
 license: MIT
 ---
@@ -21,11 +21,18 @@ license: MIT
 **Usage:** `.model` zeigt je Wahl eine Zeile — welches Modell wie lange laufen
 soll — und schaltet auf Knopfdruck um.
 
+Jede Zeile sagt zweierlei: ob das **Haus** noch ganz es selbst ist, und ob die
+Karte **schnell** oder **denkend** arbeitet.
+
 | Zeile | Was sie bedeutet |
 |---|---|
-| **Haushalt (freigeben)** | die Karte gehört wieder dem Haus — der Normalzustand |
-| **Programmieren · 1 h / 4 h / bis morgen 07:00** | die ganze Grafikkarte für einen Programmierlauf |
-| **Foundry · 1 h / 4 h / bis morgen 07:00** | ein Foundry-Abend; Solaris antwortet weiter, nur langsamer |
+| **Haushalt + Schnell (Normalzustand)** | die Karte gehört dem Haus, Solaris antwortet so schnell wie möglich — hierher kommt man immer zurück |
+| **Haushalt + Denken · 1 h / 4 h / bis morgen 07:00** | ein größeres Modell für das ganze Haus; alles funktioniert wie gewohnt, Antworten dauern rund eine Sekunde länger |
+| **Fokus Denken · 1 h / 4 h / bis morgen 07:00** | die Karte geht an ein Lese- und Denkmodell — für lange Texte, Zusammenhänge und Knobelfragen. Das Haus antwortet weiter, nur langsamer |
+| **Fokus Programmieren · 1 h / 4 h / bis morgen 07:00** | die ganze Grafikkarte für einen Programmierlauf |
+
+„Fokus" heißt: die Karte arbeitet für eine Aufgabe, das Haus tritt zurück und
+wird langsamer. „Haushalt" heißt: das Haus behält sie.
 
 Ein Tipp nimmt die Karte **bis zu einer Zeit**, nicht „bis auf Weiteres".
 Danach kommt sie von selbst zurück — niemand muss daran denken.
@@ -33,14 +40,19 @@ Danach kommt sie von selbst zurück — niemand muss daran denken.
 Auf einen Blick sagt jede Zeile zweierlei: rechts als fettes Kurzwort, **was
 gerade passiert** — `läuft` / `wird geladen` / `wird freigegeben`, und gar
 nichts, wenn die Zeile still ist; unter dem Titel **welches Modell und bis
-wann** — „Qwen 27B · bis 19:42", „Gemma 4 12B · bis morgen 07:00", beim Haus
-„Gemma 4 e4b · Haushalt". Zeilen, die nichts tun, nennen nur ihr Modell
+wann** — „Qwen 35B · bis 19:42", „Gemma 4 12B · bis morgen 07:00", beim Haus
+„Gemma 4 e4b · Normalzustand". Zeilen, die nichts tun, nennen nur ihr Modell
 („Qwen 27B"). Die Endzeit steht als **Uhrzeit**, nicht als Restdauer: „noch 42
 Min" muss man erst zur aktuellen Zeit dazurechnen, um zu wissen, wann die Karte
 wieder frei ist.
 
 Während eines Wechsels sprechen **zwei** Zeilen: die alte „wird freigegeben",
 die neue „wird geladen".
+
+Der Wechsel selbst geht schnell — das neue Modell lädt erst mit der **ersten
+Frage** danach, und die dauert deshalb 10 bis 20 Sekunden länger als sonst.
+Danach antwortet Solaris wieder im gewohnten Tempo. Es geht nichts verloren und
+nichts läuft in einen Fehler: die Antwort kommt, sie lässt sich einmal bitten.
 
 ## Warum die Zeile die Wahl ist
 
@@ -87,3 +99,16 @@ das Ende.
   abgebende „wird freigegeben", die kommende „wird geladen". Hält ein
   **anderer** Dienst die Karte, sagt die Aktion das im Klartext und ändert
   nichts; die Zeile nennt den Halter („… · von pi-web").
+- **Was ein Modus seit #1416 tut:** llama-server hält alle Presets gleichzeitig
+  und lädt das an, nach dem gefragt wird. Ein Modus tauscht darum keinen Server
+  mehr aus, sondern stellt die Umgebung (Sprache auf GPU oder CPU) und legt
+  fest, welche Presets währenddessen erlaubt sind; ein Proxy vor dem Router
+  weist alles andere mit `409` ab. Der Einbettungs-Server läuft in jedem Modus
+  weiter, die semantische Suche bleibt also da. Solaris fragt von sich aus
+  immer das Preset des laufenden Modus — „Fokus Denken" ist `qwen3.6-35b-a3b`.
+- **Nachdenken kommt auf Zuruf, nicht auf Vorrat** (Operator 13.9.): auch in
+  „Fokus Denken" antwortet Solaris normal. Erst wenn die Frage darum bittet —
+  „denk mal nach", „überleg", „gründlich", „Schritt für Schritt", „rechne",
+  „Logik" — überlegt das Modell ausführlich
+  (`chat_template_kwargs.enable_thinking`). So kostet „mach das Licht aus" auch
+  im Denkfenster keine Denkzeit.

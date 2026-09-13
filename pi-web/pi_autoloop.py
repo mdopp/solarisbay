@@ -29,10 +29,13 @@ Four things carry the design:
     opens a draft rather than nothing, because a protocol nobody can find is the
     same as no protocol.
 
-  IT TAKES NO GPU LEASE. llama-server runs one model at a time and the coding
-    lease belongs to the Solaris model tile (#1374/#1381). The loop asks
-    `/v1/models` which alias is loaded right now, uses it, and names it in the
-    protocol — it never asks for a swap.
+  IT TAKES NO GPU LEASE. llama-server is a router (#1416) and the lease — the
+    mode, and with it the presets a client may ask for — belongs to the Solaris
+    model tile (#1374/#1381). The loop is a coding session, so it asks the
+    router for the coding preset and names it in the protocol. The router
+    polices nothing itself, but where the mode policy does sit in front of a
+    request it answers 409 — the loop then says so in plain German and takes
+    the ticket again next pass. It never asks for a swap.
 
 The GitHub token is the one the pod already has: `PI_WEB_GIT_TOKEN`, which the
 `pi-web-git-credentials` init container wrote to a 0600 credential store. Git
@@ -69,9 +72,14 @@ CLAIM_REF_PREFIX = "refs/autoloop/claim"
 BRANCH_PREFIX = "pi"
 
 # The provider id templates/pi-web/post-deploy.py writes into the Pi agent's
-# models.json. `--model <provider>/<id>` is how a run is pinned to the alias
-# llama-server actually has loaded rather than the other one that file declares.
+# models.json. `--model <provider>/<id>` is how a run is pinned to one preset
+# of the router rather than to whatever that file happens to list first.
 PROVIDER_ID = "solaris-llama"
+
+# The preset this loop works in. It is a coding session, so it asks for the
+# coding preset — `/v1/models` is a catalogue of everything the router can
+# serve since #1416 and no longer says which model is loaded.
+CODING_PRESET = "qwen3.8-27b"
 
 COMMIT_NAME = "Pi Autoloop"
 COMMIT_EMAIL = "pi-autoloop@users.noreply.github.com"
@@ -400,12 +408,48 @@ def already_worked(api: str, repo: str, issue: int, token: str, http) -> bool:
     return status == 200 and isinstance(body, list) and len(body) > 0
 
 
-def loaded_alias(url: str, http) -> str:
+def preset_to_use(url: str, http) -> str:
+    """The preset this run asks the router for, or "" when it cannot be asked.
+
+    The coding preset when the router offers it; otherwise the first preset it
+    does offer, so a box whose presets were renamed still works tickets instead
+    of sending a model name nothing answers to.
+    """
     status, body = http(url, "GET")
     if status != 200 or not isinstance(body, dict):
         return ""
-    data = body.get("data") or []
-    return str(data[0].get("id", "")) if data else ""
+    ids = [
+        str(entry.get("id", ""))
+        for entry in (body.get("data") or [])
+        if isinstance(entry, dict) and entry.get("id")
+    ]
+    if CODING_PRESET in ids:
+        return CODING_PRESET
+    return ids[0] if ids else ""
+
+
+def refusal_note(lines: list[str], preset: str) -> str:
+    """A sentence for the protocol when the run died on a refused preset.
+
+    The mode policy answers a preset it does not allow with 409 and the mode's
+    name (#1416). Pi reports that as a provider error and then changes nothing
+    — which in the protocol is indistinguishable from a model that found
+    nothing to do, so the refusal has to be named where the operator reads it.
+    """
+    for line in lines:
+        low = line.lower()
+        if "409" not in low or ("allowed" not in low and "mode" not in low):
+            continue
+        # The body reaches this file inside Pi's own JSON event, so the router's
+        # quotes arrive escaped as often as not.
+        found = re.search(r'\\?"mode\\?"\s*:\s*\\?"([^"\\]+)', line)
+        mode = found.group(1) if found else "Haushalt"
+        return (
+            f"Modell {preset} ist im Modus {mode} nicht erlaubt. "
+            "In der Modell-Kachel in Solaris den Modus Programmieren wählen; "
+            "der Loop nimmt das Ticket beim nächsten Durchgang von selbst wieder auf."
+        )
+    return ""
 
 
 # ── the box side ────────────────────────────────────────────────────────────
@@ -449,7 +493,10 @@ def clone(repo: str, branch: str, dest: Path) -> bool:
     return res.returncode == 0
 
 
-def run_pi(prompt: str, model: str, cwd: Path, time_cap_s: int) -> tuple[dict, bool]:
+def run_pi(
+    prompt: str, model: str, cwd: Path, time_cap_s: int
+) -> tuple[dict, bool, str]:
+    """`(event summary, hit the time cap, refusal note)`."""
     cmd = ["pi", "--mode", "json"]
     if model:
         cmd += ["--model", f"{PROVIDER_ID}/{model}"]
@@ -463,15 +510,20 @@ def run_pi(prompt: str, model: str, cwd: Path, time_cap_s: int) -> tuple[dict, b
             timeout=time_cap_s,
             check=False,
         )
-        return summarise_events(res.stdout.splitlines()), False
+        lines = (res.stdout + res.stderr).splitlines()
+        return (
+            summarise_events(res.stdout.splitlines()),
+            False,
+            refusal_note(lines, model),
+        )
     except subprocess.TimeoutExpired as e:
         out = e.stdout or ""
         if isinstance(out, bytes):
             out = out.decode("utf-8", "replace")
-        return summarise_events(out.splitlines()), True
+        return summarise_events(out.splitlines()), True, ""
     except OSError as e:
         jlog("error", "pi-autoloop:pi", "pi could not be started", detail=str(e))
-        return summarise_events([]), True
+        return summarise_events([]), True, ""
 
 
 def run_gates(cwd: Path) -> list[dict]:
@@ -587,7 +639,7 @@ def work_ticket(cfg: dict, repo: str, issue: dict, token: str, base: str, http) 
     started = time.monotonic()
     dest = Path(cfg["workroot"]) / repo / str(number)
     branch = branch_name(number, str(issue.get("title", "")))
-    model = loaded_alias(cfg["models_url"], http)
+    model = preset_to_use(cfg["models_url"], http)
     gates: list[dict] = []
     pi: dict = summarise_events([])
     pr_url = ""
@@ -596,9 +648,16 @@ def work_ticket(cfg: dict, repo: str, issue: dict, token: str, base: str, http) 
     if not clone(repo, base, dest):
         note = "Klon fehlgeschlagen"
     else:
-        pi, capped = run_pi(task_prompt(repo, issue), model, dest, cfg["time_cap_s"])
+        pi, capped, refused = run_pi(
+            task_prompt(repo, issue), model, dest, cfg["time_cap_s"]
+        )
         if capped:
             note = "Zeitlimit erreicht — Pi abgebrochen"
+        if refused:
+            note = refused
+            jlog(
+                "warn", "pi-autoloop:pi", refused, repo=repo, issue=number, model=model
+            )
         gates = run_gates(dest)
         pushed = commit_and_push(dest, branch, commit_subject(issue), number)
         if not pushed:

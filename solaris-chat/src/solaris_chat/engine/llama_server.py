@@ -18,7 +18,20 @@ is still Ollama-shaped — it is what the store persists):
   `enable_thinking = true`, overriding its `default(false)` — box-measured, and
   the whole reason #1317 read as "llama.cpp cannot turn Gemma's thinking off".
   With it on, six of every seven generated tokens are an invisible English
-  reasoning trace the resident pays for and never sees.
+  reasoning trace the resident pays for and never sees. The `thinking` lease
+  mode (#1416) does not flip that on its own: the window says *which model*
+  answers, and thinking stays a thing the turn asks for. Operator, 2026-09-13 —
+  a Denken window is an afternoon, and paying six of seven tokens for a trace
+  on "mach das Licht aus" is not what was chosen. So in that mode the trace is
+  on only when the turn asks for deliberation in words (`reasoning`'s cue
+  list, the same one that escalates `reasoning_effort`).
+* **The `model` field names a router preset, not the caller's model.** Since
+  #1416 one llama-server holds all four presets and the client picks with this
+  field; `FAST_MODEL` is still the Ollama-era tag the panel and the traces use, and
+  the router has never heard of it. So the preset for the standing lease mode
+  goes on the wire and the `model` argument stays what Solaris calls the model
+  to itself. A mode therefore cannot be asked for a preset it does not allow:
+  the Engine only ever sends the one the lease names.
 * **The message shapes differ.** Ollama takes `tool_name` on a tool result,
   tool-call arguments as an object, and images as bare base64 on the message;
   the OpenAI schema wants `tool_call_id`/`name`, arguments as a JSON string,
@@ -34,7 +47,7 @@ from typing import Any
 
 import aiohttp
 
-from solaris_chat import gpu_lease
+from solaris_chat import gpu_lease, reasoning, turn_hints
 from solaris_chat.logging import log
 
 # Base64 magic prefixes, so an attachment carried as bare base64 (the Ollama
@@ -159,6 +172,25 @@ class LlamaServerChat:
         # lease is possible, which is what a dev install has.
         self._lease_path = lease_path
 
+    def _asked(self, messages: list[dict[str, Any]]) -> bool:
+        """True when this turn should carry a reasoning trace (#1416).
+
+        Only in the `thinking` window, and only when the resident asked for
+        deliberation in words: the window chooses the model, the sentence
+        chooses the thinking. Outside it nothing here turns the trace on —
+        `think=True` from the caller still does.
+        """
+        if not gpu_lease.thinks(self._lease_path):
+            return False
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                return False
+            return reasoning.wants_reasoning(turn_hints.strip_internal_hints(content))
+        return False
+
     async def stream(
         self,
         model: str,
@@ -173,7 +205,10 @@ class LlamaServerChat:
         request — that is what actually interrupts the model's generation.
 
         `tool_choice` is llama.cpp's string form ("auto"/"none"/"required");
-        empty leaves the field off and the server defaults to "auto"."""
+        empty leaves the field off and the server defaults to "auto".
+
+        `model` is Solaris' own name for the model (traces, panel); the router
+        preset that goes on the wire comes from the lease (#1416)."""
         if gpu_lease.mutes_chat(self._lease_path):
             # foundry holds the card, so llama.service is stopped and no model
             # can answer this turn (#1320) — or a coding lease is still loading
@@ -187,11 +222,11 @@ class LlamaServerChat:
             yield "done", leased
             return
         body: dict[str, Any] = {
-            "model": model,
+            "model": gpu_lease.preset(self._lease_path),
             "messages": to_openai_messages(messages),
             "stream": True,
             "stream_options": {"include_usage": True},
-            "chat_template_kwargs": {"enable_thinking": think},
+            "chat_template_kwargs": {"enable_thinking": think or self._asked(messages)},
         }
         if tools:
             body["tools"] = tools

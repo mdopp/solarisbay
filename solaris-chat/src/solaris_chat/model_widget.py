@@ -58,12 +58,22 @@ DEFAULT_UNTIL = "2h"
 # profile. Giving up is harmless: the release runs on the host either way.
 SWITCH_TRIES = 20
 
-# The profiles, in the order their rows are shown: the house first, so the top
-# line of a truncated tile always answers "what is running right now".
+# The profiles, in the order their rows are shown, titled as the operator named
+# them on 2026-09-13. The names say the two things a resident actually decides
+# between: whether the **house** is still fully itself, and whether the card is
+# **fast** or **thinking**. "Foundry" was a neighbour service's name for its own
+# evening and told a resident nothing; what it does is leave the house whole on
+# a bigger model, so it is "Haushalt + Denken".
+#
+# Hence the order: the two Haushalt rows first — the top line of a truncated
+# tile still answers "what is running right now" — then the two Fokus rows,
+# which hand the card to a job and slow the house down. The ids are unchanged
+# (`household`, `foundry:1h`, …), so this is a label change on the wire.
 PROFILES = (
-    (HOUSEHOLD, "Haushalt", "Gemma 4 e4b"),
-    ("coding", "Programmieren", "Qwen 27B"),
-    ("foundry", "Foundry", "Gemma 4 12B"),
+    (HOUSEHOLD, "Haushalt + Schnell", "Gemma 4 e4b"),
+    ("foundry", "Haushalt + Denken", "Gemma 4 12B"),
+    ("thinking", "Fokus Denken", "Qwen 35B"),
+    ("coding", "Fokus Programmieren", "Qwen 27B"),
 )
 
 # The short word the tile's badge chip shows, per state. The chip is bold and
@@ -228,9 +238,10 @@ def _status_text(
     parts = [model_name]
     when = when_text(expires_at, now=now)
     if not when and profile == HOUSEHOLD:
-        # The house holds no window, so there is no end to name — say whose
-        # model it is instead of leaving the active row on the bare name.
-        when = "Haushalt"
+        # The house holds no window, so there is no end to name — say that this
+        # is simply how the house runs instead of leaving the row on the bare
+        # model name.
+        when = "Normalzustand"
     if when:
         parts.append(when)
     if holder and holder != HOLDER:
@@ -245,7 +256,7 @@ def _windows(profile: str, *, now: float) -> list[tuple[str, str, float]]:
     tells the action to release.
     """
     if profile == HOUSEHOLD:
-        return [(HOUSEHOLD, "Haushalt (freigeben)", 0.0)]
+        return [(HOUSEHOLD, "Haushalt + Schnell (Normalzustand)", 0.0)]
     label = PROFILE_TITLES[profile]
     out = []
     for key, window, hours in WINDOWS:

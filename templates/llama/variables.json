@@ -1,9 +1,14 @@
 {
   "LLAMA_PORT": {
     "type": "text",
-    "description": "Host port llama-server binds on. Default `11435` — next to Ollama's 11434 and clear of llama.cpp's stock 8080, which is heavily contended on a household box. Keep it equal to the solaris template's LLAMA_SERVER_URL port. There is deliberately no proxy route: llama-server ships no authentication, so the endpoint is for on-box consumers only. It binds every host interface rather than loopback because isolated pods (claude-dev's `pi`) reach it via host.containers.internal, which rootless podman/pasta maps to the host's LAN address rather than loopback (ADR 0007, Decision 3). LAN devices are refused at the HOST firewall by the blockLanAccess flag below: ServiceBay installs an nftables rule that drops connections arriving on a physical interface while leaving loopback — and the pasta-proxied pod path, which lands on lo — untouched.",
+    "description": "The port every client on this box uses. Since #1416 what listens here is not llama-server itself but the template's MODE POLICY PROXY — a small stdlib process post-deploy installs as `solaris-llama-policy.service`. It forwards to the router on LLAMA_ROUTER_PORT and enforces one rule on the way: a request whose `model` field names a preset the standing GPU lease mode does not allow is refused with `409` naming the mode and what it does allow, and `GET /v1/models` lists only the allowed presets. Without it, one client asking for the 27B during a household evening evicts the household model (`--models-max 1`) and the next resident waits 10-20 s for it to load again — which is the whole reason the operator picked a mode policy. Streaming answers pass through chunk by chunk, so nothing about a normal turn changes. Default `11435` — clear of llama.cpp's stock 8080, which is heavily contended on a household box. Keep it equal to the solaris template's LLAMA_SERVER_URL port. There is deliberately no proxy route: there is no authentication here either, so the endpoint is for on-box consumers only. It binds every host interface rather than loopback because isolated pods (claude-dev's `pi`) reach it via host.containers.internal, which rootless podman/pasta maps to the host's LAN address rather than loopback (ADR 0007, Decision 3). LAN devices are refused at the HOST firewall by the blockLanAccess flag below: ServiceBay installs an nftables rule that drops connections arriving on a physical interface while leaving loopback — and the pasta-proxied pod path, which lands on lo — untouched.",
     "default": "11435",
     "blockLanAccess": true
+  },
+  "LLAMA_ROUTER_PORT": {
+    "type": "text",
+    "description": "Loopback port the llama-server ROUTER binds on, behind the policy proxy. One process serves four presets here — `gemma-4-e4b` (the household model), `gemma-4-12b` (foundry, 131072 with q8 KV), `qwen3.6-35b-a3b` (reading and thinking, 131072 with q8 KV) and `qwen3.8-27b` (coding, 81920) — and a client picks one with the `model` field of its request. Only one is resident at a time (`--models-max 1`), and asking for another evicts it and loads the new one in 9-19 s. The router itself refuses nothing: asked for a preset, it loads it. That is exactly why it binds `127.0.0.1` and not every interface since #1416 — the only thing in a position to ask it is the policy proxy on LLAMA_PORT, which checks the lease's `allowed` set first. Post-deploy and the GPU lease script talk to this port directly, because a release has to warm the household preset while a lease that forbids it is still standing. Default `11434` — Ollama's old port, free since that template was retired. Only change it if something else on the box already holds 11434.",
+    "default": "11434"
   },
   "LLAMA_MODEL_REPO": {
     "type": "text",
@@ -17,7 +22,7 @@
   },
   "LLAMA_MODEL_ALIAS": {
     "type": "text",
-    "description": "The model name llama-server reports in the `model` field of its /v1 answers (`--alias`). Default `gemma-4-e4b`. Without it the field carries the GGUF path, which is what a neighbour service reads back to record which model answered it (solarisbay#1333); the leased profiles report `gemma-4-12b` and `qwen3.8-27b` under the same rule.",
+    "description": "The name of the household preset: the section name in `presets.ini`, what `GET /v1/models` lists, what a client puts in the `model` field to be answered by Gemma 4 E4B, and what llama-server reports back in its /v1 answers (`--alias`). Default `gemma-4-e4b`. The other three presets are named by the template itself: `gemma-4-12b`, `qwen3.6-35b-a3b` and `qwen3.8-27b` (solarisbay#1333, #1416).",
     "default": "gemma-4-e4b"
   },
   "LLAMA_DRAFT_FILE": {
@@ -57,12 +62,12 @@
   },
   "LLAMA_CONTEXT_LENGTH": {
     "type": "text",
-    "description": "Context window the model is loaded at (tokens). Default `32768` — the same window the household prompt was measured against (7.7k of system prompt, tools and entity registry, leaving ~25k of conversation), and what the chat's auto-compaction assumes. Unlike Ollama this is a per-server setting, not a per-request hint: raising it costs KV-cache VRAM on every turn.",
+    "description": "Context window the HOUSEHOLD preset is loaded at (tokens). Default `32768` — the same window the household prompt was measured against (7.7k of system prompt, tools and entity registry, leaving ~25k of conversation), and what the chat's auto-compaction assumes; the operator's ruling of 2026-09-13 is that e4b stays at 32k. The other three presets carry their own window in `presets.ini` (131072 for the 12B and the 35B-A3B, 81920 for the 27B). Unlike Ollama this is a per-preset setting, not a per-request hint: raising it costs KV-cache VRAM on every turn.",
     "default": "32768"
   },
   "LLAMA_DRAFT_N_MAX": {
     "type": "text",
-    "description": "How many tokens the MTP drafter proposes per step (`--spec-draft-n-max`). Default `4`: box-measured 43.4% of drafted tokens accepted at 4, against 25% at 8 — a longer draft wastes more GPU work than it saves. Only change this with a measurement in hand.",
+    "description": "How many tokens the MTP drafter proposes per step for the household preset (`--spec-draft-n-max`). Default `4`: box-measured 43.4% of drafted tokens accepted at 4, against 25% at 8 — on Gemma a longer draft wastes more GPU work than it saves. The coding preset runs `8` instead, where the drafter is accepted 75% of the time and the longer draft buys 17% (solarisbay#1415). Only change this with a measurement in hand.",
     "default": "4"
   },
   "LLAMA_GPU_PASSTHROUGH": {

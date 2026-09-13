@@ -449,20 +449,63 @@ Host-Netz, Port **11435**, OpenAI-kompatibel (`POST /v1/chat/completions`,
 Speculative Decoding halbiert die Antwortzeit (0,30 s statt 0,62 s je Antwort,
 box-gemessen #1317/#1318) — das kann nur llama.cpp, nicht Ollama. Solaris' Engine
 spricht diesen Server (`LLAMA_SERVER_URL`), Denken ist per
-`chat_template_kwargs {enable_thinking:false}` aus.
+`chat_template_kwargs {enable_thinking:false}` aus — auch im Modus „Fokus
+Denken", außer die Frage bittet ausdrücklich darum (Operator 13.9., siehe unten).
 
-**Ein Server, mehrere Profile, umgeschaltet über die GPU-Lease**
-(`${DATA_DIR}/solarisbay/gpu-lease.py`, Solaris-Internum):
+**Ein Server im Router-Modus, vier Presets, der Client wählt** (#1416, Operator
+13.9.2026). llama-server hält alle Presets gleichzeitig auf **einem** Port und lädt
+das an, nach dem das `model`-Feld der Anfrage fragt; das ungenutzte wird als LRU
+verdrängt. Die GPU-Lease tauscht darum **keinen Server mehr aus**
+(`${DATA_DIR}/solarisbay/gpu-lease.py`, Solaris-Internum): sie stellt die *Umgebung*
+und schreibt `allowed` — die Presets, die im Modus erlaubt sind. Ohne `--model`
+bleibt die Lease exklusiv: alles wird gestoppt, nichts antwortet.
 
-| Profil | Modell | Alias | Sprachstack | Solaris-Chat |
+| Modus (Lease) | Preset, aus dem Solaris antwortet | erlaubte Presets | Sprachstack / Embeddings | Solaris-Chat |
 | :--- | :--- | :--- | :--- | :--- |
-| Haushalt (Standard) | gemma-4 e4b + MTP + mmproj | `gemma-4-e4b` | GPU | normal |
-| `foundry` | gemma-4 12b + MTP (`-c 32768`) | `gemma-4-12b` | bleibt auf der GPU | antwortet weiter, vom 12b |
-| `coding` (exklusiv) | Qwen 3.8 27B UD-IQ3_XXS + MTP, `-c 81920`, `--reasoning off` | `qwen3.8-27b` | CPU (`voice-device.env`) | stumm, ehrlicher Hinweis + Banner |
+| Haushalt (keine Lease) — „Haushalt + Schnell" | gemma-4 e4b + MTP + mmproj, 32k f16 | `gemma-4-e4b` | GPU / an | normal |
+| `foundry` („Haushalt + Denken") | gemma-4 12b + MTP, 131k q8-KV | `gemma-4-e4b`, `gemma-4-12b` | GPU / an | antwortet weiter, vom 12b |
+| `thinking` („Fokus Denken") | Qwen 3.6 35B-A3B UD-IQ3_XXS + MTP, 131k q8-KV | `qwen3.6-35b-a3b` | CPU / an | antwortet weiter, denkt auf Zuruf |
+| `coding` („Fokus Programmieren") | Qwen 3.8 27B UD-IQ3_XXS + MTP, 82k, `-ctv q4_0` | `qwen3.8-27b` | CPU / an | antwortet weiter, vom 27B |
+| exklusiv (ohne `--model`) | — | — | gestoppt | stumm, ehrlicher Hinweis + Banner |
 
-Der 26B-Plan ist gestrichen (passt nicht neben den Sprachstack). Eine Coding-Lease und
-ein foundry-Spielabend schließen einander aus (exklusiver Modus stoppt Sprachstack und
-Ollama/12b) — akzeptierte Folge, vom Operator bestätigt.
+Der 26B-Plan ist gestrichen (#1325: passt nicht neben den Sprachstack). Denken und
+Programmieren nehmen die Karte ganz — beide Presets liegen bei rund 15,6 GB von
+16,4 — und schließen einen foundry-Abend aus; foundry bleibt beim 12B mit
+Sprachstack auf der GPU (Operator 13.9.).
+
+Die Namen in Klammern sind, was die Modell-Kachel zeigt (Operator 13.9.): eine
+Zeile sagt, ob das **Haus** noch ganz es selbst ist und ob die Karte **schnell**
+oder **denkend** arbeitet. „Foundry" war der Name eines Nachbardienstes für
+seinen eigenen Abend und sagte einem Bewohner nichts.
+
+**Denken kommt auf Zuruf** (Operator 13.9.): auch in „Fokus Denken" antwortet
+Solaris normal; der Reasoning-Trace wird nur eingeschaltet, wenn die Frage darum
+bittet („denk mal nach", „überleg", „gründlich", „Schritt für Schritt",
+„rechne", „Logik" — dieselbe Phrasenliste, die auch `reasoning_effort` hebt).
+Sonst kostete „mach das Licht aus" im Denkfenster sechs von sieben Token für
+einen Text, den niemand sieht.
+
+**Der Embedding-Server läuft in jedem Modus weiter** (Operator 13.9.). Seine rund
+300 MiB passen unter beide Fokus-Spitzen (MoE 15 620 MiB von 16 380; 27B rund
+15 300), und ihn zu stoppen kostete den Haushalt die semantische Vault-Suche für
+das ganze Fenster. In den Fokus-Modi stoppen nur `solaris-whisper-batch` und
+`solaris-wakeword-trainer`; der Sprachstack wechselt auf die CPU.
+
+**Denken ist kein Preset, sondern ein Schalter je Anfrage.** `--reasoning off` gibt es
+nicht mehr: ein Router serviert vier Modelle, ein serverweiter Schalter würde für alle
+entscheiden. Solaris' Engine schickt `chat_template_kwargs {enable_thinking:true}` im
+Modus `thinking` und `false` in allen anderen; fremde Clients (aider, goose, Continue,
+pi-web) setzen ihn selbst.
+
+**Ein Policy-Proxy setzt die Modus-Politik durch** (#1416). Der Router kennt keine
+Politik — er lädt, wonach gefragt wird — also bindet er nur noch `127.0.0.1:11434`,
+und `solaris-llama-policy.service` hält `11435` davor. Der Proxy liest bei *jeder*
+Anfrage das `allowed` aus der Lease-Datei: ein Preset außerhalb bekommt `409` mit
+Modus und erlaubter Liste, `GET /v1/models` zeigt nur die erlaubten Presets, alles
+andere geht unverändert durch — Streams Stück für Stück. Damit gilt die Politik auch
+für Clients, die nie durch die Engine laufen (pi-web, aider, goose, Continue); die
+Engine prüft zusätzlich auf ihrer Seite, und die HTTP-Lease-Schicht lehnt ein fremdes
+Fenster weiterhin mit `409` samt Modus und `allowed` ab.
 
 **Nachbardienste holen sich das Modell über HTTP, nie über das Skript:**
 `POST/GET/DELETE http://127.0.0.1:8787/api/model-lease` (loopback, kein Token;

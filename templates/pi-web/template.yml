@@ -33,9 +33,9 @@ spec:
   # The one thing this pod therefore CANNOT reach is the Solaris Engine's
   # `/api/model-lease`: it is loopback-only by design (no token, reachability
   # is the authorisation) and the engine binds 127.0.0.1 alone. That is fine —
-  # pi-web does not ask for a lease at all (#1392): it uses whatever model
-  # llama-server currently serves, and Qwen is requested from the Solaris model
-  # tile instead.
+  # pi-web does not ask for a lease at all (#1392): it picks a router preset
+  # per session (#1416), and the mode that allows it is set from the Solaris
+  # model tile instead.
   restartPolicy: Always
   initContainers:
   # `DirectoryOrCreate` makes the host path owned by userns-root (the "core"
@@ -306,8 +306,8 @@ spec:
       value: "{{PI_AUTOLOOP_INTERVAL_S}}"
     - name: PI_AUTOLOOP_TIME_CAP_S
       value: "{{PI_AUTOLOOP_TIME_CAP_S}}"
-    # Which alias llama-server has loaded right now — read, never requested.
-    # The loop holds no lease (#1392): Qwen comes from the Solaris model tile.
+    # The router port. The loop asks it for the coding preset (#1416) and holds
+    # no lease (#1392): the mode comes from the Solaris model tile.
     - name: LLAMA_PORT
       value: "{{LLAMA_PORT}}"
     # The loop runs `pi` headlessly, so it loads the same global AGENTS.md and

@@ -132,12 +132,45 @@ def test_a_delete_body_carries_at_most_the_holder():
         model_lease.parse_release(["foundry-chronicle"])
 
 
-def test_the_model_is_one_of_the_two_the_box_knows():
+def test_the_model_is_one_of_the_windows_the_box_knows():
     """A lease name the box has no profile for would be accepted here and then
     fail in the broker, minutes later and out of sight."""
     for bad in ("gemma4:12b", "", "  ", "exclusive", 12):
         with pytest.raises(ValueError, match="invalid_model"):
             model_lease.parse_payload({"model": bad, "ttl_s": 900})
+
+
+def test_thinking_is_a_third_window_and_costs_the_old_two_nothing():
+    """#1416 adds the Denken window. Additive on foundry-chronicle#321: a
+    caller that only ever sends `foundry` or `coding` sees no change, and the
+    aliases are the router presets the box actually serves."""
+    assert model_lease.parse_payload({"model": "thinking", "ttl_s": 900}) == (
+        "thinking",
+        900,
+        "thinking",
+    )
+    assert model_lease.MODELS == ("foundry", "coding", "thinking")
+    assert model_lease.ALIASES == {
+        "foundry": "gemma-4-12b",
+        "coding": "qwen3.8-27b",
+        "thinking": "qwen3.6-35b-a3b",
+    }
+    assert model_lease.HOUSEHOLD_ALIAS == "gemma-4-e4b"
+
+
+async def test_a_thinking_window_runs_the_same_state_machine(aiohttp_client, tmp_path):
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post("/api/model-lease", json={"model": "thinking", "ttl_s": 900})
+    assert r.status == 202
+    body = await r.json()
+    assert body["state"] == "preparing"
+    assert body["alias"] == "qwen3.6-35b-a3b"
+    assert _request(tmp_path)["model"] == "thinking"
+    _hold(tmp_path, "thinking", until=888.0, holder="thinking")
+    got = await (await client.get("/api/model-lease")).json()
+    assert got["state"] == "ready"
+    assert got["model"] == "thinking"
+    assert got["alias"] == "qwen3.6-35b-a3b"
 
 
 def test_payload_rejects_bad_values_and_clamps_the_ttl():
@@ -375,6 +408,11 @@ async def test_post_for_the_other_model_is_refused_with_the_deadline(
         "reason": "held",
         "holder": "coder",
         "expires_at": 555.0,
+        # #1416: the refusal also says which mode stands and what it allows,
+        # so the caller can use the router instead of only learning it cannot
+        # have the card. Additive — every contract field above is unchanged.
+        "mode": "coding",
+        "allowed": ["qwen3.8-27b"],
     }
     # A refused request never reaches the broker.
     assert not model_lease.request_path(_db(tmp_path)).exists()
@@ -414,6 +452,8 @@ async def test_post_for_the_same_model_under_another_name_is_refused(
         "reason": "held",
         "holder": "foundry-chronicle",
         "expires_at": 777.0,
+        "mode": "foundry",
+        "allowed": ["gemma-4-12b"],
     }
     assert not model_lease.request_path(_db(tmp_path)).exists()
     # Its own holder still renews.
