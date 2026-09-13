@@ -750,13 +750,19 @@ def test_only_the_sb_token_init_ever_sees_the_parent_token(pod):
 
 
 def test_the_sessions_are_told_where_servicebay_is(pod):
-    """The URL is not a credential, and `pi-web-project` inherits it from
-    sessiond — without it every session would fall back to a compiled default."""
-    sessiond = next(c for c in pod["spec"]["containers"] if c["name"] == "sessiond")
-    assert {
+    """The URL is not a credential, and `pi-web-project` inherits it from the
+    process that starts it — without it the CLI falls back to a compiled default
+    and answers nothing, which reads exactly like a token problem.
+
+    Measured empty in `web` while `sessiond` had it (#1422), and never declared
+    for the headless loop at all, so all three carry it now."""
+    entry = {
         "name": "SERVICEBAY_API_URL",
         "value": "http://host.containers.internal:5888",
-    } in sessiond["env"]
+    }
+    for name in ("sessiond", "web", "autoloop"):
+        container = next(c for c in pod["spec"]["containers"] if c["name"] == name)
+        assert entry in container["env"], name
 
 
 def test_the_sb_token_init_runs_after_the_perms_init_as_the_image_user(pod, sb_init):

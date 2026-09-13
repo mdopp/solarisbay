@@ -60,6 +60,27 @@ _B64_MEDIA_TYPES = (
 )
 
 
+# Ceilings for the reasoning phase of one turn (#1425). Box-measured on the
+# `thinking` preset: a healthy trace is ~250 characters and answers in ~5 s,
+# and the "Rechne bitte:" turn finished in ~20 s — but "überleg dir das Schritt
+# für Schritt" produced 14 220 tokens without ever stopping, and the resident
+# saw four minutes of SSE keepalives. A per-request `reasoning_budget: 0` does
+# NOT work on this image (measured in #1415), so the bound lives here: while a
+# trace is streaming and no answer has started, we stop reading — which aborts
+# the request — after either ceiling. Generous against the measured healthy
+# trace, far below the runaway.
+THINK_CHARS_MAX = 6000
+THINK_WALL_S = 60.0
+
+# What the resident reads when the model only ever produced a trace. It says
+# what happened in one plain sentence and what to do next — never the raw
+# deliberation, which is the model's scratchpad and not an answer.
+THINK_UNFINISHED_REPLY = (
+    "Ich habe über diese Frage lange nachgedacht und bin zu keinem Ergebnis "
+    "gekommen. Stell sie mir bitte noch einmal, gern kürzer oder in zwei Teilen."
+)
+
+
 class LlamaServerError(Exception):
     """Non-2xx from llama-server — the engine's one "model backend failed"."""
 
@@ -236,6 +257,8 @@ class LlamaServerChat:
         result = ChatResult()
         calls: dict[int, dict[str, str]] = {}
         t0 = time.monotonic()
+        think_t0 = 0.0
+        stalled = ""
         async with aiohttp.ClientSession(timeout=self._timeout) as client:
             async with client.post(
                 f"{self._base_url}/v1/chat/completions", json=body
@@ -284,6 +307,15 @@ class LlamaServerChat:
                     if thinking:
                         result.thinking += thinking
                         yield "thinking", thinking
+                        if not result.content:
+                            if not think_t0:
+                                think_t0 = time.monotonic()
+                            if len(result.thinking) > THINK_CHARS_MAX:
+                                stalled = "chars"
+                            elif time.monotonic() - think_t0 > THINK_WALL_S:
+                                stalled = "wall"
+                            if stalled:
+                                break
                     for tc in tool_deltas:
                         slot = calls.setdefault(
                             int(tc.get("index") or 0),
@@ -308,5 +340,15 @@ class LlamaServerChat:
                     "function": {"name": slot["name"], "arguments": args},
                 }
             )
+        if stalled:
+            log.warn(
+                "engine.llama.thinking_unbounded",
+                reason=stalled,
+                chars=len(result.thinking),
+                wall_s=round(time.monotonic() - t0, 1),
+            )
+        if result.thinking and not result.content and not result.tool_calls:
+            result.content = THINK_UNFINISHED_REPLY
+            yield "delta", THINK_UNFINISHED_REPLY
         result.wall_s = time.monotonic() - t0
         yield "done", result

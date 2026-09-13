@@ -188,9 +188,35 @@ spec:
   # update reaches the sessions: ServiceBay refreshes the checkout hourly, and
   # the next start regenerates from whatever it now holds. Writing an unchanged
   # file is skipped, so a start with nothing new touches nothing.
+  #
+  # It also wires the home this pod's processes actually get. The image sets
+  # HOME=/data/home and XDG_CONFIG_HOME=/data/config, and neither ever held a
+  # Pi configuration: box-measured for #1422, `/data/home/.pi` did not exist and
+  # `/data/config` was empty, while the whole agent directory sat at
+  # `/data/pi-agent`. A `pi` that starts without `PI_CODING_AGENT_DIR` in its
+  # environment — a plain terminal in a session, anything the model launches
+  # itself — falls back to `~/.pi/agent` and finds nothing there, so the kit is
+  # linked into the fallback path instead of being hoped past.
   - name: pi-web-agent-kit
     image: ghcr.io/mdopp/solaris-pi-web:latest
-    args: ["pi-web-agent-kit"]
+    env:
+    - name: HOME
+      value: "/data/home"
+    - name: XDG_CONFIG_HOME
+      value: "/data/home/.config"
+    - name: PI_CODING_AGENT_DIR
+      value: "/data/pi-agent"
+    args:
+    - sh
+    - -c
+    - |
+      set -eu
+      mkdir -p "$HOME/.pi" "$XDG_CONFIG_HOME" "$PI_CODING_AGENT_DIR"
+      if [ -e "$HOME/.pi/agent" ] && [ ! -L "$HOME/.pi/agent" ]; then
+        rm -rf "$HOME/.pi/agent"
+      fi
+      ln -sfn "$PI_CODING_AGENT_DIR" "$HOME/.pi/agent"
+      exec pi-web-agent-kit
     volumeMounts:
     - mountPath: /data
       name: pi-web-data
@@ -225,6 +251,18 @@ spec:
     # hard-coded path, so it has to be set wherever a session's shell runs.
     - name: SERVICEBAY_AGENT_KIT
       value: "/opt/servicebay"
+    # The home a session inherits, spelled out here rather than left to the
+    # image: `/data/pi-agent` is the agent directory the init container fills,
+    # and `$HOME/.pi/agent` is the link into it, so every way `pi` resolves its
+    # configuration lands on the same directory (#1422). `XDG_CONFIG_HOME` moves
+    # off the image's orphan `/data/config` onto the real home for the same
+    # reason — it is the one a session's other tools write into.
+    - name: HOME
+      value: "/data/home"
+    - name: XDG_CONFIG_HOME
+      value: "/data/home/.config"
+    - name: PI_CODING_AGENT_DIR
+      value: "/data/pi-agent"
     volumeMounts:
     - mountPath: /data
       name: pi-web-data
@@ -264,6 +302,18 @@ spec:
       value: "{{PI_WEB_SUBDOMAIN}}.{{PUBLIC_DOMAIN}}"
     - name: SERVICEBAY_AGENT_KIT
       value: "/opt/servicebay"
+    # Measured empty here while sessiond had it (#1422). The web process starts
+    # the terminals the operator types in, so a CLI without an endpoint is a
+    # `servicebay` that answers nothing — the URL is not a credential, and the
+    # token still travels only as the 0600 file.
+    - name: SERVICEBAY_API_URL
+      value: "{{SERVICEBAY_API_URL}}"
+    - name: HOME
+      value: "/data/home"
+    - name: XDG_CONFIG_HOME
+      value: "/data/home/.config"
+    - name: PI_CODING_AGENT_DIR
+      value: "/data/pi-agent"
     ports:
     - containerPort: 8504
       hostPort: {{PI_WEB_PORT}}
@@ -316,6 +366,14 @@ spec:
     # that only exists in the other two containers.
     - name: SERVICEBAY_AGENT_KIT
       value: "/opt/servicebay"
+    - name: SERVICEBAY_API_URL
+      value: "{{SERVICEBAY_API_URL}}"
+    - name: HOME
+      value: "/data/home"
+    - name: XDG_CONFIG_HOME
+      value: "/data/home/.config"
+    - name: PI_CODING_AGENT_DIR
+      value: "/data/pi-agent"
     volumeMounts:
     - mountPath: /data
       name: pi-web-data
