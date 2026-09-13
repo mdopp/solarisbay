@@ -63,14 +63,12 @@ def test_post_deploy_bind_mirrors_the_template(pd):
     assert args[:2] == ["--host", "0.0.0.0"]
 
 
-def test_every_leased_profile_keeps_the_bind(pd, monkeypatch):
-    """A coding/foundry lease re-renders the unit from the same argv builder —
-    a profile that dropped back to loopback would take `pi` away for the window.
-    """
-    monkeypatch.setattr(pd, "env", lambda name, default="": default)
-    for name in pd.LEASE_PROFILES:
-        args = pd.server_args("11435", "/models", pd.LEASE_PROFILES[name])
-        assert args[:2] == ["--host", "0.0.0.0"], name
+def test_no_preset_can_move_the_bind(pd):
+    """In router mode (#1416) the bind lives on the router's own argv and a
+    preset only describes a model — but a `host=` line in the presets file
+    would be inherited by the child and take `pi` away for the window."""
+    text = pd.render_presets("/models")
+    assert "host=" not in text and "port=" not in text
 
 
 def test_port_blocks_lan_access(variables):
@@ -88,8 +86,8 @@ def test_health_check_stays_on_loopback(template_text):
     assert "url: http://127.0.0.1:{{LLAMA_PORT}}/health" in template_text
 
 
-def test_schema_version_bumped_for_the_new_bind(template_text):
-    assert 'servicebay.schema-version: "2"' in template_text
+def test_schema_version_bumped_for_router_mode(template_text):
+    assert 'servicebay.schema-version: "3"' in template_text
 
 
 def test_readme_names_all_three_audiences():

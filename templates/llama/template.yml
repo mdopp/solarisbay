@@ -9,15 +9,19 @@ metadata:
     # v2 (#1344): llama-server binds 0.0.0.0 instead of 127.0.0.1 so isolated
     # sibling pods reach it through `host.containers.internal`; the LAN is
     # refused at the host firewall via LLAMA_PORT's `blockLanAccess` flag.
-    # No data move; needs a re-deploy so the pod is recreated on the new bind.
-    servicebay.schema-version: "2"
+    # v3 (#1416): router mode. One process serves four presets on one port and
+    # the client picks with the `model` field; every model option moved out of
+    # this argv into `presets.ini`, which post-deploy writes beside the
+    # weights. No data move; needs a re-deploy so the pod is recreated on it.
+    servicebay.schema-version: "3"
     servicebay.ports: "{{LLAMA_PORT}}/tcp"
     # No `servicebay.tier` — like ollama this is opt-in AI infrastructure,
     # not a platform foundation. llama-server ships no auth and gets no proxy
     # route at all: its consumers are on-box only — the Solaris Engine on this
     # host netns, and isolated pods via `host.containers.internal`.
-    # `/health` returns 200 only once the model AND the draft model are
-    # loaded, so it doubles as the readiness signal.
+    # In router mode `/health` says the router is up and ready to load a
+    # preset on demand; post-deploy additionally asks the household preset for
+    # a token, which is the only signal that a model really serves (#1416).
     servicebay.healthcheck: |
       url: http://127.0.0.1:{{LLAMA_PORT}}/health
       interval: 30s
@@ -30,9 +34,10 @@ spec:
   containers:
   - name: llama
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    # post-deploy downloads the GGUFs into {{DATA_DIR}}/llama/models before
-    # this container can serve; until they land llama-server exits and the
-    # unit restarts, which is why nothing here waits on them.
+    # post-deploy downloads the GGUFs into {{DATA_DIR}}/llama/models and writes
+    # `presets.ini` beside them before this container can serve; until they
+    # land llama-server exits and the unit restarts, which is why nothing here
+    # waits on them.
     args:
     # 0.0.0.0, not 127.0.0.1 (#1344). ADR-0007 Decision 3: an isolated pod
     # addresses an on-box sibling as `host.containers.internal`, which rootless
@@ -48,39 +53,25 @@ spec:
     - "0.0.0.0"
     - "--port"
     - "{{LLAMA_PORT}}"
-    - "-m"
-    - "/models/{{LLAMA_MODEL_FILE}}"
-    - "-ngl"
-    - "99"
-    - "-c"
-    - "{{LLAMA_CONTEXT_LENGTH}}"
+    # Router mode (#1416). Every model option — weights, window, KV types, MTP
+    # drafter, projector, alias — lives in `presets.ini`, one section per
+    # preset, because a command-line argument outranks a preset option and
+    # would apply one model's settings to all four. post-deploy writes that
+    # file from LLAMA_MODEL_* (the household preset) and from the three leased
+    # profiles it carries.
+    - "--models-preset"
+    - "/models/presets.ini"
+    # One model resident at a time: the 16 GB card holds exactly one of these,
+    # and the router evicts the idle one and loads the asked-for preset in
+    # 9-19 s rather than OOMing on both (#1415).
+    - "--models-max"
+    - "1"
     # --jinja activates the chat template embedded in the GGUF — the
     # canonical Google Gemma-4 template. Without it llama-server falls back
-    # to a generic template and Gemma's tool-call channel never renders.
+    # to a generic template and Gemma's tool-call channel never renders. A
+    # preset's child process inherits the router's command line, so this one
+    # line covers all four.
     - "--jinja"
-    # The name llama-server reports in the `model` field of every /v1 answer
-    # (#1333): without it that field is the GGUF path, and a neighbour service
-    # recording which model wrote something has nothing to record.
-    - "--alias"
-    - "{{LLAMA_MODEL_ALIAS}}"
-    # Speculative decoding with Google's own MTP drafter: box-measured
-    # 133.5 tok/s against Ollama's 53.0 on the same weights (#1318).
-    # `--spec-type` is mandatory and `--draft-max` no longer exists — the
-    # server refuses to start on the old flag.
-    - "--spec-type"
-    - "draft-mtp"
-    - "--spec-draft-model"
-    - "/models/{{LLAMA_DRAFT_FILE}}"
-    - "--spec-draft-ngl"
-    - "99"
-    - "--spec-draft-n-max"
-    - "{{LLAMA_DRAFT_N_MAX}}"
-    {{#LLAMA_MMPROJ_FILE}}
-    # Vision/audio projector — what keeps photo attachments and voice notes
-    # working on the household path. Blank LLAMA_MMPROJ_FILE drops it.
-    - "--mmproj"
-    - "/models/{{LLAMA_MMPROJ_FILE}}"
-    {{/LLAMA_MMPROJ_FILE}}
     ports:
     - containerPort: {{LLAMA_PORT}}
     # GPU passthrough (CDI). As with ollama (#1026) `podman kube play` drops
