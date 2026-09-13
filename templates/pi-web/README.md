@@ -35,13 +35,14 @@ loopback-bound sibling is not a reason either. So the pod runs in its own
 network namespace, publishes 8504 as a `hostPort`, and addresses llama-server
 as `http://host.containers.internal:11435/v1`. That path answers because the
 sibling half already landed in #1344: the process on `LLAMA_PORT` binds
-`0.0.0.0` and the port carries `blockLanAccess: true`, so the LAN is refused at
-the host firewall while loopback — where the pasta-proxied pod path arrives —
-is not. Since #1416 that process is the llama template's mode policy proxy and
-llama-server itself sits behind it on loopback 11434.
+`0.0.0.0`, so loopback — where the pasta-proxied pod path arrives — reaches it.
+Since #1416 that process is the llama template's mode policy proxy and
+llama-server itself sits behind it on loopback 11434. That port's `LAN` side is
+open on purpose since #1420 (the operator wants llama to serve its models in
+the home network without a login); it says nothing about this one.
 
-`PI_WEB_PORT` carries the same `blockLanAccess: true` flag, for the same
-reason one step further out: PI WEB has no login of its own (upstream states
+`PI_WEB_PORT` carries `blockLanAccess: true`, for a reason that does not apply
+to llama: PI WEB has no login of its own (upstream states
 plainly that it assumes trusted users and is not a sandbox), so a published
 port reachable from the WLAN would be a way around Authelia. nginx reaches it
 over loopback; a laptop on the WLAN does not.
@@ -570,8 +571,9 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   service is up now and comes back after a reboot.
 - `curl -s http://127.0.0.1:8787/api/model-lease` names no holder `pi-web`
   until somebody takes the lease from the model tile.
-- From another LAN device, `curl -m 3 http://<box>:8504/` and
-  `http://<box>:11435/v1/models` must both fail — the `blockLanAccess` rules.
+- From another LAN device, `curl -m 3 http://<box>:8504/` must fail — the
+  `blockLanAccess` rule on `PI_WEB_PORT`. `http://<box>:11435/v1/models` must
+  **answer**: llama's LAN side is open by decision (#1420), PI WEB's is not.
 - In einer Sitzung im Projektordner: `pi-web-project add <Projekt>` meldet eine
   Token-Kennung, `pi-web-project get services` beantwortet die Dienstliste, und
   nach `pi-web-project remove <Projekt>` scheitert derselbe Aufruf mit **401** —

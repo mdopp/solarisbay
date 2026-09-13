@@ -27,8 +27,9 @@ spec:
   # loopback-bound sibling is not a carve-out either. So this pod runs in its
   # own netns, publishes 8504 as a hostPort, and reaches llama-server as
   # `host.containers.internal` — the sibling half of that pattern already
-  # landed (#1344: llama binds 0.0.0.0 and LLAMA_PORT carries blockLanAccess),
-  # which is what makes the isolated path answer at all.
+  # landed (#1344: llama binds 0.0.0.0), which is what makes the isolated path
+  # answer at all. LLAMA_PORT's own LAN side is open by decision since #1420 and
+  # says nothing about this pod's.
   #
   # The one thing this pod therefore CANNOT reach is the Solaris Engine's
   # `/api/model-lease`: it is loopback-only by design (no token, reachability
