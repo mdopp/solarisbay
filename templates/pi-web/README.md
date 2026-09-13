@@ -394,6 +394,28 @@ keine eigene `AGENTS.md`/`CLAUDE.md` mitbringt. Eine vorhandene wird nie
 überschrieben: Pi nimmt den ersten Treffer im Verzeichnis, unsere Datei stünde
 sonst vor den Konventionen des Projekts.
 
+**Das Zuhause, in das der Rückfallweg führt.** Pi liest sein Agentenverzeichnis
+aus `PI_CODING_AGENT_DIR` — und wenn die Variable in einem Prozess fehlt, aus
+`~/.pi/agent`. Auf der Box war genau das die Lücke (#1422): das ganze
+Verzeichnis lag unter `/data/pi-agent`, `$HOME/.pi` gab es nicht und
+`$XDG_CONFIG_HOME` zeigte auf ein leeres `/data/config`. Ein `pi`, das ohne die
+Variable startet — ein Terminal in der Sitzung, alles, was das Modell selbst
+aufruft — fand dort nichts und stand ohne Handbuch und ohne Skills da, während
+der Init-Schritt Erfolg meldete.
+
+Deshalb stehen `HOME`, `XDG_CONFIG_HOME` und `PI_CODING_AGENT_DIR` jetzt im
+Pod-Spec und nicht mehr nur im Image, für `sessiond`, `web`, `autoloop` und den
+Erzeuger selbst; `XDG_CONFIG_HOME` liegt als `/data/home/.config` im selben
+Zuhause wie die `.gitconfig` aus #1360, und der Init-Container legt
+`$HOME/.pi/agent` als Verweis auf `/data/pi-agent`. Beide Wege enden damit im
+selben Verzeichnis, gleich welche Variable ein Prozess befragt. `/data` ist das
+dauerhafte Volume, also überlebt das einen Neustart.
+
+`SERVICEBAY_API_URL` trägt aus demselben Ticket nun auch `web` und `autoloop`:
+gemessen war sie nur in `sessiond` gesetzt, und ein CLI ohne Endpunkt beantwortet
+nichts — was von außen wie ein Token-Problem aussieht. Die Adresse ist kein
+Geheimnis; das Token bleibt in seiner 0600-Datei.
+
 ## Der Knopf „Repo klonen"
 
 Ein Repository kommt auf die Box, ohne dass jemand ein Terminal öffnet: in PI WEB
@@ -564,6 +586,10 @@ service. PI WEB is a developer tool that happens to live on the same box, like
 - `ls /data/pi-agent/skills/servicebay | wc -l` nennt so viele Skills wie
   `ls /opt/servicebay/assists/*.md | wc -l`, und `head -4
   /data/pi-agent/AGENTS.md` zeigt den Vorspann dieser Box.
+- `readlink -f ~/.pi/agent` nennt in jeder der drei Umgebungen `/data/pi-agent`,
+  und `env | grep -E '^(HOME|XDG_CONFIG_HOME|PI_CODING_AGENT_DIR)='` zeigt in
+  `sessiond`, `web` und `autoloop` dieselben drei Werte. `podman exec pi-web-web
+  printenv SERVICEBAY_API_URL` nennt die Adresse statt nichts.
 - Der Startkopf einer neuen Sitzung nennt die geladene `AGENTS.md` und die
   Skills; `/skill:adr-0007-container-network-isolation-and-carveouts` öffnet den
   Text in der Sitzung.

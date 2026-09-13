@@ -219,7 +219,8 @@ def test_the_generator_runs_on_every_start_as_an_init_step(pod):
     """Not once at install: ServiceBay refreshes the checkout hourly, so the next
     start is what carries a changed assist into the sessions."""
     step = containers(pod, "pi-web-agent-kit")
-    assert step["args"] == ["pi-web-agent-kit"]
+    assert step["args"][:2] == ["sh", "-c"]
+    assert step["args"][2].rstrip().endswith("exec pi-web-agent-kit")
     assert step in pod["spec"]["initContainers"]
 
 
@@ -606,6 +607,57 @@ def test_the_generator_resolves_the_agent_dir_the_way_pi_web_does(kit, monkeypat
     assert kit.agent_dir_from_env() == "/data/elsewhere"
 
     assert set(dockerfile_env()) & set(kit.AGENT_DIR_ENV)
+
+
+# ── the home the fallback walks into (#1422) ────────────────────────────────
+
+PI_PROCESSES = ("sessiond", "web", "autoloop")
+AGENT_DIR = "/data/pi-agent"
+
+
+def test_every_pi_process_is_told_the_same_home_and_agent_directory(pod):
+    """Box-measured for #1422: the whole agent directory sat at `/data/pi-agent`
+    while `$HOME/.pi` did not exist and `$XDG_CONFIG_HOME` was an empty
+    `/data/config`. Leaving those to the image put the paths a session resolves
+    out of sight of the pod spec, which is where the mismatch could live for two
+    releases without anything looking broken."""
+    for name in PI_PROCESSES + ("pi-web-agent-kit",):
+        env = {e["name"]: e["value"] for e in containers(pod, name).get("env", [])}
+        assert env["HOME"] == "/data/home", name
+        assert env["XDG_CONFIG_HOME"] == "/data/home/.config", name
+        assert env["PI_CODING_AGENT_DIR"] == AGENT_DIR, name
+
+
+def test_the_home_fallback_leads_into_the_agent_directory(pod):
+    """A `pi` started without `PI_CODING_AGENT_DIR` — a plain terminal, anything
+    the model launches itself — reads `~/.pi/agent`. Without the link that path
+    is missing and the session has no handbook and no skills, while the
+    generator still reports success."""
+    script = containers(pod, "pi-web-agent-kit")["args"][2]
+    assert 'ln -sfn "$PI_CODING_AGENT_DIR" "$HOME/.pi/agent"' in script
+    assert 'mkdir -p "$HOME/.pi"' in script
+    # A real directory left there by an earlier start would swallow the link and
+    # `ln` would quietly create `~/.pi/agent/pi-agent` instead.
+    assert 'rm -rf "$HOME/.pi/agent"' in script
+
+
+def test_the_home_is_on_the_volume_that_survives_a_restart(pod):
+    """`/data` is the hostPath volume; a home anywhere else would lose the
+    agent's auth and trust files on every pod rebuild."""
+    volumes = {v["name"]: v for v in pod["spec"]["volumes"]}
+    data = next(
+        m
+        for m in containers(pod, "sessiond")["volumeMounts"]
+        if m["mountPath"] == "/data"
+    )
+    assert volumes[data["name"]]["hostPath"]["path"].endswith("/pi-web/data")
+
+
+def test_the_git_config_still_lands_in_that_same_home(pod):
+    """#1360's credential helper is written to `$HOME/.gitconfig`; a home moved
+    out from under it would leave every clone unauthenticated."""
+    script = containers(pod, "pi-web-git-credentials")["args"][2]
+    assert "config=/data/home/.gitconfig" in script
 
 
 # ── `servicebay` on PATH ────────────────────────────────────────────────────
