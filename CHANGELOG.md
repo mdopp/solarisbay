@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.69.0](https://github.com/mdopp/solarisbay/compare/v0.68.0...v0.69.0) (2026-09-13)
+
+
+### Features
+
+* **template:** install the pi-subagents extension so pi can delegate subtasks ([1b914d9](https://github.com/mdopp/solarisbay/commit/1b914d915a2e99a7cdfe1c3c87f4e4d038dc9c79))
+* **template:** install the pi-subagents extension so pi can delegate subtasks ([a0ca389](https://github.com/mdopp/solarisbay/commit/a0ca3896dbae685cd2ce6e39f8243d06dddb069a)), closes [#1423](https://github.com/mdopp/solarisbay/issues/1423)
+
+
+### Bug Fixes
+
+* **chat:** bound the thinking trace so a turn cannot stall on keepalives ([d74ba5b](https://github.com/mdopp/solarisbay/commit/d74ba5b5accd5a12914af3c4f51e9d18ce6bd2c4)), closes [#1425](https://github.com/mdopp/solarisbay/issues/1425)
+* **template:** declare the llama port as open in the LAN instead of claiming it is blocked ([b535f93](https://github.com/mdopp/solarisbay/commit/b535f93b7845231ef6a249ce863c0888beb5cf73))
+* **template:** declare the llama port as open in the LAN instead of claiming it is blocked ([443f7a0](https://github.com/mdopp/solarisbay/commit/443f7a0c06af71fd25f8eb2abbb6ab8364627195)), closes [#1420](https://github.com/mdopp/solarisbay/issues/1420)
+* **template:** give the pi containers a home so the ServiceBay kit is found ([06d8df4](https://github.com/mdopp/solarisbay/commit/06d8df4f62965fe3723313a5e64e6a51271c7616)), closes [#1422](https://github.com/mdopp/solarisbay/issues/1422)
+
 ## [0.68.0](https://github.com/mdopp/solarisbay/compare/v0.67.3...v0.68.0) (2026-09-13)
 
 
