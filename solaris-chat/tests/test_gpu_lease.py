@@ -275,3 +275,64 @@ def test_a_foundry_lease_shows_the_resident_no_banner():
     someone about something they cannot act on."""
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     assert 'if (!lease || lease.mode === "foundry") { box.hidden = true;' in html
+
+
+# ── #1416: the router modes — which preset a turn goes to, and thinking ─────
+
+
+def _mode(tmp_path, mode, *, allowed=None, alias="", ready=True):
+    """The lease file `gpu-lease.py` writes for a named router mode."""
+    path = tmp_path / gpu_lease.LEASE_FILENAME
+    record = {
+        "holder": mode,
+        "since": 1.0,
+        "until": 2_000_000_000.0,
+        "mode": mode,
+        "ready": ready,
+    }
+    if allowed is not None:
+        record["allowed"] = allowed
+    if alias:
+        record["alias"] = alias
+    path.write_text(json.dumps(record), "utf-8")
+    return path
+
+
+def test_a_thinking_lease_answers_like_coding_does(tmp_path):
+    """The MoE serves the household for the window, so muting would be wrong."""
+    assert "thinking" in gpu_lease.ANSWERING_MODES
+    assert gpu_lease.mutes_chat(_mode(tmp_path, "thinking")) is False
+    assert gpu_lease.mutes_chat(_mode(tmp_path, "thinking", ready=False)) is True
+    assert gpu_lease.state(_mode(tmp_path, "thinking"))["mode"] == "thinking"
+
+
+def test_the_preset_on_the_wire_comes_from_the_mode_not_the_caller(tmp_path):
+    free = tmp_path / "free" / gpu_lease.LEASE_FILENAME
+    assert gpu_lease.preset(free) == "gemma-4-e4b"
+    assert gpu_lease.preset(_mode(tmp_path, "foundry")) == "gemma-4-12b"
+    assert gpu_lease.preset(_mode(tmp_path, "thinking")) == "qwen3.6-35b-a3b"
+    assert gpu_lease.preset(_mode(tmp_path, "coding")) == "qwen3.8-27b"
+    # An operator who deployed other weights is asked for those.
+    assert gpu_lease.preset(_mode(tmp_path, "coding", alias="qwen3.8-14b")) == (
+        "qwen3.8-14b"
+    )
+    # An exclusive lease mutes the turn anyway; it never names a preset.
+    assert gpu_lease.preset(_held(tmp_path)) == "gemma-4-e4b"
+
+
+def test_the_allowed_set_is_the_boxs_own_list(tmp_path):
+    free = tmp_path / "free" / gpu_lease.LEASE_FILENAME
+    assert gpu_lease.allowed(free) == ["gemma-4-e4b"]
+    assert gpu_lease.allowed(
+        _mode(tmp_path, "foundry", allowed=["gemma-4-e4b", "gemma-4-12b"])
+    ) == ["gemma-4-e4b", "gemma-4-12b"]
+    # A lease file written before #1416 carries no list — the mode's own preset
+    # is the fallback, so an upgrade in flight never reads as "nothing allowed".
+    assert gpu_lease.allowed(_mode(tmp_path, "thinking")) == ["qwen3.6-35b-a3b"]
+
+
+def test_only_the_thinking_mode_asks_the_model_to_think(tmp_path):
+    assert gpu_lease.thinks(_mode(tmp_path, "thinking")) is True
+    assert gpu_lease.thinks(_mode(tmp_path, "coding")) is False
+    assert gpu_lease.thinks(_mode(tmp_path, "foundry")) is False
+    assert gpu_lease.thinks(tmp_path / "free" / gpu_lease.LEASE_FILENAME) is False

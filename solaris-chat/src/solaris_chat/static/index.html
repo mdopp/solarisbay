@@ -7005,7 +7005,18 @@
         title.className = "ha-notice-title";
         var hint = document.createElement("div");
         hint.className = "ha-notice-hint";
-        if (lease.answers) {
+        if (lease.answers && lease.mode === "thinking") {
+          // #1416: the Denken window is the same shape as the coding one, but
+          // "Programmierfenster" is the wrong word for it — the resident asked
+          // for longer, more careful answers, not for a build.
+          title.textContent =
+            "🧠 Denkfenster" + (bis ? " bis " + bis + " Uhr" : "") + ".";
+          hint.textContent =
+            "Solaris denkt gerade langsamer und gründlicher nach — gut für lange " +
+            "Texte und knifflige Fragen. Antworten dauern ein paar Sekunden " +
+            "länger, auch beim Sprechen. Alles andere funktioniert wie immer, und " +
+            "danach ist Solaris wieder so schnell wie gewohnt.";
+        } else if (lease.answers) {
           title.textContent =
             "🖥️ Programmierfenster" + (bis ? " bis " + bis + " Uhr" : "") + ".";
           hint.textContent =

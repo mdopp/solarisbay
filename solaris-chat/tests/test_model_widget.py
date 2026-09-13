@@ -153,6 +153,9 @@ def test_every_row_is_one_complete_choice():
     rows = _rows({"state": "none", "model": "", "holder": ""})
     assert list(rows) == [
         "household",
+        "thinking:1h",
+        "thinking:4h",
+        "thinking:morgen",
         "coding:1h",
         "coding:4h",
         "coding:morgen",
@@ -162,6 +165,9 @@ def test_every_row_is_one_complete_choice():
     ]
     assert [r["title"] for r in rows.values()] == [
         "Haushalt (freigeben)",
+        "Denken · 1 h",
+        "Denken · 4 h",
+        "Denken · bis morgen 07:00",
         "Programmieren · 1 h",
         "Programmieren · 4 h",
         "Programmieren · bis morgen 07:00",
@@ -233,6 +239,32 @@ def test_the_alias_still_names_the_model_the_box_loads():
     assert rows["household"]["alias"] == "gemma-4-e4b"
     assert rows["coding:1h"]["alias"] == "qwen3.8-27b"
     assert rows["foundry:1h"]["alias"] == "gemma-4-12b"
+    assert rows["thinking:1h"]["alias"] == "qwen3.6-35b-a3b"
+
+
+def test_the_denken_rows_are_a_whole_mode_like_the_others():
+    # #1416: "Denken" is the mode the operator actually asked for — reading and
+    # logic — and it is the SAME shape as Programmieren, so a resident who
+    # learned one row has learned this one.
+    rows = _rows({"state": "none", "model": "", "holder": ""})
+    assert [rows[f"thinking:{w}"]["hours"] for w in ("1h", "4h")] == [1.0, 4.0]
+    for row in ("thinking:1h", "thinking:4h", "thinking:morgen"):
+        assert rows[row]["profile"] == "thinking"
+        # The model is named in plain words, never as the preset id.
+        assert rows[row]["detail"] == "Qwen 35B"
+        assert rows[row]["badge"] == ""
+    held = _rows(
+        {
+            "state": "ready",
+            "model": "thinking",
+            "holder": "widget",
+            "expires_at": _at(hour=19, minute=42),
+        }
+    )
+    assert held["thinking:4h"]["badge"] == "läuft"
+    assert held["thinking:4h"]["status_text"] == "Qwen 35B · bis 19:42"
+    # And it is a window like any other: the house says nothing while it runs.
+    assert held["household"]["badge"] == ""
 
 
 def test_a_held_window_says_so_on_every_row_of_that_profile():
@@ -369,6 +401,9 @@ async def test_the_rows_endpoint_serves_the_tile(aiohttp_client, tmp_path):
     assert body["ok"] is True
     assert [row["id"] for row in body["models"]] == [
         "household",
+        "thinking:1h",
+        "thinking:4h",
+        "thinking:morgen",
         "coding:1h",
         "coding:4h",
         "coding:morgen",

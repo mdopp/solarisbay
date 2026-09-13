@@ -1,6 +1,6 @@
 ---
 name: solaris-model-tool
-description: The .model dot-command — welches Modell gerade läuft, und die Grafikkarte für eine gewählte Zeit auf Programmieren oder Foundry umschalten.
+description: The .model dot-command — welches Modell gerade läuft, und die Grafikkarte für eine gewählte Zeit auf Denken, Programmieren oder Foundry umschalten.
 kind: tool
 scope: household
 tool-id: model
@@ -11,7 +11,7 @@ tool-item-id-field: id
 tool-actions: model.set, model.lease, model.release
 tool-cell-schema: {"id": "id", "title": "title", "subtitle": "status_text", "meta": ["detail"], "badge": "badge", "actions": ["model.set"]}
 tool-action-params: {"model.set": {"profile": "$profile", "hours": "$hours"}}
-version: 2.1.0
+version: 2.2.0
 author: Solaris
 license: MIT
 ---
@@ -24,6 +24,7 @@ soll — und schaltet auf Knopfdruck um.
 | Zeile | Was sie bedeutet |
 |---|---|
 | **Haushalt (freigeben)** | die Karte gehört wieder dem Haus — der Normalzustand |
+| **Denken · 1 h / 4 h / bis morgen 07:00** | Solaris denkt langsamer und gründlicher nach — für lange Texte, Zusammenhänge und Knobelfragen. Das Haus antwortet weiter, nur mit mehr Bedenkzeit |
 | **Programmieren · 1 h / 4 h / bis morgen 07:00** | die ganze Grafikkarte für einen Programmierlauf |
 | **Foundry · 1 h / 4 h / bis morgen 07:00** | ein Foundry-Abend; Solaris antwortet weiter, nur langsamer |
 
@@ -33,7 +34,7 @@ Danach kommt sie von selbst zurück — niemand muss daran denken.
 Auf einen Blick sagt jede Zeile zweierlei: rechts als fettes Kurzwort, **was
 gerade passiert** — `läuft` / `wird geladen` / `wird freigegeben`, und gar
 nichts, wenn die Zeile still ist; unter dem Titel **welches Modell und bis
-wann** — „Qwen 27B · bis 19:42", „Gemma 4 12B · bis morgen 07:00", beim Haus
+wann** — „Qwen 35B · bis 19:42", „Gemma 4 12B · bis morgen 07:00", beim Haus
 „Gemma 4 e4b · Haushalt". Zeilen, die nichts tun, nennen nur ihr Modell
 („Qwen 27B"). Die Endzeit steht als **Uhrzeit**, nicht als Restdauer: „noch 42
 Min" muss man erst zur aktuellen Zeit dazurechnen, um zu wissen, wann die Karte
@@ -41,6 +42,11 @@ wieder frei ist.
 
 Während eines Wechsels sprechen **zwei** Zeilen: die alte „wird freigegeben",
 die neue „wird geladen".
+
+Der Wechsel selbst geht schnell — das neue Modell lädt erst mit der **ersten
+Frage** danach, und die dauert deshalb 10 bis 20 Sekunden länger als sonst.
+Danach antwortet Solaris wieder im gewohnten Tempo. Es geht nichts verloren und
+nichts läuft in einen Fehler: die Antwort kommt, sie lässt sich einmal bitten.
 
 ## Warum die Zeile die Wahl ist
 
@@ -87,3 +93,11 @@ das Ende.
   abgebende „wird freigegeben", die kommende „wird geladen". Hält ein
   **anderer** Dienst die Karte, sagt die Aktion das im Klartext und ändert
   nichts; die Zeile nennt den Halter („… · von pi-web").
+- **Was ein Modus seit #1416 tut:** llama-server hält alle Presets gleichzeitig
+  und lädt das an, nach dem gefragt wird. Ein Modus tauscht darum keinen Server
+  mehr aus, sondern stellt die Umgebung (Sprache auf GPU oder CPU, Einbettungen
+  an oder aus) und legt fest, welche Presets währenddessen erlaubt sind.
+  Solaris fragt von sich aus immer das Preset des laufenden Modus — „Denken"
+  ist `qwen3.6-35b-a3b`, und in diesem Modus denkt das Modell je Anfrage
+  wirklich nach (`chat_template_kwargs.enable_thinking`), in allen anderen
+  nicht.

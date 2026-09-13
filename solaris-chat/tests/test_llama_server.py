@@ -104,6 +104,65 @@ async def test_think_true_asks_for_the_reasoning_trace(monkeypatch):
     assert sess.last["json"]["chat_template_kwargs"] == {"enable_thinking": True}
 
 
+def _lease(tmp_path, mode: str) -> str:
+    """The lease file the box writes for a named router mode (#1416)."""
+    path = tmp_path / "gpu_lease.json"
+    path.write_text(
+        json.dumps({"holder": mode, "mode": mode, "ready": True, "until": 9e9}),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+async def test_the_model_field_names_the_router_preset_of_the_mode(
+    monkeypatch, tmp_path
+):
+    """#1416: one server holds four presets and routes on this field, so what
+    goes on the wire is the mode's preset — not `FAST_MODEL`, which is the
+    Ollama-era tag the panel and the traces still use and the router has never
+    heard of."""
+    for mode, preset in (
+        ("foundry", "gemma-4-12b"),
+        ("thinking", "qwen3.6-35b-a3b"),
+        ("coding", "qwen3.8-27b"),
+    ):
+        sess = _patch_post(monkeypatch, [_chunk(content="ja")])
+        client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, mode))
+
+        [c async for c in client.stream("gemma4:e4b", [{"role": "user", "c": ""}])]
+
+        assert sess.last["json"]["model"] == preset
+
+
+async def test_no_lease_asks_the_router_for_the_household_preset(monkeypatch):
+    sess = _patch_post(monkeypatch, [_chunk(content="ja")])
+    client = LlamaServerChat("http://x:11435")
+
+    [c async for c in client.stream("gemma4:e4b", [{"role": "user", "content": "hi"}])]
+
+    assert sess.last["json"]["model"] == "gemma-4-e4b"
+
+
+async def test_the_thinking_mode_asks_the_model_to_think_per_request(
+    monkeypatch, tmp_path
+):
+    """The operator takes the Denken window FOR comprehension and logic, so the
+    reasoning trace is the point — everywhere else it stays off (#1318)."""
+    sess = _patch_post(monkeypatch, [_chunk(content="ja")])
+    client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, "thinking"))
+
+    [c async for c in client.stream("gemma4:e4b", [{"role": "user", "content": "hi"}])]
+
+    assert sess.last["json"]["chat_template_kwargs"] == {"enable_thinking": True}
+
+    sess = _patch_post(monkeypatch, [_chunk(content="ja")])
+    client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, "coding"))
+
+    [c async for c in client.stream("gemma4:e4b", [{"role": "user", "content": "hi"}])]
+
+    assert sess.last["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
 async def test_options_are_translated(monkeypatch):
     sess = _patch_post(monkeypatch, [_chunk(content="x")])
     client = LlamaServerChat("http://x:11435")

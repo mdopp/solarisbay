@@ -26,23 +26,35 @@ e4b enough to justify a second resident model once MTP made e4b itself fast.
 "Model and thinking are per-turn parameters" (below) now means: which
 *profile* asks, not which of several resident models answers.
 
-**One server, switched between profiles by a GPU lease**
-(`${DATA_DIR}/solarisbay/gpu-lease.py`), not by loading several models at
-once:
+**One server in router mode, four presets, the client picks** (#1416). One
+llama-server holds every preset on `:11435` and loads the one a request's
+`model` field names, evicting the idle child. The GPU lease
+(`${DATA_DIR}/solarisbay/gpu-lease.py`) therefore no longer swaps the server:
+a named mode sets the *environment* and writes `allowed`, the presets a client
+may ask for while it stands.
 
-| Profile | Model | Who uses it |
-|---|---|---|
-| Household (default) | `gemma4:e4b` + MTP + mmproj | Solaris chat/voice — the default the box idles at |
-| `foundry` | `gemma4:12b` + MTP (`-c 32768`) | foundry-chronicle's evening runs; voice stack stays up, Solaris keeps answering from the 12b |
-| `coding` (exclusive) | Qwen 3.8 27B UD-IQ3_XXS + MTP (`-c 81920`, reasoning off) | the coding assistant; moves the voice stack to the CPU and stops the embeddings server while held |
+| Mode (lease) | Preset Solaris answers from | Allowed presets | Who uses it |
+|---|---|---|---|
+| Household (no lease) | `gemma-4-e4b` + MTP + mmproj, 32k f16 | `gemma-4-e4b` | Solaris chat/voice — the default the box idles at |
+| `foundry` | `gemma-4-12b` + MTP, 131k q8 KV | `gemma-4-e4b`, `gemma-4-12b` | foundry-chronicle's evening runs; voice stack stays on the GPU |
+| `thinking` | `qwen3.6-35b-a3b` + MTP, 131k q8 KV | `qwen3.6-35b-a3b` | reading and logic; voice stack moves to the CPU, Solaris keeps answering and thinks per request |
+| `coding` | `qwen3.8-27b` + MTP, 82k | `qwen3.8-27b` | the coding assistant; voice stack to the CPU, embeddings server stopped |
+| exclusive (no `--model`) | — | — | everything stops and Solaris says so |
+
+`--reasoning off` is gone with the swap: one server serves four models, so
+thinking is the per-request switch (`chat_template_kwargs.enable_thinking`) the
+Engine sends — `true` in `thinking`, `false` everywhere else. A client that
+sends neither sets it itself.
 
 A neighbour asks for a profile over HTTP, never by running the lease script
 itself: `POST/GET/DELETE http://127.0.0.1:8787/api/model-lease` (loopback,
 no token; contract mdopp/foundry-chronicle#321,
 `solaris_chat.model_lease`) — `{"model": "foundry", "ttl_s": 900}` →
 `200 ready` with an `alias`, or `202 preparing` with `retry_after` to poll;
-`409 held` if someone else holds it; no `DELETE` and the lease just expires
-back to household. An optional `holder` (#1347) names the *service* asking —
+`409 held` if someone else holds it — that refusal also names the standing
+`mode` and its `allowed` presets (#1416), so a caller can use the router
+instead of only learning it cannot have the card; no `DELETE` and the lease
+just expires back to household. An optional `holder` (#1347) names the *service* asking —
 one permanent name like `foundry-chronicle`, never a session or a group — so
 `GET` says whose window is open and `DELETE {"holder": ...}` closes only that
 one; a bodyless `DELETE` stays the operator's unconditional way out. **The `model` field of every `/v1` response carries the

@@ -67,6 +67,18 @@ contract addendum on `mdopp/foundry-chronicle#321` is:
 * The start-cleanup above applies only to a window that is `ready` **and**
   carries the consumer's own holder — never to one that is already going
   away.
+
+Since #1416 llama-server is a **router**: one process holds every preset and
+the client picks with the `model` field of its `/v1` request, so a window no
+longer swaps the server — it sets the environment and the set of presets a
+client may ask for. Two additions, both additive on the contract:
+
+* `thinking` is a third window name beside `foundry` and `coding`.
+* A window refused because somebody else holds one now also says which **mode**
+  stands and which presets it **allows**, so the caller can use the router
+  instead of only learning that it cannot have the card. Every existing field
+  is unchanged, and a caller that reads none of the new ones sees what it
+  always saw.
 """
 
 from __future__ import annotations
@@ -79,11 +91,12 @@ from typing import Any
 
 from solaris_chat import gpu_lease
 
-# The two leases a neighbour may ask for; anything else is a 400. Both are
+# The leases a neighbour may ask for; anything else is a 400. All are
 # `gpu-lease.py --model` values — the HTTP name and the box's profile name are
 # deliberately one word, so a lease cannot be requested under a name the box
-# does not know.
-MODELS = ("foundry", "coding")
+# does not know. `thinking` (#1416) is additive on the contract: an existing
+# caller that only ever sends `foundry` or `coding` sees no change.
+MODELS = ("foundry", "coding", "thinking")
 
 # 5 minutes to 24 hours. The floor keeps a lease from expiring inside its own
 # swap (the 12B cold-loads in ~40 s). The ceiling was the box's own default
@@ -103,12 +116,14 @@ TTL_DEFAULT_SECONDS = 14400
 RETRY_AFTER_SECONDS = 30
 
 # The model name llama-server reports (`--alias`) per lease, and for the
-# household model when no lease is held. The box sets the same three strings
-# in `templates/llama/post-deploy.py`; the leased ones are read back out of
-# the lease file rather than assumed, so only the household default lives in
-# two places (and `llama-profile.json` overrides it).
-ALIASES = {"foundry": "gemma-4-12b", "coding": "qwen3.8-27b"}
-HOUSEHOLD_ALIAS = "gemma-4-e4b"
+# household model when no lease is held. The box sets the same strings in
+# `templates/llama/post-deploy.py`; the leased ones are read back out of the
+# lease file rather than assumed, so only the household default lives in two
+# places (and `llama-profile.json` overrides it). Same table as
+# `gpu_lease.MODE_PRESETS` — since #1416 the alias IS the router preset a
+# client asks for, so the two cannot drift.
+ALIASES = dict(gpu_lease.MODE_PRESETS)
+HOUSEHOLD_ALIAS = gpu_lease.HOUSEHOLD_PRESET
 
 # The complete payload. Adding a key here is a contract change on both sides.
 PAYLOAD_KEYS = ("model", "ttl_s", "holder")

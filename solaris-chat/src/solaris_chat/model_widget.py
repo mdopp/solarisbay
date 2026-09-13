@@ -59,9 +59,13 @@ DEFAULT_UNTIL = "2h"
 SWITCH_TRIES = 20
 
 # The profiles, in the order their rows are shown: the house first, so the top
-# line of a truncated tile always answers "what is running right now".
+# line of a truncated tile always answers "what is running right now", then
+# Denken (#1416) — the mode the operator asked for, reading and logic, and the
+# one a resident reaches for. Foundry is a neighbour service's evening and is
+# tapped here least often, so it sits last.
 PROFILES = (
     (HOUSEHOLD, "Haushalt", "Gemma 4 e4b"),
+    ("thinking", "Denken", "Qwen 35B"),
     ("coding", "Programmieren", "Qwen 27B"),
     ("foundry", "Foundry", "Gemma 4 12B"),
 )
