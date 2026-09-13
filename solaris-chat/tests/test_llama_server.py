@@ -190,6 +190,177 @@ async def test_no_other_mode_ever_thinks_on_a_cue(monkeypatch, tmp_path):
         assert sess.last["json"]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
+# --- the trace has a ceiling (#1425) --------------------------------------
+
+# The turn measured on the box: this cue made the `thinking` preset generate
+# 14 220 tokens of trace without ever stopping, and the resident saw four
+# minutes of SSE keepalives and no answer.
+_RUNAWAY = (
+    "überleg dir das Schritt für Schritt: Ein Zug faehrt 90 km in 45 Minuten. "
+    "Wie schnell ist er in km/h?"
+)
+
+
+def _patch_endless_trace(monkeypatch, chunks: int, size: int) -> list[int]:
+    """An upstream that streams `chunks` reasoning fragments and never answers.
+
+    Returns a one-element list counting how many were actually pulled — the
+    ceiling has to abort the read, not drain the stream.
+    """
+    sent = [0]
+
+    class _Content:
+        def __aiter__(self):
+            async def gen():
+                for _ in range(chunks):
+                    sent[0] += 1
+                    payload = json.dumps(_chunk(reasoning_content="a" * size))
+                    yield f"data: {payload}\n".encode()
+                yield b"data: [DONE]\n"
+
+            return gen()
+
+    class _Resp:
+        status = 200
+
+        def __init__(self):
+            self.content = _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, json=None):
+            return _Resp()
+
+    monkeypatch.setattr(llama_server.aiohttp, "ClientSession", _Session)
+    return sent
+
+
+async def test_a_runaway_trace_is_cut_and_answered_in_plain_german(
+    monkeypatch, tmp_path
+):
+    """#1425: the trace is bounded on our side — a per-request
+    `reasoning_budget: 0` does not work on this image (#1415) — and the turn
+    ends with a sentence the resident can read, never with silence."""
+    sent = _patch_endless_trace(monkeypatch, chunks=60, size=500)
+    client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, "thinking"))
+
+    events = [
+        c
+        async for c in client.stream(
+            "gemma4:e4b", [{"role": "user", "content": _RUNAWAY}]
+        )
+    ]
+
+    assert sent[0] < 60, "the read was drained instead of aborted at the ceiling"
+    kind, result = events[-1]
+    assert kind == "done"
+    assert result.content == llama_server.THINK_UNFINISHED_REPLY
+    assert ("delta", llama_server.THINK_UNFINISHED_REPLY) in events
+    assert result.thinking not in result.content
+
+
+async def test_a_trace_that_never_answers_does_not_become_the_answer(monkeypatch):
+    """A short trace with empty `content` (the `finish_reason: length` shape
+    measured against the proxy) is the model's scratchpad, not a reply."""
+    _patch_post(monkeypatch, [_chunk(reasoning_content="Also: 90 km in 45 min …")])
+    client = LlamaServerChat("http://x:11435")
+
+    events = [c async for c in client.stream("gemma", [])]
+
+    assert events[-1][1].content == llama_server.THINK_UNFINISHED_REPLY
+
+
+async def test_the_wall_clock_ceiling_ends_a_slow_trace(monkeypatch, tmp_path):
+    """The characters may trickle: a trace that runs past the wall ceiling
+    without an answer ends the same way."""
+
+    class _Clock:
+        now = 0.0
+
+        def monotonic(self):
+            self.now += 45.0
+            return self.now
+
+    monkeypatch.setattr(llama_server, "time", _Clock())
+    sent = _patch_endless_trace(monkeypatch, chunks=9, size=10)
+    client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, "thinking"))
+
+    events = [
+        c
+        async for c in client.stream(
+            "gemma4:e4b", [{"role": "user", "content": _RUNAWAY}]
+        )
+    ]
+
+    assert sent[0] < 9
+    assert events[-1][1].content == llama_server.THINK_UNFINISHED_REPLY
+
+
+async def test_a_trace_that_finishes_answers_normally(monkeypatch, tmp_path):
+    """The working path from #1425 — same task, cue "Rechne bitte:", short
+    trace and an answer — stays exactly as it was."""
+    _patch_post(
+        monkeypatch,
+        [
+            _chunk(reasoning_content="90 km / 0,75 h"),
+            _chunk(content="120 km/h"),
+        ],
+    )
+    client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, "thinking"))
+
+    events = [
+        c
+        async for c in client.stream(
+            "gemma4:e4b",
+            [{"role": "user", "content": "Rechne bitte: 90 km in 45 Minuten"}],
+        )
+    ]
+
+    result = events[-1][1]
+    assert result.content == "120 km/h"
+    assert result.thinking == "90 km / 0,75 h"
+
+
+async def test_a_tool_call_without_content_is_left_alone(monkeypatch):
+    """A pass that thinks and then calls a tool has answered the turn — the
+    ceiling's sentence must not overwrite it."""
+    _patch_post(
+        monkeypatch,
+        [
+            _chunk(reasoning_content="welches Licht?"),
+            _chunk(
+                tool_calls=[
+                    {
+                        "index": 0,
+                        "id": "c1",
+                        "function": {"name": "ha", "arguments": "{}"},
+                    }
+                ]
+            ),
+        ],
+    )
+    client = LlamaServerChat("http://x:11435")
+
+    events = [c async for c in client.stream("gemma", [])]
+
+    assert events[-1][1].content == ""
+    assert events[-1][1].tool_calls[0]["function"]["name"] == "ha"
+
+
 async def test_options_are_translated(monkeypatch):
     sess = _patch_post(monkeypatch, [_chunk(content="x")])
     client = LlamaServerChat("http://x:11435")
