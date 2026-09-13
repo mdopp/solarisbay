@@ -63,7 +63,7 @@ mode taken from the phone is in force on the next one:
 | `model` in the mode's `allowed` set | forwarded to the router, streamed back chunk by chunk |
 | `model` outside it | **409** `{"error": {"message": …, "mode": "coding", "allowed": ["qwen3.8-27b"]}}` |
 | no `model` field | forwarded — the router answers from the preset it already has, which cannot be one outside the mode |
-| `GET /v1/models` | the catalogue, filtered to the allowed presets |
+| `GET /v1/models` | the whole catalogue — every preset the router knows, each marked `allowed_in_mode`, with the standing `mode` at the top level |
 | `/health`, `/props`, `/slots`, everything else | forwarded verbatim |
 
 Why it exists: without it, one client asking for the 27B during a household
@@ -77,6 +77,41 @@ standing mode names, so the refusal is belt and braces.
 The message is German and says what to do (*"Den Modus in der Modell-Kachel in
 Solaris umschalten"*), because the operator is who reads it — in PI WEB's
 ticket protocol, in aider's error line, in a log someone scrolls.
+
+### The listing names all four, the request is what is refused (#1431)
+
+`/v1/models` used to be filtered down to the mode's `allowed` set, so a client
+whose only door is this port saw exactly one model and could not learn that the
+other three exist, what they are called, or that a mode switch reaches them.
+Since #1431 it lists **every** preset and marks each one instead:
+
+```json
+{
+  "object": "list",
+  "mode": "coding",
+  "data": [
+    {"id": "gemma-4-e4b",     "status": {"value": "unloaded"}, "allowed_in_mode": false},
+    {"id": "gemma-4-12b",     "status": {"value": "unloaded"}, "allowed_in_mode": false},
+    {"id": "qwen3.6-35b-a3b", "status": {"value": "unloaded"}, "allowed_in_mode": false},
+    {"id": "qwen3.8-27b",     "status": {"value": "loaded"},   "allowed_in_mode": true}
+  ]
+}
+```
+
+The marking is **additive**: `mode` and `allowed_in_mode` are added, nothing the
+router sent is renamed or dropped, so a client that reads only `id` works
+exactly as before.
+
+**Two different axes, don't read one for the other.** `allowed_in_mode` is the
+policy: may this client ask for the preset right now. The router's own
+`status.value` (`loaded`/`unloaded`) is where the weights are: an *allowed*
+preset is very often `unloaded`, which is normal and costs 7 to 17 s on the
+first turn while it loads. A preset that is `loaded` but not allowed is equally
+possible — the mode changed and the router has not evicted it yet.
+
+Enforcement did not move: a request naming a preset outside the set still gets
+the 409 above, with `mode` and `allowed`. The list informs; the request is what
+is policed.
 
 Two properties worth knowing:
 

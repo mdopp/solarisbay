@@ -37,7 +37,8 @@ may ask for while it stands.
 binds loopback `:11434` and the llama template's
 `solaris-llama-policy.service` holds `:11435` in front of it: it reads
 `allowed` per request, answers `409` with the mode's name for a preset outside
-it, filters `/v1/models` to the same set and streams everything else through
+it, lists every preset in `/v1/models` with an `allowed_in_mode` mark and the
+standing `mode` beside them (#1431) and streams everything else through
 unchanged. Without it one client asking for the 27B on a household evening
 evicts Gemma and the next resident turn waits 10-20 s.
 

@@ -501,7 +501,8 @@ pi-web) setzen ihn selbst.
 Politik — er lädt, wonach gefragt wird — also bindet er nur noch `127.0.0.1:11434`,
 und `solaris-llama-policy.service` hält `11435` davor. Der Proxy liest bei *jeder*
 Anfrage das `allowed` aus der Lease-Datei: ein Preset außerhalb bekommt `409` mit
-Modus und erlaubter Liste, `GET /v1/models` zeigt nur die erlaubten Presets, alles
+Modus und erlaubter Liste, `GET /v1/models` nennt **alle** Presets und markiert je
+Eintrag mit `allowed_in_mode`, welche der stehende Modus zulässt (#1431), alles
 andere geht unverändert durch — Streams Stück für Stück. Damit gilt die Politik auch
 für Clients, die nie durch die Engine laufen (pi-web, aider, goose, Continue); die
 Engine prüft zusätzlich auf ihrer Seite, und die HTTP-Lease-Schicht lehnt ein fremdes

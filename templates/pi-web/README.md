@@ -151,8 +151,10 @@ Since #1416 what answers on 11435 is not the router but a **mode policy
 proxy** in front of it (the router itself moved to loopback 11434 and has no
 policy at all). It reads the lease's `allowed` set on every request: a session
 here asking for `qwen3.8-27b` during a household evening is **refused with
-409**, not served, and `GET /v1/models` shows only the presets the standing
-mode allows — so Pi's `/model` picker lists what is actually available.
+409**, not served. `GET /v1/models` lists all four presets and marks each with
+`allowed_in_mode` (#1431), so Pi's `/model` picker — which reads only `id` —
+shows all four and a pick outside the mode comes back as the 409 sentence
+naming the mode and the Modell-Kachel.
 
 That is deliberate rather than tidy: served, the request would load 15.6 GiB
 of weights, evict the household Gemma and leave the next resident waiting
@@ -594,10 +596,11 @@ service. PI WEB is a developer tool that happens to live on the same box, like
 
 - `https://pi.<publicDomain>/` unauthenticated → **302** to Authelia; after
   login the UI loads over WebSocket.
-- The model picker lists the presets the standing mode allows — with the card
-  at Haushalt that is `gemma-4-e4b` alone, and `curl
-  http://127.0.0.1:11435/v1/models` names the same ids. With **Fokus
-  Programmieren** held it lists `qwen3.8-27b`.
+- The model picker lists all four presets in every mode (#1431), and `curl -s
+  http://127.0.0.1:11435/v1/models | jq '.mode, [.data[] | {id,
+  allowed_in_mode}]'` names the standing mode and marks the same ids — with the
+  card at Haushalt only `gemma-4-e4b` is `true`, with **Fokus Programmieren**
+  only `qwen3.8-27b`. Picking one marked `false` answers with the 409.
 - With **Fokus Programmieren** held from the Modell-Kachel, a coding answer
   carries no reasoning trace (the client sent `enable_thinking: false`); after
   `/model` → *Qwen 3.6 35B-A3B* in **Fokus Denken** it does.
