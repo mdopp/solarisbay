@@ -320,8 +320,10 @@ the lease is held. Voice is off for the duration: `solaris-whisper` and
   `cpu`/`cuda` and restarts them on; whisper drops to `small-int8` with it.
   `solaris-whisper-batch` and `solaris-wakeword-trainer` stop — they hold VRAM
   and nobody is waiting on them. **`llama-embed` keeps running** (operator,
-  2026-09-13): its ~300 MiB fits under the 27B's ~15 300 MiB peak, and stopping
-  it cost the household its semantic vault search for the whole window.
+  2026-09-13): its ~430 MiB fits under the 27B's 15 486 MiB peak — 15 923 of
+  16 380 box-measured — and stopping it cost the household its semantic vault
+  search for the whole window. The `thinking` window is the one that cannot
+  afford it.
 
 ### `--model thinking` — reading and thinking (solarisbay#1416)
 
@@ -337,9 +339,13 @@ model with 3 of its 35 B parameters active per token.
   costs just 792 MiB more than 82k.
 * Same environment as the coding window: voice on the **CPU**,
   `solaris-whisper-batch` and `solaris-wakeword-trainer` stopped. At 15 620 of
-  16 380 MiB there is no room for the voice stack on the card — but the
-  embeddings server's ~300 MiB fits in the 760 that are left, so it keeps
-  running (operator, 2026-09-13) and the vault keeps its semantic search.
+  16 380 MiB there is no room for the voice stack on the card — and, unlike the
+  coding window, none for the embeddings server either: the box measured the
+  MTP drafter's compute buffer failing to allocate by 168 MiB with
+  `llama-embed` resident, which makes the whole preset fail to load and the
+  mode serve nothing. **`llama-embed` therefore stops for this mode alone** and
+  starts again on release, so the vault loses its semantic search for the
+  window. This is the one mode where it does.
 * No vision projector. The mmproj exists (614 MB, ggml-org) but vision was
   only measured to 98k, and the operator scoped this preset to the 131k text
   window. A photo reaches it as text.

@@ -69,6 +69,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 PROGRESS_LOG_INTERVAL_SEC = 15
@@ -267,14 +268,20 @@ def wait_for_ready(llama_url: str, deadline_sec: int) -> bool:
     return False
 
 
-def speculative_active(llama_url: str) -> bool:
+def speculative_active(llama_url: str, preset: str) -> bool:
     """True when /slots reports the drafter is actually in play.
 
     The server starts happily without speculative decoding when the draft
     model is missing or the flags are wrong, and then just runs at half
     speed — a silent regression with no error anywhere (#1317/#1318).
+
+    `preset` names which child to ask: a router answers a bare `/slots` with
+    400 "model name is missing from the request", which read as "no drafter"
+    and warned on every deploy while all four presets had one (box, 13.9.).
     """
-    status, body = http_request(f"{llama_url}/slots", timeout=5)
+    status, body = http_request(
+        f"{llama_url}/slots?model={urllib.parse.quote(preset)}", timeout=5
+    )
     if status != 200:
         return False
     try:
@@ -929,9 +936,13 @@ HOUSEHOLD_PRESETS = ("gemma-4-e4b",)
 # stack's device and the background GPU jobs — and the set of presets a client
 # may ask for while it stands. `presets` is written into the lease file as
 # `allowed`, and that is what the policy proxy on LLAMA_PORT refuses a foreign
-# preset against. The embeddings server stays up in every mode (operator,
-# 2026-09-13). Without `--model` the lease is still exclusive: everything stops
-# and nothing answers.
+# preset against. The embeddings server stays up wherever it fits (operator,
+# 2026-09-13) — `stop_embed` is the one mode where it does not: the MoE plus
+# its MTP drafter needs 15 620 of 16 380 MiB and the box measured the drafter's
+# compute buffer OOM by 168 MiB with the embeddings server's ~430 MiB resident,
+# so the whole preset failed to load and `thinking` served nothing at all.
+# Without `--model` the lease is still exclusive: everything stops and nothing
+# answers.
 #
 # `alias`/`label` name the model the holder is answered by, unchanged from
 # #1333 so foundry-chronicle#321 keeps reading the same two fields.
@@ -942,6 +953,7 @@ LEASE_PROFILES = {
         "label": "Gemma 4 12B",
         "voice": "gpu",
         "stop_gpu_units": False,
+        "stop_embed": False,
     },
     "thinking": {
         "presets": ("qwen3.6-35b-a3b",),
@@ -949,6 +961,7 @@ LEASE_PROFILES = {
         "label": "Qwen 3.6 35B-A3B",
         "voice": "cpu",
         "stop_gpu_units": True,
+        "stop_embed": True,
     },
     "coding": {
         "presets": ("qwen3.8-27b",),
@@ -956,6 +969,7 @@ LEASE_PROFILES = {
         "label": "Qwen 3.8 27B",
         "voice": "cpu",
         "stop_gpu_units": True,
+        "stop_embed": False,
     },
 }
 
@@ -1341,6 +1355,8 @@ def lease_acquire(
         return 0
     if profile["stop_gpu_units"]:
         systemctl("stop", LEASE_GPU_UNITS)
+    if profile["stop_embed"]:
+        systemctl("stop", (EMBED_UNIT,))
     if profile["voice"] == "cpu":
         set_voice_device(data_dir, "cpu")
     # No restart: llama-server keeps serving every preset and loads the one the
@@ -1372,6 +1388,8 @@ def lease_release(data_dir: str, port: str) -> int:
     if profile:
         if profile["stop_gpu_units"]:
             systemctl("start", LEASE_GPU_UNITS)
+        if profile["stop_embed"]:
+            systemctl("start", (EMBED_UNIT,))
         if profile["voice"] == "cpu":
             set_voice_device(data_dir, "gpu")
     else:
@@ -2063,19 +2081,25 @@ def main() -> int:
             file=embed["model_file"],
         )
 
-    # A deploy in the middle of a lease must not take the card back: restarting
-    # llama-server would drop the preset the holder has loaded and cost it the
-    # cold load again, mid-run.
+    # A deploy in the middle of a lease must not take the card back, so the
+    # household warm-up below is skipped — but the UNIT still has to converge.
+    # It is mode-independent since #1416 (one router, four presets), and the
+    # v2 -> v3 deploy proved what skipping it costs: the router stayed on the
+    # v2 argv holding LLAMA_PORT, the policy proxy could not bind that port and
+    # crash-looped 80 times, and nothing would have converged it, because a
+    # lease no longer rewrites the unit either.
     leased = os.path.exists(lease_file(data_dir))
+    lease_mode = str(read_lease(data_dir).get("mode", "")) if leased else ""
 
     if leased:
         jlog(
             "info",
             "llama:bootstrap",
-            "a GPU lease is held; leaving llama.service exactly as the lease set it",
+            "a GPU lease is held; the units are converged but the household model is not warmed",
             holder=str(read_lease(data_dir).get("holder", "")),
+            mode=lease_mode,
         )
-    elif gpu_requested:
+    if gpu_requested:
         install_gpu_quadlet_fallback(router_port, data_dir)
         install_embed_unit(data_dir, gpu=True)
     else:
@@ -2084,6 +2108,17 @@ def main() -> int:
             "info",
             "llama:bootstrap",
             "GPU passthrough not requested; llama-server runs on the CPU and will be slow",
+        )
+    # `install_embed_unit` starts the server; the one mode that cannot hold it
+    # on the card has to get it stopped again, or the deploy leaves the MoE
+    # unable to load for the rest of the window.
+    if (LEASE_PROFILES.get(lease_mode) or {}).get("stop_embed"):
+        systemctl("stop", (EMBED_UNIT,))
+        jlog(
+            "info",
+            "llama:bootstrap",
+            "the standing lease mode has no room for the embeddings server; stopped it again",
+            mode=lease_mode,
         )
 
     # Before the wait, not after: a first install that is still loading weights
@@ -2122,7 +2157,7 @@ def main() -> int:
         )
         return 0
 
-    if speculative_active(llama_url):
+    if speculative_active(llama_url, household_preset):
         jlog("info", "llama:bootstrap", "speculative decoding active (MTP drafter)")
     else:
         jlog(
