@@ -523,24 +523,47 @@ def test_a_lease_without_a_duration_still_gets_one(pd, monkeypatch):
     assert seen == {"seconds": pd.LEASE_DEFAULT_DURATION_SEC}
 
 
-def test_a_deploy_during_a_lease_leaves_the_leased_server_alone(
+def test_a_deploy_during_a_lease_converges_the_unit_but_warms_nothing(
     pd, tmp_path, monkeypatch
 ):
-    """The unit belongs to the lease for its duration: rewriting it would
-    restart llama-server into a card the coding run has filled."""
+    """The card stays the holder's — no warm-up asks it for the household
+    preset — but the UNIT is mode-independent since #1416 and must converge.
+    Skipping it on the v2 -> v3 deploy left the router on the old argv holding
+    LLAMA_PORT, the policy proxy crash-looping on a port it could not bind, and
+    nothing in the system that would ever have fixed it."""
+    installed = []
     monkeypatch.setattr(
-        pd,
-        "install_gpu_quadlet_fallback",
-        lambda *a: pytest.fail("took the card back mid-lease"),
+        pd, "install_gpu_quadlet_fallback", lambda *a: installed.append(a) or True
     )
+    monkeypatch.setattr(pd, "install_embed_unit", lambda *a, **k: True)
     monkeypatch.setattr(
-        pd, "wait_for_ready", lambda *a, **k: pytest.fail("waited on a leased server")
+        pd, "warm_preset", lambda *a, **k: pytest.fail("warmed a leased card")
     )
     monkeypatch.setattr(pd, "download_model", lambda *a: True)
     monkeypatch.setattr(pd, "install_lease_script", lambda d: "/x/gpu-lease.py")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LLAMA_GPU_PASSTHROUGH", "true")
     pd.write_lease(str(tmp_path), {"holder": "coder", "mode": "coding"})
     assert pd.main() == 0
+    assert installed, "the router unit was left on the pre-deploy argv"
+
+
+def test_a_deploy_during_a_thinking_lease_stops_the_embeddings_server_again(
+    pd, tmp_path, monkeypatch, systemctl_calls
+):
+    """`install_embed_unit` starts the server, and under the MoE that is the
+    168 MiB that makes the preset fail to load — so the deploy has to put it
+    back the way the lease left it."""
+    monkeypatch.setattr(pd, "install_gpu_quadlet_fallback", lambda *a: True)
+    monkeypatch.setattr(pd, "install_embed_unit", lambda *a, **k: True)
+    monkeypatch.setattr(pd, "warm_preset", lambda *a, **k: True)
+    monkeypatch.setattr(pd, "download_model", lambda *a: True)
+    monkeypatch.setattr(pd, "install_lease_script", lambda d: "/x/gpu-lease.py")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LLAMA_GPU_PASSTHROUGH", "true")
+    pd.write_lease(str(tmp_path), {"holder": "reader", "mode": "thinking"})
+    assert pd.main() == 0
+    assert ("stop", (pd.EMBED_UNIT,)) in systemctl_calls
 
 
 def test_both_templates_agree_on_the_voice_env_contract(pd):
@@ -600,18 +623,24 @@ def test_foundry_acquire_leaves_the_embeddings_server_alone(
     assert not any(pd.EMBED_UNIT in units for _, units in systemctl_calls)
 
 
-def test_no_named_mode_stops_the_embeddings_server(
+def test_coding_keeps_the_embeddings_server_and_thinking_does_not(
     pd, tmp_path, swap_box, systemctl_calls
 ):
-    """Operator 2026-09-13: ~300 MiB fits under both focus peaks — the MoE at
-    131k takes 15 620 of 16 380, the 27B with `-ctv q4_0 -ub 256` at 82k about
-    15 300 — and stopping it cost the household its semantic vault search for
-    the whole window. Only the exclusive lease empties the card."""
-    for holder, mode in (("coder", "coding"), ("reader", "thinking")):
+    """Operator 2026-09-13: the ~430 MiB stays wherever it fits, because
+    stopping it costs the household its semantic vault search for the whole
+    window. Under the 27B it fits — 15 486 + 430 of 16 380, box-measured. Under
+    the MoE it does not: 15 620 leaves 760, and the box OOM'd the MTP drafter's
+    compute buffer by 168 MiB, so `thinking` served nothing at all until the
+    embeddings server went. That is the one mode that stops it."""
+    for holder, mode, stops in (
+        ("coder", "coding", False),
+        ("reader", "thinking", True),
+    ):
         systemctl_calls.clear()
         assert pd.lease_acquire(str(tmp_path), holder, "11434", mode, 3600) == 0
         assert ("stop", pd.LEASE_GPU_UNITS) in systemctl_calls
-        assert not any(pd.EMBED_UNIT in units for _, units in systemctl_calls)
+        stopped = any(pd.EMBED_UNIT in units for _, units in systemctl_calls)
+        assert stopped is stops, mode
         pathlib.Path(pd.lease_file(str(tmp_path))).unlink()
     assert pd.EMBED_UNIT not in pd.LEASE_GPU_UNITS
     assert pd.EMBED_UNIT in pd.LEASED_UNITS
@@ -619,6 +648,19 @@ def test_no_named_mode_stops_the_embeddings_server(
         "solaris-whisper-batch.service",
         "solaris-wakeword-trainer.service",
     }
+
+
+def test_thinking_release_starts_the_embeddings_server_again(
+    pd, tmp_path, monkeypatch, swap_box, systemctl_calls
+):
+    """A window that took the vault's semantic search away has to give it
+    back — otherwise the first `thinking` afternoon leaves the household
+    without it until someone redeploys."""
+    monkeypatch.setattr(pd, "warm_preset", lambda *a, **k: True)
+    assert pd.lease_acquire(str(tmp_path), "reader", "11434", "thinking", 3600) == 0
+    systemctl_calls.clear()
+    assert pd.lease_release(str(tmp_path), "11434") == 0
+    assert ("start", (pd.EMBED_UNIT,)) in systemctl_calls
 
 
 def test_foundry_release_restores_e4b_without_touching_other_units(
