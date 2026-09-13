@@ -521,10 +521,19 @@ Einstellung.**
 
 **Erreichbarkeit für Nachbar-Pods** (Nachtrag 6.9., solarisbay#1344): llama-server
 bindet auf `0.0.0.0`, nicht nur Loopback, damit isolierte Pods ohne Host-Netz
-(z. B. claude-dev) es über `host.containers.internal` erreichen — die LAN-Freigabe
-bleibt zu (ADR-0007-Carve-out, nftables `blockLanAccess` auf dem Port). Regel für
+(z. B. claude-dev) es über `host.containers.internal` erreichen. Regel für
 Verbraucher: Host-Netz-Dienste → `127.0.0.1:11435`, isolierte Pods →
-`host.containers.internal:11435`, niemand die LAN-IP.
+`host.containers.internal:11435`.
+
+**Nachtrag 13.9. (solarisbay#1420): die LAN-Seite ist offen, als Entscheidung.**
+`blockLanAccess` steht für `LLAMA_PORT` auf `false`, ServiceBay nimmt den Port
+also nicht in seine Sperrmenge auf; jedes Gerät im Heimnetz erreicht den
+Endpunkt über die Box-IP. llama-server bringt keine Anmeldung mit, der
+Policy-Proxy auch nicht — Modelle auflisten, Anfragen stellen, GPU-Zeit
+verbrauchen ist damit für das ganze WLAN möglich. Der Betreiber will das genau
+so; die Modus-Politik bleibt wirksam und es gibt weiterhin keine Proxy-Route,
+also nichts davon aus dem Internet. Zurückdrehen ist eine Entscheidung mit dem
+Betreiber, keine Aufräumarbeit.
 
 **Ollama wird abgeschaltet** (solarisbay#1332): Embeddings (`nomic-embed-text`) und
 Vision-Ingest wandern auf llama.cpp; das `ollama`-Template wird stillgelegt (Tombstone,

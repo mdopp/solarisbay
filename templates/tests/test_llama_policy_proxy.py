@@ -377,6 +377,7 @@ def test_the_router_port_is_declared_with_a_default(pd):
         (TEMPLATES / "llama" / "variables.json").read_text(encoding="utf-8")
     )
     assert variables["LLAMA_ROUTER_PORT"]["default"] == "11434"
-    # LLAMA_PORT keeps the firewall flag: it is still the port on the outside.
-    assert variables["LLAMA_PORT"]["blockLanAccess"] is True
+    # LLAMA_PORT is the port on the outside and carries the LAN decision (#1420);
+    # the router port carries no flag because it never leaves loopback.
+    assert variables["LLAMA_PORT"]["blockLanAccess"] is False
     assert "blockLanAccess" not in variables["LLAMA_ROUTER_PORT"]

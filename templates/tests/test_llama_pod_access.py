@@ -7,13 +7,15 @@ Engine, the health check) uses `127.0.0.1`; an isolated pod (claude-dev's
 maps to the host's LAN address rather than to loopback. A loopback bind
 therefore serves the first and silently starves the second.
 
-ADR-0007 Decision 3 resolves that by binding wider and closing the LAN one
-layer down: `LLAMA_PORT` carries `blockLanAccess: true`, and ServiceBay drops
-the port on physical interfaces while leaving `lo` — where the pasta-proxied
-pod path lands — alone. Both halves are load-bearing and neither shows up as
-a failure when it is missing: without the wide bind `pi`'s model picker is
-merely empty, and without the flag an unauthenticated model server answers
-the whole LAN.
+ADR-0007 Decision 3 resolves that by binding wider (#1344). The wide bind is
+load-bearing and does not show up as a failure when it is missing: `pi`'s model
+picker is merely empty.
+
+The LAN is a separate decision and, since #1420, an explicit one: `LLAMA_PORT`
+carries `blockLanAccess: false`, so ServiceBay leaves the port out of its host
+block set and every device in the home network reaches an unauthenticated model
+server. The operator asked for that. What is asserted here is that the file
+still says so — the flag on its own reads like an oversight.
 
 Since #1416 the process carrying that wide bind is the mode policy proxy, and
 llama-server itself sits behind it on loopback `LLAMA_ROUTER_PORT`. That is
@@ -89,8 +91,22 @@ def test_no_preset_can_move_the_bind(pd):
     assert "host=" not in text and "port=" not in text
 
 
-def test_port_blocks_lan_access(variables):
-    assert variables["LLAMA_PORT"]["blockLanAccess"] is True
+def test_the_lan_is_opened_on_purpose_and_says_so(variables):
+    """#1420 — the operator asked for llama to serve its models in the LAN
+    without a login, and until then the reachability rested on a hand-written
+    nftables `accept` that the next deploy could overwrite.
+
+    The flag alone is half of it. An unauthenticated model server open to the
+    whole home network is the kind of thing a later reader reverts on sight, so
+    the description has to carry the decision and the cost — asserted here
+    because a rewrite that drops them leaves a file saying nothing while the
+    port stays open."""
+    port = variables["LLAMA_PORT"]
+    assert port["blockLanAccess"] is False
+    description = port["description"]
+    assert "no authentication" in description
+    assert "deliberately" in description
+    assert "#1420" in description
 
 
 def test_port_is_declared_so_the_firewall_rule_has_a_target(template_text):
@@ -114,3 +130,7 @@ def test_readme_names_all_three_audiences():
     assert "host.containers.internal" in readme
     assert "blockLanAccess" in readme
     assert "solaris-llama-policy.service" in readme
+    # #1420: the LAN is the fourth audience now, and the README is where the
+    # reasoning lives — the flag is one word and cannot carry it.
+    assert "blockLanAccess: false" in readme
+    assert "no authentication" in readme

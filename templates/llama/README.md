@@ -117,8 +117,9 @@ Tool calls were 12/12 on both, German answers complete on both.
 
 - `LLAMA_PORT` — the port every client uses (default `11435`). What listens
   there is the **mode policy proxy**, not llama-server itself. No proxy route
-  exists: there is no authentication here, so the endpoint is on-box only. See
-  *Who may reach the endpoint* below.
+  exists, so nothing here is reachable from the internet — but the home LAN
+  reaches it without a login, on purpose. See *Who may reach the endpoint*
+  below before you change `blockLanAccess`.
 - `LLAMA_ROUTER_PORT` — the loopback port the router itself binds (default
   `11434`, Ollama's old port, free since that template was retired). Only
   post-deploy and `gpu-lease.py` talk to it.
@@ -169,17 +170,15 @@ mean-pooled; anything else yields valid-looking, incomparable vectors) and
 non-causal attention, and llama.cpp rejects anything longer than one
 micro-batch).
 
-## Who may reach the endpoint — an ADR-0007 carve-out for on-box consumers
+## Who may reach the endpoint — an ADR-0007 carve-out, and one decided opening
 
-There is no authentication anywhere here, so the rule is *on-box only, never
-the LAN*. That is three different addresses, and each consumer gets exactly
-one:
+There is no authentication anywhere here. Four consumers, four addresses:
 
 | Consumer | Address | Why |
 |---|---|---|
 | Services on host networking — the Solaris Engine, the health check | `http://127.0.0.1:11435` | same netns; the default and the fast path |
-| Isolated pods without host networking — claude-dev, its `pi` | `http://host.containers.internal:11435` | ADR-0007 Decision 1: never `127.0.0.1`, never the LAN IP |
-| Anything on the LAN | *refused* | nothing outside the box may talk to an unauthenticated model server |
+| Isolated pods without host networking — pi-web, its `pi` | `http://host.containers.internal:11435` | ADR-0007 Decision 1: never `127.0.0.1`, never the LAN IP |
+| Devices on the home LAN | `http://<box-lan-ip>:11435` | **allowed, deliberately** — see the decision below |
 | post-deploy and `gpu-lease.py` | `http://127.0.0.1:11434` | the router direct: a release warms the household preset while a lease that forbids it still stands |
 
 The **policy proxy** therefore binds `0.0.0.0`, not loopback (#1344). A
@@ -194,21 +193,43 @@ The **router** binds `127.0.0.1:11434` and nothing else, which is the point:
 it loads any preset it is asked for, so the proxy has to be the only thing
 that can ask it.
 
-The LAN half is closed one layer down instead, outside the pod: `LLAMA_PORT`
-carries **`blockLanAccess: true`** in `variables.json`, and ServiceBay renders a
-host nftables rule that drops connections to the port arriving on a physical
-interface while accepting the ones arriving on `lo` — which is where the
-pasta-proxied pod path lands, because pasta re-opens the connection to one of
-the host's own addresses and the kernel routes that over loopback. This is the
-same pattern LLDAP's raw LDAP port uses (servicebay#2388), and it is what
-ADR-0007's Decision 3 prescribes: *the sibling binds wider and carries
-`blockLanAccess`; the consumer stays isolated.*
+### The LAN is open, and that is the decision — do not "fix" it
 
-Checking it on the box is three commands — from inside another pod
+`LLAMA_PORT` carries **`blockLanAccess: false`** in `variables.json`. ServiceBay
+builds its host nftables block set from exactly those declarations (`elements =
+{ … }`, commented *ports a template declared blockLanAccess on*), so with the
+flag off the port is never put in it and connections arriving on the physical
+interface are not dropped.
+
+**The operator asked for this** on 2026-09-13: *llama is to be available in the
+local network, without a login, over the server's IP, and offer its models.* It
+had been true on the box since before the ticket — but by a **hand-written**
+`accept` rule in front of the drop, which is a state the next deploy can
+overwrite and nobody can explain from the repository. #1420 moved the decision
+into the contract so the reachability stops depending on a manual edit.
+
+**What it costs, stated plainly.** llama-server ships no authentication and the
+policy proxy adds none. Every device on the home network can therefore list the
+models, send requests and spend GPU time on this box — a guest phone on the
+Wi-Fi included. What it cannot do: evict the household model (the mode policy
+refuses a preset the standing lease mode disallows, `409`), reach the router
+directly (loopback-only), or get in from the internet (no proxy route, and
+nothing forwards 11435 at the router). That trade was taken knowingly. Turning
+the flag back on closes the LAN for everyone and is a decision to take **with
+the operator**, not a tidy-up.
+
+Before #1344 this port was loopback-bound, and the reason it binds `0.0.0.0`
+today is the pod path, not the LAN one — the two arrived in that order, so a
+reader finding the wide bind should not read it as the LAN decision.
+
+Checking it on the box is four commands — from inside another pod
 `curl http://host.containers.internal:11435/v1/models` must answer, from that
 same pod `curl http://host.containers.internal:11434/v1/models` must **not**
-(the router is loopback-only, so the policy cannot be walked around), and from
-a LAN host `curl http://<box-lan-ip>:11435/v1/models` must be refused.
+(the router is loopback-only, so the policy cannot be walked around), from a LAN
+host `curl http://<box-lan-ip>:11435/v1/models` must **answer**, and
+`nft list set inet servicebay on_box_blocked` (or whatever the set is called on
+the box) must no longer carry `11435`. Once it does not, the hand-written
+`accept` rule in `on_box_gate` has nothing left to override and can go.
 
 ## Three traps, all box-measured
 
