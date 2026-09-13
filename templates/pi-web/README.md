@@ -34,9 +34,11 @@ it by arguing its case, and Decision 3 says explicitly that needing to reach a
 loopback-bound sibling is not a reason either. So the pod runs in its own
 network namespace, publishes 8504 as a `hostPort`, and addresses llama-server
 as `http://host.containers.internal:11435/v1`. That path answers because the
-sibling half already landed in #1344: llama-server binds `0.0.0.0` and
-`LLAMA_PORT` carries `blockLanAccess: true`, so the LAN is refused at the host
-firewall while loopback — where the pasta-proxied pod path arrives — is not.
+sibling half already landed in #1344: the process on `LLAMA_PORT` binds
+`0.0.0.0` and the port carries `blockLanAccess: true`, so the LAN is refused at
+the host firewall while loopback — where the pasta-proxied pod path arrives —
+is not. Since #1416 that process is the llama template's mode policy proxy and
+llama-server itself sits behind it on loopback 11434.
 
 `PI_WEB_PORT` carries the same `blockLanAccess: true` flag, for the same
 reason one step further out: PI WEB has no login of its own (upstream states
@@ -99,13 +101,13 @@ Four details that are not obvious:
 
 ## Which model in which mode
 
-llama-server is a **router** since #1416: one process on 11435, several
-presets, and the client picks one with the `model` field of its request. The
-GPU lease no longer swaps the server — it sets the **mode**: the voice stack's
-device, the embeddings server, and the set of presets a client may ask for
-while it stands. **The model widget in Solaris (the Modell-Kachel, #1374/#1381)
-is what selects that mode** — from the phone, without a development tool
-running.
+llama-server is a **router** since #1416: one process, several presets, and
+the client picks one with the `model` field of its request. The GPU lease no
+longer swaps the server — it sets the **mode**: the voice stack's device and
+the set of presets a client may ask for while it stands, which a policy proxy
+on 11435 enforces. **The model widget in Solaris (the Modell-Kachel,
+#1374/#1381) is what selects that mode** — from the phone, without a
+development tool running.
 
 | Mode (lease) | Presets allowed | What a PI WEB session should pick |
 |---|---|---|
@@ -140,22 +142,21 @@ Every client on this box must now do the same. Solaris' own Engine does
 nothing by default and will get a reasoning trace from the 27B** — they need
 the same `chat_template_kwargs` in their own provider configuration.
 
-### Take the mode — nothing on 11435 will make you
+### Take the mode — 11435 will make you
 
-The mode policy is enforced where a request passes through Solaris' own code:
-the Engine's model choice and the HTTP lease layer read `allowed` out of the
-lease file and answer **409** with the mode's name. **The router has no policy
-of its own**, and PI WEB reaches it directly — so a session here asking for
-`qwen3.8-27b` during a household evening is *served*, not refused. It loads
-15.6 GiB of weights while the voice stack is still on the GPU, which is the
-thrashing the mode exists to prevent.
+Since #1416 what answers on 11435 is not the router but a **mode policy
+proxy** in front of it (the router itself moved to loopback 11434 and has no
+policy at all). It reads the lease's `allowed` set on every request: a session
+here asking for `qwen3.8-27b` during a household evening is **refused with
+409**, not served, and `GET /v1/models` shows only the presets the standing
+mode allows — so Pi's `/model` picker lists what is actually available.
 
-So taking the mode in the Modell-Kachel first is a house rule, not something
-the port enforces. Take it.
+That is deliberate rather than tidy: served, the request would load 15.6 GiB
+of weights, evict the household Gemma and leave the next resident waiting
+10–20 s for a light to come on. Taking the mode in the Modell-Kachel first is
+now the only way in.
 
-Where a 409 *can* reach a session — a client routed through Solaris, or a
-policy that later moves in front of the port — it is handled rather than
-crashing anything:
+A 409 is handled rather than crashing anything:
 
 - **In a browser session** Pi shows the provider error in the conversation and
   the session stays open — pick an allowed model with `/model`, or set the mode

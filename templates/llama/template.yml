@@ -9,27 +9,35 @@ metadata:
     # v2 (#1344): llama-server binds 0.0.0.0 instead of 127.0.0.1 so isolated
     # sibling pods reach it through `host.containers.internal`; the LAN is
     # refused at the host firewall via LLAMA_PORT's `blockLanAccess` flag.
-    # v3 (#1416): router mode. One process serves four presets on one port and
-    # the client picks with the `model` field; every model option moved out of
-    # this argv into `presets.ini`, which post-deploy writes beside the
-    # weights. No data move; needs a re-deploy so the pod is recreated on it.
+    # v3 (#1416): router mode. One process serves four presets and the client
+    # picks with the `model` field; every model option moved out of this argv
+    # into `presets.ini`, which post-deploy writes beside the weights. The
+    # router itself refuses nothing, so it moved to LLAMA_ROUTER_PORT on
+    # loopback and post-deploy's mode policy proxy holds LLAMA_PORT — same wide
+    # bind, same firewall rule, plus the lease's `allowed` set. No data move;
+    # needs a re-deploy so the pod is recreated on the new bind.
     servicebay.schema-version: "3"
+    # Still LLAMA_PORT: that is the door consumers use and the port the
+    # firewall rule has to target. LLAMA_ROUTER_PORT is loopback-only and
+    # deliberately undeclared — nothing outside this box should find it.
     servicebay.ports: "{{LLAMA_PORT}}/tcp"
     # No `servicebay.tier` — like ollama this is opt-in AI infrastructure,
     # not a platform foundation. llama-server ships no auth and gets no proxy
     # route at all: its consumers are on-box only — the Solaris Engine on this
     # host netns, and isolated pods via `host.containers.internal`.
-    # In router mode `/health` says the router is up and ready to load a
-    # preset on demand; post-deploy additionally asks the household preset for
-    # a token, which is the only signal that a model really serves (#1416).
+    # Through the policy proxy, which passes `/health` to the router: that is
+    # the whole chain a consumer uses, and a dead proxy has to read as a dead
+    # service. post-deploy additionally asks the household preset for a token,
+    # which is the only signal that a model really serves (#1416).
     servicebay.healthcheck: |
       url: http://127.0.0.1:{{LLAMA_PORT}}/health
       interval: 30s
       timeout: 5s
       startup_timeout: 10m
 spec:
-  # hostNetwork so the solaris pod reaches llama-server at
-  # 127.0.0.1:{{LLAMA_PORT}} — same reason the ollama template uses it.
+  # hostNetwork so the policy proxy — a host process — reaches the router at
+  # 127.0.0.1:{{LLAMA_ROUTER_PORT}}, and so the Solaris Engine reaches the
+  # proxy on the same loopback. Same reason the ollama template used it.
   hostNetwork: true
   containers:
   - name: llama
@@ -39,20 +47,18 @@ spec:
     # land llama-server exits and the unit restarts, which is why nothing here
     # waits on them.
     args:
-    # 0.0.0.0, not 127.0.0.1 (#1344). ADR-0007 Decision 3: an isolated pod
-    # addresses an on-box sibling as `host.containers.internal`, which rootless
-    # podman/pasta maps to the host's LAN address, not to loopback — so a
-    # loopback bind is unreachable from every pod that is not on host
-    # networking (claude-dev's `pi` saw an empty model list). The LAN half is
-    # closed outside the pod: LLAMA_PORT carries `blockLanAccess: true`, and
-    # ServiceBay renders a host nftables rule dropping this port on physical
-    # interfaces while accepting `lo` — where the pasta-proxied pod path lands.
-    # 127.0.0.1:{{LLAMA_PORT}} keeps answering, so the Solaris Engine and the
-    # health check below are unaffected.
+    # Loopback, and the router's own port (#1416). The wide bind #1344 needed
+    # for `host.containers.internal` now belongs to the mode policy proxy
+    # post-deploy installs on {{LLAMA_PORT}} — ADR-0007 Decision 3 is unchanged,
+    # it is simply the proxy that carries it: it binds every interface, the
+    # LAN is dropped by LLAMA_PORT's `blockLanAccess` nftables rule, and an
+    # isolated pod still reaches it as `host.containers.internal`. The router
+    # loads any preset it is asked for, which is why nothing but the proxy is
+    # in a position to ask it.
     - "--host"
-    - "0.0.0.0"
+    - "127.0.0.1"
     - "--port"
-    - "{{LLAMA_PORT}}"
+    - "{{LLAMA_ROUTER_PORT}}"
     # Router mode (#1416). Every model option — weights, window, KV types, MTP
     # drafter, projector, alias — lives in `presets.ini`, one section per
     # preset, because a command-line argument outranks a preset option and
@@ -73,7 +79,7 @@ spec:
     # line covers all four.
     - "--jinja"
     ports:
-    - containerPort: {{LLAMA_PORT}}
+    - containerPort: {{LLAMA_ROUTER_PORT}}
     # GPU passthrough (CDI). As with ollama (#1026) `podman kube play` drops
     # `resources.limits.nvidia.com/gpu`, so the real passthrough is done by
     # post-deploy.py's install_gpu_quadlet_fallback(): a `.container` Quadlet

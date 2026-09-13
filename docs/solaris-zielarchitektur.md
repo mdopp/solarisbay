@@ -463,8 +463,8 @@ bleibt die Lease exklusiv: alles wird gestoppt, nichts antwortet.
 | :--- | :--- | :--- | :--- | :--- |
 | Haushalt (keine Lease) | gemma-4 e4b + MTP + mmproj, 32k f16 | `gemma-4-e4b` | GPU / an | normal |
 | `foundry` | gemma-4 12b + MTP, 131k q8-KV | `gemma-4-e4b`, `gemma-4-12b` | GPU / an | antwortet weiter, vom 12b |
-| `thinking` („Denken") | Qwen 3.6 35B-A3B UD-IQ3_XXS + MTP, 131k q8-KV | `qwen3.6-35b-a3b` | CPU / aus | antwortet weiter, denkt je Anfrage |
-| `coding` („Programmieren") | Qwen 3.8 27B UD-IQ3_XXS + MTP, 82k, `-ctv q4_0` | `qwen3.8-27b` | CPU / aus | antwortet weiter, vom 27B |
+| `thinking` („Denken") | Qwen 3.6 35B-A3B UD-IQ3_XXS + MTP, 131k q8-KV | `qwen3.6-35b-a3b` | CPU / an | antwortet weiter, denkt je Anfrage |
+| `coding` („Programmieren") | Qwen 3.8 27B UD-IQ3_XXS + MTP, 82k, `-ctv q4_0` | `qwen3.8-27b` | CPU / an | antwortet weiter, vom 27B |
 | exklusiv (ohne `--model`) | — | — | gestoppt | stumm, ehrlicher Hinweis + Banner |
 
 Der 26B-Plan ist gestrichen (#1325: passt nicht neben den Sprachstack). Denken und
@@ -472,17 +472,27 @@ Programmieren nehmen die Karte ganz — beide Presets liegen bei rund 15,6 GB vo
 16,4 — und schließen einen foundry-Abend aus; foundry bleibt beim 12B mit
 Sprachstack auf der GPU (Operator 13.9.).
 
+**Der Embedding-Server läuft in jedem Modus weiter** (Operator 13.9.). Seine rund
+300 MiB passen unter beide Fokus-Spitzen (MoE 15 620 MiB von 16 380; 27B rund
+15 300), und ihn zu stoppen kostete den Haushalt die semantische Vault-Suche für
+das ganze Fenster. In den Fokus-Modi stoppen nur `solaris-whisper-batch` und
+`solaris-wakeword-trainer`; der Sprachstack wechselt auf die CPU.
+
 **Denken ist kein Preset, sondern ein Schalter je Anfrage.** `--reasoning off` gibt es
 nicht mehr: ein Router serviert vier Modelle, ein serverweiter Schalter würde für alle
 entscheiden. Solaris' Engine schickt `chat_template_kwargs {enable_thinking:true}` im
 Modus `thinking` und `false` in allen anderen; fremde Clients (aider, goose, Continue,
 pi-web) setzen ihn selbst.
 
-**Die Modus-Politik gilt dort, wo Solaris' eigener Code eine Anfrage sieht:** die Engine
-fragt immer das Preset des laufenden Modus an, und die HTTP-Lease-Schicht lehnt ein
-fremdes Fenster mit `409` ab, das jetzt auch den stehenden Modus und dessen `allowed`
-nennt. Der Router selbst kennt keine Politik — wer `11435` direkt anspricht, ist nicht
-gebunden; der Port ist nur auf der Box erreichbar, das ist akzeptiert.
+**Ein Policy-Proxy setzt die Modus-Politik durch** (#1416). Der Router kennt keine
+Politik — er lädt, wonach gefragt wird — also bindet er nur noch `127.0.0.1:11434`,
+und `solaris-llama-policy.service` hält `11435` davor. Der Proxy liest bei *jeder*
+Anfrage das `allowed` aus der Lease-Datei: ein Preset außerhalb bekommt `409` mit
+Modus und erlaubter Liste, `GET /v1/models` zeigt nur die erlaubten Presets, alles
+andere geht unverändert durch — Streams Stück für Stück. Damit gilt die Politik auch
+für Clients, die nie durch die Engine laufen (pi-web, aider, goose, Continue); die
+Engine prüft zusätzlich auf ihrer Seite, und die HTTP-Lease-Schicht lehnt ein fremdes
+Fenster weiterhin mit `409` samt Modus und `allowed` ab.
 
 **Nachbardienste holen sich das Modell über HTTP, nie über das Skript:**
 `POST/GET/DELETE http://127.0.0.1:8787/api/model-lease` (loopback, kein Token;

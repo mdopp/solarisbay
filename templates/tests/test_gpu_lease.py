@@ -9,10 +9,12 @@ no moment when the card is gone and nothing knows it.
 
 The three named modes are the softer shapes: since #1416 llama-server runs in
 router mode and serves all four presets, so a mode stops nothing on the llama
-side at all — it sets the environment (voice device, embeddings server) and
+side at all — it sets the environment (voice device, background GPU jobs) and
 writes the presets it allows. A coding or thinking lease moves the voice units
-to the CPU; a foundry lease stops nothing at all, because foundry transcribes
-through `solaris-whisper-batch` while it runs.
+to the CPU and stops the batch transcriber and the wakeword trainer; a foundry
+lease stops nothing at all, because foundry transcribes through
+`solaris-whisper-batch` while it runs. The embeddings server keeps running in
+every named mode (operator 2026-09-13) — only the exclusive lease takes it.
 """
 
 from __future__ import annotations
@@ -131,7 +133,7 @@ def test_release_starts_everything_and_clears_only_once_warm(
         ),
     )
 
-    assert pd.lease_release(str(tmp_path), "11435") == 0
+    assert pd.lease_release(str(tmp_path), "11434") == 0
     assert systemctl_calls == [("start", pd.LEASED_UNITS)]
     # The lease still stood while the model was loading — a resident asking
     # during those ~38 s gets the honest sentence, not a connection error.
@@ -146,7 +148,7 @@ def test_release_clears_the_lease_even_when_the_model_never_comes_back(
     after the holder has left is the worse lie."""
     pd.lease_acquire(str(tmp_path), "foundry")
     monkeypatch.setattr(pd, "warm_preset", lambda url, preset, deadline_sec: False)
-    assert pd.lease_release(str(tmp_path), "11435") == 1
+    assert pd.lease_release(str(tmp_path), "11434") == 1
     assert not _lease(tmp_path, pd).exists()
 
 
@@ -234,18 +236,18 @@ def test_no_preset_switches_thinking_off_at_the_server(pd):
     mode on #1415 — which also means a client that sends nothing (aider, goose)
     gets a thinking trace and no tool call. That is the client's setting now."""
     assert "reasoning" not in pd.render_presets("/models")
-    assert "--reasoning" not in " ".join(pd.server_args("11435", "/models"))
+    assert "--reasoning" not in " ".join(pd.server_args("11434", "/models"))
 
 
 def test_the_router_argv_carries_no_model_option(pd):
     """A command-line argument outranks a preset option, so a stray `-c` here
     would give all four models the same window."""
-    args = pd.server_args("11435", "/models")
+    args = pd.server_args("11434", "/models")
     assert args == [
         "--host",
-        "0.0.0.0",
+        "127.0.0.1",
         "--port",
-        "11435",
+        "11434",
         "--models-preset",
         "/models/presets.ini",
         "--models-max",
@@ -305,7 +307,7 @@ def test_the_presets_file_lands_where_the_container_reads_it(pd, tmp_path):
 def test_coding_acquire_keeps_the_voice_units_running_on_the_cpu(
     pd, tmp_path, swap_box, systemctl_calls
 ):
-    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "coder", "11434", "coding", 3600) == 0
     stopped = [units for verb, units in systemctl_calls if verb == "stop"]
     assert stopped == [pd.LEASE_GPU_UNITS]
     assert "solaris-whisper.service" not in sum((list(u) for u in stopped), [])
@@ -320,7 +322,7 @@ def test_coding_acquire_never_restarts_the_router(
     """#1416: the router already serves the coding preset and loads it on the
     holder's first request. A restart would only cost the household its warm
     model for nothing."""
-    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "coder", "11434", "coding", 3600) == 0
     assert ("restart", ("llama.service",)) not in systemctl_calls
     assert ("stop", ("llama.service",)) not in systemctl_calls
     assert not swap_box.exists()
@@ -332,7 +334,7 @@ def test_the_lease_carries_the_presets_its_mode_allows(
     """The mode policy the Engine enforces: a request for a preset outside this
     list is refused with the mode's name instead of evicting the household
     model (#1416)."""
-    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "coder", "11434", "coding", 3600) == 0
     lease = pd.read_lease(str(tmp_path))
     assert lease["allowed"] == ["qwen3.8-27b"]
     assert lease["ready"] is True
@@ -363,7 +365,7 @@ def test_the_thinking_mode_takes_the_card_like_the_coding_one(
     """The 35B-A3B peaks at 15 620 of 16 380 MiB (#1418) — the voice stack has
     to come off the card and the embeddings server has to stop, exactly as for
     the 27B."""
-    assert pd.lease_acquire(str(tmp_path), "reader", "11435", "thinking", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "reader", "11434", "thinking", 3600) == 0
     assert ("stop", pd.LEASE_GPU_UNITS) in systemctl_calls
     assert ("restart", pd.LEASE_VOICE_UNITS) in systemctl_calls
     assert ("restart", ("llama.service",)) not in systemctl_calls
@@ -386,7 +388,7 @@ def test_every_lease_carries_a_deadline_and_arms_the_expiry(
     """#1260's lesson: an end signal alone is not enough. A run that dies
     without releasing must not leave the household on the coding model."""
     before = pd.time.time()
-    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "coder", "11434", "coding", 3600) == 0
     lease = pd.read_lease(str(tmp_path))
     assert before + 3600 <= lease["until"] <= pd.time.time() + 3600
     armed = [c for c in no_box if c and c[0] == "systemd-run"]
@@ -415,10 +417,10 @@ def test_a_holder_that_keeps_renewing_keeps_its_window(
 ):
     """The re-arm is the heartbeat: every renewal cancels the pending release
     and arms the next grace, so a live holder is never released underneath."""
-    pd.lease_acquire(str(tmp_path), "pi-web", "11435", "coding", 900)
+    pd.lease_acquire(str(tmp_path), "pi-web", "11434", "coding", 900)
     first = pd.read_lease(str(tmp_path))["last_renewed_at"]
     no_box.clear()
-    pd.lease_acquire(str(tmp_path), "pi-web", "11435", "coding", 900)
+    pd.lease_acquire(str(tmp_path), "pi-web", "11434", "coding", 900)
     lease = pd.read_lease(str(tmp_path))
     assert lease["last_renewed_at"] >= first
     assert lease["renew_after"] == 300
@@ -432,7 +434,7 @@ def test_the_lease_records_the_heartbeat_the_engine_reports(
     """`GET /api/model-lease` answers these two straight out of the file, so
     the holder can see how long its window survives its own silence."""
     before = pd.time.time()
-    pd.lease_acquire(str(tmp_path), "pi-web", "11435", "coding", 900)
+    pd.lease_acquire(str(tmp_path), "pi-web", "11434", "coding", 900)
     lease = pd.read_lease(str(tmp_path))
     assert before <= lease["last_renewed_at"] <= pd.time.time()
     assert lease["renew_after"] == pd.renew_after(900)
@@ -450,9 +452,9 @@ def test_coding_release_puts_the_gpu_voice_back_and_warms_the_household(
         "warm_preset",
         lambda url, preset, deadline_sec: bool(warmed.append(preset)) or True,
     )
-    pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600)
+    pd.lease_acquire(str(tmp_path), "coder", "11434", "coding", 3600)
     systemctl_calls.clear()
-    assert pd.lease_release(str(tmp_path), "11435") == 0
+    assert pd.lease_release(str(tmp_path), "11434") == 0
     assert ("start", pd.LEASE_GPU_UNITS) in systemctl_calls
     assert ("restart", pd.LEASE_VOICE_UNITS) in systemctl_calls
     env_file = tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE
@@ -476,8 +478,8 @@ def test_release_warms_the_preset_that_was_installed_not_the_default(
         "warm_preset",
         lambda url, preset, deadline_sec: bool(warmed.append(preset)) or True,
     )
-    pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600)
-    pd.lease_release(str(tmp_path), "11435")
+    pd.lease_acquire(str(tmp_path), "coder", "11434", "coding", 3600)
+    pd.lease_release(str(tmp_path), "11434")
     assert warmed == ["gemma-4-e4b-de"]
 
 
@@ -488,14 +490,14 @@ def test_missing_coding_weights_stop_nothing(pd, tmp_path, monkeypatch, swap_box
     monkeypatch.setattr(
         pd, "systemctl", lambda verb, units: pytest.fail("stopped a unit anyway")
     )
-    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 1
+    assert pd.lease_acquire(str(tmp_path), "coder", "11434", "coding", 3600) == 1
     assert not _lease(tmp_path, pd).exists()
 
 
 def test_an_unknown_model_is_refused_rather_than_run_exclusively(
     pd, tmp_path, systemctl_calls
 ):
-    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "qwen", 3600) == 2
+    assert pd.lease_acquire(str(tmp_path), "coder", "11434", "qwen", 3600) == 2
     assert systemctl_calls == []
 
 
@@ -569,7 +571,7 @@ def test_foundry_acquire_stops_nothing_and_leaves_the_voice_on_the_gpu(
     `solaris-whisper-batch` all evening, so the five units it would otherwise
     stop are exactly the ones it needs running — and since #1416 the router is
     not restarted either, so nothing moves at all."""
-    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600) == 0
     assert systemctl_calls == []
     assert not (tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE).exists()
 
@@ -579,7 +581,7 @@ def test_foundry_keeps_the_household_preset_on_the_menu(
 ):
     """Foundry is the one mode with two allowed presets: the 12B it asks for,
     and the household e4b, because the voice stack keeps the card too."""
-    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600) == 0
     lease = pd.read_lease(str(tmp_path))
     assert lease["allowed"] == ["gemma-4-e4b", "gemma-4-12b"]
     assert lease["mode"] == "foundry"
@@ -594,18 +596,29 @@ def test_foundry_acquire_leaves_the_embeddings_server_alone(
     """9 636 MiB for the 12B, 4 508 for the voice stack and 300 for the
     embeddings server is 14 444 of a 16 380 card — so the household keeps its
     semantic vault search for the whole evening (#1332)."""
-    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600) == 0
     assert not any(pd.EMBED_UNIT in units for _, units in systemctl_calls)
 
 
-def test_coding_acquire_stops_the_embeddings_server(
+def test_no_named_mode_stops_the_embeddings_server(
     pd, tmp_path, swap_box, systemctl_calls
 ):
-    """The coding profile peaks at 15 700 of 16 380 MiB — the embeddings
-    server's 300 MB is the difference between the drafter loading and not."""
-    assert pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600) == 0
-    assert ("stop", pd.LEASE_GPU_UNITS) in systemctl_calls
-    assert pd.EMBED_UNIT in pd.LEASE_GPU_UNITS
+    """Operator 2026-09-13: ~300 MiB fits under both focus peaks — the MoE at
+    131k takes 15 620 of 16 380, the 27B with `-ctv q4_0 -ub 256` at 82k about
+    15 300 — and stopping it cost the household its semantic vault search for
+    the whole window. Only the exclusive lease empties the card."""
+    for holder, mode in (("coder", "coding"), ("reader", "thinking")):
+        systemctl_calls.clear()
+        assert pd.lease_acquire(str(tmp_path), holder, "11434", mode, 3600) == 0
+        assert ("stop", pd.LEASE_GPU_UNITS) in systemctl_calls
+        assert not any(pd.EMBED_UNIT in units for _, units in systemctl_calls)
+        pathlib.Path(pd.lease_file(str(tmp_path))).unlink()
+    assert pd.EMBED_UNIT not in pd.LEASE_GPU_UNITS
+    assert pd.EMBED_UNIT in pd.LEASED_UNITS
+    assert set(pd.LEASE_GPU_UNITS) == {
+        "solaris-whisper-batch.service",
+        "solaris-wakeword-trainer.service",
+    }
 
 
 def test_foundry_release_restores_e4b_without_touching_other_units(
@@ -617,9 +630,9 @@ def test_foundry_release_restores_e4b_without_touching_other_units(
         "warm_preset",
         lambda url, preset, deadline_sec: bool(warmed.append(preset)) or True,
     )
-    pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600)
+    pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600)
     systemctl_calls.clear()
-    assert pd.lease_release(str(tmp_path), "11435") == 0
+    assert pd.lease_release(str(tmp_path), "11434") == 0
     assert warmed == ["gemma-4-e4b"]
     # Nothing was stopped, so nothing may be started behind the units' backs.
     assert systemctl_calls == []
@@ -630,16 +643,16 @@ def test_foundry_release_restores_e4b_without_touching_other_units(
 def test_coding_release_starts_the_embeddings_server_again(
     pd, tmp_path, swap_box, systemctl_calls
 ):
-    pd.lease_acquire(str(tmp_path), "coder", "11435", "coding", 3600)
+    pd.lease_acquire(str(tmp_path), "coder", "11434", "coding", 3600)
     systemctl_calls.clear()
-    assert pd.lease_release(str(tmp_path), "11435") == 0
+    assert pd.lease_release(str(tmp_path), "11434") == 0
     assert ("start", pd.LEASE_GPU_UNITS) in systemctl_calls
 
 
 def test_a_foundry_lease_expires_back_to_the_household_model(
     pd, tmp_path, swap_box, systemctl_calls, no_box
 ):
-    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600) == 0
     armed = [c for c in no_box if c and c[0] == "systemd-run"]
     assert armed and "--on-active=2400" in armed[0] and armed[0][-1] == "release"
 
@@ -678,7 +691,7 @@ def test_both_argv_sources_load_the_same_presets_file(pd):
     assert '- "--models-max"' in tmpl
     assert '- "-m"' not in tmpl and '- "--alias"' not in tmpl
     assert "--models-preset /models/presets.ini" in " ".join(
-        pd.server_args("11435", "/models")
+        pd.server_args("11434", "/models")
     )
     variables = json.loads(
         (TEMPLATES / "llama" / "variables.json").read_text(encoding="utf-8")
@@ -690,7 +703,7 @@ def test_both_argv_sources_load_the_same_presets_file(pd):
 def test_the_lease_records_the_alias_the_holder_will_be_answered_by(
     pd, tmp_path, swap_box, systemctl_calls
 ):
-    pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600)
+    pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600)
     assert pd.read_lease(str(tmp_path))["alias"] == "gemma-4-12b"
 
 
@@ -700,11 +713,11 @@ def test_a_renewal_moves_the_deadline_without_swapping_again(
     """The holder renews every few minutes. Reloading llama-server each time
     would cost the household a cold load per renewal — the deadline moves, the
     server does not."""
-    pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600)
+    pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600)
     first_until = pd.read_lease(str(tmp_path))["until"]
     systemctl_calls.clear()
     no_box.clear()
-    assert pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 7200) == 0
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 7200) == 0
     assert systemctl_calls == []
     assert pd.read_lease(str(tmp_path))["until"] > first_until
     armed = [c for c in no_box if c and c[0] == "systemd-run"]
@@ -729,7 +742,7 @@ def test_the_broker_acquires_what_the_engine_asked_for(
         holder="foundry",
         requested_at=1.5,
     )
-    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert pd.broker_run(str(tmp_path), "11434") == 0
     lease = pd.read_lease(str(tmp_path))
     assert lease["mode"] == "foundry" and lease["holder"] == "foundry"
     status = json.loads(pathlib.Path(pd.status_file(str(tmp_path))).read_text())
@@ -755,23 +768,23 @@ def test_the_broker_files_the_window_under_the_service_that_asked(
         holder="foundry-chronicle",
         requested_at=1.75,
     )
-    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert pd.broker_run(str(tmp_path), "11434") == 0
     assert pd.read_lease(str(tmp_path))["holder"] == "foundry-chronicle"
     status = json.loads(pathlib.Path(pd.status_file(str(tmp_path))).read_text())
     assert status["holder"] == "foundry-chronicle"
     # An acquire without a holder stays what it has always been: the profile.
     pathlib.Path(pd.lease_file(str(tmp_path))).unlink()
     _request(pd, tmp_path, op="acquire", model="foundry", ttl_s=900, requested_at=1.85)
-    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert pd.broker_run(str(tmp_path), "11434") == 0
     assert pd.read_lease(str(tmp_path))["holder"] == "foundry"
 
 
 def test_the_broker_releases_and_says_which_model_is_back(
     pd, tmp_path, swap_box, systemctl_calls
 ):
-    pd.lease_acquire(str(tmp_path), "foundry", "11435", "foundry", 3600)
+    pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600)
     _request(pd, tmp_path, op="release", model="", requested_at=2.5)
-    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert pd.broker_run(str(tmp_path), "11434") == 0
     assert not _lease(tmp_path, pd).exists()
     status = json.loads(pathlib.Path(pd.status_file(str(tmp_path))).read_text())
     assert status["state"] == "released"
@@ -786,7 +799,7 @@ def test_a_failed_acquire_is_reported_rather_than_left_pending(
     waiting for a window that is never coming."""
     monkeypatch.setattr(pd, "download_model", lambda *a: False)
     _request(pd, tmp_path, op="acquire", model="foundry", ttl_s=900, requested_at=3.5)
-    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert pd.broker_run(str(tmp_path), "11434") == 0
     status = json.loads(pathlib.Path(pd.status_file(str(tmp_path))).read_text())
     assert status["state"] == "error"
     assert status["expires_at"] is None
@@ -794,20 +807,20 @@ def test_a_failed_acquire_is_reported_rather_than_left_pending(
 
 def test_an_unknown_request_never_reaches_the_units(pd, tmp_path, systemctl_calls):
     _request(pd, tmp_path, op="acquire", model="llama5", requested_at=4.5)
-    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert pd.broker_run(str(tmp_path), "11434") == 0
     assert systemctl_calls == []
     assert not _lease(tmp_path, pd).exists()
 
 
 def test_no_request_at_all_is_a_no_op(pd, tmp_path, systemctl_calls):
-    assert pd.broker_run(str(tmp_path), "11435") == 0
+    assert pd.broker_run(str(tmp_path), "11434") == 0
     assert systemctl_calls == []
     assert not pathlib.Path(pd.status_file(str(tmp_path))).exists()
 
 
 def test_the_broker_units_watch_the_file_the_engine_writes(pd, tmp_path):
     path_unit, service_unit = render = pd.render_broker_units(
-        str(tmp_path), "11435", "/x/gpu-lease.py"
+        str(tmp_path), "11434", "/x/gpu-lease.py"
     )
     assert len(render) == 2
     assert f"PathChanged={pd.request_file(str(tmp_path))}" in path_unit
@@ -824,7 +837,7 @@ def test_installing_the_broker_enables_the_watcher(pd, tmp_path, monkeypatch, no
     monkeypatch.setattr(
         pd.os.path, "expanduser", lambda p: p.replace("~", str(tmp_path))
     )
-    pd.install_broker_units(str(tmp_path), "11435", "/x/gpu-lease.py")
+    pd.install_broker_units(str(tmp_path), "11434", "/x/gpu-lease.py")
     unit_dir = tmp_path / ".config" / "systemd" / "user"
     assert (unit_dir / f"{pd.BROKER_UNIT}.path").exists()
     assert (unit_dir / f"{pd.BROKER_UNIT}.service").exists()

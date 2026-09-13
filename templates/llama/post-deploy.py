@@ -2,7 +2,7 @@
 """
 post-deploy hook for the `llama` template.
 
-Six responsibilities:
+Seven responsibilities:
 
   1. **Download the GGUFs and write the presets file.** llama-server serves a
      file, not a registry — nothing pulls on first start. The weights, the MTP
@@ -23,8 +23,13 @@ Six responsibilities:
      job Ollama still had. Its own `llama-embed.container` Quadlet, loopback
      bind, ~300 MB of VRAM.
 
-  4. **Register an HTTP health check** against `/health`, which the router
-     answers once it is up and ready to load a preset on demand.
+  4. **Serve the mode policy on LLAMA_PORT** (#1416). The router enforces
+     nothing — asked for a preset, it loads it, evicting whatever was resident.
+     So the router moved to LLAMA_ROUTER_PORT on loopback and this script's
+     `proxy` verb took its place on LLAMA_PORT: it reads the lease's `allowed`
+     set per request, refuses a preset outside it with 409 and forwards
+     everything else to the router, chunk by chunk. Plus an HTTP health check
+     against `/health`, which passes through it.
 
   5. **Install the GPU lease** (#1320, #1319, #1325). A copy of this script
      lands at `${DATA_DIR}/solarisbay/gpu-lease.py`; run with `acquire
@@ -56,6 +61,8 @@ contract.
 from __future__ import annotations
 
 import datetime
+import http.client
+import http.server
 import json
 import os
 import subprocess
@@ -316,6 +323,8 @@ def env_profile() -> dict[str, str]:
 def server_args(port: str, models_dir_in_container: str) -> list[str]:
     """The llama-server argv, shared by the Quadlet render and template.yml.
 
+    `port` is LLAMA_ROUTER_PORT, not LLAMA_PORT.
+
     Router mode (#1416): one process, one port, four presets, and the client
     picks with the `model` field of its request. Everything a model needs —
     weights, window, KV types, drafter, projector — lives in the presets file
@@ -325,11 +334,12 @@ def server_args(port: str, models_dir_in_container: str) -> list[str]:
     of this argv, which is how `--jinja` reaches every preset.
     """
     return [
-        # 0.0.0.0, not loopback (#1344): pasta maps `host.containers.internal`
-        # to the host's LAN address, so an isolated sibling pod cannot reach a
-        # loopback bind. LLAMA_PORT's `blockLanAccess` flag keeps the LAN out.
+        # Loopback, and the router's own port. The wide bind #1344 needed for
+        # `host.containers.internal` moved to the policy proxy, which is what
+        # holds LLAMA_PORT now: the router will load any preset it is asked
+        # for, so nothing but the proxy may be able to ask it (#1416).
         "--host",
-        "0.0.0.0",
+        "127.0.0.1",
         "--port",
         port,
         "--models-preset",
@@ -798,20 +808,22 @@ LEASE_STATUS_FILE = "gpu_lease_status.json"
 BROKER_UNIT = "solaris-gpu-lease-broker"
 SYSTEMD_USER_DIR = "~/.config/systemd/user"
 
-# The embeddings server (#1332) is listed here rather than left alone: the
-# coding profile peaks at 15 700 MiB of 16 380, so its 300 MB is the
-# difference between the drafter loading and not. A foundry lease leaves it
-# up — 9 636 MiB plus the voice stack still has room, and the household would
-# otherwise lose its semantic vault search for the whole window.
+# The batch transcriber and the wakeword trainer are background GPU jobs with
+# no resident waiting on them, so a focus mode stops them for its window.
+#
+# The embeddings server (#1332) is NOT among them any more (operator,
+# 2026-09-13). It costs ~300 MiB and both focus peaks leave more than that:
+# the MoE at 131k takes 15 620 of 16 380 MiB, and the 27B with `-ctv q4_0
+# -ub 256` at 82k about 15 300 — its 104k cell fitted in 15 724. Stopping it
+# cost the household its semantic vault search for the whole window, which is
+# a worse trade than 300 MiB.
 #
 # The two voice units are listed apart because the coding lease (#1319) keeps
 # them RUNNING, on the CPU: the operator ruled on 2026-09-05 that the house can
 # still be spoken to during a coding window, slower rather than not at all. The
-# thinking mode (#1416) is the same shape — the 35B-A3B peaks at 15 620 MiB of
-# 16 380 and leaves no room for the voice stack on the card. A foundry lease
-# (#1325) stops none of the five and leaves them all on the GPU.
+# thinking mode (#1416) is the same shape. A foundry lease (#1325) stops
+# nothing at all and leaves everything on the GPU.
 LEASE_GPU_UNITS = (
-    EMBED_UNIT,
     "solaris-whisper-batch.service",
     "solaris-wakeword-trainer.service",
 )
@@ -819,7 +831,9 @@ LEASE_VOICE_UNITS = (
     "solaris-whisper.service",
     "solaris-tts.service",
 )
-LEASED_UNITS = LEASE_GPU_UNITS + LEASE_VOICE_UNITS + ("llama.service",)
+# Only the exclusive lease empties the card, and that one takes the embeddings
+# server with it.
+LEASED_UNITS = LEASE_GPU_UNITS + LEASE_VOICE_UNITS + (EMBED_UNIT, "llama.service")
 
 # Which execution provider the two voice units use, read from this file by
 # their Quadlets (`EnvironmentFile=`). The other half of this contract is
@@ -910,13 +924,14 @@ FOUNDRY_PROFILE = {
 # What the household may ask the router for when no lease is held.
 HOUSEHOLD_PRESETS = ("gemma-4-e4b",)
 
-# The lease modes (#1416). Since the router serves all four presets on one
-# port, a lease no longer swaps the server: it sets the ENVIRONMENT the mode
-# needs — the voice stack's device and the embeddings server — and the set of
-# presets a client may ask for while it stands. `presets` is written into the
-# lease file as `allowed`, and that is what the Engine and the HTTP lease
-# layer refuse a foreign preset against. Without `--model` the lease is still
-# exclusive: everything stops and nothing answers.
+# The lease modes (#1416). Since the router serves all four presets, a lease no
+# longer swaps the server: it sets the ENVIRONMENT the mode needs — the voice
+# stack's device and the background GPU jobs — and the set of presets a client
+# may ask for while it stands. `presets` is written into the lease file as
+# `allowed`, and that is what the policy proxy on LLAMA_PORT refuses a foreign
+# preset against. The embeddings server stays up in every mode (operator,
+# 2026-09-13). Without `--model` the lease is still exclusive: everything stops
+# and nothing answers.
 #
 # `alias`/`label` name the model the holder is answered by, unchanged from
 # #1333 so foundry-chronicle#321 keeps reading the same two fields.
@@ -1179,7 +1194,7 @@ def schedule_expiry(data_dir: str, port: str, seconds: int) -> None:
             f"--on-active={expiry_wake(seconds)}",
             "--description=Solaris GPU lease expiry (#1319)",
             f"--setenv=DATA_DIR={data_dir}",
-            f"--setenv=LLAMA_PORT={port}",
+            f"--setenv=LLAMA_ROUTER_PORT={port}",
             sys.executable,
             os.path.realpath(__file__),
             "release",
@@ -1216,7 +1231,7 @@ def cancel_expiry() -> None:
 def lease_acquire(
     data_dir: str,
     holder: str,
-    port: str = "11435",
+    port: str = "11434",
     model: str = "",
     duration_sec: int = LEASE_DEFAULT_DURATION_SEC,
 ) -> int:
@@ -1226,12 +1241,12 @@ def lease_acquire(
     the softer variants, and since #1416 they no longer touch llama-server at
     all: the router serves all four presets and the mode only decides what the
     environment looks like and which presets a client may ask for. A coding or
-    thinking lease stops the embeddings server, the batch transcriber and the
-    trainer and moves the voice stack to the CPU — both models need the card
-    almost whole; a foundry lease leaves all five units alone on the GPU,
-    because foundry transcribes through `solaris-whisper-batch` while it runs
-    and the household keeps its semantic vault search. Without `--model` the
-    card is emptied outright.
+    thinking lease stops the batch transcriber and the wakeword trainer and
+    moves the voice stack to the CPU; a foundry lease stops nothing and leaves
+    everything on the GPU. The embeddings server keeps running in all three —
+    its 300 MiB fits under both focus peaks and the household would otherwise
+    lose its semantic vault search for the window. Without `--model` the card
+    is emptied outright.
     """
     current = read_lease(data_dir)
     if current and current.get("holder") != holder:
@@ -1504,7 +1519,7 @@ def render_broker_units(data_dir: str, port: str, script: str) -> tuple[str, str
         "[Service]\n"
         "Type=oneshot\n"
         f"Environment=DATA_DIR={data_dir}\n"
-        f"Environment=LLAMA_PORT={port}\n"
+        f"Environment=LLAMA_ROUTER_PORT={port}\n"
         # The first foundry lease downloads 8 GB before it swaps anything.
         "TimeoutStartSec=3600\n"
         f"ExecStart={sys.executable} {script} broker\n"
@@ -1546,7 +1561,10 @@ def install_broker_units(data_dir: str, port: str, script: str) -> None:
 
 def lease_cli(argv: list[str]) -> int:
     data_dir = env("DATA_DIR", "/mnt/data/stacks")
-    port = env("LLAMA_PORT", "11435")
+    # The router, not the door: `release` warms the household preset while the
+    # lease file still stands, which the policy proxy on LLAMA_PORT would be
+    # right to refuse (#1416).
+    port = env("LLAMA_ROUTER_PORT", "11434")
     if argv[0] != "acquire":
         return lease_release(data_dir, port)
     holder, model, duration = "", "", LEASE_DEFAULT_DURATION_SEC
@@ -1594,6 +1612,344 @@ def install_lease_script(data_dir: str) -> str:
         return ""
     jlog("info", "llama:lease", "gpu-lease installed", path=dst)
     return dst
+
+
+# --- The mode policy proxy (#1416) ----------------------------------------
+#
+# The router polices nothing: asked for a preset, it loads it. With
+# `--models-max 1` that evicts whatever was resident, so one client on
+# LLAMA_PORT asking for the 27B during a household evening costs the next
+# resident turn a 10-20 s reload — precisely what the operator took the mode
+# for. The Engine refusing it on its own side does not help, because the
+# clients that do this (PI WEB, aider, goose, Continue) never pass through the
+# Engine.
+#
+# So the router moved to LLAMA_ROUTER_PORT on loopback and this proxy holds
+# LLAMA_PORT instead, with the same wide bind and the same `blockLanAccess`
+# firewall rule the router used to have. Per request it reads the lease's
+# `allowed` set, answers 409 for a preset outside it, filters `/v1/models` to
+# the same set and forwards everything else verbatim.
+#
+# It is a verb of this script rather than a file of its own: the copy
+# `install_lease_script` already puts on the box carries the preset table, the
+# lease reader and the household default, and a second copy of those is
+# exactly what drifts.
+POLICY_UNIT = "solaris-llama-policy"
+
+# Big enough that a whole SSE frame usually arrives in one write, small enough
+# that a long answer is never held back waiting to fill it.
+PROXY_CHUNK = 64 * 1024
+
+# Between the router's slowest honest answer (a 51 s cold load plus a long
+# generation) and a hung socket. The Engine gives up at 300 s of its own.
+PROXY_TIMEOUT_SEC = 600
+
+# RFC 9110: these describe the one hop and must not be relayed. `content-length`
+# is re-derived rather than copied, because the body may be rewritten.
+HOP_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
+
+MODELS_PATHS = ("/v1/models", "/models")
+
+
+def proxy_policy(data_dir: str) -> tuple[list[str], str]:
+    """`(presets a client may ask for, the mode that says so)`.
+
+    Read from the lease file on every request rather than cached: the mode is
+    taken and dropped from the phone, and the next request has to see it.
+    """
+    lease = read_lease(data_dir)
+    if not lease:
+        return [household_profile(data_dir)["alias"]], "household"
+    allowed = [
+        name.strip()
+        for name in lease.get("allowed") or []
+        if isinstance(name, str) and name.strip()
+    ]
+    return allowed, str(lease.get("mode") or "exclusive")
+
+
+def requested_model(body: bytes) -> str:
+    """The `model` field of a `/v1` request, `""` when it carries none."""
+    try:
+        request = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    if not isinstance(request, dict):
+        return ""
+    model = request.get("model")
+    return model.strip() if isinstance(model, str) else ""
+
+
+def denial(model: str, mode: str, allowed: list[str]) -> dict[str, object]:
+    """The 409 body: what was refused, which mode refused it, and what may be
+    asked for instead. German, because the operator is who reads it — in PI
+    WEB's ticket protocol, in aider's error line, in a log someone scrolls."""
+    if not allowed:
+        say = "Die Grafikkarte ist exklusiv vergeben; es antwortet gerade kein Modell."
+    elif len(allowed) == 1:
+        say = f"Erlaubt ist: {allowed[0]}."
+    else:
+        say = f"Erlaubt sind: {', '.join(allowed)}."
+    return {
+        "error": {
+            "message": f"Modell {model} ist im Modus {mode} nicht erlaubt. {say} "
+            "Den Modus in der Modell-Kachel in Solaris umschalten.",
+            "mode": mode,
+            "allowed": allowed,
+        }
+    }
+
+
+def filter_models(body: bytes, allowed: list[str]) -> bytes:
+    """`/v1/models` with everything the mode forbids taken out, so a client
+    that picks from the catalogue cannot pick a preset it may not have."""
+    try:
+        listing = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return body
+    if not isinstance(listing, dict) or not isinstance(listing.get("data"), list):
+        return body
+    listing["data"] = [
+        entry
+        for entry in listing["data"]
+        if isinstance(entry, dict) and entry.get("id") in allowed
+    ]
+    return json.dumps(listing).encode("utf-8")
+
+
+def make_proxy_server(
+    data_dir: str, listen_port: int, router_port: int
+) -> http.server.ThreadingHTTPServer:
+    """The policy proxy, bound and ready to serve. Returned rather than run so
+    the test drives the very object the `proxy` verb runs."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            """A refusal gets a jlog line; a token stream does not get 400."""
+
+        def do_GET(self) -> None:
+            if self.path.split("?")[0] in MODELS_PATHS:
+                self._catalogue()
+                return
+            self._forward(b"")
+
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            allowed, mode = proxy_policy(data_dir)
+            wanted = requested_model(body)
+            # A request naming no model is forwarded: the router answers it
+            # from the preset it already has resident, which cannot be one
+            # outside the mode, so there is nothing here to refuse.
+            if wanted and wanted not in allowed:
+                jlog(
+                    "info",
+                    "llama:policy",
+                    "refused a preset the standing mode does not allow",
+                    model=wanted,
+                    mode=mode,
+                    allowed=allowed,
+                )
+                self._answer(
+                    409, json.dumps(denial(wanted, mode, allowed)).encode("utf-8")
+                )
+                return
+            self._forward(body)
+
+        def _upstream(self) -> dict[str, str]:
+            return {
+                key: value
+                for key, value in self.headers.items()
+                if key.lower() not in HOP_HEADERS
+            }
+
+        def _answer(self, status: int, payload: bytes) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            self.wfile.write(payload)
+
+        def _catalogue(self) -> None:
+            allowed, _ = proxy_policy(data_dir)
+            conn = http.client.HTTPConnection(
+                "127.0.0.1", router_port, timeout=PROXY_TIMEOUT_SEC
+            )
+            try:
+                conn.request("GET", self.path, headers=self._upstream())
+                response = conn.getresponse()
+                status, body = response.status, response.read()
+            except OSError:
+                self._answer(502, self._unreachable())
+                return
+            finally:
+                conn.close()
+            self._answer(
+                status, filter_models(body, allowed) if status == 200 else body
+            )
+
+        def _forward(self, body: bytes) -> None:
+            headers = self._upstream()
+            if self.command == "POST":
+                headers["Content-Length"] = str(len(body))
+            conn = http.client.HTTPConnection(
+                "127.0.0.1", router_port, timeout=PROXY_TIMEOUT_SEC
+            )
+            try:
+                conn.request(
+                    self.command, self.path, body=body or None, headers=headers
+                )
+                response = conn.getresponse()
+            except OSError:
+                conn.close()
+                self._answer(502, self._unreachable())
+                return
+            try:
+                self.send_response(response.status)
+                for key, value in response.getheaders():
+                    if (
+                        key.lower() not in HOP_HEADERS
+                        and key.lower() != "content-length"
+                    ):
+                        self.send_header(key, value)
+                length = response.getheader("Content-Length")
+                if length is not None:
+                    self.send_header("Content-Length", length)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+                while True:
+                    # read1, not read: `read(n)` on a chunked response keeps
+                    # pulling chunks until it has n bytes, which would hold an
+                    # SSE stream back until the whole answer is finished.
+                    chunk = response.read1(PROXY_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except OSError:
+                self.close_connection = True
+            finally:
+                conn.close()
+
+        def _unreachable(self) -> bytes:
+            allowed, mode = proxy_policy(data_dir)
+            return json.dumps(
+                {
+                    "error": {
+                        "message": "llama-server antwortet nicht. "
+                        "`journalctl --user -u llama.service` sagt warum.",
+                        "mode": mode,
+                        "allowed": allowed,
+                    }
+                }
+            ).encode("utf-8")
+
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", listen_port), Handler)
+    server.daemon_threads = True
+    return server
+
+
+def proxy_run(data_dir: str, listen_port: str, router_port: str) -> int:
+    server = make_proxy_server(data_dir, int(listen_port), int(router_port))
+    jlog(
+        "info",
+        "llama:policy",
+        "mode policy proxy serving",
+        listen=int(listen_port),
+        router=int(router_port),
+    )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+def render_policy_unit(
+    data_dir: str, listen_port: str, router_port: str, script: str
+) -> str:
+    """The proxy's unit, pure so the test can read it."""
+    return (
+        "[Unit]\n"
+        "Description=Solaris llama mode policy proxy (#1416)\n"
+        "Wants=network-online.target\n"
+        "After=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        f"Environment=DATA_DIR={data_dir}\n"
+        f"Environment=LLAMA_PORT={listen_port}\n"
+        f"Environment=LLAMA_ROUTER_PORT={router_port}\n"
+        f"ExecStart={sys.executable} {script} proxy\n"
+        "Restart=always\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def install_policy_unit(
+    data_dir: str, listen_port: str, router_port: str, script: str
+) -> None:
+    """Write, enable and restart the proxy.
+
+    Restarted unconditionally rather than only on a changed unit file: the
+    script it runs is rewritten by this same install, and a proxy still
+    executing the previous copy would police the previous table.
+    """
+    if not script:
+        jlog(
+            "error",
+            "llama:policy",
+            "no lease script on the box, so no policy proxy — nothing would answer on LLAMA_PORT at all",
+        )
+        return
+    unit_dir = os.path.expanduser(SYSTEMD_USER_DIR)
+    path = os.path.join(unit_dir, f"{POLICY_UNIT}.service")
+    try:
+        os.makedirs(unit_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(render_policy_unit(data_dir, listen_port, router_port, script))
+        os.chmod(path, 0o644)
+    except OSError as e:
+        jlog(
+            "error",
+            "llama:policy",
+            "could not install the policy proxy; nothing would answer on LLAMA_PORT",
+            path=path,
+            error=str(e),
+        )
+        return
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    systemctl("enable", ("--now", f"{POLICY_UNIT}.service"))
+    systemctl("restart", (f"{POLICY_UNIT}.service",))
+    jlog(
+        "info",
+        "llama:policy",
+        "mode policy proxy installed",
+        unit=f"{POLICY_UNIT}.service",
+        listen=listen_port,
+        router=router_port,
+    )
 
 
 def register_http_check(
@@ -1644,17 +2000,29 @@ def main() -> int:
     # the Engine writes a request for a neighbour service.
     if len(sys.argv) > 1 and sys.argv[1] == "broker":
         return broker_run(
-            env("DATA_DIR", "/mnt/data/stacks"), env("LLAMA_PORT", "11435")
+            env("DATA_DIR", "/mnt/data/stacks"), env("LLAMA_ROUTER_PORT", "11434")
+        )
+    # The mode policy on LLAMA_PORT (#1416), run by solaris-llama-policy.service
+    # from the copy install_lease_script puts on the box.
+    if len(sys.argv) > 1 and sys.argv[1] == "proxy":
+        return proxy_run(
+            env("DATA_DIR", "/mnt/data/stacks"),
+            env("LLAMA_PORT", "11435"),
+            env("LLAMA_ROUTER_PORT", "11434"),
         )
 
     port = env("LLAMA_PORT", "11435")
+    router_port = env("LLAMA_ROUTER_PORT", "11434")
     repo = env("LLAMA_MODEL_REPO", "ggml-org/gemma-4-E4B-it-GGUF")
     stall_sec = int(env("LLAMA_DOWNLOAD_STALL_SECONDS", "600"))
     sb_api = env("SB_API_URL", "http://localhost:3000")
     sb_token = env("SB_API_TOKEN", "")
     data_dir = env("DATA_DIR", "/mnt/data/stacks")
     models_dir = os.path.join(data_dir, "llama", "models")
-    llama_url = f"http://127.0.0.1:{port}"
+    # post-deploy talks to the router itself: it warms the household preset,
+    # which the policy proxy is entitled to refuse mid-lease.
+    llama_url = f"http://127.0.0.1:{router_port}"
+    policy_url = f"http://127.0.0.1:{port}"
 
     _gpu = env("LLAMA_GPU_PASSTHROUGH", "").strip().lower()
     if _gpu in ("yes", "true", "1"):
@@ -1708,7 +2076,7 @@ def main() -> int:
             holder=str(read_lease(data_dir).get("holder", "")),
         )
     elif gpu_requested:
-        install_gpu_quadlet_fallback(port, data_dir)
+        install_gpu_quadlet_fallback(router_port, data_dir)
         install_embed_unit(data_dir, gpu=True)
     else:
         install_embed_unit(data_dir, gpu=False)
@@ -1721,7 +2089,10 @@ def main() -> int:
     # Before the wait, not after: a first install that is still loading weights
     # must not be the reason the lease script is missing when foundry asks.
     lease_script = install_lease_script(data_dir)
-    install_broker_units(data_dir, port, lease_script)
+    install_broker_units(data_dir, router_port, lease_script)
+    # Before the leased early-return: the proxy is the only thing listening on
+    # LLAMA_PORT, so a deploy during a window must not leave it on old code.
+    install_policy_unit(data_dir, port, router_port, lease_script)
     save_household_profile(data_dir)
 
     if leased:
@@ -1760,7 +2131,9 @@ def main() -> int:
             "llama-server is up but /slots reports no speculative decoding — the drafter is not in play and answers will take about twice as long. Check LLAMA_DRAFT_FILE.",
         )
 
-    register_http_check(sb_api, sb_token, llama_url)
+    # Against the proxy, not the router: LLAMA_PORT is the door every consumer
+    # uses, so a dead proxy has to read as a dead service.
+    register_http_check(sb_api, sb_token, policy_url)
 
     if embed["port"]:
         embed_url = f"http://127.0.0.1:{embed['port']}"
@@ -1785,10 +2158,15 @@ def main() -> int:
                 url=embed_url,
             )
 
-    print(f"✅ llama-server is running on 127.0.0.1:{port} in router mode.")
+    print(f"✅ llama-server is running on 127.0.0.1:{router_port} in router mode.")
     print(f"   Models in {models_dir} (from https://huggingface.co/{repo}).")
     print(f"   Presets: {', '.join(preset_profiles())} (pick one per request).")
-    print("   The Solaris Engine reaches it via LLAMA_SERVER_URL.")
+    print(
+        f"   Clients use :{port} — the mode policy proxy "
+        f"({POLICY_UNIT}.service), which refuses a preset the standing "
+        "lease mode does not allow. The Solaris Engine reaches it via "
+        "LLAMA_SERVER_URL."
+    )
     if embed["port"]:
         print(
             f"   Embeddings on 127.0.0.1:{embed['port']} ({embed['alias']}), "

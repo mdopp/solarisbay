@@ -2,9 +2,16 @@
 """
 Migration: llama v2 → v3.
 
-Router mode (#1416): one llama-server serves four presets on one port and the
-client picks with the `model` field of its request. The pod's argv loses every
-model option to `presets.ini`, which post-deploy writes beside the weights.
+Router mode (#1416): one llama-server serves four presets and the client picks
+with the `model` field of its request. The pod's argv loses every model option
+to `presets.ini`, which post-deploy writes beside the weights.
+
+The port moves with it. The router binds `127.0.0.1:${LLAMA_ROUTER_PORT}`
+(11434) and post-deploy's mode policy proxy takes `${LLAMA_PORT}` (11435) —
+same wide bind, same `blockLanAccess` rule, plus the lease's `allowed` set. No
+consumer changes: 11435 is still the address in `LLAMA_SERVER_URL` and in PI
+WEB's `models.json`. The pod is recreated on this deploy, so there is a few
+seconds between the old bind going and the proxy coming up.
 
 The one thing on disk that carries the old shape is
 `${DATA_DIR}/solarisbay/llama-profile.json` — the household profile a release
@@ -54,6 +61,9 @@ def main() -> int:
     print("    qwen3.6-35b-a3b, qwen3.8-27b); the client picks per request.")
     print("  - A lease no longer swaps the server: it sets the environment and")
     print("    the presets the mode allows (written as `allowed` in the lease).")
+    print("  - The router moved to 127.0.0.1:11434; the mode policy proxy")
+    print("    (solaris-llama-policy.service) holds 11435 and refuses a preset")
+    print("    the standing mode does not allow. No client address changes.")
     print("  - `--reasoning off` is gone; thinking is a per-request switch.")
     print("  " + migrate(os.path.join(data_dir, "solarisbay", "llama-profile.json")))
     return 0

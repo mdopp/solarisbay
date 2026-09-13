@@ -27,18 +27,26 @@ e4b enough to justify a second resident model once MTP made e4b itself fast.
 *profile* asks, not which of several resident models answers.
 
 **One server in router mode, four presets, the client picks** (#1416). One
-llama-server holds every preset on `:11435` and loads the one a request's
-`model` field names, evicting the idle child. The GPU lease
+llama-server holds every preset and loads the one a request's `model` field
+names, evicting the idle child. The GPU lease
 (`${DATA_DIR}/solarisbay/gpu-lease.py`) therefore no longer swaps the server:
 a named mode sets the *environment* and writes `allowed`, the presets a client
 may ask for while it stands.
+
+**A policy proxy enforces that set.** The router itself refuses nothing, so it
+binds loopback `:11434` and the llama template's
+`solaris-llama-policy.service` holds `:11435` in front of it: it reads
+`allowed` per request, answers `409` with the mode's name for a preset outside
+it, filters `/v1/models` to the same set and streams everything else through
+unchanged. Without it one client asking for the 27B on a household evening
+evicts Gemma and the next resident turn waits 10-20 s.
 
 | Mode (lease) | Preset Solaris answers from | Allowed presets | Who uses it |
 |---|---|---|---|
 | Household (no lease) | `gemma-4-e4b` + MTP + mmproj, 32k f16 | `gemma-4-e4b` | Solaris chat/voice — the default the box idles at |
 | `foundry` | `gemma-4-12b` + MTP, 131k q8 KV | `gemma-4-e4b`, `gemma-4-12b` | foundry-chronicle's evening runs; voice stack stays on the GPU |
 | `thinking` | `qwen3.6-35b-a3b` + MTP, 131k q8 KV | `qwen3.6-35b-a3b` | reading and logic; voice stack moves to the CPU, Solaris keeps answering and thinks per request |
-| `coding` | `qwen3.8-27b` + MTP, 82k | `qwen3.8-27b` | the coding assistant; voice stack to the CPU, embeddings server stopped |
+| `coding` | `qwen3.8-27b` + MTP, 82k | `qwen3.8-27b` | the coding assistant; voice stack to the CPU, embeddings server keeps running |
 | exclusive (no `--model`) | — | — | everything stops and Solaris says so |
 
 `--reasoning off` is gone with the swap: one server serves four models, so
@@ -61,9 +69,9 @@ one; a bodyless `DELETE` stays the operator's unconditional way out. **The `mode
 alias of what is actually loaded** — a consumer reads its model from the
 response, never from its own setting, because the lease can swap under it.
 
-**Who may reach `:11435`.** llama-server ships no auth, so the rule is
+**Who may reach `:11435`.** There is no auth anywhere here, so the rule is
 on-box only, never the LAN: host-networked services (the Solaris Engine,
-post-deploy, the health check) use `http://127.0.0.1:11435`; isolated pods
+the health check) use `http://127.0.0.1:11435`; isolated pods
 without host networking (e.g. claude-dev) use
 `http://host.containers.internal:11435`; nobody gets the LAN IP
 (mdopp/solarisbay#1344, an ADR-0007 carve-out — see

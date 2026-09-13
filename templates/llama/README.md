@@ -12,9 +12,11 @@ template is retired; nothing on this box runs it any more.
 
 ## Router mode — four models, one port (solarisbay#1416)
 
-Since #1416 llama-server runs as a **router**: one process on `LLAMA_PORT`,
-four model presets, and the **client picks** with the `model` field of its
-request. `GET /v1/models` lists what is on offer:
+Since #1416 llama-server runs as a **router**: one process, four model presets,
+and the **client picks** with the `model` field of its request. `GET
+/v1/models` lists what is on offer. The router listens on `LLAMA_ROUTER_PORT`
+(loopback); what clients talk to on `LLAMA_PORT` is the **mode policy proxy**
+in front of it (below).
 
 | Preset | Model | Window | KV | Drafter | Vision | For |
 |---|---|---|---|---|---|---|
@@ -42,11 +44,51 @@ requests for different presets at once do not crash it — the router serialises
 (#1415). A release warms `gemma-4-e4b` again before it clears the lease, so
 that wait does not land on the next resident.
 
-**The router has no policy.** It will load whatever it is asked for, which is
-why the allowed set lives one layer up, in the lease (below) — and why a
-client that reaches `LLAMA_PORT` directly bypasses the mode entirely. That is
-accepted: the port is on-box only and the consumers that matter go through the
-Engine.
+**The router has no policy of its own.** It will load whatever it is asked
+for. That is what the policy proxy in front of it is for.
+
+## The mode policy proxy — what actually enforces the mode (solarisbay#1416)
+
+`LLAMA_PORT` (11435) is held by **`solaris-llama-policy.service`**, a stdlib
+process post-deploy installs; the router sits behind it on
+`LLAMA_ROUTER_PORT` (11434), bound to loopback. Every client address is
+unchanged — `LLAMA_SERVER_URL`, PI WEB's `models.json`, aider, goose all still
+point at 11435 — and a normal turn is unchanged too, streams included.
+
+What the proxy does, reading the lease file fresh on **every** request so a
+mode taken from the phone is in force on the next one:
+
+| Request | Answer |
+|---|---|
+| `model` in the mode's `allowed` set | forwarded to the router, streamed back chunk by chunk |
+| `model` outside it | **409** `{"error": {"message": …, "mode": "coding", "allowed": ["qwen3.8-27b"]}}` |
+| no `model` field | forwarded — the router answers from the preset it already has, which cannot be one outside the mode |
+| `GET /v1/models` | the catalogue, filtered to the allowed presets |
+| `/health`, `/props`, `/slots`, everything else | forwarded verbatim |
+
+Why it exists: without it, one client asking for the 27B during a household
+evening is *served*. `--models-max 1` then evicts Gemma, and the next resident
+turn — a voice command, a light — waits 10-20 s for it to load again. The
+Engine refusing that on its own side does not help, because the clients that
+do it (PI WEB, aider, goose, Continue) never pass through the Engine. The
+Engine's own check stays as well: it only ever asks for the preset the
+standing mode names, so the refusal is belt and braces.
+
+The message is German and says what to do (*"Den Modus in der Modell-Kachel in
+Solaris umschalten"*), because the operator is who reads it — in PI WEB's
+ticket protocol, in aider's error line, in a log someone scrolls.
+
+Two properties worth knowing:
+
+* **SSE is not buffered.** The proxy reads the router one chunk at a time
+  (`read1`, not `read` — the latter fills its buffer before returning and
+  would hold a whole answer back until it is finished) and flushes each one.
+* **It stays up during an exclusive lease**, when `llama.service` is stopped.
+  Every model request is then refused with `allowed: []` and the sentence
+  saying the card is handed out, rather than the connection simply failing.
+
+`journalctl --user -u solaris-llama-policy.service` shows one line per refusal
+and nothing per turn.
 
 **Thinking is a per-request switch**, not a server flag: `"chat_template_kwargs":
 {"enable_thinking": false}`, which the Engine sends on every household turn.
@@ -73,9 +115,13 @@ Tool calls were 12/12 on both, German answers complete on both.
 
 ## Configuration
 
-- `LLAMA_PORT` — the port llama-server binds (default `11435`). No proxy route
-  exists: llama-server ships no authentication, so the endpoint is on-box only.
-  See *Who may reach the endpoint* below.
+- `LLAMA_PORT` — the port every client uses (default `11435`). What listens
+  there is the **mode policy proxy**, not llama-server itself. No proxy route
+  exists: there is no authentication here, so the endpoint is on-box only. See
+  *Who may reach the endpoint* below.
+- `LLAMA_ROUTER_PORT` — the loopback port the router itself binds (default
+  `11434`, Ollama's old port, free since that template was retired). Only
+  post-deploy and `gpu-lease.py` talk to it.
 - `LLAMA_MODEL_REPO` / `LLAMA_MODEL_FILE` / `LLAMA_DRAFT_FILE` /
   `LLAMA_MMPROJ_FILE` — what post-deploy downloads into
   `${DATA_DIR}/llama/models`. Defaults are ggml-org's Gemma 4 E4B Q4_0
@@ -125,22 +171,28 @@ micro-batch).
 
 ## Who may reach the endpoint — an ADR-0007 carve-out for on-box consumers
 
-llama-server has no authentication, so the rule is *on-box only, never the LAN*.
-That is three different addresses, and each consumer gets exactly one:
+There is no authentication anywhere here, so the rule is *on-box only, never
+the LAN*. That is three different addresses, and each consumer gets exactly
+one:
 
 | Consumer | Address | Why |
 |---|---|---|
-| Services on host networking — the Solaris Engine, post-deploy, the health check | `http://127.0.0.1:11435` | same netns; the default and the fast path |
+| Services on host networking — the Solaris Engine, the health check | `http://127.0.0.1:11435` | same netns; the default and the fast path |
 | Isolated pods without host networking — claude-dev, its `pi` | `http://host.containers.internal:11435` | ADR-0007 Decision 1: never `127.0.0.1`, never the LAN IP |
 | Anything on the LAN | *refused* | nothing outside the box may talk to an unauthenticated model server |
+| post-deploy and `gpu-lease.py` | `http://127.0.0.1:11434` | the router direct: a release warms the household preset while a lease that forbids it still stands |
 
-The server therefore binds **`0.0.0.0`, not loopback** (#1344). A loopback bind
-looks like the safe choice and is not reachable from a sibling pod at all:
-rootless podman/pasta maps `host.containers.internal` (`169.254.1.2` here) to
-the host's **LAN address**, not to `127.0.0.1`, so `pi`'s model picker came up
-empty against a loopback-bound server. Binding the pasta-mapped address instead
-would hard-code a LAN IP and take `127.0.0.1` away from the Engine — both
-forbidden — and `llama-server` accepts only one `--host`.
+The **policy proxy** therefore binds `0.0.0.0`, not loopback (#1344). A
+loopback bind looks like the safe choice and is not reachable from a sibling
+pod at all: rootless podman/pasta maps `host.containers.internal`
+(`169.254.1.2` here) to the host's **LAN address**, not to `127.0.0.1`, so
+`pi`'s model picker came up empty against a loopback-bound server. Binding the
+pasta-mapped address instead would hard-code a LAN IP and take `127.0.0.1`
+away from the Engine — both forbidden.
+
+The **router** binds `127.0.0.1:11434` and nothing else, which is the point:
+it loads any preset it is asked for, so the proxy has to be the only thing
+that can ask it.
 
 The LAN half is closed one layer down instead, outside the pod: `LLAMA_PORT`
 carries **`blockLanAccess: true`** in `variables.json`, and ServiceBay renders a
@@ -152,9 +204,11 @@ same pattern LLDAP's raw LDAP port uses (servicebay#2388), and it is what
 ADR-0007's Decision 3 prescribes: *the sibling binds wider and carries
 `blockLanAccess`; the consumer stays isolated.*
 
-Checking it on the box is two commands — from inside another pod
-`curl http://host.containers.internal:11435/v1/models` must answer, and from a
-LAN host `curl http://<box-lan-ip>:11435/v1/models` must be refused.
+Checking it on the box is three commands — from inside another pod
+`curl http://host.containers.internal:11435/v1/models` must answer, from that
+same pod `curl http://host.containers.internal:11434/v1/models` must **not**
+(the router is loopback-only, so the policy cannot be walked around), and from
+a LAN host `curl http://<box-lan-ip>:11435/v1/models` must be refused.
 
 ## Three traps, all box-measured
 
@@ -194,24 +248,25 @@ check (solarisbay#1320).
 every preset, so a named mode sets two things and nothing else:
 
 1. **the environment** — whether the voice stack runs on the GPU or the CPU,
-   and whether the embeddings server keeps its 300 MB;
+   and whether the background GPU jobs keep running;
 2. **the mode policy** — the presets a client may ask for, written into the
    lease file as `allowed`.
 
 | Mode | Environment | Allowed presets | Solaris answers from |
 |---|---|---|---|
-| household (no lease) | voice GPU, embeddings on | `gemma-4-e4b` | e4b |
-| `--model foundry` | voice GPU, embeddings on | `gemma-4-e4b`, `gemma-4-12b` | the 12B |
-| `--model thinking` | voice **CPU**, embeddings **off** | `qwen3.6-35b-a3b` | the 35B-A3B |
-| `--model coding` | voice **CPU**, embeddings **off** | `qwen3.8-27b` | the 27B |
+| household (no lease) | voice GPU, batch jobs on | `gemma-4-e4b` | e4b |
+| `--model foundry` | voice GPU, batch jobs on | `gemma-4-e4b`, `gemma-4-12b` | the 12B |
+| `--model thinking` | voice **CPU**, batch jobs **off** | `qwen3.6-35b-a3b` | the 35B-A3B |
+| `--model coding` | voice **CPU**, batch jobs **off** | `qwen3.8-27b` | the 27B |
 | no `--model` | everything stopped | none | nothing — the fixed sentence |
 
 A request for a preset the current mode does not allow is refused with the
 mode's name rather than served: the household model is never evicted by a
-stray request, and there is no thrashing between e4b and Qwen. The refusal is
-made where the request passes through Solaris' own code — the Engine's model
-choice and the HTTP lease layer. **The router itself has no policy**, so a
-client that reaches `LLAMA_PORT` directly is not bound by the mode.
+stray request, and there is no thrashing between e4b and Qwen. **The policy
+proxy on `LLAMA_PORT` is what refuses it** (above) — every client on the box
+goes through it. The Engine checks on its own side too, asking only for the
+preset the standing mode names; the router behind the proxy has no policy at
+all.
 
 post-deploy installs `${DATA_DIR}/solarisbay/gpu-lease.py` for that:
 
@@ -263,9 +318,10 @@ the lease is held. Voice is off for the duration: `solaris-whisper` and
   than disappearing. Both units read their provider from
   `${DATA_DIR}/solarisbay/voice-device.env`, which the lease flips to
   `cpu`/`cuda` and restarts them on; whisper drops to `small-int8` with it.
-  `llama-embed`, `solaris-whisper-batch` and `solaris-wakeword-trainer` stop —
-  they hold VRAM and nobody is waiting on them. Semantic vault search falls
-  back to keyword hits for the window.
+  `solaris-whisper-batch` and `solaris-wakeword-trainer` stop — they hold VRAM
+  and nobody is waiting on them. **`llama-embed` keeps running** (operator,
+  2026-09-13): its ~300 MiB fits under the 27B's ~15 300 MiB peak, and stopping
+  it cost the household its semantic vault search for the whole window.
 
 ### `--model thinking` — reading and thinking (solarisbay#1416)
 
@@ -279,8 +335,11 @@ model with 3 of its 35 B parameters active per token.
   acceptance, 12/12 tool calls, and it found a planted sentence in an
   85 287-token prompt. Only 10 of its 40 layers carry KV, which is why 131k
   costs just 792 MiB more than 82k.
-* Same environment as the coding window: voice on the **CPU**, embeddings
-  server stopped. At 15 620 MiB there is no room for either on the card.
+* Same environment as the coding window: voice on the **CPU**,
+  `solaris-whisper-batch` and `solaris-wakeword-trainer` stopped. At 15 620 of
+  16 380 MiB there is no room for the voice stack on the card — but the
+  embeddings server's ~300 MiB fits in the 760 that are left, so it keeps
+  running (operator, 2026-09-13) and the vault keeps its semantic search.
 * No vision projector. The mmproj exists (614 MB, ggml-org) but vision was
   only measured to 98k, and the operator scoped this preset to the 131k text
   window. A photo reaches it as text.
@@ -299,9 +358,8 @@ take the voice stack away. This mode therefore stops **nothing**:
   turn and a foundry turn trade the card at 9-19 s a switch.
 * All five units — `llama-embed`, `solaris-whisper`, `solaris-whisper-batch`,
   `solaris-tts`, `solaris-wakeword-trainer` — keep running, on the **GPU**;
-  `voice-device.env` is not touched. The embeddings server's 300 MB fits
-  beside the 12B, so the household keeps its semantic vault search for the
-  whole evening.
+  `voice-device.env` is not touched. The 12B leaves 6 GB spare, so nothing has
+  to move at all.
 * Solaris answers the household from the 12B and **shows no banner**: operator
   decision of 2026-09-05. Nothing the resident does changes — voice included —
   except that an answer takes about a second longer. `/api/whoami` still names
@@ -336,9 +394,10 @@ download never leaves a truncated GGUF that llama-server would crash-loop on.
 
 ## Health checks
 
-`/health` says the router is up and ready to load a preset on demand; that is
-the liveness signal. Readiness of a *model* is a different question, so
-post-deploy asks the household preset for one token after the install and warns
-if it does not come. post-deploy registers
-it as the `llama-api` HTTP check (60 s) on top of the auto-created
-`service`-type check.
+`/health` on 11435 goes through the policy proxy to the router, so one probe
+covers the whole chain a consumer uses — a dead proxy reads as a dead service,
+which is what it is. That is the liveness signal. Readiness of a *model* is a
+different question, so post-deploy asks the household preset for one token
+after the install (against the router direct) and warns if it does not come.
+post-deploy registers 11435 as the `llama-api` HTTP check (60 s) on top of the
+auto-created `service`-type check.
