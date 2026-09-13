@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.68.0](https://github.com/mdopp/solarisbay/compare/v0.67.3...v0.68.0) (2026-09-13)
+
+
+### Features
+
+* **chat:** name the four modes as the household sees them and think only on request ([b4dfa41](https://github.com/mdopp/solarisbay/commit/b4dfa41ea466ad477fdd7c6f412dc90600aec94c)), closes [#1416](https://github.com/mdopp/solarisbay/issues/1416)
+* **chat:** pick the router preset per lease mode and add the Denken rows ([2d64d6f](https://github.com/mdopp/solarisbay/commit/2d64d6f0db611dc52b25e1a6cedb249439039e5d)), closes [#1416](https://github.com/mdopp/solarisbay/issues/1416)
+* **pi-web:** pick the router preset per session and switch thinking off client-side ([3118f29](https://github.com/mdopp/solarisbay/commit/3118f298eb8fbbc17ea35d7a0f2b33468dac14f1)), closes [#1416](https://github.com/mdopp/solarisbay/issues/1416)
+* **template:** enforce the lease mode in a policy proxy in front of the router ([5929479](https://github.com/mdopp/solarisbay/commit/592947916859d2c05dd7f0f19c8a61443d3c7a4a)), closes [#1416](https://github.com/mdopp/solarisbay/issues/1416)
+* **template:** run llama-server in router mode with four presets and per-mode allowed sets ([1e936ad](https://github.com/mdopp/solarisbay/commit/1e936adf93a745f3b6e2abe7b971b05ad09dacc7)), closes [#1416](https://github.com/mdopp/solarisbay/issues/1416)
+
+
+### Bug Fixes
+
+* **template:** give the thinking mode the card alone, and converge the router unit under a lease ([72ace90](https://github.com/mdopp/solarisbay/commit/72ace90be671c175dd2d43d7c857c11fd0e4c292))
+* **template:** give the thinking mode the card alone, and converge the router unit under a lease ([fec19ba](https://github.com/mdopp/solarisbay/commit/fec19ba3cdc08eddbab1f7f71b44b8ea8cfa316a)), closes [#1416](https://github.com/mdopp/solarisbay/issues/1416)
+
 ## [0.67.3](https://github.com/mdopp/solarisbay/compare/v0.67.2...v0.67.3) (2026-09-13)
 
 
