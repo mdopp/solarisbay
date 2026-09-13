@@ -36,7 +36,15 @@ import re
 import sys
 
 DEFAULT_KIT = "/opt/servicebay"
-DEFAULT_AGENT_DIR = "/data/pi-agent"
+
+# Where Pi reads its global context file and its skills from. Resolved the way
+# PI WEB itself resolves it — the deprecated `PI_WEB_AGENT_DIR` first, then the
+# canonical `PI_CODING_AGENT_DIR`, then Pi's own `~/.pi/agent` — and never as a
+# constant of our own. A private default that disagrees with Pi's is how a
+# 10 kB handbook and 55 skills land in a directory no session reads while this
+# script still prints success (#1413).
+AGENT_DIR_ENV = ("PI_WEB_AGENT_DIR", "PI_CODING_AGENT_DIR")
+PI_CONFIG_DIR_NAME = ".pi"
 
 # One folder we own entirely, so pruning a retired assist is a scoped delete and
 # never touches a skill somebody put in the agent directory by hand.
@@ -64,6 +72,16 @@ PRELUDE = """# Where you are: the PI WEB container on this box
 """
 
 
+def agent_dir_from_env(env=os.environ) -> str:
+    """The directory a PI WEB session's Pi actually reads, in PI WEB's own
+    precedence order (`dist/config.js`, `effectiveAgentConfig`)."""
+    for name in AGENT_DIR_ENV:
+        value = env.get(name, "").strip()
+        if value:
+            return value
+    return os.path.join(os.path.expanduser("~"), PI_CONFIG_DIR_NAME, "agent")
+
+
 def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
@@ -89,8 +107,21 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
 
 
 def unquote(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
+    """The scalar a YAML parser would read out of a quoted frontmatter value.
+
+    Stripping the delimiters alone left `\\"` in the text, so a description that
+    quotes a phrase reached Pi carrying literal backslashes. A double-quoted
+    YAML 1.2 scalar is a JSON string, so the stdlib decodes it; the few YAML-only
+    escapes JSON rejects fall back to the bare strip.
+    """
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return value[1:-1]
+        return decoded if isinstance(decoded, str) else value[1:-1]
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
     return value
 
 
@@ -233,12 +264,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--kit", default=os.environ.get("SERVICEBAY_AGENT_KIT", ""))
-    parser.add_argument(
-        "--agent-dir", default=os.environ.get("PI_CODING_AGENT_DIR", "")
-    )
+    parser.add_argument("--agent-dir", default="")
     args = parser.parse_args(argv)
     kit = args.kit or DEFAULT_KIT
-    agent_dir = args.agent_dir or DEFAULT_AGENT_DIR
+    agent_dir = args.agent_dir or agent_dir_from_env()
 
     skills = generate_skills(
         os.path.join(kit, "assists"), os.path.join(agent_dir, "skills")
