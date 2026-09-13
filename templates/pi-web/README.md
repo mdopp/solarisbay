@@ -417,6 +417,44 @@ gemessen war sie nur in `sessiond` gesetzt, und ein CLI ohne Endpunkt beantworte
 nichts — was von außen wie ein Token-Problem aussieht. Die Adresse ist kein
 Geheimnis; das Token bleibt in seiner 0600-Datei.
 
+### Die Erweiterung `pi-subagents` — eine getroffene Entscheidung, kein Versehen
+
+Pi gibt dem Modell vier Werkzeuge — `read`, `write`, `edit`, `bash` — und alles,
+was dabei anfällt, landet im selben Gespräch. `pi-subagents` gibt ihm die
+Möglichkeit, eine Teilarbeit an einen eigenen Agenten mit eigenem Kontext
+abzugeben; der Hauptfaden bleibt frei. Genau darum hat der Betreiber sie am
+13.9.2026 verlangt (#1423).
+
+**Woher sie kommt.** `npm:pi-subagents`, Repository
+`github.com/nicobailon/pi-subagents`, gelistet auf `pi.dev/packages/pi-subagents`.
+Das ist ein **Fremdpaket**: Herausgeber ist `nicobailon`, nicht `earendil-works`
+wie pi selbst. Die Aufnahme in das Paketverzeichnis von pi.dev ist eine gewisse
+Bestätigung, aber keine Herkunft aus dem Kernprojekt. Sie ist die erste fremde
+Erweiterung in diesem Container.
+
+**Was sie darf.** Eine pi-Erweiterung läuft mit denselben Werkzeugen wie der
+Agent: `read`, `write`, `edit` und `bash` in diesem Container. Dieser Container
+hat Zugriff auf `/workspace` — also auf jedes Repository, das hier ausgecheckt
+ist, samt der Git-Zugangsdaten aus #1360 — und auf die ServiceBay-CLI mit dem
+Lese-Token dieses Pods. Eine Erweiterung kann demnach alles, was eine Sitzung
+kann. Das ist kein Nebeneffekt der Installation, sondern ihr Wesen.
+
+**Ohne feste Version — ausdrücklich so entschieden.** Der Eintrag lautet
+`pi install npm:pi-subagents`, ohne `@<version>`: **jeder Pod-Bau zieht die
+jeweils neueste Fassung.** Das Ticket hatte das Gegenteil vorgeschlagen (eine
+feste Version, wie beim py-cord-Fork in `mdopp/foundry-chronicle#145`); der
+Betreiber hat am 13.9.2026 anders entschieden und will die aktuelle Fassung.
+Wer das später pinnen möchte, ändert damit eine Entscheidung und nicht einen
+Fehler — bitte mit dem Betreiber, nicht nebenbei.
+
+**Warum im Template und nicht nur zur Laufzeit.** `pi install` schreibt die
+`settings.json` im Agentenverzeichnis auf dem dauerhaften Volume, ein Neustart
+übersteht das also. Ein Pod-**Neubau** fängt mit einem leeren Volume an — was
+nicht deklariert ist, fehlt danach. Deshalb installiert der Init-Container
+`pi-web-extensions` sie bei jedem Start; ein fehlgeschlagener Aufruf (kein Netz
+beim Booten) bricht den Pod nicht ab, sondern lässt stehen, was auf dem Volume
+liegt.
+
 ## Der Knopf „Repo klonen"
 
 Ein Repository kommt auf die Box, ohne dass jemand ein Terminal öffnet: in PI WEB
@@ -585,6 +623,8 @@ service. PI WEB is a developer tool that happens to live on the same box, like
 - `servicebay services --json` liefert im Projektordner die Dienstliste und
   `servicebay assist adr-0007-container-network-isolation-and-carveouts` den
   Text der Entscheidung. `ps auxww | grep servicebay` zeigt kein Token.
+- `pi list` nennt neben dem `relays`-Paket von PI WEB auch `pi-subagents`, und
+  `cat /data/pi-agent/settings.json` führt es unter `packages`.
 - `ls /data/pi-agent/skills/servicebay | wc -l` nennt so viele Skills wie
   `ls /opt/servicebay/assists/*.md | wc -l`, und `head -4
   /data/pi-agent/AGENTS.md` zeigt den Vorspann dieser Box.

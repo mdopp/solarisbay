@@ -145,6 +145,39 @@ spec:
     - mountPath: /data
       name: pi-web-data
 
+  # extensions — the Pi extensions this pod installs for the agent itself
+  # (#1423). `pi install` records the package in the agent directory's
+  # settings.json, which lives on the persistent volume — so a *restart* would
+  # keep it, but a pod rebuild starts from an empty volume and a runtime-only
+  # install would be gone. Declaring it here is what makes it survive.
+  #
+  # `pi-subagents` is deliberately NOT version-pinned: the operator decided on
+  # 2026-09-13 that every pod build takes the latest published release. See the
+  # README's "pi-subagents" section for what that package is allowed to do and
+  # why the trade was taken — it is a third-party extension.
+  #
+  # A failed install must not fail the pod: the registry is not reachable on a
+  # box that boots before its WAN link, and settings.json on the volume still
+  # holds whatever the last successful start installed.
+  - name: pi-web-extensions
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    env:
+    - name: HOME
+      value: "/data/home"
+    - name: PI_CODING_AGENT_DIR
+      value: "/data/pi-agent"
+    args:
+    - sh
+    - -c
+    - |
+      set -eu
+      mkdir -p "$HOME" "$PI_CODING_AGENT_DIR"
+      pi install npm:pi-subagents \
+        || echo "pi-subagents: install failed, keeping what the volume holds"
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+
   # plugins — install the "Repo klonen" plugin (#1395 slice B) into the local
   # plugin root PI WEB scans, `$PI_WEB_DATA_DIR/plugins`. A plugin found there
   # is enabled unless the config disables it, so this copy IS the installation:

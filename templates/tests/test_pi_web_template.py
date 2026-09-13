@@ -816,3 +816,55 @@ def test_the_readme_says_how_a_project_gets_its_token():
     assert "PI_WEB_SB_TOKEN" in readme
     # The rule an operator has to know: nothing is adopted by being there.
     assert "pi-web-project remove" in readme
+
+
+# ── the pi-subagents extension (#1423) ──────────────────────────────────────
+
+
+def extensions_init(pod: dict) -> dict:
+    return next(
+        c for c in pod["spec"]["initContainers"] if c["name"] == "pi-web-extensions"
+    )
+
+
+def test_the_subagents_extension_is_declared_and_not_only_installed_by_hand(pod):
+    """`pi install` writes the agent directory's settings.json on the persistent
+    volume, so a restart keeps it — but a pod rebuild starts from an empty volume
+    and a runtime-only install is gone with it, silently: the sessions simply
+    stop being able to delegate."""
+    script = extensions_init(pod)["args"][2]
+    assert "pi install npm:pi-subagents" in script
+    env = {e["name"]: e["value"] for e in extensions_init(pod)["env"]}
+    assert env["PI_CODING_AGENT_DIR"] == "/data/pi-agent"
+    assert env["HOME"] == "/data/home"
+    assert {m["mountPath"] for m in extensions_init(pod)["volumeMounts"]} == {"/data"}
+
+
+def test_the_extension_is_deliberately_unpinned(pod):
+    """Operator decision, 2026-09-13: every pod build takes the latest release.
+    The ticket proposed pinning; this is the decision that overrode it, so a
+    later `@<version>` is a change of mind and not a fix."""
+    script = extensions_init(pod)["args"][2]
+    assert "npm:pi-subagents@" not in script
+
+
+def test_a_registry_that_is_unreachable_does_not_fail_the_pod(pod):
+    """A box that boots before its WAN link would otherwise crash-loop the whole
+    pod over an extension — and what the last good start installed is still on
+    the volume."""
+    script = extensions_init(pod)["args"][2]
+    assert "||" in script
+    order = [c["name"] for c in pod["spec"]["initContainers"]]
+    assert order.index("pi-web-data-perms") < order.index("pi-web-extensions")
+
+
+def test_the_readme_records_what_the_extension_is_allowed_to_do():
+    """It is a third-party package running with the agent's own tools in a
+    container that reaches every checkout and the ServiceBay CLI. That belongs
+    in the file as a decision — an undocumented foreign extension is the kind of
+    thing a later reader removes on sight, or worse, does not notice."""
+    readme = (PI_WEB / "README.md").read_text(encoding="utf-8")
+    assert "pi-subagents" in readme
+    assert "nicobailon" in readme
+    assert "earendil-works" in readme
+    assert "jeder Pod-Bau zieht die" in readme
