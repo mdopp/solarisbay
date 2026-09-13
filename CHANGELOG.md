@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.69.1](https://github.com/mdopp/solarisbay/compare/v0.69.0...v0.69.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **template:** list every preset and mark which one this mode allows ([3009b53](https://github.com/mdopp/solarisbay/commit/3009b5312973e71814ccbf0f2e943133dbd8f780)), closes [#1431](https://github.com/mdopp/solarisbay/issues/1431)
+
 ## [0.69.0](https://github.com/mdopp/solarisbay/compare/v0.68.0...v0.69.0) (2026-09-13)
 
 
