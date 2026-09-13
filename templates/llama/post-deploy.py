@@ -27,7 +27,8 @@ Seven responsibilities:
      nothing — asked for a preset, it loads it, evicting whatever was resident.
      So the router moved to LLAMA_ROUTER_PORT on loopback and this script's
      `proxy` verb took its place on LLAMA_PORT: it reads the lease's `allowed`
-     set per request, refuses a preset outside it with 409 and forwards
+     set per request, refuses a preset outside it with 409, marks every preset
+     in `/v1/models` as usable in the standing mode or not, and forwards
      everything else to the router, chunk by chunk. Plus an HTTP health check
      against `/health`, which passes through it.
 
@@ -1645,8 +1646,8 @@ def install_lease_script(data_dir: str) -> str:
 # So the router moved to LLAMA_ROUTER_PORT on loopback and this proxy holds
 # LLAMA_PORT instead, with the same wide bind and the same `blockLanAccess`
 # firewall rule the router used to have. Per request it reads the lease's
-# `allowed` set, answers 409 for a preset outside it, filters `/v1/models` to
-# the same set and forwards everything else verbatim.
+# `allowed` set, answers 409 for a preset outside it, marks `/v1/models` with
+# which presets that set holds (#1431) and forwards everything else verbatim.
 #
 # It is a verb of this script rather than a file of its own: the copy
 # `install_lease_script` already puts on the box carries the preset table, the
@@ -1729,19 +1730,33 @@ def denial(model: str, mode: str, allowed: list[str]) -> dict[str, object]:
     }
 
 
-def filter_models(body: bytes, allowed: list[str]) -> bytes:
-    """`/v1/models` with everything the mode forbids taken out, so a client
-    that picks from the catalogue cannot pick a preset it may not have."""
+def mark_models(body: bytes, allowed: list[str], mode: str) -> bytes:
+    """`/v1/models` with every preset the router knows still listed, each one
+    marked `allowed_in_mode` and the standing mode named at the top (#1431).
+
+    Filtering the list to the mode hid the other three presets from anyone
+    whose only door is this interface. The enforcement sits on the request,
+    not on the list — a preset outside the mode still gets the 409 — so naming
+    all four costs nothing.
+
+    `allowed_in_mode` is a different axis from the router's own
+    `status.value`: `unloaded` says the weights are not in VRAM, which for an
+    allowed preset is normal and costs 7-17 s on the first turn. Every field
+    the router sent is passed through untouched, so a client reading only `id`
+    is unaffected.
+    """
     try:
         listing = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return body
     if not isinstance(listing, dict) or not isinstance(listing.get("data"), list):
         return body
+    listing["mode"] = mode
     listing["data"] = [
-        entry
+        {**entry, "allowed_in_mode": entry.get("id") in allowed}
+        if isinstance(entry, dict)
+        else entry
         for entry in listing["data"]
-        if isinstance(entry, dict) and entry.get("id") in allowed
     ]
     return json.dumps(listing).encode("utf-8")
 
@@ -1803,7 +1818,7 @@ def make_proxy_server(
             self.wfile.write(payload)
 
         def _catalogue(self) -> None:
-            allowed, _ = proxy_policy(data_dir)
+            allowed, mode = proxy_policy(data_dir)
             conn = http.client.HTTPConnection(
                 "127.0.0.1", router_port, timeout=PROXY_TIMEOUT_SEC
             )
@@ -1817,7 +1832,7 @@ def make_proxy_server(
             finally:
                 conn.close()
             self._answer(
-                status, filter_models(body, allowed) if status == 200 else body
+                status, mark_models(body, allowed, mode) if status == 200 else body
             )
 
         def _forward(self, body: bytes) -> None:

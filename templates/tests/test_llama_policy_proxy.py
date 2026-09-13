@@ -5,12 +5,13 @@ The router enforces nothing: asked for a preset, it loads it, and with
 router moved to loopback and this proxy holds `LLAMA_PORT`, reading the lease's
 `allowed` set per request.
 
-Two halves are load-bearing and neither shows up as a failure when it breaks:
+Three things here are load-bearing and none shows up as a failure when it breaks:
 a proxy that forgets to refuse is exactly the bug the operator asked to have
-closed, and a proxy that *buffers* turns every streamed answer into a long
-silence followed by the whole text at once. Both are exercised here against a
-fake upstream rather than mocked, because the thing under test is HTTP
-behaviour, not a function's return value.
+closed, a proxy that *buffers* turns every streamed answer into a long silence
+followed by the whole text at once, and a listing that drops what the mode
+forbids hides the other three presets from anyone whose only door is this port
+(#1431). All are exercised here against a fake upstream rather than mocked,
+because the thing under test is HTTP behaviour, not a function's return value.
 """
 
 from __future__ import annotations
@@ -42,15 +43,20 @@ def pd():
     return _load("llama_pd_policy", TEMPLATES / "llama" / "post-deploy.py")
 
 
+# Shaped like the router's own answer, `status.value` included: that field is
+# the load state, a different axis from the mode's permission, and it has to
+# survive the proxy untouched.
 CATALOGUE = {
     "object": "list",
     "data": [
-        {"id": "gemma-4-e4b", "object": "model"},
-        {"id": "gemma-4-12b", "object": "model"},
-        {"id": "qwen3.6-35b-a3b", "object": "model"},
-        {"id": "qwen3.8-27b", "object": "model"},
+        {"id": "gemma-4-e4b", "object": "model", "status": {"value": "unloaded"}},
+        {"id": "gemma-4-12b", "object": "model", "status": {"value": "unloaded"}},
+        {"id": "qwen3.6-35b-a3b", "object": "model", "status": {"value": "unloaded"}},
+        {"id": "qwen3.8-27b", "object": "model", "status": {"value": "loaded"}},
     ],
 }
+
+PRESETS = [entry["id"] for entry in CATALOGUE["data"]]
 
 
 @pytest.fixture
@@ -257,23 +263,91 @@ def test_a_request_naming_no_model_is_forwarded(pd, tmp_path, proxy, upstream):
     assert ("POST", "/v1/chat/completions", None) in upstream.state["seen"]
 
 
-def test_the_model_list_shows_only_what_the_mode_allows(pd, tmp_path, proxy):
-    """Pi's `/model` picker and every other chooser read this; offering a
-    preset the box will refuse is a dead end the resident cannot see."""
-    _lease(pd, tmp_path, "foundry", ["gemma-4-e4b", "gemma-4-12b"])
+@pytest.mark.parametrize(
+    "mode,allowed",
+    [
+        ("household", ["gemma-4-e4b"]),
+        ("foundry", ["gemma-4-e4b", "gemma-4-12b"]),
+        ("coding", ["qwen3.8-27b"]),
+        ("exclusive", []),
+    ],
+)
+def test_the_model_list_names_every_preset_in_every_mode(
+    pd, tmp_path, proxy, mode, allowed
+):
+    """#1431: filtered to the mode, this list hid the other three presets from
+    a client whose only door is this port — it could not learn they exist."""
+    _lease(pd, tmp_path, mode, allowed)
     status, body = _get(f"{proxy}/v1/models")
     assert status == 200
-    assert [entry["id"] for entry in body["data"]] == [
-        "gemma-4-e4b",
-        "gemma-4-12b",
+    assert [entry["id"] for entry in body["data"]] == PRESETS
+
+
+@pytest.mark.parametrize(
+    "mode,allowed",
+    [
+        ("foundry", ["gemma-4-e4b", "gemma-4-12b"]),
+        ("coding", ["qwen3.8-27b"]),
+        ("exclusive", []),
+    ],
+)
+def test_the_model_list_marks_which_presets_the_mode_allows(
+    pd, tmp_path, proxy, mode, allowed
+):
+    _lease(pd, tmp_path, mode, allowed)
+    _, body = _get(f"{proxy}/v1/models")
+    assert body["mode"] == mode
+    assert {entry["id"]: entry["allowed_in_mode"] for entry in body["data"]} == {
+        preset: preset in allowed for preset in PRESETS
+    }
+
+
+def test_the_model_list_without_a_lease_marks_the_household_preset(pd, tmp_path, proxy):
+    _, body = _get(f"{proxy}/v1/models")
+    assert body["mode"] == "household"
+    assert [entry["id"] for entry in body["data"] if entry["allowed_in_mode"]] == [
+        "gemma-4-e4b"
     ]
 
 
-def test_the_model_list_without_a_lease_is_the_household_preset_alone(
+def test_the_load_state_is_passed_through_and_is_not_the_permission(
     pd, tmp_path, proxy
 ):
+    """Two axes: `status.value` says where the weights are, `allowed_in_mode`
+    says whether this client may ask. An allowed preset is routinely unloaded
+    — normal, and 7-17 s on the first turn."""
+    _lease(pd, tmp_path, "foundry", ["gemma-4-e4b", "gemma-4-12b"])
     _, body = _get(f"{proxy}/v1/models")
-    assert [entry["id"] for entry in body["data"]] == ["gemma-4-e4b"]
+    entries = {entry["id"]: entry for entry in body["data"]}
+    assert entries["gemma-4-12b"]["status"]["value"] == "unloaded"
+    assert entries["gemma-4-12b"]["allowed_in_mode"] is True
+    assert entries["qwen3.8-27b"]["status"]["value"] == "loaded"
+    assert entries["qwen3.8-27b"]["allowed_in_mode"] is False
+
+
+def test_a_client_that_reads_only_the_id_still_parses_the_listing(pd, tmp_path, proxy):
+    """The marking is additive: an OpenAI client knows `object` and `data[].id`
+    and nothing else, and must not trip over what was added beside them."""
+    _lease(pd, tmp_path, "coding", ["qwen3.8-27b"])
+    _, body = _get(f"{proxy}/v1/models")
+    assert body["object"] == "list"
+    for entry in body["data"]:
+        assert entry["object"] == "model"
+    assert "qwen3.8-27b" in [entry["id"] for entry in body["data"]]
+
+
+def test_the_listing_is_not_the_gate(pd, tmp_path, proxy, upstream):
+    """Listed and marked not-allowed is still refused at the request — the
+    409 path is unchanged by #1431."""
+    _lease(pd, tmp_path, "coding", ["qwen3.8-27b"])
+    _, body = _get(f"{proxy}/v1/models")
+    listed = {entry["id"]: entry["allowed_in_mode"] for entry in body["data"]}
+    assert listed["gemma-4-12b"] is False
+    status, refusal = _post(f"{proxy}/v1/chat/completions", {"model": "gemma-4-12b"})
+    assert status == 409
+    assert refusal["error"]["mode"] == "coding"
+    assert refusal["error"]["allowed"] == ["qwen3.8-27b"]
+    assert ("POST", "/v1/chat/completions", "gemma-4-12b") not in upstream.state["seen"]
 
 
 def test_health_and_slots_pass_through(pd, tmp_path, proxy, upstream):
