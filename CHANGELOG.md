@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.67.3](https://github.com/mdopp/solarisbay/compare/v0.67.2...v0.67.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* **pi-web:** land the agent kit where a session reads it, and pin the skill head against every catalog value ([9f61419](https://github.com/mdopp/solarisbay/commit/9f61419fd2448f091650abc35b7027fb0003c143)), closes [#1413](https://github.com/mdopp/solarisbay/issues/1413)
+
 ## [0.67.2](https://github.com/mdopp/solarisbay/compare/v0.67.1...v0.67.2) (2026-09-09)
 
 
