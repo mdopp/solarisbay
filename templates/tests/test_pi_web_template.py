@@ -189,6 +189,7 @@ def test_provider_speaks_openai_completions(pd):
     assert provider["compat"] == {
         "supportsDeveloperRole": False,
         "supportsReasoningEffort": False,
+        "thinkingFormat": "chat-template",
     }
 
 
@@ -199,18 +200,42 @@ def test_provider_carries_a_placeholder_key(pd):
     assert provider["apiKey"] == "llama"
 
 
-def test_both_loaded_aliases_are_offered(pd):
+def test_the_coding_preset_is_the_one_a_session_starts_with(pd):
+    """Pi takes the first model of the first provider with auth when nothing is
+    saved, so the order of this list is what a new session gets. Coding first;
+    Denken is one `/model` away."""
     provider = pd.models_document("11435")["providers"][pd.PROVIDER_ID]
     ids = [m["id"] for m in provider["models"]]
-    assert ids == [pd.CODING_ALIAS, pd.HOUSEHOLD_ALIAS]
+    assert ids == [pd.CODING_ALIAS, pd.THINKING_ALIAS, pd.HOUSEHOLD_ALIAS]
 
 
-def test_the_coding_model_matches_the_leased_profile(pd):
-    """The alias and window are llama's coding profile, not a guess: a model
-    entry naming something llama-server does not serve is an empty picker."""
+def test_coding_switches_thinking_off_and_denken_switches_it_on(pd):
+    """The server stopped deciding this (#1416: no `--reasoning off`, one router
+    for four presets). A client that sends nothing gets a reasoning trace and no
+    tool call — #1321 all over again — and Pi only sends `chat_template_kwargs`
+    for a model declared `reasoning: true`, so both Qwen presets are."""
+    models = {
+        m["id"]: m
+        for m in pd.models_document("11435")["providers"][pd.PROVIDER_ID]["models"]
+    }
+    coding, thinking = models[pd.CODING_ALIAS], models[pd.THINKING_ALIAS]
+    assert coding["reasoning"] is True and thinking["reasoning"] is True
+    assert coding["compat"]["chatTemplateKwargs"] == {"enable_thinking": False}
+    assert thinking["compat"]["chatTemplateKwargs"] == {"enable_thinking": True}
+    # Gemma has no thinking mode; declaring one would send kwargs its template
+    # does not know.
+    assert models[pd.HOUSEHOLD_ALIAS]["reasoning"] is False
+
+
+def test_the_qwen_presets_match_the_router_profiles(pd):
+    """The aliases and windows are llama's own presets, not a guess: a model
+    entry naming something the router does not serve is a request nothing
+    answers."""
     llama = _load("llama_pd_for_pi_web", TEMPLATES / "llama" / "post-deploy.py")
     assert pd.CODING_ALIAS == llama.CODING_PROFILE["alias"]
     assert pd.CODING_CONTEXT == int(llama.CODING_PROFILE["context_length"])
+    assert pd.THINKING_ALIAS == llama.THINKING_PROFILE["alias"]
+    assert pd.THINKING_CONTEXT == int(llama.THINKING_PROFILE["context_length"])
 
 
 def test_the_household_model_is_left_alone(pd):
@@ -517,12 +542,17 @@ def test_the_agent_kit_path_survives_a_plain_upgrade(template_text, variables, p
         assert host["path"].startswith("/mnt/data/servicebay/agent-kit/")
 
 
-def test_the_readme_says_where_qwen_comes_from(variables):
-    """The operator-facing sentence: nothing in the template asks for Qwen, so
-    the README has to say who does."""
+def test_the_readme_says_which_model_comes_from_which_mode(variables):
+    """Nothing in the template asks for a mode, so the README has to say who
+    does — the widget in Solaris — and which preset each mode allows."""
     readme = (PI_WEB / "README.md").read_text(encoding="utf-8")
     assert "Modell-Kachel" in readme
-    assert "Haushaltsmodell" in readme
+    for word in ("Haushalt", "Denken", "Programmieren"):
+        assert word in readme
+    for preset in ("gemma-4-e4b", "qwen3.6-35b-a3b", "qwen3.8-27b"):
+        assert preset in readme
+    # The client-side switch and what happens without it.
+    assert "enable_thinking" in readme and "409" in readme
 
 
 # ── git credentials for private clones (#1395 slice A) ──────────────────────
