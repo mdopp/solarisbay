@@ -7008,17 +7008,22 @@
         if (lease.answers && lease.mode === "thinking") {
           // #1416: the Denken window is the same shape as the coding one, but
           // "Programmierfenster" is the wrong word for it — the resident asked
-          // for longer, more careful answers, not for a build.
+          // for longer, more careful answers, not for a build. Since the
+          // operator's decision of 13.9. the window only chooses the model;
+          // the careful thinking happens when the question asks for it, so the
+          // banner says how to ask rather than promising it for every answer.
           title.textContent =
-            "🧠 Denkfenster" + (bis ? " bis " + bis + " Uhr" : "") + ".";
+            "🧠 Fokus Denken" + (bis ? " bis " + bis + " Uhr" : "") + ".";
           hint.textContent =
-            "Solaris denkt gerade langsamer und gründlicher nach — gut für lange " +
-            "Texte und knifflige Fragen. Antworten dauern ein paar Sekunden " +
-            "länger, auch beim Sprechen. Alles andere funktioniert wie immer, und " +
-            "danach ist Solaris wieder so schnell wie gewohnt.";
+            "Solaris antwortet gerade mit einem größeren Modell — gut für lange " +
+            "Texte und knifflige Fragen. Wer „denk mal nach\u201c oder „Schritt " +
+            "für Schritt\u201c dazusagt, bekommt eine ausführlich überlegte " +
+            "Antwort; sonst antwortet Solaris ganz normal. Alles dauert ein paar " +
+            "Sekunden länger, auch beim Sprechen, und danach ist Solaris wieder " +
+            "so schnell wie gewohnt.";
         } else if (lease.answers) {
           title.textContent =
-            "🖥️ Programmierfenster" + (bis ? " bis " + bis + " Uhr" : "") + ".";
+            "🖥️ Fokus Programmieren" + (bis ? " bis " + bis + " Uhr" : "") + ".";
           hint.textContent =
             "Die Grafikkarte im Haus arbeitet gerade an einer Programmieraufgabe. " +
             "Solaris antwortet solange mit " +

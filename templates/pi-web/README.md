@@ -109,15 +109,17 @@ on 11435 enforces. **The model widget in Solaris (the Modell-Kachel,
 #1374/#1381) is what selects that mode** — from the phone, without a
 development tool running.
 
+The tile's names, as a resident reads them (operator, 2026-09-13):
+
 | Mode (lease) | Presets allowed | What a PI WEB session should pick |
 |---|---|---|
-| Haushalt (no lease) | `gemma-4-e4b` | Gemma answers; Qwen needs a mode first |
-| Lesen / Foundry | `gemma-4-e4b`, `gemma-4-12b` | neither is a coding model |
-| **Denken** | `qwen3.6-35b-a3b` | `/model` → *Qwen 3.6 35B-A3B (Denken)* |
-| **Programmieren** | `qwen3.8-27b` | the session default, nothing to do |
+| Haushalt + Schnell (no lease) | `gemma-4-e4b` | Gemma answers; Qwen needs a mode first |
+| Haushalt + Denken (`foundry`) | `gemma-4-e4b`, `gemma-4-12b` | neither is a coding model |
+| **Fokus Denken** (`thinking`) | `qwen3.6-35b-a3b` | `/model` → *Qwen 3.6 35B-A3B* |
+| **Fokus Programmieren** (`coding`) | `qwen3.8-27b` | the session default, nothing to do |
 
-So: a coding session needs the mode **Programmieren** from the tile, a reading
-or reasoning session the mode **Denken** plus `/model` inside Pi. That `/model`
+So: a coding session needs **Fokus Programmieren** from the tile, a reading or
+reasoning session **Fokus Denken** plus `/model` inside Pi. That `/model`
 picker is the whole switch — there is no PI WEB setting to change and no
 environment variable to redeploy.
 
@@ -164,7 +166,7 @@ A 409 is handled rather than crashing anything:
 - **In the autoloop** the run would end without changing anything, which on its
   own reads as "Pi found nothing to do". So the loop recognises the 409 and
   writes it in the protocol in plain German: *Modell qwen3.8-27b ist im Modus
-  Haushalt nicht erlaubt. In der Modell-Kachel in Solaris den Modus
+  household nicht erlaubt. In der Modell-Kachel in Solaris den Modus
   Programmieren wählen* — and picks the ticket up again by itself next pass.
 
 ### The retired lease unit (#1392)
@@ -490,7 +492,7 @@ Minuten nachsehen):
    geklont.
 3. `pi --mode json` bekommt das Ticket als Auftrag, mit dem Preset
    `qwen3.8-27b`. Der Loop fordert **keine** GPU an — der Modus kommt aus der
-   Modell-Kachel in Solaris. Wird das Preset doch einmal abgelehnt (409), steht
+   Modell-Kachel in Solaris (dort „Fokus Programmieren"). Wird das Preset doch einmal abgelehnt (409), steht
    der Grund im Klartext im Protokoll, statt dass der Lauf still nichts tut.
 4. Danach laufen die Prüfungen des Zielrepositories — was es selbst mitbringt
    (`ruff`, `pytest`, `npm run lint`, `npm test`). Ein Werkzeug, das dieser
@@ -531,16 +533,16 @@ service. PI WEB is a developer tool that happens to live on the same box, like
 
 - `https://pi.<publicDomain>/` unauthenticated → **302** to Authelia; after
   login the UI loads over WebSocket.
-- The model picker lists all three presets the post-deploy declared, and a new
-  session starts on *Qwen 3.8 27B (Programmieren)*; `curl
-  http://127.0.0.1:11435/v1/models` names the same ids.
-- With the mode **Programmieren** held from the Modell-Kachel, a coding answer
+- The model picker lists the presets the standing mode allows — with the card
+  at Haushalt that is `gemma-4-e4b` alone, and `curl
+  http://127.0.0.1:11435/v1/models` names the same ids. With **Fokus
+  Programmieren** held it lists `qwen3.8-27b`.
+- With **Fokus Programmieren** held from the Modell-Kachel, a coding answer
   carries no reasoning trace (the client sent `enable_thinking: false`); after
-  `/model` → *Qwen 3.6 35B-A3B (Denken)* in the mode **Denken** it does.
-- With no lease held, asking for a Qwen preset is **served** — the router
-  polices nothing and the port is reachable on the box; that is the accepted
-  gap the house rule above covers. What must not happen is a crash: the
-  session stays usable either way.
+  `/model` → *Qwen 3.6 35B-A3B* in **Fokus Denken** it does.
+- With no lease held, asking for a Qwen preset is **refused with 409** by the
+  policy proxy and the session stays usable — the loop names the mode in its
+  protocol and takes the ticket again next pass.
 - `systemctl --user status pi-web-model-lease` reports **not-found** and
   `grep -c Install ~/.config/containers/systemd/pi-web.kube` is 1 — the
   service is up now and comes back after a reboot.

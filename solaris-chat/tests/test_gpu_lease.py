@@ -212,7 +212,10 @@ def test_the_banner_is_wired_to_the_whoami_lease_token():
     assert 'id="gpu-notice"' in html
     assert "function applyGpuLease(lease)" in html
     assert "applyGpuLease(j && j.gpu_lease)" in html
-    assert "🖥️ Programmierfenster" in html
+    # The operator's names of 2026-09-13: a window says whether the card is in
+    # focus on one job, and what kind of job (#1416).
+    assert "🖥️ Fokus Programmieren" in html
+    assert "🧠 Fokus Denken" in html
 
 
 # ── #1325: the foundry evening — the same assistant, one model up ──────────

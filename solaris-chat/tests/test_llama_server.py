@@ -143,24 +143,51 @@ async def test_no_lease_asks_the_router_for_the_household_preset(monkeypatch):
     assert sess.last["json"]["model"] == "gemma-4-e4b"
 
 
-async def test_the_thinking_mode_asks_the_model_to_think_per_request(
+async def test_the_thinking_mode_thinks_only_when_the_turn_asks_for_it(
     monkeypatch, tmp_path
 ):
-    """The operator takes the Denken window FOR comprehension and logic, so the
-    reasoning trace is the point — everywhere else it stays off (#1318)."""
-    sess = _patch_post(monkeypatch, [_chunk(content="ja")])
-    client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, "thinking"))
+    """Operator 2026-09-13: a Denken window is an afternoon, and six of every
+    seven tokens spent on an invisible trace for "mach das Licht aus" is not
+    what was chosen. The window picks the MODEL; the sentence picks the
+    thinking."""
+    lease = _lease(tmp_path, "thinking")
+    for text, thinks in (
+        ("mach das Licht im Bad aus", False),
+        ("wie spät ist es", False),
+        ("denk mal nach: warum ist der Zähler gestiegen", True),
+        ("[Aktuelle Zeit: 19:42] überleg dir das bitte", True),
+        ("erklär mir das Schritt für Schritt", True),
+    ):
+        sess = _patch_post(monkeypatch, [_chunk(content="ja")])
+        client = LlamaServerChat("http://x:11435", lease_path=lease)
 
-    [c async for c in client.stream("gemma4:e4b", [{"role": "user", "content": "hi"}])]
+        [
+            c
+            async for c in client.stream(
+                "gemma4:e4b", [{"role": "user", "content": text}]
+            )
+        ]
 
-    assert sess.last["json"]["chat_template_kwargs"] == {"enable_thinking": True}
+        assert sess.last["json"]["chat_template_kwargs"] == {
+            "enable_thinking": thinks
+        }, text
 
-    sess = _patch_post(monkeypatch, [_chunk(content="ja")])
-    client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, "coding"))
 
-    [c async for c in client.stream("gemma4:e4b", [{"role": "user", "content": "hi"}])]
+async def test_no_other_mode_ever_thinks_on_a_cue(monkeypatch, tmp_path):
+    """The cue only lifts the switch inside the Denken window: everywhere else
+    the household pays for the trace and never sees it (#1318)."""
+    for mode in ("coding", "foundry"):
+        sess = _patch_post(monkeypatch, [_chunk(content="ja")])
+        client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, mode))
 
-    assert sess.last["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+        [
+            c
+            async for c in client.stream(
+                "gemma4:e4b", [{"role": "user", "content": "denk mal nach"}]
+            )
+        ]
+
+        assert sess.last["json"]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 async def test_options_are_translated(monkeypatch):

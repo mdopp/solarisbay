@@ -153,27 +153,31 @@ def test_every_row_is_one_complete_choice():
     rows = _rows({"state": "none", "model": "", "holder": ""})
     assert list(rows) == [
         "household",
+        "foundry:1h",
+        "foundry:4h",
+        "foundry:morgen",
         "thinking:1h",
         "thinking:4h",
         "thinking:morgen",
         "coding:1h",
         "coding:4h",
         "coding:morgen",
-        "foundry:1h",
-        "foundry:4h",
-        "foundry:morgen",
     ]
+    # The operator's wording of 2026-09-13: a row says whether the HOUSE is
+    # still fully itself and whether the card is fast or thinking. "Foundry"
+    # was a neighbour service's name for its own evening and told a resident
+    # nothing.
     assert [r["title"] for r in rows.values()] == [
-        "Haushalt (freigeben)",
-        "Denken · 1 h",
-        "Denken · 4 h",
-        "Denken · bis morgen 07:00",
-        "Programmieren · 1 h",
-        "Programmieren · 4 h",
-        "Programmieren · bis morgen 07:00",
-        "Foundry · 1 h",
-        "Foundry · 4 h",
-        "Foundry · bis morgen 07:00",
+        "Haushalt + Schnell (Normalzustand)",
+        "Haushalt + Denken · 1 h",
+        "Haushalt + Denken · 4 h",
+        "Haushalt + Denken · bis morgen 07:00",
+        "Fokus Denken · 1 h",
+        "Fokus Denken · 4 h",
+        "Fokus Denken · bis morgen 07:00",
+        "Fokus Programmieren · 1 h",
+        "Fokus Programmieren · 4 h",
+        "Fokus Programmieren · bis morgen 07:00",
     ]
     assert rows["coding:1h"]["profile"] == "coding"
     assert rows["coding:1h"]["hours"] == 1.0
@@ -196,7 +200,7 @@ def test_a_row_says_its_state_in_german_and_carries_no_raw_time():
     # A tile prints a field as it stands, so "1757336400" is not a time and
     # `remaining_s` is not a sentence: `status_text` is the whole answer.
     rows = _rows({"state": "none", "model": "", "holder": ""})
-    assert rows["household"]["status_text"] == "Gemma 4 e4b · Haushalt"
+    assert rows["household"]["status_text"] == "Gemma 4 e4b · Normalzustand"
     assert rows["coding:1h"]["detail"] == "Qwen 27B"
     assert rows["foundry:4h"]["detail"] == "Gemma 4 12B"
     for row in rows.values():
@@ -401,15 +405,15 @@ async def test_the_rows_endpoint_serves_the_tile(aiohttp_client, tmp_path):
     assert body["ok"] is True
     assert [row["id"] for row in body["models"]] == [
         "household",
+        "foundry:1h",
+        "foundry:4h",
+        "foundry:morgen",
         "thinking:1h",
         "thinking:4h",
         "thinking:morgen",
         "coding:1h",
         "coding:4h",
         "coding:morgen",
-        "foundry:1h",
-        "foundry:4h",
-        "foundry:morgen",
     ]
     assert body["models"][0]["state"] == "active"
     assert body["models"][1]["hours"] == 1.0

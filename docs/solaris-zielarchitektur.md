@@ -449,7 +449,8 @@ Host-Netz, Port **11435**, OpenAI-kompatibel (`POST /v1/chat/completions`,
 Speculative Decoding halbiert die Antwortzeit (0,30 s statt 0,62 s je Antwort,
 box-gemessen #1317/#1318) — das kann nur llama.cpp, nicht Ollama. Solaris' Engine
 spricht diesen Server (`LLAMA_SERVER_URL`), Denken ist per
-`chat_template_kwargs {enable_thinking:false}` aus — außer im Modus „Denken".
+`chat_template_kwargs {enable_thinking:false}` aus — auch im Modus „Fokus
+Denken", außer die Frage bittet ausdrücklich darum (Operator 13.9., siehe unten).
 
 **Ein Server im Router-Modus, vier Presets, der Client wählt** (#1416, Operator
 13.9.2026). llama-server hält alle Presets gleichzeitig auf **einem** Port und lädt
@@ -461,16 +462,28 @@ bleibt die Lease exklusiv: alles wird gestoppt, nichts antwortet.
 
 | Modus (Lease) | Preset, aus dem Solaris antwortet | erlaubte Presets | Sprachstack / Embeddings | Solaris-Chat |
 | :--- | :--- | :--- | :--- | :--- |
-| Haushalt (keine Lease) | gemma-4 e4b + MTP + mmproj, 32k f16 | `gemma-4-e4b` | GPU / an | normal |
-| `foundry` | gemma-4 12b + MTP, 131k q8-KV | `gemma-4-e4b`, `gemma-4-12b` | GPU / an | antwortet weiter, vom 12b |
-| `thinking` („Denken") | Qwen 3.6 35B-A3B UD-IQ3_XXS + MTP, 131k q8-KV | `qwen3.6-35b-a3b` | CPU / an | antwortet weiter, denkt je Anfrage |
-| `coding` („Programmieren") | Qwen 3.8 27B UD-IQ3_XXS + MTP, 82k, `-ctv q4_0` | `qwen3.8-27b` | CPU / an | antwortet weiter, vom 27B |
+| Haushalt (keine Lease) — „Haushalt + Schnell" | gemma-4 e4b + MTP + mmproj, 32k f16 | `gemma-4-e4b` | GPU / an | normal |
+| `foundry` („Haushalt + Denken") | gemma-4 12b + MTP, 131k q8-KV | `gemma-4-e4b`, `gemma-4-12b` | GPU / an | antwortet weiter, vom 12b |
+| `thinking` („Fokus Denken") | Qwen 3.6 35B-A3B UD-IQ3_XXS + MTP, 131k q8-KV | `qwen3.6-35b-a3b` | CPU / an | antwortet weiter, denkt auf Zuruf |
+| `coding` („Fokus Programmieren") | Qwen 3.8 27B UD-IQ3_XXS + MTP, 82k, `-ctv q4_0` | `qwen3.8-27b` | CPU / an | antwortet weiter, vom 27B |
 | exklusiv (ohne `--model`) | — | — | gestoppt | stumm, ehrlicher Hinweis + Banner |
 
 Der 26B-Plan ist gestrichen (#1325: passt nicht neben den Sprachstack). Denken und
 Programmieren nehmen die Karte ganz — beide Presets liegen bei rund 15,6 GB von
 16,4 — und schließen einen foundry-Abend aus; foundry bleibt beim 12B mit
 Sprachstack auf der GPU (Operator 13.9.).
+
+Die Namen in Klammern sind, was die Modell-Kachel zeigt (Operator 13.9.): eine
+Zeile sagt, ob das **Haus** noch ganz es selbst ist und ob die Karte **schnell**
+oder **denkend** arbeitet. „Foundry" war der Name eines Nachbardienstes für
+seinen eigenen Abend und sagte einem Bewohner nichts.
+
+**Denken kommt auf Zuruf** (Operator 13.9.): auch in „Fokus Denken" antwortet
+Solaris normal; der Reasoning-Trace wird nur eingeschaltet, wenn die Frage darum
+bittet („denk mal nach", „überleg", „gründlich", „Schritt für Schritt",
+„rechne", „Logik" — dieselbe Phrasenliste, die auch `reasoning_effort` hebt).
+Sonst kostete „mach das Licht aus" im Denkfenster sechs von sieben Token für
+einen Text, den niemand sieht.
 
 **Der Embedding-Server läuft in jedem Modus weiter** (Operator 13.9.). Seine rund
 300 MiB passen unter beide Fokus-Spitzen (MoE 15 620 MiB von 16 380; 27B rund
