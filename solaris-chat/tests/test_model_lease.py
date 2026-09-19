@@ -499,6 +499,29 @@ async def test_post_for_the_same_model_under_another_name_is_refused(
     assert _request(tmp_path)["op"] == "acquire"
 
 
+async def test_a_holder_may_move_its_own_window_to_another_mode(
+    aiohttp_client, tmp_path
+):
+    """PI WEB holds `foundry` for a 12B session, someone picks the 27B, and the
+    gate asks for `erweitert` under the same holder. That is one service
+    changing its own window — measured on the box 19.9., it came back as a 409
+    naming `pi-web` as the holder, i.e. refused by itself, and the session got
+    no answer at all."""
+    _hold(tmp_path, "foundry", until=777.0, holder="pi-web")
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post(
+        "/api/model-lease",
+        json={"model": "erweitert", "ttl_s": 900, "holder": "pi-web"},
+    )
+    assert r.status == 202
+    body = await r.json()
+    # Not `ready`: the environment switch is still ahead, and `ready` would send
+    # the caller straight at a preset `foundry` still refuses.
+    assert body["state"] == "preparing"
+    assert _request(tmp_path)["op"] == "acquire"
+    assert _request(tmp_path)["model"] == "erweitert"
+
+
 async def test_delete_releases_only_the_callers_own_window(aiohttp_client, tmp_path):
     """A restarting service closing "its" window must not close a stranger's —
     that was the whole of #1347."""
