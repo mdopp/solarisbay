@@ -104,30 +104,32 @@ async def test_think_true_asks_for_the_reasoning_trace(monkeypatch):
     assert sess.last["json"]["chat_template_kwargs"] == {"enable_thinking": True}
 
 
-def _lease(tmp_path, mode: str) -> str:
-    """The lease file the box writes for a named router mode (#1416)."""
+def _lease(tmp_path, mode: str, alias: str = "") -> str:
+    """The lease file the box writes for a window (#1416/#1435). `alias` is the
+    preset the policy proxy last saw served."""
     path = tmp_path / "gpu_lease.json"
-    path.write_text(
-        json.dumps({"holder": mode, "mode": mode, "ready": True, "until": 9e9}),
-        encoding="utf-8",
-    )
+    record = {"holder": mode, "mode": mode, "ready": True, "until": 9e9}
+    if alias:
+        record["alias"] = alias
+    path.write_text(json.dumps(record), encoding="utf-8")
     return str(path)
 
 
-async def test_the_model_field_names_the_router_preset_of_the_mode(
-    monkeypatch, tmp_path
-):
-    """#1416: one server holds four presets and routes on this field, so what
-    goes on the wire is the mode's preset — not `FAST_MODEL`, which is the
-    Ollama-era tag the panel and the traces still use and the router has never
-    heard of."""
+async def test_the_model_field_names_the_preset_that_is_loaded(monkeypatch, tmp_path):
+    """#1416/#1435: one server holds every preset and routes on this field, so
+    what goes on the wire is the preset the holder's own requests loaded — not
+    `FAST_MODEL`, which is the Ollama-era tag the panel and the traces still
+    use and the router has never heard of, and not the household preset, which
+    would evict the holder's model on every turn."""
     for mode, preset in (
-        ("foundry", "gemma-4-12b"),
-        ("thinking", "qwen3.6-35b-a3b"),
+        ("erweitert", "gemma-4-12b"),
+        ("erweitert", "qwen3.6-35b-a3b"),
         ("coding", "qwen3.8-27b"),
     ):
         sess = _patch_post(monkeypatch, [_chunk(content="ja")])
-        client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, mode))
+        client = LlamaServerChat(
+            "http://x:11435", lease_path=_lease(tmp_path, mode, preset)
+        )
 
         [c async for c in client.stream("gemma4:e4b", [{"role": "user", "c": ""}])]
 
@@ -150,7 +152,7 @@ async def test_the_thinking_mode_thinks_only_when_the_turn_asks_for_it(
     seven tokens spent on an invisible trace for "mach das Licht aus" is not
     what was chosen. The window picks the MODEL; the sentence picks the
     thinking."""
-    lease = _lease(tmp_path, "thinking")
+    lease = _lease(tmp_path, "erweitert")
     for text, thinks in (
         ("mach das Licht im Bad aus", False),
         ("wie spät ist es", False),
@@ -173,12 +175,14 @@ async def test_the_thinking_mode_thinks_only_when_the_turn_asks_for_it(
         }, text
 
 
-async def test_no_other_mode_ever_thinks_on_a_cue(monkeypatch, tmp_path):
-    """The cue only lifts the switch inside the Denken window: everywhere else
-    the household pays for the trace and never sees it (#1318)."""
-    for mode in ("coding", "foundry"):
+async def test_the_household_never_thinks_on_a_cue(monkeypatch, tmp_path):
+    """The cue only lifts the switch inside the open window: on the household
+    model the resident pays for a trace and never sees it (#1318). Since #1435
+    the window is one, so "everywhere else" is the household and an exclusive
+    lease."""
+    for lease_path in ("", str(tmp_path / "absent.json")):
         sess = _patch_post(monkeypatch, [_chunk(content="ja")])
-        client = LlamaServerChat("http://x:11435", lease_path=_lease(tmp_path, mode))
+        client = LlamaServerChat("http://x:11435", lease_path=lease_path)
 
         [
             c

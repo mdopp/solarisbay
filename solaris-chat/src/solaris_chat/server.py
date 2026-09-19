@@ -3210,9 +3210,13 @@ def build_app(
             model, ttl, holder = model_lease.parse_payload(body)
         except ValueError as e:
             return web.json_response({"ok": False, "reason": str(e)}, status=400)
+        # The window under its name of today: a caller that still asks for
+        # `thinking` or `coding` is asking for `erweitert` (#1435), so a
+        # renewal under an old name must not read as somebody else's window.
+        window = model_lease.canonical(model)
         current = model_lease.state(solaris_db_path)
         if current["state"] != "none" and (
-            current["model"] != model or current["holder"] != holder
+            current["model"] != window or current["holder"] != holder
         ):
             # The mode policy (#1416): the router serves every preset at once,
             # so a refused window is no longer a dead end — the caller is told
@@ -3253,7 +3257,10 @@ def build_app(
                 "ok": True,
                 "state": "preparing",
                 "model": model,
-                "alias": model_lease.ALIASES[model],
+                # What the caller will be answered by: the preset its own
+                # word has always meant, else whatever is loaded now.
+                "alias": model_lease.ALIASES.get(model)
+                or model_lease.household_alias(solaris_db_path),
                 "retry_after": model_lease.RETRY_AFTER_SECONDS,
                 "expires_at": None,
             },

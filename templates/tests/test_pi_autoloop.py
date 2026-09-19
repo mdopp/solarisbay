@@ -43,6 +43,19 @@ def loop():
 
 
 @pytest.fixture(scope="module")
+def pd():
+    """The pi-web post-deploy, for the one number the loop and models.json
+    must agree on: the port of the model gate."""
+    spec = importlib.util.spec_from_file_location(
+        "pi_web_pd_autoloop", PI_WEB / "post-deploy.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
 def pod() -> dict:
     text = (PI_WEB / "template.yml").read_text(encoding="utf-8")
     variables = json.loads((PI_WEB / "variables.json").read_text(encoding="utf-8"))
@@ -417,7 +430,7 @@ def test_a_preset_the_mode_refuses_is_named_instead_of_looking_like_idleness(loo
     )
     note = loop.refusal_note([event], "qwen3.8-27b")
     assert "qwen3.8-27b" in note and "Haushalt" in note
-    assert "Modell-Kachel" in note and "Programmieren" in note
+    assert "Modell-Kachel" in note
     assert loop.refusal_note(['{"type":"done"}'], "qwen3.8-27b") == ""
 
 
@@ -448,20 +461,24 @@ def test_a_refusal_reaches_the_protocol_and_not_only_the_container_log(
     assert "Hinweis:  Modell qwen3.8-27b" in protocol
 
 
-def test_the_autoloop_takes_no_gpu_lease(loop):
-    """#1392: the mode belongs to the Solaris model tile. The loop asks the
-    router for the preset it needs and proceeds — it never asks for a swap."""
+def test_the_loop_implements_no_lease_of_its_own(loop):
+    """#1435: the loop may have the mode, but not a second implementation of
+    how to get it. Everything that knows about the lease lives in the gate and
+    the host broker; this file only ever speaks OpenAI to the gate."""
     source = LOOP.read_text(encoding="utf-8")
-    assert "model-lease" not in source
-    cfg = loop.config_from_env({"LLAMA_PORT": "11435"})
-    assert cfg["models_url"] == "http://host.containers.internal:11435/v1/models"
+    for banned in ("model-lease", "api/model-lease", "gpu_lease", "8787"):
+        assert banned not in source, banned
+    cfg = loop.config_from_env({})
+    assert cfg["models_url"] == "http://127.0.0.1:11437/v1/models"
 
 
-def test_the_loop_addresses_llama_the_way_the_isolated_pod_has_to(loop):
-    """ADR 0007: this pod has its own netns, so 127.0.0.1 would be itself."""
+def test_the_loop_goes_through_the_same_door_a_session_does(loop, pd):
+    """One door, one implementation. The gate is a container of this pod, and
+    the containers of a pod share a network namespace — so `127.0.0.1` here is
+    the gate and not the host, and the port is the one models.json names."""
     url = loop.config_from_env({})["models_url"]
-    assert "host.containers.internal" in url
-    assert "127.0.0.1" not in url and "localhost" not in url
+    assert f"127.0.0.1:{pd.MODEL_GATE_PORT}" in url
+    assert "host.containers.internal" not in url
 
 
 def test_the_autoloop_knobs_are_all_wired_into_the_container(

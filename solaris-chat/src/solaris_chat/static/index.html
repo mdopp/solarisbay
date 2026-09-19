@@ -7005,32 +7005,24 @@
         title.className = "ha-notice-title";
         var hint = document.createElement("div");
         hint.className = "ha-notice-hint";
-        if (lease.answers && lease.mode === "thinking") {
-          // #1416: the Denken window is the same shape as the coding one, but
-          // "Programmierfenster" is the wrong word for it — the resident asked
-          // for longer, more careful answers, not for a build. Since the
-          // operator's decision of 13.9. the window only chooses the model;
-          // the careful thinking happens when the question asks for it, so the
-          // banner says how to ask rather than promising it for every answer.
+        if (lease.answers) {
+          // #1435: one banner for the one window in which the house is not
+          // served first. It says who took the card, which model answers
+          // meanwhile and what is slower — a voice assistant that has gone
+          // slow must not look broken. `foundry` is handled above: it changes
+          // nothing the resident can notice, so it shows nothing.
           title.textContent =
-            "🧠 Fokus Denken" + (bis ? " bis " + bis + " Uhr" : "") + ".";
+            "🧠 Erweitert" + (bis ? " bis " + bis + " Uhr" : "") + ".";
           hint.textContent =
-            "Solaris antwortet gerade mit einem größeren Modell — gut für lange " +
-            "Texte und knifflige Fragen. Wer „denk mal nach\u201c oder „Schritt " +
-            "für Schritt\u201c dazusagt, bekommt eine ausführlich überlegte " +
-            "Antwort; sonst antwortet Solaris ganz normal. Alles dauert ein paar " +
-            "Sekunden länger, auch beim Sprechen, und danach ist Solaris wieder " +
-            "so schnell wie gewohnt.";
-        } else if (lease.answers) {
-          title.textContent =
-            "🖥️ Fokus Programmieren" + (bis ? " bis " + bis + " Uhr" : "") + ".";
-          hint.textContent =
-            "Die Grafikkarte im Haus arbeitet gerade an einer Programmieraufgabe. " +
-            "Solaris antwortet solange mit " +
-            (lease.model || "einem anderen Modell") +
-            " — das kann ein paar Sekunden länger dauern, auch beim Sprechen. " +
-            "Alles andere funktioniert wie immer, und danach ist Solaris wieder " +
-            "so schnell wie gewohnt.";
+            "Die Grafikkarte ist gerade für ein größeres Modell freigegeben" +
+            (lease.holder ? " — „" + lease.holder + "\u201c arbeitet damit" : "") +
+            ". Solaris antwortet solange mit " +
+            (lease.model || "einem größeren Modell") +
+            " — das kann ein paar Sekunden länger dauern, auch beim Sprechen, " +
+            "und die Suche in Notizen und Dokumenten findet solange nur " +
+            "Stichwörter. Wer „denk mal nach\u201c oder „Schritt für Schritt\u201c " +
+            "dazusagt, bekommt eine ausführlich überlegte Antwort. Danach ist " +
+            "Solaris wieder so schnell wie gewohnt.";
         } else {
           title.textContent =
             "🖥️ Solaris rechnet gerade an einer großen Aufgabe" +

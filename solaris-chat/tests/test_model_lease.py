@@ -59,7 +59,7 @@ def _hold(
         "holder": holder or model,
         "mode": model,
         "model": "Gemma 4 12B",
-        "alias": model_lease.ALIASES[model],
+        "alias": model_lease.ALIASES.get(model, ""),
         "until": until,
         "ready": ready,
     }
@@ -140,16 +140,28 @@ def test_the_model_is_one_of_the_windows_the_box_knows():
             model_lease.parse_payload({"model": bad, "ttl_s": 900})
 
 
-def test_thinking_is_a_third_window_and_costs_the_old_two_nothing():
-    """#1416 adds the Denken window. Additive on foundry-chronicle#321: a
-    caller that only ever sends `foundry` or `coding` sees no change, and the
-    aliases are the router presets the box actually serves."""
-    assert model_lease.parse_payload({"model": "thinking", "ttl_s": 900}) == (
-        "thinking",
-        900,
-        "thinking",
-    )
-    assert model_lease.MODELS == ("foundry", "coding", "thinking")
+def test_there_are_two_windows_and_the_retired_names_still_reach_one():
+    """#1435 collapses `thinking` and `coding` into `erweitert` and keeps
+    `foundry`, which sets a different environment. Nothing on
+    foundry-chronicle#321 breaks: `foundry` is still a window of its own, the
+    retired names are still accepted, the holder default is unchanged, and each
+    one still promises the preset it always meant."""
+    assert model_lease.MODELS == ("foundry", "erweitert")
+    assert set(model_lease.MODEL_ALIASES) == {"coding", "thinking"}
+    for old in model_lease.MODEL_ALIASES:
+        assert model_lease.parse_payload({"model": old, "ttl_s": 900}) == (
+            old,
+            900,
+            old,
+        )
+        assert model_lease.canonical(old) == "erweitert"
+    for window in model_lease.MODELS:
+        assert model_lease.parse_payload({"model": window, "ttl_s": 900}) == (
+            window,
+            900,
+            window,
+        )
+        assert model_lease.canonical(window) == window
     assert model_lease.ALIASES == {
         "foundry": "gemma-4-12b",
         "coding": "qwen3.8-27b",
@@ -158,7 +170,10 @@ def test_thinking_is_a_third_window_and_costs_the_old_two_nothing():
     assert model_lease.HOUSEHOLD_ALIAS == "gemma-4-e4b"
 
 
-async def test_a_thinking_window_runs_the_same_state_machine(aiohttp_client, tmp_path):
+async def test_an_old_name_runs_the_same_state_machine(aiohttp_client, tmp_path):
+    """What a caller sends is what the box is asked for — so the alias it is
+    promised is the preset that word has always meant — but the window it gets
+    is reported under its name of today."""
     client = await aiohttp_client(_app(tmp_path))
     r = await client.post("/api/model-lease", json={"model": "thinking", "ttl_s": 900})
     assert r.status == 202
@@ -169,8 +184,27 @@ async def test_a_thinking_window_runs_the_same_state_machine(aiohttp_client, tmp
     _hold(tmp_path, "thinking", until=888.0, holder="thinking")
     got = await (await client.get("/api/model-lease")).json()
     assert got["state"] == "ready"
-    assert got["model"] == "thinking"
+    assert got["model"] == "erweitert"
     assert got["alias"] == "qwen3.6-35b-a3b"
+
+
+async def test_a_window_named_erweitert_answers_as_what_is_loaded(
+    aiohttp_client, tmp_path
+):
+    """A caller that asks for the window itself names no preset, so what it is
+    told is what llama-server has loaded — the household model until somebody
+    asks the router for something else (#1435)."""
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post(
+        "/api/model-lease", json={"model": "erweitert", "ttl_s": 900, "holder": "pi"}
+    )
+    assert r.status == 202
+    assert (await r.json())["alias"] == "gemma-4-e4b"
+    _hold(tmp_path, "erweitert", until=888.0, holder="pi")
+    got = await (await client.get("/api/model-lease")).json()
+    assert got["state"] == "ready"
+    assert got["model"] == "erweitert"
+    assert got["alias"] == "gemma-4-e4b"
 
 
 def test_payload_rejects_bad_values_and_clamps_the_ttl():
@@ -240,7 +274,7 @@ def test_a_ready_lease_reports_its_alias_and_deadline(tmp_path):
     _hold(tmp_path, "coding", until=1234.0, holder="foundry-chronicle")
     assert model_lease.state(_db(tmp_path)) == {
         "state": "ready",
-        "model": "coding",
+        "model": "erweitert",
         "alias": "qwen3.8-27b",
         "expires_at": 1234.0,
         "holder": "foundry-chronicle",
@@ -411,7 +445,7 @@ async def test_post_for_the_other_model_is_refused_with_the_deadline(
         # #1416: the refusal also says which mode stands and what it allows,
         # so the caller can use the router instead of only learning it cannot
         # have the card. Additive — every contract field above is unchanged.
-        "mode": "coding",
+        "mode": "erweitert",
         "allowed": ["qwen3.8-27b"],
     }
     # A refused request never reaches the broker.
