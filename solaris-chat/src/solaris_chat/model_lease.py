@@ -80,12 +80,15 @@ client may ask for. Two additions, both additive on the contract:
   is unchanged, and a caller that reads none of the new ones sees what it
   always saw.
 
-Since #1435 there is **one** window, `erweitert`, and `foundry`/`thinking`/
-`coding` are accepted as its older names. What separated them was only the set
-of presets they allowed, and `erweitert` allows every preset the router knows —
-so a caller that still asks for `foundry` gets the same window, is still
-answered by the 12B (`alias`), still files under its own holder and still ends
-the window the same way. `GET` reports the window under its name of today.
+Since #1435 there are **two** windows, `foundry` and `erweitert`, and
+`thinking`/`coding` are accepted as older names of `erweitert`. What separated
+those two was only the set of presets they allowed, and `erweitert` allows
+every preset the router knows — so a caller that still asks for `coding` gets
+the same window, is still answered by the 27B (`alias`), still files under its
+own holder and still ends the window the same way. `foundry` stayed a window of
+its own because it keeps the voice stack on the GPU: foundry-chronicle
+transcribes with `solaris-whisper-batch` while its session runs. `GET` reports
+the window under its name of today.
 """
 
 from __future__ import annotations
@@ -101,10 +104,10 @@ from solaris_chat import gpu_lease
 # The leases a neighbour may ask for; anything else is a 400. All are
 # `gpu-lease.py --model` values — the HTTP name and the box's profile name are
 # deliberately one word, so a lease cannot be requested under a name the box
-# does not know. Since #1435 there is one window, `erweitert`; `foundry`,
-# `coding` and `thinking` are its older names and are still accepted, so an
-# existing caller sees no change at all.
-MODELS = (gpu_lease.EXTENDED_MODE,)
+# does not know. Since #1435 there are two windows, `foundry` and `erweitert`;
+# `coding` and `thinking` are older names of `erweitert` and are still
+# accepted, so an existing caller sees no change at all.
+MODELS = (gpu_lease.FOUNDRY_MODE, gpu_lease.EXTENDED_MODE)
 MODEL_ALIASES = dict(gpu_lease.MODE_ALIASES)
 
 
@@ -130,8 +133,8 @@ TTL_DEFAULT_SECONDS = 14400
 # What a `preparing` answer tells the caller to wait before polling `GET`.
 RETRY_AFTER_SECONDS = 30
 
-# The model name llama-server reports (`--alias`) for a window asked for under
-# one of the old names, and for the household model when no lease is held. The
+# The model name llama-server reports (`--alias`) for a window asked for by
+# name, and for the household model when no lease is held. The
 # box sets the same strings in `templates/llama/post-deploy.py`; a standing
 # window's alias is read back out of the lease file rather than assumed — in
 # `erweitert` the holder picks its own preset and the policy proxy records it
@@ -338,9 +341,10 @@ def state(db_path: str) -> dict:
         }
         # In `erweitert` the holder picks the preset and the policy proxy
         # records it in the lease; until something has been asked for, what is
-        # loaded is still the household model.
+        # loaded is the preset the window's own name means, else the household
+        # model.
         alias = (
-            str(lease.get("alias") or household_alias(db_path))
+            str(lease.get("alias") or ALIASES.get(mode) or household_alias(db_path))
             if lease.get("ready")
             else household_alias(db_path)
         )

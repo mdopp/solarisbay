@@ -36,9 +36,10 @@ Seven responsibilities:
      lands at `${DATA_DIR}/solarisbay/gpu-lease.py`; run with `acquire
      <holder>` it hands the whole card to another job, with `release` it gives
      it back. Self-copy, like ollama-warm (#1236), so the unit list cannot
-     drift from a second copy of itself. `--model erweitert` takes the softer
-     path: llama-server keeps serving all four presets, and the mode only sets
-     the environment and the presets a client may ask for (#1416/#1435).
+     drift from a second copy of itself. `--model foundry` and `--model
+     erweitert` take the softer path: llama-server keeps serving all four
+     presets, and the mode only sets the environment and the presets a client
+     may ask for (#1416/#1435).
 
   6. **Install the lease broker** (#1333). A neighbour *container* cannot run
      any of that, so it asks the Engine over HTTP instead; the Engine writes
@@ -928,64 +929,86 @@ FOUNDRY_PROFILE = {
     "label": "Gemma 4 12B",
 }
 
-# The two lease modes (#1435, operator 2026-09-19). The only question the
-# policy actually has to answer is whether the card may serve something other
-# than the household — which model that then is, the client decides with the
-# `model` field of its request, and the router loads it on demand.
+# The lease modes (#1435, operator 2026-09-19). Four modes collapsed to three:
+# what separated `thinking` and `coding` was only the set of presets they
+# allowed, and the environment they set was the same — so they become one
+# window, `erweitert`, and the policy answers the question it has to: may the
+# card serve something other than the household, and with which presets.
 #
 #   haushalt  — the card is the house's: voice stack on the GPU, embeddings
 #               server up, and the household preset the only one a client may
 #               ask for. It IS the absence of a lease, so it is never written
 #               to disk; the proxy reports it when no lease stands.
+#   foundry   — the house keeps everything and answers from a bigger model
+#               (#1325). The one mode that leaves the voice stack ON the GPU:
+#               foundry-chronicle transcribes through `solaris-whisper-batch`
+#               DURING its own session, and on the CPU that transcription is
+#               not the same feature. Its own environment, not `erweitert`'s.
 #   erweitert — the card is free for something bigger: voice stack on the CPU,
-#               embeddings server down, and every preset the router knows
-#               allowed. `--models-max 1` swaps on demand, box-measured.
+#               batch GPU jobs and embeddings server down, and every preset the
+#               router knows allowed. `--models-max 1` swaps on demand.
 #
-# `foundry`, `thinking` and `coding` are gone as modes: what separated them was
-# only the allowed preset set, the environment was identical in all three. They
-# live on as ALIASES of `erweitert` (below), so foundry-chronicle#321 and every
-# other caller keeps working unchanged. The preset DEFINITIONS above stay —
-# they describe weights, window and drafter and are still what presets.ini is
-# rendered from.
+# `thinking` and `coding` live on as ALIASES of `erweitert` (below) so pi-web
+# and every other caller keeps working unchanged; `foundry` is a mode again and
+# maps to itself. The preset DEFINITIONS above are untouched either way — they
+# describe weights, window and drafter and are what presets.ini is rendered
+# from.
 #
 # The embeddings server goes down in `erweitert` (operator 2026-09-19, measured
 # in #1434): the MoE plus its MTP drafter needs 15 620 of 16 380 MiB and the
 # box OOM'd the drafter's compute buffer by 168 MiB with the embeddings
-# server's ~430 MiB resident. That the household loses semantic vault search
-# for the window is now part of the decision rather than a broken promise.
-# Without `--model` the lease is still exclusive: everything stops and nothing
-# answers.
+# server's ~430 MiB resident, so the MoE answered `500 model failed to load`.
+# `erweitert` allows the MoE, so it cannot keep the embeddings server — the
+# household loses semantic vault search for the window, which is now part of
+# the decision rather than a broken promise. `foundry` allows no MoE and keeps
+# it. Without `--model` the lease is still exclusive: everything stops and
+# nothing answers.
+#
+# `alias`/`label` name the model the holder is answered by, unchanged from
+# #1333 so foundry-chronicle#321 keeps reading the same two fields. In
+# `erweitert` nobody has chosen yet, so both are empty until the door records
+# what it served; an empty `presets` there means "every preset the router
+# knows".
 HOUSEHOLD_MODE = "haushalt"
 EXTENDED_MODE = "erweitert"
 
 LEASE_PROFILES = {
+    "foundry": {
+        "presets": ("gemma-4-e4b", "gemma-4-12b"),
+        "alias": "gemma-4-12b",
+        "label": "Gemma 4 12B",
+        "voice": "gpu",
+        "stop_gpu_units": False,
+        "stop_embed": False,
+    },
     EXTENDED_MODE: {
-        "label": "Erweitert",
+        "presets": (),
+        "alias": "",
+        "label": "",
         "voice": "cpu",
         "stop_gpu_units": True,
         "stop_embed": True,
     },
 }
 
-# The old mode names, kept as aliases so nothing that still sends them breaks.
+# The retired mode names, kept as aliases so nothing that still sends them
+# breaks. `foundry` is deliberately not here: it is a mode of its own.
 LEASE_MODE_ALIASES = {
-    "foundry": EXTENDED_MODE,
     "thinking": EXTENDED_MODE,
     "coding": EXTENDED_MODE,
 }
 
 # And the preset each of those names has always meant: a caller that asks for
-# `foundry` is still answered by the 12B, which is what `alias` in the lease
-# file (contract #1333, foundry-chronicle#321) promises it.
+# `coding` is still answered by the 27B, which is what `alias` in the lease
+# file (contract #1333) promises it.
 ALIAS_PRESETS = {
-    "foundry": FOUNDRY_PROFILE,
     "thinking": THINKING_PROFILE,
     "coding": CODING_PROFILE,
 }
 
 
 def canonical_mode(name: object) -> str:
-    """The mode a name stands for today — the three retired ones map onto
+    """The mode a name stands for today — the two retired ones map onto
     `erweitert` (#1435), everything else is itself."""
     text = str(name or "").strip()
     return LEASE_MODE_ALIASES.get(text, text)
@@ -994,12 +1017,14 @@ def canonical_mode(name: object) -> str:
 def allowed_presets(mode: str) -> tuple[str, ...]:
     """The presets a client may ask the router for in `mode`.
 
-    `erweitert` allows every preset the router knows — the client picks and the
-    router swaps. Anything else is the household's own one.
+    `erweitert` names none of its own and allows every preset the router knows
+    — the client picks and the router swaps. A mode with its own set allows
+    exactly that set; anything else is the household's own one.
     """
-    if mode == EXTENDED_MODE:
-        return tuple(preset_profiles())
-    return (env_profile()["alias"],)
+    profile = LEASE_PROFILES.get(mode)
+    if profile is None:
+        return (env_profile()["alias"],)
+    return tuple(profile["presets"]) or tuple(preset_profiles())
 
 
 # How long `release` waits for the household model to answer /health again.
@@ -1106,9 +1131,9 @@ def parse_duration(text: str) -> int:
 def read_lease(data_dir: str) -> dict[str, object]:
     """The lease as it stands, with a retired mode name migrated (#1435).
 
-    A box upgraded mid-window has `foundry`/`thinking`/`coding` on disk. Read
-    as-is, that mode matches no profile any more: the release would put neither
-    the voice stack back on the GPU nor the embeddings server back up, and the
+    A box upgraded mid-window has `thinking` or `coding` on disk. Read as-is,
+    that mode matches no profile any more: the release would put neither the
+    voice stack back on the GPU nor the embeddings server back up, and the
     deploy would keep reporting a mode nothing knows.
     """
     try:
@@ -1295,15 +1320,16 @@ def lease_acquire(
 ) -> int:
     """Hand the card to `holder`: claim, then set the environment.
 
-    `model=erweitert` (#1435) is the softer variant, and since #1416 it does
-    not touch llama-server at all: the router serves every preset and the mode
-    only decides what the environment looks like and which presets a client may
-    ask for. It stops the batch transcriber, the wakeword trainer and the
-    embeddings server and moves the voice stack to the CPU — the house is still
-    spoken to, slower rather than not at all. `foundry`, `thinking` and
-    `coding` are accepted as the old names of the same mode and decide only
-    which preset the holder is told it will be answered by. Without `--model`
-    the card is emptied outright.
+    `model=erweitert` and `model=foundry` (#1435) are the softer variants, and
+    since #1416 neither touches llama-server at all: the router serves every
+    preset and the mode only decides what the environment looks like and which
+    presets a client may ask for. `erweitert` stops the batch transcriber, the
+    wakeword trainer and the embeddings server and moves the voice stack to the
+    CPU — the house is still spoken to, slower rather than not at all.
+    `foundry` stops nothing and leaves everything on the GPU, because
+    foundry-chronicle transcribes through `solaris-whisper-batch` while its own
+    session runs. `thinking` and `coding` are accepted as the old names of
+    `erweitert`. Without `--model` the card is emptied outright.
     """
     current = read_lease(data_dir)
     if current and current.get("holder") != holder:
@@ -1326,10 +1352,10 @@ def lease_acquire(
         )
         return 2
     profile = LEASE_PROFILES.get(mode)
-    # The preset the requested name promises the holder, empty when it asked
-    # for the mode itself — then the door fills it in from what is actually
-    # served (`note_preset`).
-    wanted = ALIAS_PRESETS.get(str(model).strip(), {})
+    # The preset the requested name promises the holder: the retired name's own
+    # one, else the mode's. Empty in `erweitert`, where the client picks — the
+    # door fills it in from what is actually served (`note_preset`).
+    wanted = ALIAS_PRESETS.get(str(model).strip()) or profile or {}
     # A renewal (#1333): the same holder asking again for the mode it already
     # has moves the deadline, it does not swap the server a second time — a
     # restart every renewal interval would rebuild exactly the thrash the lease
@@ -1347,7 +1373,7 @@ def lease_acquire(
             "llama:lease",
             "lease renewed",
             holder=holder,
-            model=profile["label"],
+            model=wanted.get("label") or mode,
             until_sec=int(current["until"]),
         )
         return 0
@@ -1427,7 +1453,7 @@ def lease_acquire(
         "llama:lease",
         f"GPU leased for {mode} — Solaris keeps answering, from the presets this mode allows",
         holder=holder,
-        model=wanted.get("label", profile["label"]),
+        model=wanted.get("label") or mode,
         allowed=list(allowed_presets(mode)),
         voice=profile["voice"],
         until_sec=int(now + duration_sec),
@@ -1661,7 +1687,8 @@ def lease_cli(argv: list[str]) -> int:
         jlog(
             "error",
             "llama:lease",
-            "usage: gpu-lease.py acquire <holder> [--model erweitert] [--duration 4h]",
+            "usage: gpu-lease.py acquire <holder> "
+            "[--model foundry|erweitert] [--duration 4h]",
         )
         return 2
     return lease_acquire(data_dir, holder, port, model, duration)
@@ -2315,7 +2342,7 @@ def main() -> int:
         print(f"   GPU lease: python3 {lease_script} acquire <name> | release")
         print(
             f"   Modes: python3 {lease_script} acquire <name> "
-            "--model erweitert --duration 4h"
+            "--model foundry|erweitert --duration 4h"
         )
     return 0
 

@@ -1,6 +1,6 @@
 ---
 name: solaris-model-tool
-description: The .model dot-command — welches Modell gerade läuft, und die Grafikkarte für eine gewählte Zeit von Haushalt auf Erweitert umschalten.
+description: The .model dot-command — welches Modell gerade läuft, und die Grafikkarte für eine gewählte Zeit auf Haushalt + Denken oder Erweitert umschalten.
 kind: tool
 scope: household
 tool-id: model
@@ -21,18 +21,20 @@ license: MIT
 **Usage:** `.model` zeigt je Wahl eine Zeile — welches Modell wie lange laufen
 soll — und schaltet auf Knopfdruck um.
 
-Es gibt **zwei** Zustände, und die Zeile sagt genau einen Unterschied: gehört
-die Grafikkarte dem Haus, oder ist sie für ein größeres Modell freigegeben.
+Es gibt **drei** Zustände, und die Zeile sagt, wie viel das Haus abgibt.
 
 | Zeile | Was sie bedeutet |
 |---|---|
 | **Haushalt (Normalzustand)** | die Karte gehört dem Haus: Solaris antwortet so schnell wie möglich, Sprechen läuft flott, die Suche in Notizen und Dokumenten versteht auch sinngemäß Gemeintes — hierher kommt man immer zurück |
-| **Erweitert · 1 h / 4 h / bis morgen 07:00** | die Karte ist für ein größeres Modell frei. Wer sie benutzt, wählt sein Modell selbst. Das Haus antwortet weiter, nur langsamer — auch beim Sprechen — und die Suche findet solange nur Stichwörter |
+| **Haushalt + Denken · 1 h / 4 h / bis morgen 07:00** | ein größeres Modell für das ganze Haus. Sprechen und Suche bleiben, wie sie sind; nur die Antworten dauern rund eine Sekunde länger |
+| **Erweitert · 1 h / 4 h / bis morgen 07:00** | die Karte ist für ein noch größeres Modell frei. Wer sie benutzt, wählt sein Modell selbst. Das Haus antwortet weiter, nur langsamer — auch beim Sprechen — und die Suche findet solange nur Stichwörter |
 
-Früher standen hier vier Zeilen („Haushalt + Denken", „Fokus Denken", „Fokus
-Programmieren"). Sie stellten alle dieselbe Umgebung her und unterschieden sich
-nur darin, welche Modelle sie erlaubten — vier Namen für zwei Zustände. Die
-Modelle selbst gibt es unverändert; nur wählt sie jetzt der, der sie benutzt.
+Früher standen hier vier Zeilen: „Fokus Denken" und „Fokus Programmieren"
+stellten dieselbe Umgebung her und unterschieden sich nur darin, welche Modelle
+sie erlaubten — zwei Namen für einen Zustand. Sie sind jetzt „Erweitert", und
+die Modelle wählt der, der die Karte nimmt. „Haushalt + Denken" bleibt eine
+eigene Zeile, weil sie wirklich etwas anderes tut: der Sprachteil behält die
+Grafikkarte.
 
 Ein Tipp nimmt die Karte **bis zu einer Zeit**, nicht „bis auf Weiteres".
 Danach kommt sie von selbst zurück — niemand muss daran denken.
@@ -46,9 +48,9 @@ e4b · Normalzustand". Zeilen, die nichts tun, nennen nur ihr Modell
 „noch 42 Min" muss man erst zur aktuellen Zeit dazurechnen, um zu wissen, wann
 die Karte wieder frei ist.
 
-**Der Halter steht immer dabei.** „Erweitert" ist der einzige Zustand, in dem
-das Haus nicht bevorzugt bedient wird, und nicht nur die Kachel kann ihn
-nehmen: ein Programmierwerkzeug darf das auch. Wer dann am Telefon steht und
+**Der Halter steht immer dabei.** „Erweitert" ist der Zustand, in dem das Haus
+nicht bevorzugt bedient wird, und nicht nur die Kachel kann ihn nehmen: ein
+Programmierwerkzeug darf das auch. Wer dann am Telefon steht und
 einen langsamen Sprachassistenten erlebt, soll an derselben Zeile sehen, **dass**
 jemand die Karte hat, **wer** das ist und **bis wann** — statt zu rätseln, ob
 etwas kaputt ist.
@@ -115,13 +117,14 @@ das Ende.
   CPU, Einbettungs-Server an oder aus) und legt fest, welche Presets
   währenddessen erlaubt sind; ein Proxy vor dem Router weist alles andere mit
   `409` ab. In „Haushalt" ist genau ein Preset erlaubt (`gemma-4-e4b`), in
-  „Erweitert" alle — dort gibt es nichts mehr zu verweigern, der Klient wählt
-  mit dem Feld `model`. Solaris selbst fragt das Preset an, das gerade geladen
-  ist, statt das des Halters zu verdrängen.
-- **In „Erweitert" pausiert die sinngemäße Suche:** der Einbettungs-Server
-  passt nicht neben ein großes Modell auf die Karte (gemessen, #1434), also
+  „Haushalt + Denken" zwei, in „Erweitert" alle — dort gibt es nichts mehr zu
+  verweigern, der Klient wählt mit dem Feld `model`. Solaris selbst fragt das
+  Preset an, das gerade geladen ist, statt das des Halters zu verdrängen.
+- **Nur in „Erweitert" pausiert die sinngemäße Suche:** der Einbettungs-Server
+  passt nicht neben das größte Modell auf die Karte (gemessen, #1434), also
   findet die Suche in Notizen und Dokumenten solange nur Stichwörter. Das ist
-  Teil der Entscheidung, kein Ausfall — „Haushalt" bringt sie zurück.
+  Teil der Entscheidung, kein Ausfall — „Haushalt" und „Haushalt + Denken"
+  haben sie.
 - **Nachdenken kommt auf Zuruf, nicht auf Vorrat** (Operator 13.9.): auch in
   „Erweitert" antwortet Solaris normal. Erst wenn die Frage darum bittet —
   „denk mal nach", „überleg", „gründlich", „Schritt für Schritt", „rechne",

@@ -3211,8 +3211,8 @@ def build_app(
         except ValueError as e:
             return web.json_response({"ok": False, "reason": str(e)}, status=400)
         # The window under its name of today: a caller that still asks for
-        # `foundry` or `coding` is asking for `erweitert` (#1435), so a renewal
-        # under an old name must not read as somebody else's window.
+        # `thinking` or `coding` is asking for `erweitert` (#1435), so a
+        # renewal under an old name must not read as somebody else's window.
         window = model_lease.canonical(model)
         current = model_lease.state(solaris_db_path)
         if current["state"] != "none" and (

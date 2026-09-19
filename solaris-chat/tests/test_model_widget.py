@@ -131,9 +131,11 @@ def test_the_household_profile_is_a_lease_name_here_and_nowhere_else():
     # An old name a sentence in the chat may still use answers as the window
     # it now is, rather than as a dead end (#1435).
     assert model_widget.lease_profile("coding") == "erweitert"
+    # `foundry` is a window of its own again, so it answers as itself (#1435).
+    assert model_widget.lease_profile("foundry") == "foundry"
     with pytest.raises(ValueError, match="invalid_model"):
         model_widget.lease_profile("gemma")
-    # The contract itself still knows only the one real window.
+    # The contract itself knows only the real windows.
     assert "household" not in model_lease.MODELS
 
 
@@ -163,14 +165,21 @@ def test_every_row_is_one_complete_choice():
     rows = _rows({"state": "none", "model": "", "holder": ""})
     assert list(rows) == [
         "household",
+        "foundry:1h",
+        "foundry:4h",
+        "foundry:morgen",
         "erweitert:1h",
         "erweitert:4h",
         "erweitert:morgen",
     ]
-    # #1435: two rows, because there were only ever two states. The row says
-    # the one thing the choice decides — does the house keep the card.
+    # #1435: three rows, not the four of #1416 — `thinking` and `coding` set
+    # the same environment and are one row now. `foundry` stays because it is
+    # a different state of the house: the voice stack keeps the card.
     assert [r["title"] for r in rows.values()] == [
         "Haushalt (Normalzustand)",
+        "Haushalt + Denken · 1 h",
+        "Haushalt + Denken · 4 h",
+        "Haushalt + Denken · bis morgen 07:00",
         "Erweitert · 1 h",
         "Erweitert · 4 h",
         "Erweitert · bis morgen 07:00",
@@ -200,6 +209,8 @@ def test_a_row_says_its_state_in_german_and_carries_no_raw_time():
     # Nobody has picked a model for the open window yet, so the row cannot
     # promise a name — it says what it is instead (#1435).
     assert rows["erweitert:1h"]["detail"] == "größeres Modell"
+    # A window that does name its model keeps saying so.
+    assert rows["foundry:1h"]["detail"] == "Gemma 4 12B"
     for row in rows.values():
         assert "meta" not in row
         assert "expires_at" not in row
@@ -431,6 +442,9 @@ async def test_the_rows_endpoint_serves_the_tile(aiohttp_client, tmp_path):
     assert body["ok"] is True
     assert [row["id"] for row in body["models"]] == [
         "household",
+        "foundry:1h",
+        "foundry:4h",
+        "foundry:morgen",
         "erweitert:1h",
         "erweitert:4h",
         "erweitert:morgen",

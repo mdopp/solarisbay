@@ -43,7 +43,7 @@ _SELECTOR_VALUES = {FAST, LOW, HIGH}
 # path's list). Word-boundaried, case-insensitive, intentionally narrow — tune
 # by adding a phrase, not by widening into heuristics.
 #
-# Since #1416 this list has a second reader: in the `thinking` lease window it
+# Since #1416 this list has a second reader: in the `erweitert` lease window it
 # also decides whether the turn carries a reasoning trace at all. Same
 # question either way ("did the resident ask to be thought about"), so the
 # phrases the operator named on 2026-09-13 — überleg, gründlich, Schritt für

@@ -6995,7 +6995,7 @@
       function applyGpuLease(lease) {
         var box = document.getElementById("gpu-notice");
         if (!box) return;
-        if (!lease) { box.hidden = true; box.textContent = ""; return; }
+        if (!lease || lease.mode === "foundry") { box.hidden = true; box.textContent = ""; return; }
         var bis = "";
         if (lease.until) {
           var end = new Date(lease.until * 1000);
@@ -7006,10 +7006,11 @@
         var hint = document.createElement("div");
         hint.className = "ha-notice-hint";
         if (lease.answers) {
-          // #1435: one window for everything that is not the household, so one
-          // banner. It says who took the card, which model answers meanwhile
-          // and what is slower — a voice assistant that has gone slow must not
-          // look broken.
+          // #1435: one banner for the one window in which the house is not
+          // served first. It says who took the card, which model answers
+          // meanwhile and what is slower — a voice assistant that has gone
+          // slow must not look broken. `foundry` is handled above: it changes
+          // nothing the resident can notice, so it shows nothing.
           title.textContent =
             "🧠 Erweitert" + (bis ? " bis " + bis + " Uhr" : "") + ".";
           hint.textContent =

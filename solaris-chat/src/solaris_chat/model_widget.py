@@ -58,15 +58,18 @@ DEFAULT_UNTIL = "2h"
 # profile. Giving up is harmless: the release runs on the host either way.
 SWITCH_TRIES = 20
 
-# The lease as a resident sees it (#1435, operator 2026-09-19): two rows, named
-# for the one thing the choice decides — does the house keep the graphics card,
-# or is it free for something bigger. The four rows before this were four names
-# for two states: `foundry`, `thinking` and `coding` set exactly the same
-# environment and differed only in which models they allowed.
+# The lease as a resident sees it (#1435, operator 2026-09-19): three rows, not
+# the four of #1416. `thinking` and `coding` set exactly the same environment
+# and differed only in which models they allowed, so they are one row now and
+# whoever takes the card picks the model. The middle row stays because it is a
+# different state of the house, not a different model list: the voice stack
+# keeps the graphics card, so dictation and the batch transcriber stay fast.
 #
 # Haushalt first: the top line of a truncated tile still answers "what is
-# running right now".
-EXTENDED = model_lease.MODELS[0]
+# running right now", and the order runs from "the house is untouched" to "the
+# card is somebody else's".
+FOUNDRY = gpu_lease.FOUNDRY_MODE
+EXTENDED = gpu_lease.EXTENDED_MODE
 
 # What the Erweitert row says it runs while nothing is loaded for it yet. The
 # model is the holder's choice, so the row cannot promise a name in advance.
@@ -74,6 +77,7 @@ EXTENDED_MODEL = "größeres Modell"
 
 PROFILES = (
     (HOUSEHOLD, "Haushalt", "Gemma 4 e4b"),
+    (FOUNDRY, "Haushalt + Denken", "Gemma 4 12B"),
     (EXTENDED, "Erweitert", EXTENDED_MODEL),
 )
 
@@ -319,10 +323,11 @@ def rows(lease: dict, *, household_alias: str, now: float | None = None) -> list
                 state = "active"
             row_holder = holder if leased == profile else ""
             row_expires = expires_at if leased == profile else None
-            # Which model is running is the holder's choice in this window, so
+            # In `erweitert` which model is running is the holder's choice, so
             # the row reads it off the standing lease rather than naming one in
-            # advance (#1435).
+            # advance; a window that does name one keeps saying so (#1435).
             alias = str(lease.get("alias") or "") if leased == profile else ""
+            alias = alias or model_lease.ALIASES.get(profile, "")
             if alias:
                 model_name = gpu_lease.PRESET_LABELS.get(alias, alias)
         status = _status_text(

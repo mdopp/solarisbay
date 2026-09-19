@@ -140,13 +140,14 @@ def test_the_model_is_one_of_the_windows_the_box_knows():
             model_lease.parse_payload({"model": bad, "ttl_s": 900})
 
 
-def test_there_is_one_window_and_the_old_names_still_reach_it():
-    """#1435 collapses the three windows into `erweitert`. Nothing on
-    foundry-chronicle#321 breaks: the old names are accepted, the holder
-    default is unchanged, and each one still promises the preset it always
-    meant."""
-    assert model_lease.MODELS == ("erweitert",)
-    assert set(model_lease.MODEL_ALIASES) == {"foundry", "coding", "thinking"}
+def test_there_are_two_windows_and_the_retired_names_still_reach_one():
+    """#1435 collapses `thinking` and `coding` into `erweitert` and keeps
+    `foundry`, which sets a different environment. Nothing on
+    foundry-chronicle#321 breaks: `foundry` is still a window of its own, the
+    retired names are still accepted, the holder default is unchanged, and each
+    one still promises the preset it always meant."""
+    assert model_lease.MODELS == ("foundry", "erweitert")
+    assert set(model_lease.MODEL_ALIASES) == {"coding", "thinking"}
     for old in model_lease.MODEL_ALIASES:
         assert model_lease.parse_payload({"model": old, "ttl_s": 900}) == (
             old,
@@ -154,11 +155,13 @@ def test_there_is_one_window_and_the_old_names_still_reach_it():
             old,
         )
         assert model_lease.canonical(old) == "erweitert"
-    assert model_lease.parse_payload({"model": "erweitert", "ttl_s": 900}) == (
-        "erweitert",
-        900,
-        "erweitert",
-    )
+    for window in model_lease.MODELS:
+        assert model_lease.parse_payload({"model": window, "ttl_s": 900}) == (
+            window,
+            900,
+            window,
+        )
+        assert model_lease.canonical(window) == window
     assert model_lease.ALIASES == {
         "foundry": "gemma-4-12b",
         "coding": "qwen3.8-27b",
@@ -258,7 +261,7 @@ def test_a_lease_still_loading_is_preparing_and_still_answers_as_the_household(
     _hold(tmp_path, "foundry", ready=False)
     assert model_lease.state(_db(tmp_path)) == {
         "state": "preparing",
-        "model": "erweitert",
+        "model": "foundry",
         "alias": "gemma-4-e4b",
         "expires_at": None,
         "holder": "foundry",
@@ -349,7 +352,7 @@ def test_a_release_the_broker_has_not_run_yet_is_releasing(tmp_path):
     model_lease.write_request(db, "release", holder="foundry-chronicle")
     seen = model_lease.state(db)
     assert seen["state"] == "releasing"
-    assert seen["model"] == "erweitert"
+    assert seen["model"] == "foundry"
     assert seen["holder"] == "foundry-chronicle"
     # No deadline to plan against — the window ends when the broker says so.
     assert seen["expires_at"] is None
@@ -483,7 +486,7 @@ async def test_post_for_the_same_model_under_another_name_is_refused(
         "reason": "held",
         "holder": "foundry-chronicle",
         "expires_at": 777.0,
-        "mode": "erweitert",
+        "mode": "foundry",
         "allowed": ["gemma-4-12b"],
     }
     assert not model_lease.request_path(_db(tmp_path)).exists()
@@ -568,7 +571,7 @@ async def test_get_answers_what_is_loaded_right_now(aiohttp_client, tmp_path):
     body = await (await client.get("/api/model-lease")).json()
     assert body == {
         "state": "ready",
-        "model": "erweitert",
+        "model": "foundry",
         "alias": "gemma-4-12b",
         "expires_at": 99.0,
         "holder": "foundry-chronicle",

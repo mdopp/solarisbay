@@ -309,25 +309,31 @@ every preset, so a named mode sets two things and nothing else:
 2. **the mode policy** — the presets a client may ask for, written into the
    lease file as `allowed`.
 
-**Two modes since #1435**, not four. What separated `foundry`, `thinking` and
-`coding` was only the set of presets they allowed — the environment was the
-same in all three, which is a distinction without a difference. The question a
-mode has to answer is whether the card may serve something other than the
-household; *which* model that then is, the client decides with the `model`
-field, and the router loads it on demand.
+**Three modes since #1435**, not four. What separated `thinking` from `coding`
+was only the set of presets they allowed — the environment was the same in both
+— so they are one window now, and *which* model it runs the client decides with
+the `model` field. `foundry` is **not** one of them: it is the only mode that
+leaves the voice stack on the GPU, because foundry-chronicle transcribes with
+`solaris-whisper-batch` on the card during its own session
+(mdopp/foundry-chronicle#294, #1325).
 
 | Mode | Environment | Allowed presets | Solaris answers from |
 |---|---|---|---|
 | `haushalt` (no lease) | voice GPU, batch jobs on, embeddings up | `gemma-4-e4b` | e4b |
+| `--model foundry` | voice GPU, batch jobs on, embeddings up | `gemma-4-e4b`, `gemma-4-12b` | the 12B |
 | `--model erweitert` | voice **CPU**, batch jobs **off**, embeddings **down** | **every** preset the router knows | the preset that is loaded |
 | no `--model` | everything stopped | none | nothing — the fixed sentence |
 
-`foundry`, `thinking` and `coding` are still accepted as **aliases** of
-`erweitert` (contract mdopp/foundry-chronicle#321), and decide only which
-preset the holder is told it will be answered by. A lease file left on disk
-under one of the old names migrates to `erweitert` when it is read. The preset
-*definitions* are untouched — they describe weights, window and drafter and are
-what `presets.ini` is rendered from.
+`erweitert` is the one window that cannot keep the embeddings server: it allows
+the MoE, and #1434 measured the MoE plus its MTP drafter at 15 618 MiB of
+16 380 with `llama-embed`'s 432 MiB already resident — the MoE answered `500
+model failed to load`. `foundry` allows no MoE and keeps it.
+
+`thinking` and `coding` are still accepted as **aliases** of `erweitert`, and
+decide only which preset the holder is told it will be answered by. A lease
+file left on disk under one of them migrates to `erweitert` when it is read.
+The preset *definitions* are untouched — they describe weights, window and
+drafter and are what `presets.ini` is rendered from.
 
 A request for a preset the current mode does not allow is refused with the
 mode's name rather than served: the household model is never evicted by a
@@ -343,6 +349,7 @@ post-deploy installs `${DATA_DIR}/solarisbay/gpu-lease.py` for that:
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire someone
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire coder --model erweitert --duration 4h
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire foundry --model foundry --duration 5h
+python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire reader --model thinking --duration 2h
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py release
 ```
 

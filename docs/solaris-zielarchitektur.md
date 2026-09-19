@@ -460,25 +460,30 @@ verdrängt. Die GPU-Lease tauscht darum **keinen Server mehr aus**
 und schreibt `allowed` — die Presets, die im Modus erlaubt sind. Ohne `--model`
 bleibt die Lease exklusiv: alles wird gestoppt, nichts antwortet.
 
-**Zwei Modi, nicht vier** (#1435, Operator 19.9.2026). Was `foundry`, `thinking`
-und `coding` unterschied, war ausschließlich die erlaubte Preset-Menge — die
-Umgebung war bei allen dreien dieselbe. Drei Modi für einen Umgebungszustand
-sind eine Unterscheidung ohne Unterschied, also beantwortet die Politik nur noch
-die Frage, die sie beantworten muss: **darf die Karte gerade etwas anderes
-bedienen als den Haushalt.** Welches Modell das dann ist, entscheidet, wer es
-benutzt.
+**Drei Modi, nicht vier** (#1435, Operator 19.9.2026). Was `thinking` und
+`coding` unterschied, war ausschließlich die erlaubte Preset-Menge — die
+Umgebung war bei beiden dieselbe. Zwei Modi für einen Umgebungszustand sind
+eine Unterscheidung ohne Unterschied, also werden sie zu **einem** Fenster,
+`erweitert`; welches Modell darin läuft, entscheidet, wer es benutzt.
+`foundry` bleibt ein eigener Modus: es ist der einzige, der den Sprachstack auf
+der GPU lässt, weil foundry-chronicle **während** seiner Sitzung mit
+`solaris-whisper-batch` auf der Karte transkribiert (foundry-chronicle#294,
+#1325). Es mit hineinzufalten hätte diese Transkription still auf die CPU
+verschoben.
 
 | Modus (Lease) | Preset, aus dem Solaris antwortet | erlaubte Presets | Sprachstack / Embeddings | Solaris-Chat |
 | :--- | :--- | :--- | :--- | :--- |
 | `haushalt` (keine Lease) | gemma-4 e4b + MTP + mmproj, 32k f16 | `gemma-4-e4b` | GPU / an | normal |
+| `foundry` | gemma-4 12b + MTP, 131k q8-KV | `gemma-4-e4b`, `gemma-4-12b` | GPU / an | antwortet weiter, vom 12b, kein Banner |
 | `erweitert` | das gerade geladene Preset | **alle**, die der Router kennt | CPU / **aus** | antwortet weiter, denkt auf Zuruf |
 | exklusiv (ohne `--model`) | — | — | gestoppt | stumm, ehrlicher Hinweis + Banner |
 
 Die Preset-*Definitionen* bleiben unverändert — sie beschreiben Gewichte,
 Kontextlänge und Drafter und werden weiter in `presets.ini` gebraucht. Und
-`foundry`, `thinking` und `coding` bleiben als **Aliase** von `erweitert` auf
-der Lease-API gültig (Vertrag foundry-chronicle#321), sie bestimmen nur noch,
-welches Preset dem Halter als Antwortmodell genannt wird.
+`thinking` und `coding` bleiben als **Aliase** von `erweitert` auf der
+Lease-API gültig, sie bestimmen nur noch, welches Preset dem Halter als
+Antwortmodell genannt wird; `foundry` ist ein Modus und bleibt es (Vertrag
+foundry-chronicle#321).
 
 Der 26B-Plan ist gestrichen (#1325: passt nicht neben den Sprachstack).
 
@@ -490,12 +495,14 @@ Sonst kostete „mach das Licht aus" im Denkfenster sechs von sieben Token für
 einen Text, den niemand sieht.
 
 **Der Embedding-Server pausiert in „Erweitert"** (Operator 19.9., gemessen in
-#1434). MoE und `llama-embed` passen zusammen nicht auf die Karte: 15 620 von
-16 380 MiB lassen 760 übrig, und der Compute-Buffer des Drafters lief um 168 MiB
-über. Die semantische Vault-Suche fällt für das Fenster auf Stichwortsuche
-zurück — mit zwei Modi ist das Teil der Entscheidung statt ein gebrochenes
-Versprechen. Zusätzlich stoppen `solaris-whisper-batch` und
-`solaris-wakeword-trainer`; der Sprachstack wechselt auf die CPU.
+#1434). MoE und `llama-embed` passen zusammen nicht auf die Karte: 15 618 von
+16 380 MiB lassen 762 übrig, der Compute-Buffer des Drafters lief um 168 MiB
+über, und die MoE antwortete `500 model failed to load`, während `llama-embed`
+lief. „Erweitert" erlaubt die MoE, also kann es den Embedding-Server nicht
+halten: die semantische Vault-Suche fällt für das Fenster auf Stichwortsuche
+zurück — Teil der Entscheidung statt ein gebrochenes Versprechen. Zusätzlich
+stoppen `solaris-whisper-batch` und `solaris-wakeword-trainer`; der Sprachstack
+wechselt auf die CPU. In „foundry" bleibt alles davon, wie es ist.
 
 **Denken ist kein Preset, sondern ein Schalter je Anfrage.** `--reasoning off` gibt es
 nicht mehr: ein Router serviert vier Modelle, ein serverweiter Schalter würde für alle

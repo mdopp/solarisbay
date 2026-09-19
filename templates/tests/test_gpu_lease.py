@@ -342,46 +342,68 @@ def test_the_lease_carries_the_presets_its_mode_allows(
     assert lease["model"] == ""
 
 
-def test_there_are_exactly_two_modes_and_this_is_what_they_allow(pd):
+def test_there_are_exactly_three_modes_and_this_is_what_they_allow(pd):
     """#1435, operator 2026-09-19. `haushalt` is the absence of a lease and
-    allows the household preset; `erweitert` is the only window and allows
-    everything. Three modes for one environment were a distinction without a
-    difference."""
-    assert set(pd.LEASE_PROFILES) == {"erweitert"}
+    allows the household preset; `erweitert` is the open window and allows
+    everything; `foundry` keeps its own two because it keeps its own
+    environment. `thinking` and `coding` differed from each other only in the
+    preset set, which was a distinction without a difference."""
+    assert set(pd.LEASE_PROFILES) == {"foundry", "erweitert"}
     assert pd.HOUSEHOLD_MODE == "haushalt" and pd.EXTENDED_MODE == "erweitert"
     presets = set(pd.preset_profiles())
     assert set(pd.allowed_presets("erweitert")) == presets
+    assert pd.allowed_presets("foundry") == ("gemma-4-e4b", "gemma-4-12b")
     assert pd.allowed_presets("haushalt") == ("gemma-4-e4b",)
     assert set(pd.allowed_presets("haushalt")) <= presets
 
 
-def test_the_old_mode_names_still_reach_the_one_mode(pd):
-    """foundry-chronicle#321 and pi-web send `foundry`/`thinking`/`coding`;
-    they are the names this window used to have, not modes of their own."""
-    assert set(pd.LEASE_MODE_ALIASES) == {"foundry", "thinking", "coding"}
+def test_foundry_keeps_the_environment_the_chronicle_transcribes_in(pd):
+    """The premise behind collapsing all three was that they shared one
+    environment. They did not: foundry-chronicle transcribes with
+    `solaris-whisper-batch` ON THE GPU during its own session
+    (foundry-chronicle#294, #1325), so `foundry` stops neither the batch GPU
+    units nor the embeddings server and leaves the voice stack on the card.
+    Folding it into `erweitert` would have moved that transcription to the CPU
+    without anyone deciding to."""
+    foundry = pd.LEASE_PROFILES["foundry"]
+    assert foundry["voice"] == "gpu"
+    assert foundry["stop_gpu_units"] is False
+    assert foundry["stop_embed"] is False
+    extended = pd.LEASE_PROFILES["erweitert"]
+    assert extended["voice"] == "cpu"
+    assert extended["stop_gpu_units"] is True
+    assert extended["stop_embed"] is True
+
+
+def test_the_retired_mode_names_still_reach_the_open_window(pd):
+    """pi-web sends `coding` and the reading jobs send `thinking`; they are
+    names `erweitert` used to have, not modes of their own. `foundry` is not
+    one of them — it is a mode and maps to itself."""
+    assert set(pd.LEASE_MODE_ALIASES) == {"thinking", "coding"}
     for old in pd.LEASE_MODE_ALIASES:
         assert pd.canonical_mode(old) == "erweitert"
     assert pd.canonical_mode("erweitert") == "erweitert"
+    assert pd.canonical_mode("foundry") == "foundry"
     assert pd.canonical_mode("") == ""
 
 
-def test_an_old_name_is_answered_by_the_preset_it_always_meant(
+def test_a_named_window_is_answered_by_the_preset_it_always_meant(
     pd, tmp_path, swap_box, systemctl_calls
 ):
     """The alias is what a caller puts in the `model` field of its own `/v1`
-    request (#1333), so `foundry` has to keep meaning the 12B even though the
-    mode it takes is the same one `coding` takes."""
-    for name, alias, label in (
-        ("foundry", "gemma-4-12b", "Gemma 4 12B"),
-        ("thinking", "qwen3.6-35b-a3b", "Qwen 3.6 35B-A3B"),
-        ("coding", "qwen3.8-27b", "Qwen 3.8 27B"),
+    request (#1333), so every name a caller may still send has to keep meaning
+    the model it always meant."""
+    for name, mode, alias, label in (
+        ("foundry", "foundry", "gemma-4-12b", "Gemma 4 12B"),
+        ("thinking", "erweitert", "qwen3.6-35b-a3b", "Qwen 3.6 35B-A3B"),
+        ("coding", "erweitert", "qwen3.8-27b", "Qwen 3.8 27B"),
     ):
         assert pd.lease_acquire(str(tmp_path), name, "11434", name, 3600) == 0
         lease = pd.read_lease(str(tmp_path))
-        assert lease["mode"] == "erweitert"
+        assert lease["mode"] == mode
         assert lease["alias"] == alias
         assert lease["model"] == label
-        assert lease["allowed"] == list(pd.preset_profiles())
+        assert lease["allowed"] == list(pd.allowed_presets(mode))
         pathlib.Path(pd.lease_file(str(tmp_path))).unlink()
 
 
@@ -621,7 +643,7 @@ def test_both_templates_agree_on_the_voice_env_contract(pd):
     assert solaris_pd.GPU_LEASE_FILE == pd.LEASE_FILE
 
 
-# ── #1325 → #1435: what used to be the foundry lease ───────────────────────
+# ── #1325: the foundry lease, still its own mode ───────────────────────────
 
 
 def test_the_foundry_preset_names_the_weights_it_measured_on(pd):
@@ -633,16 +655,17 @@ def test_the_foundry_preset_names_the_weights_it_measured_on(pd):
     assert "parallel" not in preset and "mmproj" not in preset
 
 
-def test_an_old_name_takes_the_same_environment_as_the_mode_itself(
+def test_the_foundry_window_leaves_the_voice_stack_on_the_card(
     pd, tmp_path, swap_box, systemctl_calls
 ):
-    """#1435: `foundry` used to leave the voice stack on the GPU. It is now a
-    name for `erweitert`, so it moves the same units — the alias decides the
-    model it is answered by, never the environment."""
+    """#1325 / foundry-chronicle#294: the chronicle transcribes with
+    `solaris-whisper-batch` on the GPU DURING its own session, so this is the
+    one window that stops nothing and moves nothing to the CPU. #1435 nearly
+    folded it into `erweitert`, which would have moved that transcription to
+    the CPU without anyone deciding to."""
     assert pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600) == 0
-    assert ("stop", pd.LEASE_GPU_UNITS) in systemctl_calls
-    assert ("stop", (pd.EMBED_UNIT,)) in systemctl_calls
-    assert ("restart", pd.LEASE_VOICE_UNITS) in systemctl_calls
+    assert systemctl_calls == []
+    assert not (tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE).exists()
     assert not swap_box.exists()
 
 
@@ -690,7 +713,7 @@ def test_a_release_of_a_window_taken_under_an_old_name_restores_everything(
         "warm_preset",
         lambda url, preset, deadline_sec: bool(warmed.append(preset)) or True,
     )
-    pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600)
+    pd.lease_acquire(str(tmp_path), "pi-web", "11434", "coding", 3600)
     systemctl_calls.clear()
     assert pd.lease_release(str(tmp_path), "11434") == 0
     assert warmed == ["gemma-4-e4b"]
@@ -704,7 +727,7 @@ def test_a_release_of_a_window_taken_under_an_old_name_restores_everything(
 def test_a_window_taken_under_an_old_name_expires_back_to_the_household(
     pd, tmp_path, swap_box, systemctl_calls, no_box
 ):
-    assert pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 3600) == 0
+    assert pd.lease_acquire(str(tmp_path), "pi-web", "11434", "coding", 3600) == 0
     armed = [c for c in no_box if c and c[0] == "systemd-run"]
     assert armed and "--on-active=2400" in armed[0] and armed[0][-1] == "release"
 
@@ -796,8 +819,7 @@ def test_the_broker_acquires_what_the_engine_asked_for(
     )
     assert pd.broker_run(str(tmp_path), "11434") == 0
     lease = pd.read_lease(str(tmp_path))
-    # Asked for under its old name, filed under the one mode there is (#1435).
-    assert lease["mode"] == "erweitert" and lease["holder"] == "foundry"
+    assert lease["mode"] == "foundry" and lease["holder"] == "foundry"
     status = json.loads(pathlib.Path(pd.status_file(str(tmp_path))).read_text())
     # The requested_at goes back unchanged — that is how the HTTP side knows
     # this request has been dealt with and is not still "preparing".

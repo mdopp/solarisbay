@@ -259,7 +259,7 @@ def test_a_foundry_lease_still_loading_mutes(tmp_path):
 
 def test_the_foundry_state_names_the_model_without_claiming_silence(tmp_path):
     assert gpu_lease.state(_foundry(tmp_path)) == {
-        "mode": "erweitert",
+        "mode": "foundry",
         # Named from the preset that is loaded, the way a resident reads it.
         "model": "Gemma 4 12B",
         "holder": "foundry",
@@ -279,9 +279,19 @@ async def test_whoami_names_the_window_under_its_name_of_today(
 
     lease = (await (await client.get("/api/whoami")).json())["gpu_lease"]
 
-    assert lease["mode"] == "erweitert"
+    assert lease["mode"] == "foundry"
     assert lease["holder"] == "foundry"
     assert lease["answers"] is True
+
+
+def test_a_foundry_lease_shows_the_resident_no_banner():
+    """Operator decision of 2026-09-05, still standing after #1435: nothing
+    about the house changes except that answers take about a second longer, so
+    a notice would only worry someone about something they cannot act on. The
+    `erweitert` banner would also be wrong here — it promises keyword-only
+    search, and foundry keeps the embeddings server."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'if (!lease || lease.mode === "foundry") { box.hidden = true;' in html
 
 
 def test_the_banner_names_the_holder_and_what_is_slower():
@@ -316,17 +326,23 @@ def _mode(tmp_path, mode, *, allowed=None, alias="", ready=True):
     return path
 
 
-def test_there_is_one_answering_mode_and_the_old_names_reach_it(tmp_path):
-    """#1435: one window, three retired names for it. A lease file under any of
-    them must read as the window it is, not as "no lease" — the Engine would
-    otherwise answer a turn from a preset the box is not serving."""
-    assert gpu_lease.ANSWERING_MODES == ("erweitert",)
-    assert set(gpu_lease.MODE_ALIASES) == {"foundry", "thinking", "coding"}
-    for name in ("erweitert", "foundry", "thinking", "coding"):
-        assert gpu_lease.mode(_mode(tmp_path, name)) == "erweitert", name
+def test_two_answering_modes_and_the_retired_names_reach_the_open_one(tmp_path):
+    """#1435: two windows, and two retired names for `erweitert`. A lease file
+    under any of them must read as the window it is, not as "no lease" — the
+    Engine would otherwise answer a turn from a preset the box is not serving.
+    `foundry` is a window of its own: it keeps the voice stack on the GPU."""
+    assert gpu_lease.ANSWERING_MODES == ("foundry", "erweitert")
+    assert set(gpu_lease.MODE_ALIASES) == {"thinking", "coding"}
+    for name, window in (
+        ("erweitert", "erweitert"),
+        ("foundry", "foundry"),
+        ("thinking", "erweitert"),
+        ("coding", "erweitert"),
+    ):
+        assert gpu_lease.mode(_mode(tmp_path, name)) == window, name
         assert gpu_lease.mutes_chat(_mode(tmp_path, name)) is False
         assert gpu_lease.mutes_chat(_mode(tmp_path, name, ready=False)) is True
-        assert gpu_lease.state(_mode(tmp_path, name))["mode"] == "erweitert"
+        assert gpu_lease.state(_mode(tmp_path, name))["mode"] == window
 
 
 def test_the_preset_on_the_wire_is_the_one_that_is_loaded(tmp_path):

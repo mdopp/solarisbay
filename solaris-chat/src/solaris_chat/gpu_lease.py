@@ -14,10 +14,15 @@ loaded", and reading it costs a stat instead of a request to a server that is
 not running.
 
 Since #1319 a lease also has a **mode** and a **deadline**, and since #1435
-there are two of them:
+there are three of them:
 
 * `exclusive` — the shape above: nothing answers, so a turn gets one honest
   German sentence instead of a timeout against a dead socket.
+* `foundry` (#1325) — llama-server answers the house from Gemma 4 12B instead
+  of the household e4b. The voice stack keeps the GPU and nothing about the
+  house changes except that answers take about a second longer, so the operator
+  ruled there is no banner either: this one is named in `/api/whoami` for the
+  log and shows the resident nothing.
 * `erweitert` — the card is free for a bigger model. llama-server keeps
   serving, so Solaris answers the household from whatever preset is loaded and
   the chat carries a banner naming it. Only the swap itself mutes
@@ -25,9 +30,10 @@ there are two of them:
   embeddings server is down, so the vault's semantic search pauses.
 * no lease at all — `haushalt`: the card is the house's, e4b answers.
 
-`foundry`, `thinking` and `coding` were the three names this one mode used to
-have (#1325/#1416); they are read as `erweitert`, so a lease file written
-before the upgrade is understood rather than mistaken for no lease at all.
+`thinking` and `coding` (#1416/#1319) were two more names for what `erweitert`
+does; they are read as `erweitert`, so a lease file written before the upgrade
+is understood rather than mistaken for no lease at all. `foundry` is not one of
+them — it sets a different environment and stayed a mode of its own.
 
 Since #1416 llama-server runs as a **router**: one process holds all presets
 and the client picks with the `model` field of its request, so a mode no longer
@@ -51,24 +57,25 @@ from pathlib import Path
 
 LEASE_FILENAME = "gpu_lease.json"
 
-# The two modes (#1435). `haushalt` is the absence of a lease, so the only mode
-# a lease file ever names is this one — and it is one in which llama-server is
-# still serving something, so the turn goes to the model instead of to the
-# fixed sentence.
+# The lease modes in which llama-server is still serving something, so the turn
+# goes to the model instead of to the fixed sentence. `haushalt` is the absence
+# of a lease and is never written to a lease file.
+FOUNDRY_MODE = "foundry"
 EXTENDED_MODE = "erweitert"
-ANSWERING_MODES = (EXTENDED_MODE,)
+ANSWERING_MODES = (FOUNDRY_MODE, EXTENDED_MODE)
 
-# The names this mode had before #1435. A lease file on the box outlives the
-# deploy that collapsed them, so they are read rather than refused.
+# The names `erweitert` had before #1435. A lease file on the box outlives the
+# deploy that collapsed them, so they are read rather than refused. `foundry`
+# is deliberately absent: it keeps the voice stack on the GPU and is its own
+# mode.
 MODE_ALIASES = {
-    "foundry": EXTENDED_MODE,
     "thinking": EXTENDED_MODE,
     "coding": EXTENDED_MODE,
 }
 
-# What the router is asked for when no lease stands, and the preset each of the
-# old names has always meant — still promised to a caller that sends one, which
-# is how foundry-chronicle#321 keeps working unchanged. The box writes the same
+# What the router is asked for when no lease stands, and the preset each named
+# mode or retired name has always meant — still promised to a caller that sends
+# one, which is how foundry-chronicle#321 keeps working. The box writes the same
 # strings in `templates/llama/post-deploy.py`; a standing lease's own `alias`
 # wins over this table, so an operator who deployed other weights, or a client
 # that picked its own preset, is asked for that one.
@@ -168,9 +175,10 @@ def state(path: str | Path) -> dict | None:
         # The model that is actually loaded, said the way a resident reads it:
         # the preset the door last served, else what the window was taken for.
         "model": PRESET_LABELS.get(alias) or str(lease.get("model") or ""),
-        # Who took the window (#1435): with one mode for everything that is not
-        # the household, the banner has to be able to say that somebody else is
-        # using the card and who — otherwise a slow voice assistant looks broken.
+        # Who took the window (#1435): `erweitert` is the state in which the
+        # house is not served first, so the banner has to be able to say that
+        # somebody else has the card and who — otherwise a voice assistant that
+        # has gone slow looks broken.
         "holder": str(lease.get("holder") or ""),
         # The `--alias` llama-server answers with while this lease stands
         # (#1333) — the same string `/api/model-lease` and the `model` field of
@@ -200,20 +208,21 @@ def preset(path: str | Path) -> str:
     which preset it is serving in the lease's `alias` (#1435). Following that
     is what keeps Solaris from asking for e4b every turn and evicting the very
     model the holder is working with. Until anything has been asked for, the
-    household preset is the sane default.
+    preset the mode name means — else the household one — is the sane default.
     """
     if not mode(path):
         return HOUSEHOLD_PRESET
     alias = record(path).get("alias")
     if isinstance(alias, str) and alias.strip():
         return alias.strip()
-    return HOUSEHOLD_PRESET
+    legacy = MODE_PRESETS.get(str(record(path).get("mode") or ""))
+    return legacy or HOUSEHOLD_PRESET
 
 
 def allowed(path: str | Path) -> list[str]:
     """The presets a client may ask the router for while this lease stands.
 
-    Written by the box as `allowed`; the preset the old mode name meant is the
+    Written by the box as `allowed`; the preset the mode name means is the
     fallback for a lease file from before #1416, so an upgrade in flight never
     reads as "nothing is allowed".
     """
@@ -229,8 +238,9 @@ def allowed(path: str | Path) -> list[str]:
 
 
 def thinks(path: str | Path) -> bool:
-    """True while `erweitert` stands — the window in which a model that can
-    reason may be loaded, so a resident who asks for deliberation in words gets
-    it. `enable_thinking` stays a per-request switch either way (#1416/#1435).
+    """True while `erweitert` stands — the only window in which a model that
+    can reason may be loaded, so a resident who asks for deliberation in words
+    gets it. `foundry` allows the 12B and the e4b and neither reasons, so it is
+    not one. `enable_thinking` stays a per-request switch (#1416/#1435).
     """
     return mode(path) == EXTENDED_MODE
