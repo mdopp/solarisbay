@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.70.0](https://github.com/mdopp/solarisbay/compare/v0.69.1...v0.70.0) (2026-09-19)
+
+
+### Features
+
+* **pi-web:** ask for a mode through a request file so the pod needs no loopback access ([8bf04d4](https://github.com/mdopp/solarisbay/commit/8bf04d46659c97f6bbd43cfea5ed3098967be963))
+* **pi-web:** let pi refresh the model list itself so it cannot go stale ([7140258](https://github.com/mdopp/solarisbay/commit/7140258585b533cd047fe8a5a5c44681237ab082)), closes [#1435](https://github.com/mdopp/solarisbay/issues/1435)
+
+
+### Bug Fixes
+
+* **pi-web:** finish the stream the gate writes itself so the session sees it ([8873511](https://github.com/mdopp/solarisbay/commit/88735118301a371af5cbe0fcc1a0803e503b0277))
+* **template:** keep foundry as its own mode so the chronicle keeps the GPU for speech ([41f2f69](https://github.com/mdopp/solarisbay/commit/41f2f69536c496cefc8bbac56db31379d4242243))
+* **template:** let a holder move its own window instead of refusing itself ([87a267d](https://github.com/mdopp/solarisbay/commit/87a267dcf8bb30195eaa61c622fa18ff38a267fb))
+
 ## [0.69.1](https://github.com/mdopp/solarisbay/compare/v0.69.0...v0.69.1) (2026-09-13)
 
 
