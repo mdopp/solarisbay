@@ -26,6 +26,14 @@ which does not; `gemma-4-e4b` needs no mode at all — waits for the broker's
 answer and says so in the session while it waits, then forwards the request that
 was refused.
 
+The one request it does not forward verbatim is `GET /v1/models`: it answers
+that from the router's own list, enriched with the `PRESETS` table below, so the
+Pi extension `solaris-llama.js` can fetch a catalog that already carries the
+German names, the windows and the thinking switch. Pi's own hourly background
+refresh then keeps the model picker current with no script, no timer and no
+recurring restart — and because a fetched entry REPLACES a hand-written one of
+the same id, that enrichment is what keeps the names from being lost.
+
 Three rules it does not get to bend:
 
   **It never steals.** A window somebody else holds comes back as 409 naming the
@@ -98,18 +106,78 @@ HOP_HEADERS = frozenset(
     }
 )
 
-# Which mode each router preset needs — the least intrusive one that permits it.
-# The three modes are `templates/llama/post-deploy.py`'s `LEASE_PROFILES` plus
-# the absence of a lease; `foundry` is listed for the 12B rather than
-# `erweitert` because it keeps the voice stack and the embeddings server on the
-# GPU, so a 12B session costs the household nothing it can notice. An empty
-# string means no window is needed at all.
-MODEL_MODES = {
-    "gemma-4-e4b": "",
-    "gemma-4-12b": "foundry",
-    "qwen3.6-35b-a3b": "erweitert",
-    "qwen3.8-27b": "erweitert",
+# Everything this pod knows about a router preset, in ONE table (#1435).
+#
+# `mode` is the least intrusive window that permits the preset — the three modes
+# are `templates/llama/post-deploy.py`'s `LEASE_PROFILES` plus the absence of a
+# lease. `foundry` is listed for the 12B rather than `erweitert` because it keeps
+# the voice stack and the embeddings server on the GPU, so a 12B session costs
+# the household nothing it can notice. An empty string means no window at all.
+#
+# The rest is what Pi shows and sends: the German display name, the window the
+# preset is actually served with, and its thinking switch. It lives here because
+# `/v1/models` below answers from it, and a catalog Pi FETCHES replaces the
+# entries a person wrote by hand (`@earendil-works/pi-ai/dist/models.js`,
+# `createProvider`: same id, fetched wins). Before #1435 those names sat in
+# `models.json` on the data volume, written once per deploy — which is how
+# `gemma-4-12b` stayed missing from the picker for six days after #1431 started
+# serving it. One table, shipped with this image, is the fix.
+PRESETS = {
+    "gemma-4-e4b": {
+        "mode": "",
+        "name": "Gemma 4 E4B (Haushaltsmodell)",
+        "reasoning": False,
+        "input": ["text", "image"],
+        "contextWindow": 32768,
+        "maxTokens": 16384,
+    },
+    "gemma-4-12b": {
+        "mode": "foundry",
+        "name": "Gemma 4 12B (Haushalt + Denken)",
+        "reasoning": False,
+        "input": ["text"],
+        "contextWindow": 131072,
+        "maxTokens": 16384,
+    },
+    "qwen3.6-35b-a3b": {
+        "mode": "erweitert",
+        "name": "Qwen 3.6 35B-A3B (Denken)",
+        "reasoning": True,
+        "input": ["text"],
+        "contextWindow": 131072,
+        "maxTokens": 16384,
+        "chatTemplateKwargs": {"enable_thinking": True},
+    },
+    "qwen3.8-27b": {
+        "mode": "erweitert",
+        "name": "Qwen 3.8 27B (Programmieren)",
+        "reasoning": True,
+        "input": ["text"],
+        "contextWindow": 81920,
+        "maxTokens": 16384,
+        "chatTemplateKwargs": {"enable_thinking": False},
+    },
 }
+
+# What every model of this provider needs Pi to know about the server, as
+# opposed to about the model: llama-server takes neither the `developer` role
+# nor `reasoning_effort` — asking for either turns the request into a 400 — and
+# `chat-template` is the thinking dialect llama.cpp speaks
+# (`chat_template_kwargs.enable_thinking`).
+MODEL_COMPAT = {
+    "supportsDeveloperRole": False,
+    "supportsReasoningEffort": False,
+    "thinkingFormat": "chat-template",
+}
+
+# What a preset this table does not know is offered as. It is served by the
+# router, so hiding it would be the very staleness this unit removes; it simply
+# gets its own id as a name and a window small enough to be safe until somebody
+# gives it a row above.
+UNKNOWN_CONTEXT = 32768
+UNKNOWN_MAX_TOKENS = 16384
+
+MODELS_PATHS = ("/v1/models", "/models")
 
 MODE_LABELS = {
     "foundry": "Foundry",
@@ -140,7 +208,54 @@ def mode_for_model(model: str) -> str:
     the refusal it earned already says so — taking a window for it would switch
     the household's environment for a name nothing serves.
     """
-    return MODEL_MODES.get(str(model or "").strip(), "")
+    return str(PRESETS.get(str(model or "").strip(), {}).get("mode") or "")
+
+
+def pi_model(preset: str) -> dict:
+    """What Pi needs to show and call `preset` with.
+
+    A preset with no row in `PRESETS` is still served by the router, so it is
+    described rather than hidden: its own id as the name and a small window.
+    Hiding it would be exactly the staleness this unit removes.
+    """
+    row = PRESETS.get(preset, {})
+    model = {
+        "name": str(row.get("name") or preset),
+        "reasoning": bool(row.get("reasoning")),
+        "input": list(row.get("input") or ["text"]),
+        "contextWindow": int(row.get("contextWindow") or UNKNOWN_CONTEXT),
+        "maxTokens": int(row.get("maxTokens") or UNKNOWN_MAX_TOKENS),
+        "compat": dict(MODEL_COMPAT),
+    }
+    kwargs = row.get("chatTemplateKwargs")
+    if kwargs:
+        model["compat"]["chatTemplateKwargs"] = dict(kwargs)
+    return model
+
+
+def enrich_catalog(body: bytes) -> bytes:
+    """The router's `/v1/models` with a `pi` block added to every entry.
+
+    The LIST is the router's, never this table's — so a preset the router has
+    stopped serving disappears from Pi's picker instead of lingering until a
+    call fails (#1435, the fourth of the operator's conditions). The table only
+    ever describes what is there; it cannot add to it.
+
+    Every field the policy proxy sent survives, `allowed_in_mode` and `status`
+    included, so a client that reads only `id` is unaffected.
+    """
+    try:
+        listing = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return body
+    if not isinstance(listing, dict) or not isinstance(listing.get("data"), list):
+        return body
+    listing["data"] = [
+        {**entry, "pi": pi_model(entry["id"])}
+        for entry in listing["data"]
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+    ]
+    return json.dumps(listing).encode("utf-8")
 
 
 def mode_label(mode: str) -> str:
@@ -387,6 +502,9 @@ def make_gate_server(
             """A refusal gets a jlog line; a token stream does not get a log."""
 
         def do_GET(self) -> None:
+            if self.path.split("?")[0] in MODELS_PATHS:
+                self._catalogue()
+                return
             self._relay(self._upstream_call("GET", b""))
 
         def do_DELETE(self) -> None:
@@ -471,6 +589,24 @@ def make_gate_server(
                 self._end_stream()
                 return
             self._answer(status, json.dumps(payload).encode("utf-8"))
+
+        def _catalogue(self) -> None:
+            """`/v1/models`, enriched — the one answer that is not forwarded.
+
+            An upstream that is unreachable or unhappy is passed on as it is
+            rather than answered from the table: a catalog invented here would
+            put a preset back into Pi's picker that the router no longer serves,
+            which is the failure this endpoint exists to prevent.
+            """
+            conn, response = self._upstream_call("GET", b"")
+            if response is None:
+                self._answer(502, self._unreachable())
+                return
+            try:
+                status, body = response.status, response.read()
+            finally:
+                conn.close()
+            self._answer(status, enrich_catalog(body) if status == 200 else body)
 
         # -- transport ----------------------------------------------------
 

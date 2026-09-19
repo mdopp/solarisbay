@@ -14,7 +14,7 @@ Authelia and wires it to the box's own model server.
 | Containers | `sessiond` (owns the sessions, terminals and the model runtime), `web` (HTTP/WebSocket), `model-gate` (the door to the model, #1435), `autoloop` (works labelled tickets) |
 | Network | isolated netns, `hostPort` 8504 |
 | Route | `pi.<publicDomain>`, internal exposure, Authelia forward-auth `one_factor` |
-| Model | llama-server on this box, via the Pi agent's `models.json` |
+| Model | llama-server on this box, via the `model-gate` container; the list is the Pi extension `solaris-llama` (#1435) |
 | Volumes | `{{DATA_DIR}}/pi-web/data` → `/data`, `{{DATA_DIR}}/pi-web/workspace` → `/workspace`, ServiceBays Agenten-Paket → `/opt/servicebay` (nur lesend) |
 
 ### Why the image is ours
@@ -55,9 +55,15 @@ it would meet a login page.
 ## How the model is configured
 
 PI WEB has no LLM settings of its own — the model runtime belongs to the Pi
-Coding Agent, and a self-hosted OpenAI-compatible endpoint is declared in the
-agent directory's `models.json`. The post-deploy writes that file into
-`{{DATA_DIR}}/pi-web/data/pi-agent/models.json`:
+Coding Agent. Two halves configure it, and since #1435 they are deliberately
+different halves: **the connection** comes from a file, **the model list** comes
+from a Pi extension that fetches it.
+
+### The connection: `models.json`
+
+The post-deploy writes
+`{{DATA_DIR}}/pi-web/data/pi-agent/models.json`, and it declares nothing but
+where the provider is:
 
 ```json
 {
@@ -70,36 +76,93 @@ agent directory's `models.json`. The post-deploy writes that file into
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
         "thinkingFormat": "chat-template"
-      },
-      "models": [
-        { "id": "qwen3.8-27b", "reasoning": true,
-          "compat": { "chatTemplateKwargs": { "enable_thinking": false } } },
-        { "id": "qwen3.6-35b-a3b", "reasoning": true,
-          "compat": { "chatTemplateKwargs": { "enable_thinking": true } } },
-        { "id": "gemma-4-e4b", "reasoning": false }
-      ]
+      }
     }
   }
 }
 ```
 
-Four details that are not obvious:
-
 - **`api: "openai-completions"`, not Pi's built-in `llama.cpp` provider.** The
   built-in one discovers models in a directory of its own; this box runs the
-  router off a pinned presets file, so the model ids are declared here and the
-  list stays exactly what `templates/llama/post-deploy.py` serves.
+  router off a pinned presets file.
 - **`apiKey` is a placeholder.** llama-server ships no authentication and there
   is no key to hold; Pi hides models whose provider has no auth configured at
   all, so a dummy value is what makes them appear. Upstream's own Ollama
   example does the same.
-- **The order is the default.** With nothing saved, Pi starts a session on the
-  first model of the first provider that has auth configured — the coding
-  preset. Everything else is one `/model` away.
+- **`baseUrl` is the pod's own gate**, not the host's `LLAMA_PORT`. This pod has
+  its own network namespace; the containers of a pod share it, so `127.0.0.1`
+  here is the `model-gate` container beside the sessions.
+- **There is no `models` array, on purpose.** This file is the seed Pi needs
+  before any extension has run — **it is not the source of truth for the model
+  list.** If the extension below fails to load, PI WEB shows this provider with
+  no models at all rather than quietly serving an outdated list, and the
+  sessiond log names the extension that failed.
+
+### The list: the `solaris-llama` extension
+
+`pi-web/extensions/solaris-llama.js` registers the **same provider** a second
+time, in Pi's **native** form (`pi.registerProvider(provider)`), with a real
+`fetchModels` that asks the model gate. Pi's own background catalog refresh —
+15 s after the session daemon starts, then hourly, catalogs treated as fresh for
+four hours — then keeps the model picker current. **No script, no systemd timer,
+no recurring restart.**
+
+Why it had to be the native form: in `@earendil-works/pi-ai/dist/models.js`,
+`createProvider` sets `refreshModels: fetchModels ? … : undefined`, and a
+provider that arrives in **config** form — which is what a `models.json` entry
+becomes — brings no `fetchModels`. The hourly refresh existed all along and had
+nothing to call for us. That is why `models.json`, written on 13.09. before
+#1431 made all four presets visible, still listed three of them six days later
+and `gemma-4-12b` could not be picked at all.
+
+**One restart, not a recurring one.** Providers are captured when
+`pi-web-sessiond` starts and frozen for its lifetime, so installing or changing
+the extension needs `systemctl --user restart pi-web-sessiond` once. The
+`pi-web-extensions` init container copies it into `/data/pi-agent/extensions`
+before `sessiond` comes up, so an ordinary deploy **is** that restart. Later
+changes to the model *list* need nothing at all — the background refresh reaches
+into the provider that is already registered.
+
+**Where the names live.** Once a fetch exists, pi-ai merges the two lists by id
+and a fetched entry **replaces** the hand-written one — display name,
+`contextWindow`, `maxTokens` and `chatTemplateKwargs` included. So the gate
+serves them: the table is `PRESETS` in `pi-web/pi_model_gate.py`, and
+`GET /v1/models` there answers the router's own list with a `pi` block added to
+every entry. One table, shipped with the pod, instead of a file on a data volume
+that can go stale.
+
+```
+GET /v1/models  →  { "data": [ { "id": "qwen3.8-27b", …,
+                      "pi": { "name": "Qwen 3.8 27B (Programmieren)",
+                              "reasoning": true, "input": ["text"],
+                              "contextWindow": 81920, "maxTokens": 16384,
+                              "compat": { "thinkingFormat": "chat-template",
+                                          "chatTemplateKwargs": {
+                                            "enable_thinking": false } } } } ] }
+```
+
 - **Both Qwen presets say `reasoning: true`, and each pins its own value.** Pi
-  only sends `chat_template_kwargs` for a model it has been told can reason,
-  and that is the only way to send `enable_thinking: false` at all — see the
-  next section.
+  only sends `chat_template_kwargs` for a model it has been told can reason, and
+  that is the only way to send `enable_thinking: false` at all.
+- **The window is ours, not the router's.** A preset is served with the
+  `ctx-size` its profile in `templates/llama/post-deploy.py` names; the router's
+  `n_ctx_train` is far larger and promising Pi that much would be a request the
+  server cannot honour.
+
+### A preset that disappears
+
+**Decided, not left open:** a preset the router has stopped serving **vanishes
+from Pi's list**, it is never marked and left selectable. The list the gate
+answers with is always the router's own — `PRESETS` only *describes* the entries
+in it and can add none — so dropping a preset from `presets.ini` takes it out of
+the picker at the next refresh. The one window in which a retired preset can
+still be offered is between the daemon restoring its persisted catalog and that
+first refresh 15 s later; that is Pi's own persistence and we do not fight it.
+
+The opposite direction is handled too, because it is the case that actually bit
+us: a preset the router serves but `PRESETS` has no row for is **offered under
+its own id** with a conservative 32k window, rather than hidden until somebody
+remembers to add it.
 
 ## Which model in which mode
 
@@ -489,6 +552,22 @@ nicht deklariert ist, fehlt danach. Deshalb installiert der Init-Container
 beim Booten) bricht den Pod nicht ab, sondern lässt stehen, was auf dem Volume
 liegt.
 
+### Die eigene Erweiterung `solaris-llama` (#1435)
+
+Derselbe Init-Container legt seit #1435 auch **unsere** Erweiterung ab — nicht
+aus einem Paketverzeichnis, sondern aus dem Abbild: `/opt/solaris/pi-extensions`
+wird nach `/data/pi-agent/extensions` kopiert, mit `rm -rf` vor `cp -a`, damit
+ein Stand von gestern nicht danebenliegen bleibt. Pi lädt **jede** Datei in
+diesem Verzeichnis, eine Altfassung wäre also eine zweite Anbieter-Anmeldung und
+keine tote Datei.
+
+Sie meldet den Anbieter `solaris-llama` in Pis **nativer** Form an und bringt
+damit ein `fetchModels` mit — das ist der einzige Grund, warum Pis eigener
+stündlicher Katalog-Abgleich für uns überhaupt etwas zu tun hat. Siehe „How the
+model is configured" oben. **Ein** Neustart von `pi-web-sessiond` ist dafür
+nötig, und den leistet der gewöhnliche Deploy, weil der Init-Container vor dem
+Daemon läuft. Danach nichts Wiederkehrendes mehr.
+
 ## Der Knopf „Repo klonen"
 
 Ein Repository kommt auf die Box, ohne dass jemand ein Terminal öffnet: in PI WEB
@@ -667,6 +746,16 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   Text der Entscheidung. `ps auxww | grep servicebay` zeigt kein Token.
 - `pi list` nennt neben dem `relays`-Paket von PI WEB auch `pi-subagents`, und
   `cat /data/pi-agent/settings.json` führt es unter `packages`.
+- `ls /data/pi-agent/extensions` zeigt `solaris-llama.js`, und
+  `jq '.providers["solaris-llama"] | has("models")' /data/pi-agent/models.json`
+  antwortet `false` — die Liste kommt aus der Erweiterung, nicht aus der Datei.
+- `podman exec pi-web-model-gate curl -s 127.0.0.1:11437/v1/models | jq
+  '[.data[] | {id, name: .pi.name, ctx: .pi.contextWindow}]'` nennt **alle vier**
+  Presets mit den deutschen Namen — und nur die, die der Router gerade bedient.
+- Im Modellwähler einer Sitzung stehen dieselben vier Namen. Nach einem
+  `systemctl --user restart pi-web-sessiond` sagt
+  `journalctl --user -u pi-web-sessiond | grep global-provider` „baseline
+  bootstrapped and frozen" mit `solaris-llama` in `providerIds`.
 - `ls /data/pi-agent/skills/servicebay | wc -l` nennt so viele Skills wie
   `ls /opt/servicebay/assists/*.md | wc -l`, und `head -4
   /data/pi-agent/AGENTS.md` zeigt den Vorspann dieser Box.

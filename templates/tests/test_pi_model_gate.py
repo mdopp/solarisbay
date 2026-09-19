@@ -148,16 +148,123 @@ def test_a_preset_nothing_serves_is_a_typo_and_not_a_policy_question(gate):
 def test_every_mode_the_gate_asks_for_is_one_the_box_knows(gate, llama):
     """A name the box does not know is a 400 the session would see as a hang."""
     known = set(llama.LEASE_PROFILES) | set(llama.LEASE_MODE_ALIASES)
-    for mode in gate.MODEL_MODES.values():
-        if mode:
-            assert mode in known, mode
+    for row in gate.PRESETS.values():
+        if row["mode"]:
+            assert row["mode"] in known, row["mode"]
 
 
 def test_every_preset_the_box_serves_has_a_mode_here(gate, llama):
     """A preset added to the router without a row here would be refused for
     ever: the gate would read it as a typo and never ask for its mode."""
     for preset in llama.preset_profiles():
-        assert preset in gate.MODEL_MODES, preset
+        assert preset in gate.PRESETS, preset
+
+
+# ── the catalog Pi fetches (#1435) ───────────────────────────────────────────
+
+
+def catalog(gate, *ids: str) -> dict:
+    """What the policy proxy answers `/v1/models` with, for `ids`."""
+    return json.loads(
+        gate.enrich_catalog(
+            json.dumps(
+                {
+                    "object": "list",
+                    "mode": "haushalt",
+                    "data": [
+                        {"id": name, "object": "model", "allowed_in_mode": False}
+                        for name in ids
+                    ],
+                }
+            ).encode("utf-8")
+        ).decode("utf-8")
+    )
+
+
+def test_the_catalog_carries_the_names_and_limits_pi_would_otherwise_lose(gate):
+    """Once a fetch exists, pi-ai merges by id and the FETCHED entry replaces
+    the hand-written one (`createProvider` in `dist/models.js`). So everything a
+    person would have written into models.json has to travel in this answer, or
+    the refresh that keeps the list fresh is what throws the German names,
+    the windows and the thinking switch away."""
+    entries = {
+        entry["id"]: entry["pi"] for entry in catalog(gate, *gate.PRESETS)["data"]
+    }
+    assert entries["qwen3.8-27b"]["name"] == "Qwen 3.8 27B (Programmieren)"
+    assert entries["qwen3.6-35b-a3b"]["name"] == "Qwen 3.6 35B-A3B (Denken)"
+    assert entries["gemma-4-e4b"]["name"] == "Gemma 4 E4B (Haushaltsmodell)"
+    assert entries["gemma-4-12b"]["name"] == "Gemma 4 12B (Haushalt + Denken)"
+    assert entries["qwen3.8-27b"]["contextWindow"] == 81920
+    assert entries["qwen3.8-27b"]["maxTokens"] == 16384
+    assert entries["qwen3.8-27b"]["compat"]["chatTemplateKwargs"] == {
+        "enable_thinking": False
+    }
+    assert entries["qwen3.6-35b-a3b"]["compat"]["chatTemplateKwargs"] == {
+        "enable_thinking": True
+    }
+    # Gemma has no thinking mode; declaring one would send kwargs its template
+    # does not know.
+    assert "chatTemplateKwargs" not in entries["gemma-4-e4b"]["compat"]
+    assert entries["gemma-4-e4b"]["reasoning"] is False
+    assert entries["qwen3.8-27b"]["reasoning"] is True
+
+
+def test_every_entry_says_what_llama_server_cannot_take(gate):
+    """`developer` and `reasoning_effort` turn a call into a 400, and
+    `chat-template` is the thinking dialect llama.cpp speaks. The extension
+    registers this provider on its own, so the compat has to ride on the model
+    rather than on the models.json entry."""
+    for entry in catalog(gate, *gate.PRESETS)["data"]:
+        compat = entry["pi"]["compat"]
+        assert compat["supportsDeveloperRole"] is False
+        assert compat["supportsReasoningEffort"] is False
+        assert compat["thinkingFormat"] == "chat-template"
+
+
+def test_the_windows_match_the_presets_the_router_is_configured_with(gate, llama):
+    """The window is ours, not the router's `n_ctx_train`: a preset is served
+    with the `ctx-size` its profile names, and promising Pi more than that is a
+    request the server cannot honour."""
+    profiles = llama.preset_profiles()
+    for preset, row in gate.PRESETS.items():
+        assert row["contextWindow"] == int(profiles[preset]["context_length"]), preset
+
+
+def test_a_preset_the_router_stopped_serving_disappears(gate):
+    """The fourth of the operator's conditions: a vanished preset must not
+    linger until a call fails. The LIST is always the router's — this table
+    only describes what is in it — so dropping a preset from `presets.ini` is
+    enough to take it out of Pi's picker."""
+    listed = [entry["id"] for entry in catalog(gate, "gemma-4-e4b")["data"]]
+    assert listed == ["gemma-4-e4b"]
+
+
+def test_a_preset_with_no_row_here_is_described_rather_than_hidden(gate):
+    """The opposite direction: a preset added to the router but not yet to the
+    table is exactly the case that broke `gemma-4-12b`. It is offered under its
+    own id with a safe window until somebody names it."""
+    entry = catalog(gate, "gemma-5-2b")["data"][0]
+    assert entry["pi"]["name"] == "gemma-5-2b"
+    assert entry["pi"]["contextWindow"] == gate.UNKNOWN_CONTEXT
+    assert entry["pi"]["reasoning"] is False
+
+
+def test_the_proxys_own_fields_survive_the_enrichment(gate):
+    """`allowed_in_mode` and the standing mode are #1431's; a client reading
+    only `id` must be unaffected by this endpoint existing."""
+    listing = catalog(gate, "gemma-4-e4b")
+    assert listing["mode"] == "haushalt"
+    assert listing["data"][0]["allowed_in_mode"] is False
+    assert listing["data"][0]["object"] == "model"
+
+
+def test_an_answer_that_is_not_a_catalog_is_passed_through_untouched(gate):
+    """An upstream error body must not be turned into a model list: a catalog
+    invented here would put back a preset the router no longer serves."""
+    assert gate.enrich_catalog(b"not json") == b"not json"
+    assert gate.enrich_catalog(b'{"error": {"message": "nope"}}') == (
+        b'{"error": {"message": "nope"}}'
+    )
 
 
 # ── the wish, and waiting for it ─────────────────────────────────────────────

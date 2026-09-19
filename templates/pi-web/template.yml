@@ -161,6 +161,21 @@ spec:
   # A failed install must not fail the pod: the registry is not reachable on a
   # box that boots before its WAN link, and settings.json on the volume still
   # holds whatever the last successful start installed.
+  #
+  # `solaris-llama.js` is ours and comes from the image, not from a registry
+  # (#1435). It registers the model provider in NATIVE form so it can carry a
+  # `fetchModels`, which is what lets Pi's own hourly catalog refresh keep the
+  # model picker current — the config form a models.json entry becomes has no
+  # fetch, so that schedule had nothing to call for us. Providers are captured
+  # when `sessiond` starts and frozen for its lifetime, so the extension has to
+  # be in place BEFORE it: an init container, which makes an ordinary deploy the
+  # one restart this needs. Nothing recurring follows.
+  #
+  # `rm -rf` then `cp -a`, like the plugin step below: the target is the
+  # directory this image owns, so a file dropped between versions does not
+  # linger, and running the step twice leaves exactly the same tree. (That is
+  # the opposite of the repo's tombstone rule, which is about ServiceBay's
+  # asset-transport — this path never goes through it.)
   - name: pi-web-extensions
     image: ghcr.io/mdopp/solaris-pi-web:latest
     env:
@@ -173,7 +188,12 @@ spec:
     - -c
     - |
       set -eu
-      mkdir -p "$HOME" "$PI_CODING_AGENT_DIR"
+      mkdir -p "$HOME" "$PI_CODING_AGENT_DIR/extensions"
+      for extension in /opt/solaris/pi-extensions/*; do
+        name=$(basename "$extension")
+        rm -rf "$PI_CODING_AGENT_DIR/extensions/$name"
+        cp -a "$extension" "$PI_CODING_AGENT_DIR/extensions/"
+      done
       pi install npm:pi-subagents \
         || echo "pi-subagents: install failed, keeping what the volume holds"
     volumeMounts:

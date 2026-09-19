@@ -215,50 +215,25 @@ def test_provider_carries_a_placeholder_key(pd):
     assert provider["apiKey"] == "llama"
 
 
-def test_the_coding_preset_is_the_one_a_session_starts_with(pd):
-    """Pi takes the first model of the first provider with auth when nothing is
-    saved, so the order of this list is what a new session gets. Coding first;
-    Denken is one `/model` away."""
-    provider = pd.models_document("11435")["providers"][pd.PROVIDER_ID]
-    ids = [m["id"] for m in provider["models"]]
-    assert ids == [pd.CODING_ALIAS, pd.THINKING_ALIAS, pd.HOUSEHOLD_ALIAS]
+def test_models_json_declares_no_models_of_its_own(pd):
+    """The list comes from the `solaris-llama` extension now (#1435).
+
+    `applyModelsJson` in `@earendil-works/pi-coding-agent` upserts a models.json
+    entry OVER the fetched one of the same id, so a `models` array here would
+    beat the live catalog and this file would be the stale source of truth
+    again — which is how `gemma-4-12b` stayed unpickable for six days after
+    #1431 started serving it.
+    """
+    provider = pd.models_document("11437")["providers"][pd.PROVIDER_ID]
+    assert "models" not in provider
+    assert set(provider) == {"baseUrl", "api", "apiKey", "compat"}
 
 
-def test_coding_switches_thinking_off_and_denken_switches_it_on(pd):
-    """The server stopped deciding this (#1416: no `--reasoning off`, one router
-    for four presets). A client that sends nothing gets a reasoning trace and no
-    tool call — #1321 all over again — and Pi only sends `chat_template_kwargs`
-    for a model declared `reasoning: true`, so both Qwen presets are."""
-    models = {
-        m["id"]: m
-        for m in pd.models_document("11435")["providers"][pd.PROVIDER_ID]["models"]
-    }
-    coding, thinking = models[pd.CODING_ALIAS], models[pd.THINKING_ALIAS]
-    assert coding["reasoning"] is True and thinking["reasoning"] is True
-    assert coding["compat"]["chatTemplateKwargs"] == {"enable_thinking": False}
-    assert thinking["compat"]["chatTemplateKwargs"] == {"enable_thinking": True}
-    # Gemma has no thinking mode; declaring one would send kwargs its template
-    # does not know.
-    assert models[pd.HOUSEHOLD_ALIAS]["reasoning"] is False
-
-
-def test_the_qwen_presets_match_the_router_profiles(pd):
-    """The aliases and windows are llama's own presets, not a guess: a model
-    entry naming something the router does not serve is a request nothing
-    answers."""
-    llama = _load("llama_pd_for_pi_web", TEMPLATES / "llama" / "post-deploy.py")
-    assert pd.CODING_ALIAS == llama.CODING_PROFILE["alias"]
-    assert pd.CODING_CONTEXT == int(llama.CODING_PROFILE["context_length"])
-    assert pd.THINKING_ALIAS == llama.THINKING_PROFILE["alias"]
-    assert pd.THINKING_CONTEXT == int(llama.THINKING_PROFILE["context_length"])
-
-
-def test_the_household_model_is_left_alone(pd):
-    """#1325: the household model stays e4b — pi-web leases, it does not swap."""
-    llama_vars = json.loads(
-        (TEMPLATES / "llama" / "variables.json").read_text(encoding="utf-8")
-    )
-    assert pd.HOUSEHOLD_ALIAS == llama_vars["LLAMA_MODEL_ALIAS"]["default"]
+def test_models_json_points_at_the_pod_gate_and_not_at_the_host(pd):
+    """This pod has its own netns: the host's LLAMA_PORT is not on its
+    loopback, and the gate beside it is."""
+    provider = pd.models_document("11437")["providers"][pd.PROVIDER_ID]
+    assert provider["baseUrl"] == "http://127.0.0.1:11437/v1"
 
 
 def test_models_json_lands_where_the_container_reads_it(pd):

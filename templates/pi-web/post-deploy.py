@@ -17,10 +17,13 @@ Three responsibilities:
      podman refuses it), and never the `llama.<domain>` route, which is
      Authelia-gated and exists for a human with a browser.
 
-     llama-server is a router since #1416: one port, several presets, the
-     client picks one with the `model` field. So `models.json` lists the
-     presets a session here may ask for — coding first, because that is what a
-     session starts with — and each one carries its own thinking switch.
+     It declares the CONNECTION only. The model list itself comes from the Pi
+     extension `pi-web/extensions/solaris-llama.js`, which registers the same
+     provider in native form with a real `fetchModels` so Pi's own hourly
+     catalog refresh keeps the picker current (#1435). A `models` array here
+     would override that fetched list entry for entry and be the stale source
+     of truth again — which is exactly how `gemma-4-12b` stayed unpickable for
+     six days after #1431 started serving it.
 
   3. **Bridge the gate's lease wishes to the Engine (#1435).** Picking a model
      in PI WEB now takes the mode that permits it (operator, 2026-09-19). The
@@ -109,17 +112,6 @@ GATE_POLL_SEC = 5
 QUADLET_DIR = "~/.config/containers/systemd"
 KUBE_UNIT = "pi-web.kube"
 BOOT_INSTALL = "[Install]\nWantedBy=default.target\n"
-
-# The router presets a session here may pick (#1416). They are pinned in
-# templates/llama/post-deploy.py — constants here rather than variables,
-# because a knob that let them drift from that file would only ever produce a
-# model list naming something the server does not serve.
-CODING_ALIAS = "qwen3.8-27b"
-CODING_CONTEXT = 81920
-THINKING_ALIAS = "qwen3.6-35b-a3b"
-THINKING_CONTEXT = 131072
-HOUSEHOLD_ALIAS = "gemma-4-e4b"
-HOUSEHOLD_CONTEXT = 32768
 
 # llama-server ships no authentication, so there is no key to hold — but Pi
 # hides a model whose provider has no auth configured at all, so the provider
@@ -303,30 +295,30 @@ def add_boot_install(kube_text: str) -> str:
 
 
 def models_document(gate_port: str) -> dict:
-    """The Pi agent's `models.json`: one OpenAI-compatible provider and the
-    three router presets a session here may pick.
+    """The Pi agent's `models.json`: the provider CONNECTION and nothing else.
 
-    The provider points at the pod's own model gate (#1435), which forwards to
-    the policy proxy on `LLAMA_PORT` and, when the standing mode refuses the
-    wanted preset, asks the box for the mode that permits it. That detour is
-    invisible to Pi — same URL shape, same OpenAI dialect — and it is what makes
-    picking a model here *activate* it.
+    It deliberately lists no models (#1435). The model list is now produced by
+    the Pi extension `solaris-llama.js`, which registers this same provider in
+    native form with a real `fetchModels` and lets Pi's own hourly background
+    refresh keep it current. A `models` array here would not merely duplicate
+    that list — `applyModelsJson` in `@earendil-works/pi-coding-agent` upserts a
+    models.json entry OVER the fetched one of the same id, so the hand-written
+    copy would win and this file would be the stale source of truth all over
+    again. That is the bug this unit removes: the file dated 13.09. still named
+    three presets after #1431 had made four visible.
 
-    Since #1416 llama-server is a router — one port, four presets, the client
-    picks with the `model` field — so all three are served at once and the
-    order in this list is the choice a session starts with: with no saved
-    default Pi takes the first model of the first provider that has auth
-    configured, and that is the coding preset. `/model` inside the session
-    switches to the thinking MoE for a reading or reasoning job.
+    What stays is what Pi needs before any extension has run: where the provider
+    is, which dialect it speaks, and a key so it is not hidden. If the extension
+    fails to load, PI WEB shows this provider with no models — visible, and the
+    sessiond log says which extension failed — rather than quietly serving an
+    old list.
 
-    Thinking is the client's switch now that one server serves four models:
-    `--reasoning off` is gone from the server (#1321 was a server-wide setting
-    and would decide for all four), so a client that sends nothing gets a
-    reasoning trace and no tool call. Pi only sends `chat_template_kwargs` for
-    a model it has been told can reason, so both Qwen presets are declared
-    `reasoning: true` and each pins the literal value it wants — false for
-    coding, true for thinking, where the trace is the point. Gemma has no
-    thinking mode and stays `reasoning: false`.
+    The `baseUrl` is the pod's own gate, which forwards to the policy proxy on
+    `LLAMA_PORT` and, when the standing mode refuses the wanted preset, asks the
+    box for the mode that permits it. Not `127.0.0.1` for *that* hop (this pod
+    has its own netns), not the LAN address (rootless podman refuses it), and
+    never the `llama.<domain>` route, which is Authelia-gated and exists for a
+    human with a browser.
     """
     return {
         "providers": {
@@ -343,52 +335,6 @@ def models_document(gate_port: str) -> dict:
                     "supportsReasoningEffort": False,
                     "thinkingFormat": "chat-template",
                 },
-                "models": [
-                    {
-                        "id": CODING_ALIAS,
-                        "name": "Qwen 3.8 27B (Programmieren)",
-                        "reasoning": True,
-                        "compat": {"chatTemplateKwargs": {"enable_thinking": False}},
-                        "input": ["text"],
-                        "contextWindow": CODING_CONTEXT,
-                        "maxTokens": 16384,
-                        "cost": {
-                            "input": 0,
-                            "output": 0,
-                            "cacheRead": 0,
-                            "cacheWrite": 0,
-                        },
-                    },
-                    {
-                        "id": THINKING_ALIAS,
-                        "name": "Qwen 3.6 35B-A3B (Denken)",
-                        "reasoning": True,
-                        "compat": {"chatTemplateKwargs": {"enable_thinking": True}},
-                        "input": ["text"],
-                        "contextWindow": THINKING_CONTEXT,
-                        "maxTokens": 16384,
-                        "cost": {
-                            "input": 0,
-                            "output": 0,
-                            "cacheRead": 0,
-                            "cacheWrite": 0,
-                        },
-                    },
-                    {
-                        "id": HOUSEHOLD_ALIAS,
-                        "name": "Gemma 4 E4B (Haushaltsmodell)",
-                        "reasoning": False,
-                        "input": ["text", "image"],
-                        "contextWindow": HOUSEHOLD_CONTEXT,
-                        "maxTokens": 16384,
-                        "cost": {
-                            "input": 0,
-                            "output": 0,
-                            "cacheRead": 0,
-                            "cacheWrite": 0,
-                        },
-                    },
-                ],
             }
         }
     }
@@ -431,7 +377,7 @@ def write_models_json(data_dir: str, gate_port: str) -> bool:
         "models.json written",
         path=path,
         provider=PROVIDER_ID,
-        models=[CODING_ALIAS, THINKING_ALIAS, HOUSEHOLD_ALIAS],
+        models="from the model gate, via the solaris-llama extension",
     )
     return True
 
