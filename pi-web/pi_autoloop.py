@@ -29,13 +29,15 @@ Four things carry the design:
     opens a draft rather than nothing, because a protocol nobody can find is the
     same as no protocol.
 
-  IT TAKES NO GPU LEASE. llama-server is a router (#1416) and the lease — the
-    mode, and with it the presets a client may ask for — belongs to the Solaris
-    model tile (#1374/#1381). The loop is a coding session, so it asks the
-    router for the coding preset and names it in the protocol. The router
-    polices nothing itself, but where the mode policy does sit in front of a
-    request it answers 409 — the loop then says so in plain German and takes
-    the ticket again next pass. It never asks for a swap.
+  IT ASKS FOR THE MODE THE SAME WAY A SESSION DOES. llama-server is a router
+    (#1416) and the mode — the presets a client may ask for — is a lease. Since
+    #1435 a client here may take it: the loop talks to the pod's own model gate
+    (`pi-web-model-gate`, 127.0.0.1:11437), which asks the box for the mode the
+    coding preset needs and gives it back when the pod goes idle. This file
+    holds no lease logic of its own; a second implementation of the same
+    protocol is exactly what drifts. Where the mode cannot be had — somebody
+    else holds it — the gate answers 409 and the loop says so in plain German
+    and takes the ticket again next pass.
 
 The GitHub token is the one the pod already has: `PI_WEB_GIT_TOKEN`, which the
 `pi-web-git-credentials` init container wrote to a 0600 credential store. Git
@@ -81,6 +83,13 @@ PROVIDER_ID = "solaris-llama"
 # serve since #1416 and no longer says which model is loaded.
 CODING_PRESET = "qwen3.8-27b"
 
+# The model gate on the pod's own loopback (#1435). Every container of this pod
+# shares one network namespace, so this is the `model-gate` container beside
+# this one — the same door the sessions use, which is what keeps the mode
+# request in one place. Pinned to the port templates/pi-web/post-deploy.py
+# writes into models.json.
+MODEL_GATE_PORT = 11437
+
 COMMIT_NAME = "Pi Autoloop"
 COMMIT_EMAIL = "pi-autoloop@users.noreply.github.com"
 
@@ -117,8 +126,8 @@ def config_from_env(environ=os.environ) -> dict:
         "store": environ.get("PI_WEB_GIT_TOKEN_FILE") or DEFAULT_CREDENTIAL_STORE,
         "protocol_dir": environ.get("PI_AUTOLOOP_PROTOCOL_DIR") or DEFAULT_PROTOCOL_DIR,
         "workroot": environ.get("PI_AUTOLOOP_WORKROOT") or DEFAULT_WORKROOT,
-        "models_url": "http://host.containers.internal:%s/v1/models"
-        % (environ.get("LLAMA_PORT") or "11435"),
+        "models_url": "http://127.0.0.1:%s/v1/models"
+        % (environ.get("PI_MODEL_GATE_PORT") or str(MODEL_GATE_PORT)),
     }
 
 
@@ -431,10 +440,11 @@ def preset_to_use(url: str, http) -> str:
 def refusal_note(lines: list[str], preset: str) -> str:
     """A sentence for the protocol when the run died on a refused preset.
 
-    The mode policy answers a preset it does not allow with 409 and the mode's
-    name (#1416). Pi reports that as a provider error and then changes nothing
-    — which in the protocol is indistinguishable from a model that found
-    nothing to do, so the refusal has to be named where the operator reads it.
+    The gate takes the mode itself now (#1435), so what still reaches here is a
+    refusal it could not resolve — a window somebody else holds. Pi reports that
+    as a provider error and then changes nothing, which in the protocol is
+    indistinguishable from a model that found nothing to do, so the refusal has
+    to be named where the operator reads it.
     """
     for line in lines:
         low = line.lower()
@@ -445,9 +455,10 @@ def refusal_note(lines: list[str], preset: str) -> str:
         found = re.search(r'\\?"mode\\?"\s*:\s*\\?"([^"\\]+)', line)
         mode = found.group(1) if found else "Haushalt"
         return (
-            f"Modell {preset} ist im Modus {mode} nicht erlaubt. "
-            "In der Modell-Kachel in Solaris den Modus Erweitert wählen; "
-            "der Loop nimmt das Ticket beim nächsten Durchgang von selbst wieder auf."
+            f"Modell {preset} ist im Modus {mode} nicht erlaubt und der Modus "
+            "war nicht zu bekommen — die Modell-Kachel in Solaris zeigt, wer "
+            "die Grafikkarte gerade hält und bis wann. Der Loop nimmt das "
+            "Ticket beim nächsten Durchgang von selbst wieder auf."
         )
     return ""
 

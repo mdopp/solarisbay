@@ -62,6 +62,13 @@ COPY --chmod=0755 pi_agent_kit.py /usr/local/bin/pi-web-agent-kit
 # stdlib Python, so the repo's ruff + pytest gates cover it.
 COPY --chmod=0755 pi_autoloop.py /usr/local/bin/pi-web-autoloop
 
+# The model gate (#1435): the OpenAI-compatible door on the pod's own loopback
+# that every session and the autoloop talk to. It forwards to the policy proxy
+# on LLAMA_PORT and, when the standing mode refuses the wanted preset, asks the
+# box for the mode that permits it over a file the host broker watches — this
+# pod can reach neither systemd nor the Engine's loopback lease API.
+COPY --chmod=0755 pi_model_gate.py /usr/local/bin/pi-web-model-gate
+
 # The "Repo klonen" plugin (#1395 slice B). It rides in the image rather than in
 # the template's asset tree because it is written against the plugin API of the
 # PI_WEB_VERSION pinned above — the two move together or not at all. An init

@@ -33,10 +33,12 @@ spec:
   #
   # The one thing this pod therefore CANNOT reach is the Solaris Engine's
   # `/api/model-lease`: it is loopback-only by design (no token, reachability
-  # is the authorisation) and the engine binds 127.0.0.1 alone. That is fine —
-  # pi-web does not ask for a lease at all (#1392): it picks a router preset
-  # per session (#1416), and the mode that allows it is set from the Solaris
-  # model tile instead.
+  # is the authorisation) and the engine binds 127.0.0.1 alone. Since #1435 a
+  # session may nevertheless take the mode its model needs — over a file, not
+  # over the network: `model-gate` writes the wish to /data/model-lease and the
+  # host's `pi-web-lease-broker.path` makes the call. Same bridge, same reason
+  # as the Engine's own `solaris-gpu-lease-broker` (#1333). Nothing in this pod
+  # addresses CHAT_PORT, and there is no variable here that would let it.
   restartPolicy: Always
   initContainers:
   # `DirectoryOrCreate` makes the host path owned by userns-root (the "core"
@@ -265,6 +267,28 @@ spec:
       readOnly: true
 
   containers:
+  # model-gate — the door every model request in this pod goes through (#1435).
+  # `models.json` points the sessions and the autoloop at 127.0.0.1:11437, which
+  # is this container: the containers of a pod share one network namespace, so
+  # loopback here is the pod and not the host. It forwards to the policy proxy
+  # on LLAMA_PORT, and when the standing mode refuses the preset a session
+  # picked, it asks the box for the mode that permits it.
+  #
+  # It cannot make that lease call itself: `/api/model-lease` is loopback-only
+  # and unauthenticated, and this pod has its own netns — so it writes the wish
+  # to /data/model-lease/request.json and the host's `pi-web-lease-broker.path`
+  # turns it into the call, answering in status.json. No hostPort and a 127.0.0.1
+  # bind: this door exists for the pod, and nothing outside it can knock.
+  - name: model-gate
+    image: ghcr.io/mdopp/solaris-pi-web:latest
+    args: ["pi-web-model-gate"]
+    env:
+    - name: LLAMA_PORT
+      value: "{{LLAMA_PORT}}"
+    volumeMounts:
+    - mountPath: /data
+      name: pi-web-data
+
   # sessiond — the workspace authority: it owns the agent sessions, the
   # terminals and the model runtime, and keeps them alive across browser
   # disconnects. It talks to the web process over a unix socket on the shared
@@ -390,10 +414,10 @@ spec:
       value: "{{PI_AUTOLOOP_INTERVAL_S}}"
     - name: PI_AUTOLOOP_TIME_CAP_S
       value: "{{PI_AUTOLOOP_TIME_CAP_S}}"
-    # The router port. The loop asks it for the coding preset (#1416) and holds
-    # no lease (#1392): the mode comes from the Solaris model tile.
-    - name: LLAMA_PORT
-      value: "{{LLAMA_PORT}}"
+    # No LLAMA_PORT any more (#1435): the loop asks the pod's own model gate for
+    # the coding preset, on the same 127.0.0.1:11437 the sessions use, so a
+    # refused preset takes the mode it needs through one implementation rather
+    # than two.
     # The loop runs `pi` headlessly, so it loads the same global AGENTS.md and
     # the same generated skills as a browser session — and that file points at
     # this path. Without the mount here the context file would name a directory

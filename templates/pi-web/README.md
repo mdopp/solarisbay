@@ -11,7 +11,7 @@ Authelia and wires it to the box's own model server.
 | | |
 |---|---|
 | Image | `ghcr.io/mdopp/solaris-pi-web:latest`, built from `pi-web/Dockerfile` in this repo |
-| Containers | `sessiond` (owns the sessions, terminals and the model runtime) + `web` (HTTP/WebSocket) |
+| Containers | `sessiond` (owns the sessions, terminals and the model runtime), `web` (HTTP/WebSocket), `model-gate` (the door to the model, #1435), `autoloop` (works labelled tickets) |
 | Network | isolated netns, `hostPort` 8504 |
 | Route | `pi.<publicDomain>`, internal exposure, Authelia forward-auth `one_factor` |
 | Model | llama-server on this box, via the Pi agent's `models.json` |
@@ -33,7 +33,8 @@ ADR 0007 Decision 2's carve-out list is **closed**; a new service does not join
 it by arguing its case, and Decision 3 says explicitly that needing to reach a
 loopback-bound sibling is not a reason either. So the pod runs in its own
 network namespace, publishes 8504 as a `hostPort`, and addresses llama-server
-as `http://host.containers.internal:11435/v1`. That path answers because the
+as `http://host.containers.internal:11435/v1` — the hop the `model-gate`
+container makes on the sessions' behalf. That path answers because the
 sibling half already landed in #1344: the process on `LLAMA_PORT` binds
 `0.0.0.0`, so loopback — where the pasta-proxied pod path arrives — reaches it.
 Since #1416 that process is the llama template's mode policy proxy and
@@ -62,7 +63,7 @@ agent directory's `models.json`. The post-deploy writes that file into
 {
   "providers": {
     "solaris-llama": {
-      "baseUrl": "http://host.containers.internal:11435/v1",
+      "baseUrl": "http://127.0.0.1:11437/v1",
       "api": "openai-completions",
       "apiKey": "llama",
       "compat": {
@@ -104,28 +105,30 @@ Four details that are not obvious:
 
 llama-server is a **router** since #1416: one process, several presets, and
 the client picks one with the `model` field of its request. The GPU lease no
-longer swaps the server — it sets the **mode**: the voice stack's device and
-the set of presets a client may ask for while it stands, which a policy proxy
-on 11435 enforces. **The model widget in Solaris (the Modell-Kachel,
-#1374/#1381) is what selects that mode** — from the phone, without a
-development tool running.
+longer swaps the server — it sets the **mode**: the voice stack's device, the
+embeddings server, and the set of presets a client may ask for while it stands,
+which a policy proxy on 11435 enforces.
 
-The tile's names, as a resident reads them (operator, 2026-09-13):
+Three modes since #1435 (operator, 2026-09-19):
 
-| Mode (lease) | Presets allowed | What a PI WEB session should pick |
-|---|---|---|
-| Haushalt + Schnell (no lease) | `gemma-4-e4b` | Gemma answers; Qwen needs a mode first |
-| Haushalt + Denken (`foundry`) | `gemma-4-e4b`, `gemma-4-12b` | neither is a coding model |
-| **Fokus Denken** (`thinking`) | `qwen3.6-35b-a3b` | `/model` → *Qwen 3.6 35B-A3B* |
-| **Fokus Programmieren** (`coding`) | `qwen3.8-27b` | the session default, nothing to do |
+| Mode (lease) | Sprache | Gedächtnissuche | Presets allowed |
+|---|---|---|---|
+| **Haushalt** (no lease) | GPU | an | `gemma-4-e4b` |
+| **Foundry** (`foundry`) | GPU | an | `gemma-4-e4b`, `gemma-4-12b` |
+| **Erweitert** (`erweitert`) | CPU | **aus** | every preset the router knows |
 
-So: a coding session needs **Fokus Programmieren** from the tile, a reading or
-reasoning session **Fokus Denken** plus `/model` inside Pi. That `/model`
-picker is the whole switch — there is no PI WEB setting to change and no
-environment variable to redeploy.
+`thinking` and `coding` are still accepted as older names of `erweitert`, so
+nothing pointed at them breaks.
 
-The first turn after a mode change pays a 10–20 s load, because the router
-loads a preset on demand. That is a slow answer, not an error.
+**A PI WEB session no longer has to ask anybody for the mode.** Picking a model
+with `/model` takes the one that model needs — see the next section. The
+Modell-Kachel in Solaris (#1374/#1381) is still the phone-side route to the same
+thing, and it is who the session names when the window is already somebody
+else's.
+
+The first turn after a mode change pays a 10–20 s load on top of the ~56 s
+switch, because the router loads a preset on demand. That is a slow answer, not
+an error, and the session says so while it waits.
 
 ### Thinking is the client's switch now
 
@@ -145,34 +148,55 @@ Every client on this box must now do the same. Solaris' own Engine does
 nothing by default and will get a reasoning trace from the 27B** — they need
 the same `chat_template_kwargs` in their own provider configuration.
 
-### Take the mode — 11435 will make you
+### The model gate — picking a model activates it (#1435)
 
-Since #1416 what answers on 11435 is not the router but a **mode policy
-proxy** in front of it (the router itself moved to loopback 11434 and has no
-policy at all). It reads the lease's `allowed` set on every request: a session
-here asking for `qwen3.8-27b` during a household evening is **refused with
-409**, not served. `GET /v1/models` lists all four presets and marks each with
-`allowed_in_mode` (#1431), so Pi's `/model` picker — which reads only `id` —
-shows all four and a pick outside the mode comes back as the 409 sentence
-naming the mode and the Modell-Kachel.
+What answers on 11435 is not the router but a **mode policy proxy** in front of
+it (the router itself moved to loopback 11434 and has no policy at all). It
+reads the lease's `allowed` set on every request, so a session asking for
+`qwen3.8-27b` during a household evening used to be **refused with 409** and
+that was the end of it.
 
-That is deliberate rather than tidy: served, the request would load 15.6 GiB
-of weights, evict the household Gemma and leave the next resident waiting
-10–20 s for a light to come on. Taking the mode in the Modell-Kachel first is
-now the only way in.
+Since #1435 the sessions do not talk to 11435 directly. `models.json` points
+them at **`http://127.0.0.1:11437/v1`** — the `model-gate` container of this
+pod, which every other container reaches over the pod's shared network
+namespace. It forwards verbatim, and on a 409 it asks the box for the **least
+intrusive** mode that permits the wanted preset:
 
-A 409 is handled rather than crashing anything:
+| Preset picked | Mode taken |
+|---|---|
+| `gemma-4-e4b` | none — Haushalt already allows it |
+| `gemma-4-12b` | `foundry` — voice and vault search stay on the GPU |
+| `qwen3.6-35b-a3b`, `qwen3.8-27b` | `erweitert` |
 
-- **In a browser session** Pi shows the provider error in the conversation and
-  the session stays open — pick an allowed model with `/model`, or set the mode
-  in the Modell-Kachel.
-- **In the autoloop** the run would end without changing anything, which on its
-  own reads as "Pi found nothing to do". So the loop recognises the 409 and
-  writes it in the protocol in plain German: *Modell qwen3.8-27b ist im Modus
-  household nicht erlaubt. In der Modell-Kachel in Solaris den Modus
-  Programmieren wählen* — and picks the ticket up again by itself next pass.
+**How it reaches the lease at all.** It does not: `/api/model-lease` on the
+Engine is loopback-only and carries no token — being able to reach it *is* the
+authorisation — and this pod has its own netns. So the gate writes the wish to
+`/data/model-lease/request.json` (a correlation id, the mode, the TTL — never a
+secret) and the host's `pi-web-lease-broker.path` starts a **oneshot** service
+that makes the call as holder `pi-web` and answers in `status.json` under the
+same id. Exactly the bridge the Engine already uses for itself
+(`gpu_lease_request.json` + `solaris-gpu-lease-broker`, #1333), for exactly the
+same reason.
 
-### The retired lease unit (#1392)
+**While it switches**, a streamed session is told so in plain German rather than
+left to look hung — *„Ich hole gerade den Modus Erweitert …"*, then a line every
+15 s.
+
+**It never steals.** A window somebody else holds comes back as a 409 naming the
+holder and the end time, and pointing at the Modell-Kachel.
+
+**It gives the card back.** The window is 900 s, renewed every 300 s while the
+pod is working, and released once nothing has come through for 300 s. If the
+gate dies without releasing, the box reclaims the mode 600 s after the last
+renewal on its own (#1361: two missed renewals) — the TTL is the outer net, not
+the mechanism.
+
+The autoloop uses the same door and the same port, so there is one
+implementation of this and not two. What still reaches its protocol is a
+refusal the gate could not resolve, named in plain German, and the ticket is
+picked up again next pass.
+
+### The retired lease unit (#1392), and the unit that is not its return
 
 Until v0.63 the post-deploy installed a host-side systemd unit
 `pi-web-model-lease.service`, `BindsTo=pi-web.service`, that took the coding
@@ -186,7 +210,15 @@ the unit, `disable`s it (which is what drops the `pi-web.service.wants` link —
 a unit file removed while still enabled comes back with the next PI WEB start),
 removes the unit file and the `{{DATA_DIR}}/pi-web/pi-web-lease.py` script copy,
 and gives back a window still filed under holder `pi-web` — `GET` first, `DELETE`
-only if it is ours, so the model tile's own window is never touched.
+only if it is ours, so the model tile's own window is never touched. All of that
+still runs on every deploy.
+
+`pi-web-lease-broker` above is **not** that unit coming back. What was wrong was
+never that a unit existed: it was `BindsTo=pi-web.service` on a service that runs
+around the clock, so the card was taken by PI WEB merely being up. The broker is
+demand-driven — a `.path` watcher on the wish file and a `Type=oneshot` service
+that ends when the call is made — and the premise that pi must never hold the
+card was lifted by the operator on 2026-09-19.
 
 ## Why it now runs around the clock
 
@@ -599,19 +631,26 @@ service. PI WEB is a developer tool that happens to live on the same box, like
 - The model picker lists all four presets in every mode (#1431), and `curl -s
   http://127.0.0.1:11435/v1/models | jq '.mode, [.data[] | {id,
   allowed_in_mode}]'` names the standing mode and marks the same ids — with the
-  card at Haushalt only `gemma-4-e4b` is `true`, with **Fokus Programmieren**
-  only `qwen3.8-27b`. Picking one marked `false` answers with the 409.
-- With **Fokus Programmieren** held from the Modell-Kachel, a coding answer
-  carries no reasoning trace (the client sent `enable_thinking: false`); after
-  `/model` → *Qwen 3.6 35B-A3B* in **Fokus Denken** it does.
-- With no lease held, asking for a Qwen preset is **refused with 409** by the
-  policy proxy and the session stays usable — the loop names the mode in its
-  protocol and takes the ticket again next pass.
-- `systemctl --user status pi-web-model-lease` reports **not-found** and
-  `grep -c Install ~/.config/containers/systemd/pi-web.kube` is 1 — the
-  service is up now and comes back after a reboot.
-- `curl -s http://127.0.0.1:8787/api/model-lease` names no holder `pi-web`
-  until somebody takes the lease from the model tile.
+  card at Haushalt only `gemma-4-e4b` is `true`.
+- With the card at **Haushalt**, `/model` → *Qwen 3.8 27B* in a session: the
+  answer begins with *„Ich hole gerade den Modus Erweitert …"*, and after the
+  switch the model answers in the same turn. `curl -s
+  http://127.0.0.1:8787/api/model-lease` then names holder `pi-web`, mode
+  `erweitert`.
+- `/model` → *Gemma 4 12B* takes **`foundry`** and not `erweitert` — check the
+  holder's `model` field above, and that `solaris-whisper.service` is still on
+  `cuda` (`grep WHISPER_DEVICE {{DATA_DIR}}/solarisbay/voice-device.env`).
+- Leave the pod idle for 6 minutes: the same `curl` reports `"state":"none"` —
+  the gate gave the card back without anyone asking.
+- With the Modell-Kachel holding the card as `widget`, a `/model` pick in a
+  session answers with a sentence naming `widget` and the end time, and the
+  lease still reports holder `widget`: nothing was stolen.
+- `systemctl --user status pi-web-model-lease` reports **not-found**, while
+  `systemctl --user status pi-web-lease-broker.path` is **active (waiting)** and
+  `pi-web-lease-broker.service` is **inactive (dead)** between wishes — it runs
+  only while one is pending.
+- `grep -c Install ~/.config/containers/systemd/pi-web.kube` is 1 — the service
+  is up now and comes back after a reboot.
 - From another LAN device, `curl -m 3 http://<box>:8504/` must fail — the
   `blockLanAccess` rule on `PI_WEB_PORT`. `http://<box>:11435/v1/models` must
   **answer**: llama's LAN side is open by decision (#1420), PI WEB's is not.

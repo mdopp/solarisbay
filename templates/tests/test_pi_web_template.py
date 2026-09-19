@@ -107,15 +107,21 @@ def test_every_container_keeps_tini_as_entrypoint(pod):
             ["pi-web-sessiond"],
             ["pi-web-server"],
             ["pi-web-autoloop"],
+            ["pi-web-model-gate"],
         )
 
 
 def test_the_processes_share_the_state_volume(pod):
     """web reaches sessiond over a unix socket on /data — a container missing
-    that mount comes up and answers nothing."""
+    that mount comes up and answers nothing. The model gate needs /data too:
+    that is where it leaves the lease wish the host broker picks up (#1435). It
+    is the one container with no business in the repositories, so /workspace is
+    asserted only for the three that work in them."""
     for container in pod["spec"]["containers"]:
         mounts = {m["mountPath"] for m in container["volumeMounts"]}
-        assert {"/data", "/workspace"} <= mounts, container["name"]
+        assert "/data" in mounts, container["name"]
+        if container["name"] != "model-gate":
+            assert "/workspace" in mounts, container["name"]
 
 
 def test_data_perms_are_opened_before_the_nonroot_containers_start(pod):
@@ -138,10 +144,19 @@ def test_template_references_public_domain(template_text):
 
 
 def test_nothing_addresses_llama_by_loopback_or_lan(template_text, pd):
+    """Two hops since #1435, and each one has exactly one right address.
+
+    The sessions reach the model gate at `127.0.0.1` — the containers of a pod
+    share one network namespace, so that is the gate container beside them. The
+    gate reaches llama-server at `host.containers.internal`, because the pod as
+    a whole has its own netns and `127.0.0.1` there would be the pod itself.
+    """
     assert "127.0.0.1:11435" not in template_text
     assert "{{LAN_IP}}" not in template_text
-    provider = pd.models_document("11435")["providers"][pd.PROVIDER_ID]
-    assert provider["baseUrl"] == "http://host.containers.internal:11435/v1"
+    provider = pd.models_document(pd.MODEL_GATE_PORT)["providers"][pd.PROVIDER_ID]
+    assert provider["baseUrl"] == "http://127.0.0.1:11437/v1"
+    gate_source = (ROOT / "pi-web" / "pi_model_gate.py").read_text(encoding="utf-8")
+    assert 'env("LLAMA_HOST", "host.containers.internal")' in gate_source
 
 
 def test_the_model_server_is_never_reached_through_its_domain(pd, template_text):
@@ -396,14 +411,29 @@ def _written_strings() -> list[str]:
     ]
 
 
-def test_no_lease_unit_is_rendered_any_more(pd):
-    """The whole point of #1392: PI WEB must not take the coding lease by being
-    started. A unit that came back would do it on every boot, silently."""
+def test_no_unit_takes_the_card_by_pi_web_merely_running(pd):
+    """The whole point of #1392, and it survives #1435 intact.
+
+    What was wrong was never that a unit existed — it was that the unit was
+    `BindsTo=pi-web.service`, so PI WEB, which runs around the clock, took the
+    coding lease on every start and every boot for hours nobody had asked for.
+    The operator lifted the "pi never holds the card" premise on 2026-09-19, so
+    there is a unit again; it must be demand-driven and tied to a wish on disk,
+    never to the pod's own lifetime.
+    """
     for literal in _written_strings():
-        for banned in ("BindsTo", "WantedBy=pi-web.service", "ExecStart="):
+        for banned in ("BindsTo", "WantedBy=pi-web.service", "PartOf=pi-web"):
             assert banned not in literal, literal
     for gone in ("render_lease_unit", "install_lease_unit", "install_lease_script"):
         assert not hasattr(pd, gone), gone
+    path_unit, service_unit = pd.render_broker_units(
+        "/mnt/data/stacks", "8787", "/mnt/data/stacks/pi-web/pi-lease-broker.py"
+    )
+    assert "Type=oneshot" in service_unit
+    assert "PathChanged=/mnt/data/stacks/pi-web/data/model-lease/request.json" in (
+        path_unit
+    )
+    assert f"Unit={pd.BROKER_UNIT}.service" in path_unit
 
 
 def test_the_post_deploy_never_stops_the_pod(pd):

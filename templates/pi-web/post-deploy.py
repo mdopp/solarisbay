@@ -2,23 +2,35 @@
 """
 post-deploy hook for the `pi-web` template.
 
-Two responsibilities:
+Three responsibilities:
 
-  1. **Point the Pi agent at llama-server.** PI WEB has no LLM configuration of
+  1. **Point the Pi agent at the model.** PI WEB has no LLM configuration of
      its own — the model runtime is the Pi Coding Agent's, and a self-hosted
      OpenAI-compatible endpoint is declared in the agent directory's
-     `models.json`. This writes that file into the volume the pod mounts, with
-     `baseUrl` = `http://host.containers.internal:<LLAMA_PORT>/v1`. Not
-     `127.0.0.1` (this pod has its own network namespace), not the LAN address
-     (rootless podman refuses it), and never the `llama.<domain>` route, which
-     is Authelia-gated and exists for a human with a browser.
+     `models.json`. This writes that file into the volume the pod mounts.
+
+     Since #1435 the `baseUrl` is the pod's own gate, `http://127.0.0.1:11437/v1`
+     — the containers of this pod share one network namespace, so that is the
+     `model-gate` container beside the sessions, and it forwards to the policy
+     proxy on `LLAMA_PORT` as `host.containers.internal`. Not `127.0.0.1` for
+     *that* hop (this pod has its own netns), not the LAN address (rootless
+     podman refuses it), and never the `llama.<domain>` route, which is
+     Authelia-gated and exists for a human with a browser.
 
      llama-server is a router since #1416: one port, several presets, the
      client picks one with the `model` field. So `models.json` lists the
      presets a session here may ask for — coding first, because that is what a
-     session starts with — and each one carries its own thinking switch. PI WEB
-     still never asks for a lease; the lease only sets which presets the
-     standing mode allows.
+     session starts with — and each one carries its own thinking switch.
+
+  3. **Bridge the gate's lease wishes to the Engine (#1435).** Picking a model
+     in PI WEB now takes the mode that permits it (operator, 2026-09-19). The
+     pod cannot make that call itself — `/api/model-lease` is loopback-only and
+     unauthenticated, and this pod has its own netns — so the gate writes a wish
+     onto the shared volume and `pi-web-lease-broker.path` starts a oneshot
+     service that makes the call, holder `pi-web`, and writes the answer back.
+     Same pattern and the same reason as the Engine's own
+     `solaris-gpu-lease-broker` (#1333). Demand-driven, never long-running:
+     that is the difference from the unit #1392 retired.
 
   2. **Retire the host-side lease unit (#1392).** Until now PI WEB took the
      coding lease by simply being started: `pi-web-model-lease.service` was
@@ -53,6 +65,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -65,6 +78,34 @@ LEASE_UNIT = "pi-web-model-lease"
 LEASE_SCRIPT = "pi-web-lease.py"
 POD_UNIT = "pi-web.service"
 SYSTEMD_USER_DIR = "~/.config/systemd/user"
+
+# The bridge across the pod's network namespace (#1435). PI WEB may take the
+# mode itself now (operator, 2026-09-19), but the pod cannot: `/api/model-lease`
+# is loopback-only with no token — reachability IS the authorisation — and this
+# pod has its own netns (ADR 0007). So `pi-web-model-gate` writes a wish onto
+# the volume and the units below turn it into the very lease call a host script
+# would make, holder `pi-web`.
+#
+# This is NOT the unit #1392 removed. That one was `BindsTo=pi-web.service`:
+# PI WEB runs around the clock, so it took the card on every start and boot for
+# hours nobody had asked for. This one is a `.path` watcher with a oneshot
+# service — it exists only while a wish is pending and ends with it.
+BROKER_UNIT = "pi-web-lease-broker"
+BROKER_SCRIPT = "pi-lease-broker.py"
+LEASE_DIR_NAME = "model-lease"
+LEASE_REQUEST_FILE = "request.json"
+LEASE_STATUS_FILE = "status.json"
+
+# How long the broker waits for the box to finish a mode switch before it says
+# so. The switch was box-measured at ~56 s including the environment change;
+# a first `foundry` window on a fresh box downloads 8 GB first, which is what
+# the unit's own `TimeoutStartSec` covers.
+BROKER_DEADLINE_SEC = 300
+
+# How often the waiting session is told to look at the status file again. It
+# travels in the `preparing` record as `retry_after`, so the pod reads a cadence
+# off the answer instead of carrying a second copy of this number.
+GATE_POLL_SEC = 5
 QUADLET_DIR = "~/.config/containers/systemd"
 KUBE_UNIT = "pi-web.kube"
 BOOT_INSTALL = "[Install]\nWantedBy=default.target\n"
@@ -86,6 +127,15 @@ HOUSEHOLD_CONTEXT = 32768
 LLAMA_PLACEHOLDER_KEY = "llama"
 
 PROVIDER_ID = "solaris-llama"
+
+# Where `models.json` sends the sessions: the pod's own model gate, not
+# `LLAMA_PORT` on the host. Every container of this pod shares one network
+# namespace, so `127.0.0.1` here is the gate container beside them — and routing
+# the sessions through it is what lets a refused preset take the mode it needs
+# instead of coming back as an error. A constant rather than a variable for the
+# same reason as the presets above: the port the gate binds and the port this
+# file writes are one number or the sessions have no model at all.
+MODEL_GATE_PORT = "11437"
 
 
 def env(key: str, default: str = "") -> str:
@@ -166,6 +216,79 @@ def is_own_stale_window(status: int, body: dict) -> bool:
     )
 
 
+def acquire_outcome(status: int, body: dict) -> str:
+    """What a `POST /api/model-lease` answer means, by its documented status.
+
+    200 the window stands, 202 the box is switching, 409 somebody else holds it,
+    anything else is a refusal or a silence. `state` is preferred over the code
+    where the body carries one, because that is the field the contract
+    (mdopp/foundry-chronicle#321) calls authoritative.
+    """
+    if status == 200:
+        return str(body.get("state") or "ready")
+    if status == 202:
+        return "preparing"
+    if status == 409:
+        return "held"
+    return "error"
+
+
+def poll_cadence(body: dict) -> float:
+    """`retry_after` is how often to ask again, not how long the switch takes —
+    so it is the sleep between two `GET`s and never a one-shot wait."""
+    value = body.get("retry_after")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return 5.0
+    return float(value)
+
+
+def lease_dir(data_dir: str) -> str:
+    """The exchange, on the volume the pod mounts at /data (template.yml)."""
+    return os.path.join(data_dir, "pi-web", "data", LEASE_DIR_NAME)
+
+
+def request_path(data_dir: str) -> str:
+    return os.path.join(lease_dir(data_dir), LEASE_REQUEST_FILE)
+
+
+def status_path(data_dir: str) -> str:
+    return os.path.join(lease_dir(data_dir), LEASE_STATUS_FILE)
+
+
+def render_broker_units(data_dir: str, chat_port: str, script: str) -> tuple[str, str]:
+    """The `.path`/`.service` pair, pure so the test can read them.
+
+    Demand-driven on purpose: `Type=oneshot`, started by the write itself and
+    gone again afterwards. That is the difference from the unit #1392 retired,
+    which was bound to the pod and therefore held the card for as long as PI WEB
+    ran — which is always.
+    """
+    path_unit = (
+        "[Unit]\n"
+        "Description=Watch for a PI WEB model-lease wish (#1435)\n"
+        "\n"
+        "[Path]\n"
+        f"PathChanged={request_path(data_dir)}\n"
+        f"Unit={BROKER_UNIT}.service\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+    service_unit = (
+        "[Unit]\n"
+        "Description=Take or give back the GPU mode PI WEB asked for (#1435)\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"Environment=DATA_DIR={data_dir}\n"
+        f"Environment=CHAT_PORT={chat_port}\n"
+        # A first `foundry` window downloads 8 GB before it switches anything.
+        "TimeoutStartSec=3600\n"
+        f"ExecStart={sys.executable} {script} broker\n"
+    )
+    return path_unit, service_unit
+
+
 def add_boot_install(kube_text: str) -> str:
     """The `.kube` unit with an `[Install] WantedBy=default.target` section.
 
@@ -179,9 +302,15 @@ def add_boot_install(kube_text: str) -> str:
     return kube_text + separator + BOOT_INSTALL
 
 
-def models_document(llama_port: str) -> dict:
+def models_document(gate_port: str) -> dict:
     """The Pi agent's `models.json`: one OpenAI-compatible provider and the
     three router presets a session here may pick.
+
+    The provider points at the pod's own model gate (#1435), which forwards to
+    the policy proxy on `LLAMA_PORT` and, when the standing mode refuses the
+    wanted preset, asks the box for the mode that permits it. That detour is
+    invisible to Pi — same URL shape, same OpenAI dialect — and it is what makes
+    picking a model here *activate* it.
 
     Since #1416 llama-server is a router — one port, four presets, the client
     picks with the `model` field — so all three are served at once and the
@@ -202,7 +331,7 @@ def models_document(llama_port: str) -> dict:
     return {
         "providers": {
             PROVIDER_ID: {
-                "baseUrl": f"http://host.containers.internal:{llama_port}/v1",
+                "baseUrl": f"http://127.0.0.1:{gate_port}/v1",
                 "api": "openai-completions",
                 "apiKey": LLAMA_PLACEHOLDER_KEY,
                 # llama-server takes neither the `developer` role nor
@@ -277,9 +406,9 @@ def kube_unit_path() -> str:
     return os.path.join(os.path.expanduser(QUADLET_DIR), KUBE_UNIT)
 
 
-def write_models_json(data_dir: str, llama_port: str) -> bool:
+def write_models_json(data_dir: str, gate_port: str) -> bool:
     path = os.path.join(agent_dir(data_dir), "models.json")
-    text = json.dumps(models_document(llama_port), indent=2) + "\n"
+    text = json.dumps(models_document(gate_port), indent=2) + "\n"
     try:
         if os.path.exists(path) and open(path, encoding="utf-8").read() == text:
             jlog("info", "pi-web:models", "models.json already current", path=path)
@@ -305,6 +434,248 @@ def write_models_json(data_dir: str, llama_port: str) -> bool:
         models=[CODING_ALIAS, THINKING_ALIAS, HOUSEHOLD_ALIAS],
     )
     return True
+
+
+# ── the host half of the bridge (#1435) ─────────────────────────────────────
+
+
+def read_lease_request(data_dir: str) -> dict:
+    try:
+        with open(request_path(data_dir), encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def write_lease_status(data_dir: str, record: dict) -> None:
+    path = status_path(data_dir)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+        os.chmod(path, 0o644)
+    except OSError as e:
+        jlog(
+            "error",
+            "pi-web:broker",
+            "could not write the lease status; the session will wait for nothing",
+            path=path,
+            error=str(e),
+        )
+
+
+def broker_acquire(url: str, correlation: str, mode: str, ttl: int) -> dict:
+    """Take `mode` for holder `pi-web` and wait for it to stand.
+
+    Never a takeover: a 409 is reported with the holder and the end time the
+    lease API returns, which is what the session then shows.
+    """
+    status, body = http_request(
+        url, {"model": mode, "ttl_s": ttl, "holder": LEASE_HOLDER}, "POST"
+    )
+    outcome = acquire_outcome(status, body)
+    if outcome == "held":
+        return {
+            "id": correlation,
+            "state": "held",
+            "mode": mode,
+            "holder": str(body.get("holder") or ""),
+            "expires_at": body.get("expires_at"),
+        }
+    if outcome == "error":
+        return {
+            "id": correlation,
+            "state": "error",
+            "mode": mode,
+            "message": f"Die Lease-Schnittstelle antwortete {status or 'gar nicht'}.",
+        }
+    deadline = time.time() + BROKER_DEADLINE_SEC
+    while outcome != "ready" and time.time() < deadline:
+        time.sleep(poll_cadence(body))
+        status, body = http_request(url, None, "GET")
+        outcome = str(body.get("state") or "") if status == 200 else "error"
+        if outcome == "none":
+            return {
+                "id": correlation,
+                "state": "error",
+                "mode": mode,
+                "message": "Das Fenster ist wieder verschwunden, bevor es stand.",
+            }
+    if outcome != "ready":
+        return {
+            "id": correlation,
+            "state": "error",
+            "mode": mode,
+            "message": "Der Umbau lief in eine Zeitgrenze.",
+        }
+    return {
+        "id": correlation,
+        "state": "ready",
+        "mode": mode,
+        "holder": LEASE_HOLDER,
+        "alias": str(body.get("alias") or ""),
+        "expires_at": body.get("expires_at"),
+        "renew_after": body.get("renew_after"),
+    }
+
+
+def broker_release(url: str, correlation: str, mode: str) -> dict:
+    """Give the window back, once. A `releasing` state is waited out rather than
+    answered with a second DELETE — the host finishes it whether anyone polls or
+    not (#1364)."""
+    status, body = http_request(url, {"holder": LEASE_HOLDER}, "DELETE")
+    if status == 409:
+        return {
+            "id": correlation,
+            "state": "held",
+            "mode": mode,
+            "holder": str(body.get("holder") or ""),
+            "expires_at": body.get("expires_at"),
+        }
+    deadline = time.time() + BROKER_DEADLINE_SEC
+    while time.time() < deadline:
+        status, body = http_request(url, None, "GET")
+        if status == 200 and body.get("state") == "none":
+            return {"id": correlation, "state": "released", "mode": mode}
+        time.sleep(poll_cadence(body))
+    return {
+        "id": correlation,
+        "state": "error",
+        "mode": mode,
+        "message": "Die Rückgabe läuft noch; die Box beendet sie von selbst.",
+    }
+
+
+def broker_run(data_dir: str, chat_port: str) -> int:
+    """What `pi-web-lease-broker.service` runs: one wish, one answer.
+
+    Idempotent against a path unit that fires twice — an id already answered is
+    left alone rather than re-run, which for `acquire` would re-arm a window and
+    for `release` would be the second DELETE the contract forbids.
+    """
+    request = read_lease_request(data_dir)
+    correlation = str(request.get("id") or "")
+    if not correlation:
+        return 0
+    answered = read_lease_status_id(data_dir)
+    if answered == correlation:
+        return 0
+    mode = str(request.get("mode") or "")
+    op = str(request.get("op") or "")
+    url = lease_url(chat_port)
+    write_lease_status(
+        data_dir,
+        {
+            "id": correlation,
+            "state": "preparing",
+            "mode": mode,
+            "retry_after": GATE_POLL_SEC,
+        },
+    )
+    if op == "release":
+        record = broker_release(url, correlation, mode)
+    elif op == "acquire" and mode:
+        record = broker_acquire(
+            url, correlation, mode, int(request.get("ttl_s") or 900)
+        )
+    else:
+        record = {
+            "id": correlation,
+            "state": "error",
+            "mode": mode,
+            "message": "Unbekannter Wunsch.",
+        }
+    write_lease_status(data_dir, record)
+    jlog(
+        "info",
+        "pi-web:broker",
+        "lease wish handled",
+        op=op,
+        mode=mode,
+        state=record.get("state"),
+    )
+    return 0
+
+
+def read_lease_status_id(data_dir: str) -> str:
+    try:
+        with open(status_path(data_dir), encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(record, dict) or record.get("state") == "preparing":
+        return ""
+    return str(record.get("id") or "")
+
+
+def install_broker_script(data_dir: str) -> str:
+    """Copy this script to a durable path the unit can execute — the same
+    self-copy the llama lease broker uses, so the request format and the code
+    that reads it are one file."""
+    dst = os.path.join(data_dir, "pi-web", BROKER_SCRIPT)
+    try:
+        with open(os.path.realpath(__file__), encoding="utf-8") as f:
+            source = f.read()
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write(source)
+        os.chmod(dst, 0o755)
+    except OSError as e:
+        jlog(
+            "warn",
+            "pi-web:broker",
+            "could not install the lease broker script",
+            path=dst,
+            error=str(e),
+        )
+        return ""
+    return dst
+
+
+def install_broker_units(data_dir: str, chat_port: str, script: str) -> None:
+    """Write + enable the wish watcher. Idempotent: same text, same enable.
+
+    The exchange directory is opened to everyone on purpose. The pod's
+    containers run as the image's `USER node`, which is a different host UID
+    than this script's, and the pod's own perms init already keeps /data
+    `a+rwX` for exactly that reason (#1358/#1403). Only a correlation id, a mode
+    and a deadline are ever written here — never a token, because the lease API
+    has none.
+    """
+    if not script:
+        return
+    unit_dir = os.path.expanduser(SYSTEMD_USER_DIR)
+    path_unit, service_unit = render_broker_units(data_dir, chat_port, script)
+    try:
+        os.makedirs(unit_dir, exist_ok=True)
+        os.makedirs(lease_dir(data_dir), exist_ok=True)
+        os.chmod(lease_dir(data_dir), 0o777)
+        for name, text in (
+            (f"{BROKER_UNIT}.path", path_unit),
+            (f"{BROKER_UNIT}.service", service_unit),
+        ):
+            with open(os.path.join(unit_dir, name), "w", encoding="utf-8") as f:
+                f.write(text)
+            os.chmod(os.path.join(unit_dir, name), 0o644)
+    except OSError as e:
+        jlog(
+            "error",
+            "pi-web:broker",
+            "could not install the lease broker; PI WEB will not be able to switch the mode",
+            path=unit_dir,
+            error=str(e),
+        )
+        return
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    subprocess.run(
+        ["systemctl", "--user", "enable", "--now", f"{BROKER_UNIT}.path"],
+        check=False,
+        capture_output=True,
+    )
+    jlog("info", "pi-web:broker", "lease broker installed", unit=f"{BROKER_UNIT}.path")
 
 
 # ── retiring the host-side lease unit (#1392) ───────────────────────────────
@@ -427,12 +798,20 @@ def start_pod() -> None:
 
 def main() -> int:
     data_dir = env("DATA_DIR", "/mnt/data/stacks")
+    chat_port = env("CHAT_PORT", "8787")
 
-    write_models_json(data_dir, env("LLAMA_PORT", "11435"))
+    # The host half of the bridge, run by `pi-web-lease-broker.service`. It has
+    # to come before anything else: ServiceBay executes this same file, and the
+    # unit executes the copy of it.
+    if len(sys.argv) > 1 and sys.argv[1] == "broker":
+        return broker_run(data_dir, chat_port)
+
+    write_models_json(data_dir, MODEL_GATE_PORT)
     retire_lease_unit(data_dir)
+    install_broker_units(data_dir, chat_port, install_broker_script(data_dir))
     restore_boot_autostart()
     start_pod()
-    release_own_lease(env("CHAT_PORT", "8787"))
+    release_own_lease(chat_port)
     return 0
 
 
