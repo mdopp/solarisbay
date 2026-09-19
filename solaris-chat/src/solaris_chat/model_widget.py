@@ -33,7 +33,7 @@ import re
 import time
 from datetime import datetime, timedelta
 
-from solaris_chat import model_lease
+from solaris_chat import gpu_lease, model_lease
 
 # The engine's permanent name on a window it holds for the tile. A holder is
 # the identity of the *service*, never of a session or a person (#1347), so
@@ -58,22 +58,23 @@ DEFAULT_UNTIL = "2h"
 # profile. Giving up is harmless: the release runs on the host either way.
 SWITCH_TRIES = 20
 
-# The profiles, in the order their rows are shown, titled as the operator named
-# them on 2026-09-13. The names say the two things a resident actually decides
-# between: whether the **house** is still fully itself, and whether the card is
-# **fast** or **thinking**. "Foundry" was a neighbour service's name for its own
-# evening and told a resident nothing; what it does is leave the house whole on
-# a bigger model, so it is "Haushalt + Denken".
+# The lease as a resident sees it (#1435, operator 2026-09-19): two rows, named
+# for the one thing the choice decides — does the house keep the graphics card,
+# or is it free for something bigger. The four rows before this were four names
+# for two states: `foundry`, `thinking` and `coding` set exactly the same
+# environment and differed only in which models they allowed.
 #
-# Hence the order: the two Haushalt rows first — the top line of a truncated
-# tile still answers "what is running right now" — then the two Fokus rows,
-# which hand the card to a job and slow the house down. The ids are unchanged
-# (`household`, `foundry:1h`, …), so this is a label change on the wire.
+# Haushalt first: the top line of a truncated tile still answers "what is
+# running right now".
+EXTENDED = model_lease.MODELS[0]
+
+# What the Erweitert row says it runs while nothing is loaded for it yet. The
+# model is the holder's choice, so the row cannot promise a name in advance.
+EXTENDED_MODEL = "größeres Modell"
+
 PROFILES = (
-    (HOUSEHOLD, "Haushalt + Schnell", "Gemma 4 e4b"),
-    ("foundry", "Haushalt + Denken", "Gemma 4 12B"),
-    ("thinking", "Fokus Denken", "Qwen 35B"),
-    ("coding", "Fokus Programmieren", "Qwen 27B"),
+    (HOUSEHOLD, "Haushalt", "Gemma 4 e4b"),
+    (EXTENDED, "Erweitert", EXTENDED_MODEL),
 )
 
 # The short word the tile's badge chip shows, per state. The chip is bold and
@@ -169,12 +170,17 @@ def lease_profile(profile: object) -> str:
     """The profile a row or a `model.lease` names, or `ValueError`.
 
     `household` is accepted here and nowhere else in the contract: it is the
-    row that releases.
+    row that releases. An older name for `erweitert` is accepted too and
+    answers as `erweitert`, so a sentence in the chat that still says "Fokus
+    Programmieren" does not become a dead end (#1435).
     """
     name = str(profile or "").strip().lower()
-    if name != HOUSEHOLD and name not in model_lease.MODELS:
+    if name == HOUSEHOLD:
+        return name
+    window = model_lease.canonical(name)
+    if window not in model_lease.MODELS:
         raise ValueError("invalid_model")
-    return name
+    return window
 
 
 def lease_seconds(hours: object) -> int:
@@ -231,19 +237,24 @@ def _status_text(
     """
     if state == "available":
         return ""
-    if state == "preparing":
-        return f"{model_name} · das dauert etwa eine Minute"
-    if state == "releasing":
-        return f"{model_name} · gleich wieder da"
     parts = [model_name]
-    when = when_text(expires_at, now=now)
-    if not when and profile == HOUSEHOLD:
-        # The house holds no window, so there is no end to name — say that this
-        # is simply how the house runs instead of leaving the row on the bare
-        # model name.
-        when = "Normalzustand"
-    if when:
-        parts.append(when)
+    if state == "preparing":
+        parts.append("das dauert etwa eine Minute")
+    elif state == "releasing":
+        parts.append("gleich wieder da")
+    else:
+        when = when_text(expires_at, now=now)
+        if not when and profile == HOUSEHOLD:
+            # The house holds no window, so there is no end to name — say that
+            # this is simply how the house runs instead of leaving the row on
+            # the bare model name.
+            when = "Normalzustand"
+        if when:
+            parts.append(when)
+    # Who has it, in every state including the switch (#1435): `erweitert` is
+    # now the only window in which the house is not served, so somebody at the
+    # phone has to be able to see THAT it was taken and by whom — otherwise a
+    # voice assistant that has gone slow looks broken.
     if holder and holder != HOLDER:
         parts.append(f"von {holder}")
     return " · ".join(parts)
@@ -256,7 +267,7 @@ def _windows(profile: str, *, now: float) -> list[tuple[str, str, float]]:
     tells the action to release.
     """
     if profile == HOUSEHOLD:
-        return [(HOUSEHOLD, "Haushalt + Schnell (Normalzustand)", 0.0)]
+        return [(HOUSEHOLD, "Haushalt (Normalzustand)", 0.0)]
     label = PROFILE_TITLES[profile]
     out = []
     for key, window, hours in WINDOWS:
@@ -308,7 +319,12 @@ def rows(lease: dict, *, household_alias: str, now: float | None = None) -> list
                 state = "active"
             row_holder = holder if leased == profile else ""
             row_expires = expires_at if leased == profile else None
-            alias = model_lease.ALIASES[profile]
+            # Which model is running is the holder's choice in this window, so
+            # the row reads it off the standing lease rather than naming one in
+            # advance (#1435).
+            alias = str(lease.get("alias") or "") if leased == profile else ""
+            if alias:
+                model_name = gpu_lease.PRESET_LABELS.get(alias, alias)
         status = _status_text(
             state,
             profile=profile,

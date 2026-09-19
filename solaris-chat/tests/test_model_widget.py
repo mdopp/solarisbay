@@ -43,7 +43,14 @@ def _at(*, hour: int, minute: int = 0, day: int = 8) -> float:
     return datetime(2026, 9, day, hour, minute).timestamp()
 
 
-def _hold(tmp_path, model: str, *, holder: str = "widget", hours: float = 2.0) -> None:
+def _hold(
+    tmp_path,
+    model: str,
+    *,
+    holder: str = "widget",
+    hours: float = 2.0,
+    alias: str = "",
+) -> None:
     """The lease file the box's `gpu-lease.py` writes for a live window."""
     path = gpu_lease.lease_path(_db(tmp_path))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +60,7 @@ def _hold(tmp_path, model: str, *, holder: str = "widget", hours: float = 2.0) -
                 "holder": holder,
                 "mode": model,
                 "ready": True,
-                "alias": model_lease.ALIASES[model],
+                "alias": alias or model_lease.ALIASES.get(model, ""),
                 "until": time.time() + hours * 3600,
             }
         ),
@@ -120,18 +127,21 @@ def test_an_unreadable_window_is_refused_not_guessed():
 
 def test_the_household_profile_is_a_lease_name_here_and_nowhere_else():
     assert model_widget.lease_profile("household") == "household"
-    assert model_widget.lease_profile("coding") == "coding"
+    assert model_widget.lease_profile("erweitert") == "erweitert"
+    # An old name a sentence in the chat may still use answers as the window
+    # it now is, rather than as a dead end (#1435).
+    assert model_widget.lease_profile("coding") == "erweitert"
     with pytest.raises(ValueError, match="invalid_model"):
         model_widget.lease_profile("gemma")
-    # The contract itself still knows only the two real windows.
+    # The contract itself still knows only the one real window.
     assert "household" not in model_lease.MODELS
 
 
 def test_the_cap_rose_to_a_day_without_moving_the_default():
     assert model_lease.TTL_MAX_SECONDS == 86400
-    assert model_lease.parse_payload({"model": "coding", "ttl_s": 86400})[1] == 86400
+    assert model_lease.parse_payload({"model": "erweitert", "ttl_s": 86400})[1] == 86400
     # A payload that names no window still gets the box's own 4 hours.
-    assert model_lease.parse_payload({"model": "coding"})[1] == 14400
+    assert model_lease.parse_payload({"model": "erweitert"})[1] == 14400
 
 
 # ---- one row per choice -----------------------------------------------------
@@ -153,35 +163,21 @@ def test_every_row_is_one_complete_choice():
     rows = _rows({"state": "none", "model": "", "holder": ""})
     assert list(rows) == [
         "household",
-        "foundry:1h",
-        "foundry:4h",
-        "foundry:morgen",
-        "thinking:1h",
-        "thinking:4h",
-        "thinking:morgen",
-        "coding:1h",
-        "coding:4h",
-        "coding:morgen",
+        "erweitert:1h",
+        "erweitert:4h",
+        "erweitert:morgen",
     ]
-    # The operator's wording of 2026-09-13: a row says whether the HOUSE is
-    # still fully itself and whether the card is fast or thinking. "Foundry"
-    # was a neighbour service's name for its own evening and told a resident
-    # nothing.
+    # #1435: two rows, because there were only ever two states. The row says
+    # the one thing the choice decides — does the house keep the card.
     assert [r["title"] for r in rows.values()] == [
-        "Haushalt + Schnell (Normalzustand)",
-        "Haushalt + Denken · 1 h",
-        "Haushalt + Denken · 4 h",
-        "Haushalt + Denken · bis morgen 07:00",
-        "Fokus Denken · 1 h",
-        "Fokus Denken · 4 h",
-        "Fokus Denken · bis morgen 07:00",
-        "Fokus Programmieren · 1 h",
-        "Fokus Programmieren · 4 h",
-        "Fokus Programmieren · bis morgen 07:00",
+        "Haushalt (Normalzustand)",
+        "Erweitert · 1 h",
+        "Erweitert · 4 h",
+        "Erweitert · bis morgen 07:00",
     ]
-    assert rows["coding:1h"]["profile"] == "coding"
-    assert rows["coding:1h"]["hours"] == 1.0
-    assert rows["coding:4h"]["hours"] == 4.0
+    assert rows["erweitert:1h"]["profile"] == "erweitert"
+    assert rows["erweitert:1h"]["hours"] == 1.0
+    assert rows["erweitert:4h"]["hours"] == 4.0
     # The release row is `hours: 0` — a value, not a missing one.
     assert rows["household"]["profile"] == "household"
     assert rows["household"]["hours"] == 0.0
@@ -190,9 +186,9 @@ def test_every_row_is_one_complete_choice():
 def test_the_morning_row_is_recomputed_on_every_fetch():
     # "bis morgen 07:00" shrinks all evening; a value cached from the last
     # fetch would take the card hours past the morning it names.
-    evening = _rows({"state": "none"}, now=_at(hour=18, minute=15))["coding:morgen"]
+    evening = _rows({"state": "none"}, now=_at(hour=18, minute=15))["erweitert:morgen"]
     assert evening["hours"] == 12.75
-    later = _rows({"state": "none"}, now=_at(hour=23))["coding:morgen"]
+    later = _rows({"state": "none"}, now=_at(hour=23))["erweitert:morgen"]
     assert later["hours"] == 8.0
 
 
@@ -201,8 +197,9 @@ def test_a_row_says_its_state_in_german_and_carries_no_raw_time():
     # `remaining_s` is not a sentence: `status_text` is the whole answer.
     rows = _rows({"state": "none", "model": "", "holder": ""})
     assert rows["household"]["status_text"] == "Gemma 4 e4b · Normalzustand"
-    assert rows["coding:1h"]["detail"] == "Qwen 27B"
-    assert rows["foundry:4h"]["detail"] == "Gemma 4 12B"
+    # Nobody has picked a model for the open window yet, so the row cannot
+    # promise a name — it says what it is instead (#1435).
+    assert rows["erweitert:1h"]["detail"] == "größeres Modell"
     for row in rows.values():
         assert "meta" not in row
         assert "expires_at" not in row
@@ -213,8 +210,8 @@ def test_a_quiet_row_says_only_its_model_and_the_loud_one_only_its_status():
     # The tile joins subtitle and meta into ONE line, so a model name in both
     # would read "Qwen 27B · bis 19:42 · Qwen 27B" (#1385).
     rows = _rows({"state": "none", "model": "", "holder": ""})
-    assert rows["coding:1h"]["status_text"] == ""
-    assert rows["coding:1h"]["detail"] == "Qwen 27B"
+    assert rows["erweitert:1h"]["status_text"] == ""
+    assert rows["erweitert:1h"]["detail"] == "größeres Modell"
     assert rows["household"]["detail"] == ""
     for row in rows.values():
         assert not (row["status_text"] and row["detail"]), row["id"]
@@ -226,10 +223,10 @@ def test_the_badge_is_a_ready_short_word_never_the_machine_state():
     quiet = _rows({"state": "none", "model": "", "holder": ""})
     assert quiet["household"]["badge"] == "läuft"
     # An idle row shows no chip at all rather than a word for "does nothing".
-    assert quiet["coding:1h"]["badge"] == ""
-    assert quiet["foundry:morgen"]["badge"] == ""
-    held = _rows({"state": "ready", "model": "coding", "holder": "widget"})
-    assert held["coding:4h"]["badge"] == "läuft"
+    assert quiet["erweitert:1h"]["badge"] == ""
+    assert quiet["erweitert:morgen"]["badge"] == ""
+    held = _rows({"state": "ready", "model": "erweitert", "holder": "widget"})
+    assert held["erweitert:4h"]["badge"] == "läuft"
     assert held["household"]["badge"] == ""
     assert model_widget.BADGES == {
         "active": "läuft",
@@ -238,35 +235,26 @@ def test_the_badge_is_a_ready_short_word_never_the_machine_state():
     }
 
 
-def test_the_alias_still_names_the_model_the_box_loads():
+def test_the_row_names_the_model_that_is_actually_loaded():
+    """#1435: in the open window the holder picks the model, and the policy
+    proxy records it in the lease. The row reads it from there — the tile is
+    where a resident finds out WHICH model is answering."""
     rows = _rows({"state": "none", "model": "", "holder": ""})
     assert rows["household"]["alias"] == "gemma-4-e4b"
-    assert rows["coding:1h"]["alias"] == "qwen3.8-27b"
-    assert rows["foundry:1h"]["alias"] == "gemma-4-12b"
-    assert rows["thinking:1h"]["alias"] == "qwen3.6-35b-a3b"
-
-
-def test_the_denken_rows_are_a_whole_mode_like_the_others():
-    # #1416: "Denken" is the mode the operator actually asked for — reading and
-    # logic — and it is the SAME shape as Programmieren, so a resident who
-    # learned one row has learned this one.
-    rows = _rows({"state": "none", "model": "", "holder": ""})
-    assert [rows[f"thinking:{w}"]["hours"] for w in ("1h", "4h")] == [1.0, 4.0]
-    for row in ("thinking:1h", "thinking:4h", "thinking:morgen"):
-        assert rows[row]["profile"] == "thinking"
-        # The model is named in plain words, never as the preset id.
-        assert rows[row]["detail"] == "Qwen 35B"
-        assert rows[row]["badge"] == ""
+    assert rows["erweitert:1h"]["alias"] == ""
     held = _rows(
         {
             "state": "ready",
-            "model": "thinking",
+            "model": "erweitert",
             "holder": "widget",
+            "alias": "qwen3.6-35b-a3b",
             "expires_at": _at(hour=19, minute=42),
         }
     )
-    assert held["thinking:4h"]["badge"] == "läuft"
-    assert held["thinking:4h"]["status_text"] == "Qwen 35B · bis 19:42"
+    assert held["erweitert:1h"]["alias"] == "qwen3.6-35b-a3b"
+    # In plain words, never as the preset id.
+    assert held["erweitert:4h"]["status_text"] == "Qwen 35B · bis 19:42"
+    assert held["erweitert:4h"]["badge"] == "läuft"
     # And it is a window like any other: the house says nothing while it runs.
     assert held["household"]["badge"] == ""
 
@@ -275,31 +263,33 @@ def test_a_held_window_says_so_on_every_row_of_that_profile():
     rows = _rows(
         {
             "state": "ready",
-            "model": "coding",
+            "model": "erweitert",
             "holder": "widget",
+            "alias": "qwen3.8-27b",
             "expires_at": _at(hour=19, minute=42),
         }
     )
-    for row_id in ("coding:1h", "coding:4h", "coding:morgen"):
+    for row_id in ("erweitert:1h", "erweitert:4h", "erweitert:morgen"):
         assert rows[row_id]["state"] == "active"
         # The model first, then the END as a clock — the two things the
         # operator asked the tile to answer at a glance (#1385).
         assert rows[row_id]["status_text"] == "Qwen 27B · bis 19:42"
         assert rows[row_id]["badge"] == "läuft"
     assert rows["household"]["state"] == "available"
-    assert rows["foundry:1h"]["status_text"] == ""
+    assert rows["household"]["status_text"] == ""
 
 
 def test_a_window_that_ends_tomorrow_names_the_day_with_the_clock():
     rows = _rows(
         {
             "state": "ready",
-            "model": "foundry",
+            "model": "erweitert",
             "holder": "widget",
+            "alias": "gemma-4-12b",
             "expires_at": _at(hour=7, day=9),
         }
     )
-    assert rows["foundry:4h"]["status_text"] == "Gemma 4 12B · bis morgen 07:00"
+    assert rows["erweitert:4h"]["status_text"] == "Gemma 4 12B · bis morgen 07:00"
 
 
 def test_the_last_hour_is_a_clock_too_never_a_remaining_duration():
@@ -308,49 +298,85 @@ def test_the_last_hour_is_a_clock_too_never_a_remaining_duration():
     rows = _rows(
         {
             "state": "ready",
-            "model": "foundry",
+            "model": "erweitert",
             "holder": "widget",
+            "alias": "gemma-4-12b",
             "expires_at": _at(hour=14, minute=42),
         }
     )
-    assert rows["foundry:1h"]["status_text"] == "Gemma 4 12B · bis 14:42"
+    assert rows["erweitert:1h"]["status_text"] == "Gemma 4 12B · bis 14:42"
 
 
 def test_a_stranger_holding_the_card_is_named_on_the_row():
+    """#1435: `erweitert` is the only state in which the house is not served
+    first, and anything — not just the tile — may take it. Somebody at the
+    phone with a slow voice assistant has to be able to read here WHO has the
+    card, WHICH model is answering and until when."""
     rows = _rows(
         {
             "state": "ready",
-            "model": "foundry",
+            "model": "erweitert",
             "holder": "pi-web",
+            "alias": "gemma-4-12b",
             "expires_at": _at(hour=7, day=9),
         }
     )
     assert (
-        rows["foundry:1h"]["status_text"]
+        rows["erweitert:1h"]["status_text"]
         == "Gemma 4 12B · bis morgen 07:00 · von pi-web"
     )
-    assert rows["foundry:1h"]["holder"] == "pi-web"
+    assert rows["erweitert:1h"]["holder"] == "pi-web"
+
+
+def test_the_holder_is_named_while_the_switch_is_still_happening():
+    """The switch costs about a minute, and it is exactly the minute in which
+    the assistant is least like itself — so the row says who took it then
+    too, not only once the window stands."""
+    taking = _rows({"state": "preparing", "model": "erweitert", "holder": "pi-web"})
+    assert (
+        taking["erweitert:1h"]["status_text"]
+        == "größeres Modell · das dauert etwa eine Minute · von pi-web"
+    )
+    giving = _rows(
+        {
+            "state": "releasing",
+            "model": "erweitert",
+            "holder": "pi-web",
+            "alias": "qwen3.8-27b",
+        }
+    )
+    assert (
+        giving["erweitert:1h"]["status_text"]
+        == "Qwen 27B · gleich wieder da · von pi-web"
+    )
 
 
 def test_the_house_keeps_the_card_until_the_swap_actually_lands():
     # `preparing` is the 12B still loading: llama-server is answering the
     # household model, so saying the house is not loaded would be a lie.
-    rows = _rows({"state": "preparing", "model": "foundry", "holder": "widget"})
+    rows = _rows({"state": "preparing", "model": "erweitert", "holder": "widget"})
     assert rows["household"]["state"] == "active"
-    assert rows["foundry:1h"]["state"] == "preparing"
-    assert rows["foundry:1h"]["badge"] == "wird geladen"
+    assert rows["erweitert:1h"]["state"] == "preparing"
+    assert rows["erweitert:1h"]["badge"] == "wird geladen"
     # …and while the card comes back the house is the one that is preparing.
-    rows = _rows({"state": "releasing", "model": "foundry", "holder": "widget"})
+    rows = _rows({"state": "releasing", "model": "erweitert", "holder": "widget"})
     assert rows["household"]["state"] == "preparing"
-    assert rows["foundry:1h"]["state"] == "releasing"
+    assert rows["erweitert:1h"]["state"] == "releasing"
 
 
 def test_a_swap_is_two_rows_speaking_at_once():
     # "dass gerade ein Wechsel stattfindet" (#1385): one row hands the card
     # back while the other takes it, and both say which half they are.
-    rows = _rows({"state": "releasing", "model": "foundry", "holder": "widget"})
-    assert rows["foundry:1h"]["badge"] == "wird freigegeben"
-    assert rows["foundry:1h"]["status_text"] == "Gemma 4 12B · gleich wieder da"
+    rows = _rows(
+        {
+            "state": "releasing",
+            "model": "erweitert",
+            "holder": "widget",
+            "alias": "gemma-4-12b",
+        }
+    )
+    assert rows["erweitert:1h"]["badge"] == "wird freigegeben"
+    assert rows["erweitert:1h"]["status_text"] == "Gemma 4 12B · gleich wieder da"
     assert rows["household"]["badge"] == "wird geladen"
     assert (
         rows["household"]["status_text"] == "Gemma 4 e4b · das dauert etwa eine Minute"
@@ -405,15 +431,9 @@ async def test_the_rows_endpoint_serves_the_tile(aiohttp_client, tmp_path):
     assert body["ok"] is True
     assert [row["id"] for row in body["models"]] == [
         "household",
-        "foundry:1h",
-        "foundry:4h",
-        "foundry:morgen",
-        "thinking:1h",
-        "thinking:4h",
-        "thinking:morgen",
-        "coding:1h",
-        "coding:4h",
-        "coding:morgen",
+        "erweitert:1h",
+        "erweitert:4h",
+        "erweitert:morgen",
     ]
     assert body["models"][0]["state"] == "active"
     assert body["models"][1]["hours"] == 1.0
@@ -441,19 +461,22 @@ async def test_a_row_takes_the_window_its_own_hours_name(aiohttp_client, tmp_pat
     client = await aiohttp_client(_app(tmp_path))
     r = await client.post(
         "/api/action-callback",
-        json={"action_id": "model.set", "params": {"profile": "coding", "hours": 4}},
+        json={
+            "action_id": "model.set",
+            "params": {"profile": "erweitert", "hours": 4},
+        },
     )
     body = await r.json()
     assert body["ok"] is True
     request = _request(tmp_path)
     assert request["op"] == "acquire"
-    assert request["model"] == "coding"
+    assert request["model"] == "erweitert"
     assert request["holder"] == model_widget.HOLDER
     # The window is measured from the tap, so the sub-second on the way to the
     # broker is the only difference from the four hours it names.
     assert 14395 <= request["ttl_s"] <= 14400
     # The answer is the plain sentence the card shows, not a state machine.
-    assert "Programmieren" in body["detail"]
+    assert "Erweitert" in body["detail"]
     assert "bis " in body["detail"]
 
 

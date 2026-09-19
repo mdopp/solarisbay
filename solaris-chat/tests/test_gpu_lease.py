@@ -1,14 +1,15 @@
-"""The GPU lease seen from the Engine (#1320), its coding window (#1319) and
-its foundry evening (#1325).
+"""The GPU lease seen from the Engine (#1320) and its one window (#1435).
 
 While an exclusive lease holds the card, `llama.service` is stopped. The turn
 must end in one honest German sentence instead of a timeout against a dead
 socket — and it must not reach the network at all, because there is nothing
 there to answer.
 
-The two named profiles are the opposite case: llama-server is up on another
-model, so the turn must actually be sent. A coding window says so in the chat;
-a foundry evening deliberately says nothing.
+An `erweitert` window is the opposite case: llama-server is up on some model,
+so the turn must actually be sent — and the chat says so, because that window
+is the only state in which the house is not served first. `foundry`,
+`thinking` and `coding` are the names it had before #1435 and are still read,
+so a lease file that outlived the deploy is understood.
 """
 
 from __future__ import annotations
@@ -91,6 +92,8 @@ async def test_a_leased_turn_calls_no_tool(tmp_path, monkeypatch):
 
 
 def _coding(tmp_path, ready=True, until=2_000_000_000.0):
+    """A window as the box writes it — under the old name `coding`, which is
+    what a lease file written before #1435 carries."""
     path = tmp_path / gpu_lease.LEASE_FILENAME
     path.write_text(
         json.dumps(
@@ -112,13 +115,14 @@ def test_an_exclusive_lease_mutes_the_chat(tmp_path):
     assert gpu_lease.mutes_chat(_held(tmp_path)) is True
 
 
-def test_a_live_coding_lease_does_not_mute_the_chat(tmp_path):
-    """Mode B: llama-server is serving the coding model, so the household turn
-    goes to it — a fixed sentence would be a worse answer than a real one."""
+def test_a_live_window_does_not_mute_the_chat(tmp_path):
+    """llama-server is serving a model, so the household turn goes to it — a
+    fixed sentence would be a worse answer than a real one. True for a lease
+    file written under the old name too (#1435)."""
     assert gpu_lease.mutes_chat(_coding(tmp_path)) is False
 
 
-def test_a_coding_lease_still_loading_mutes(tmp_path):
+def test_a_window_still_being_set_up_mutes(tmp_path):
     """The ~2 minutes between the swap and the model answering are the dead
     socket the fixed sentence exists for."""
     assert gpu_lease.mutes_chat(_coding(tmp_path, ready=False)) is True
@@ -130,8 +134,9 @@ def test_no_lease_mutes_nothing(tmp_path):
 
 def test_the_state_the_banner_is_built_from(tmp_path):
     assert gpu_lease.state(_coding(tmp_path)) == {
-        "mode": "coding",
+        "mode": "erweitert",
         "model": "Qwen 3.8 27B",
+        "holder": "coder",
         "alias": "",
         "until": 2_000_000_000.0,
         "answers": True,
@@ -139,6 +144,7 @@ def test_the_state_the_banner_is_built_from(tmp_path):
     assert gpu_lease.state(_held(tmp_path)) == {
         "mode": "exclusive",
         "model": "",
+        "holder": "coder",
         "alias": "",
         "until": 0.0,
         "answers": False,
@@ -146,8 +152,8 @@ def test_the_state_the_banner_is_built_from(tmp_path):
     assert gpu_lease.state(tmp_path / "free" / gpu_lease.LEASE_FILENAME) is None
 
 
-async def test_a_coding_turn_reaches_the_model(tmp_path, monkeypatch):
-    """The whole point of mode B — the request must actually be sent."""
+async def test_a_windowed_turn_reaches_the_model(tmp_path, monkeypatch):
+    """The whole point of the window — the request must actually be sent."""
     sent: list[object] = []
     monkeypatch.setattr(
         "aiohttp.ClientSession",
@@ -193,8 +199,9 @@ async def test_whoami_carries_the_window_the_banner_names(aiohttp_client, tmp_pa
 
     lease = (await (await client.get("/api/whoami")).json())["gpu_lease"]
 
-    assert lease["mode"] == "coding"
+    assert lease["mode"] == "erweitert"
     assert lease["model"] == "Qwen 3.8 27B"
+    assert lease["holder"] == "coder"
     assert lease["answers"] is True
 
 
@@ -212,13 +219,13 @@ def test_the_banner_is_wired_to_the_whoami_lease_token():
     assert 'id="gpu-notice"' in html
     assert "function applyGpuLease(lease)" in html
     assert "applyGpuLease(j && j.gpu_lease)" in html
-    # The operator's names of 2026-09-13: a window says whether the card is in
-    # focus on one job, and what kind of job (#1416).
-    assert "🖥️ Fokus Programmieren" in html
-    assert "🧠 Fokus Denken" in html
+    # One window, one banner (#1435) — and it names who has the card, because
+    # this is the only state in which the house is not served first.
+    assert "🧠 Erweitert" in html
+    assert "lease.holder" in html
 
 
-# ── #1325: the foundry evening — the same assistant, one model up ──────────
+# ── #1325 → #1435: a window taken under an old name is the same window ─────
 
 
 def _foundry(tmp_path, ready=True, until=2_000_000_000.0):
@@ -252,8 +259,10 @@ def test_a_foundry_lease_still_loading_mutes(tmp_path):
 
 def test_the_foundry_state_names_the_model_without_claiming_silence(tmp_path):
     assert gpu_lease.state(_foundry(tmp_path)) == {
-        "mode": "foundry",
+        "mode": "erweitert",
+        # Named from the preset that is loaded, the way a resident reads it.
         "model": "Gemma 4 12B",
+        "holder": "foundry",
         # #1333: the `--alias` llama-server answers with, empty for a lease
         # written before the box carried one.
         "alias": "gemma-4-12b",
@@ -262,22 +271,28 @@ def test_the_foundry_state_names_the_model_without_claiming_silence(tmp_path):
     }
 
 
-async def test_whoami_names_the_foundry_window(aiohttp_client, tmp_path):
+async def test_whoami_names_the_window_under_its_name_of_today(
+    aiohttp_client, tmp_path
+):
     _foundry(tmp_path)
     client = await aiohttp_client(_app(str(tmp_path / "solaris.db")))
 
     lease = (await (await client.get("/api/whoami")).json())["gpu_lease"]
 
-    assert lease["mode"] == "foundry"
+    assert lease["mode"] == "erweitert"
+    assert lease["holder"] == "foundry"
     assert lease["answers"] is True
 
 
-def test_a_foundry_lease_shows_the_resident_no_banner():
-    """Operator decision of 2026-09-05: nothing about the house changes except
-    that answers take about a second longer, so a notice would only worry
-    someone about something they cannot act on."""
+def test_the_banner_names_the_holder_and_what_is_slower():
+    """#1435: `erweitert` is the only state in which the house is not served
+    first, and anyone but the tile can take it. A resident who finds the voice
+    assistant slow must be able to read WHO has the card and what that costs —
+    the alternative is an assistant that looks broken."""
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    assert 'if (!lease || lease.mode === "foundry") { box.hidden = true;' in html
+    assert "Die Grafikkarte ist gerade für ein größeres Modell freigegeben" in html
+    assert 'lease.holder ? " — „" + lease.holder' in html
+    assert "findet solange nur " in html and "Stichwörter." in html
 
 
 # ── #1416: the router modes — which preset a turn goes to, and thinking ─────
@@ -301,24 +316,33 @@ def _mode(tmp_path, mode, *, allowed=None, alias="", ready=True):
     return path
 
 
-def test_a_thinking_lease_answers_like_coding_does(tmp_path):
-    """The MoE serves the household for the window, so muting would be wrong."""
-    assert "thinking" in gpu_lease.ANSWERING_MODES
-    assert gpu_lease.mutes_chat(_mode(tmp_path, "thinking")) is False
-    assert gpu_lease.mutes_chat(_mode(tmp_path, "thinking", ready=False)) is True
-    assert gpu_lease.state(_mode(tmp_path, "thinking"))["mode"] == "thinking"
+def test_there_is_one_answering_mode_and_the_old_names_reach_it(tmp_path):
+    """#1435: one window, three retired names for it. A lease file under any of
+    them must read as the window it is, not as "no lease" — the Engine would
+    otherwise answer a turn from a preset the box is not serving."""
+    assert gpu_lease.ANSWERING_MODES == ("erweitert",)
+    assert set(gpu_lease.MODE_ALIASES) == {"foundry", "thinking", "coding"}
+    for name in ("erweitert", "foundry", "thinking", "coding"):
+        assert gpu_lease.mode(_mode(tmp_path, name)) == "erweitert", name
+        assert gpu_lease.mutes_chat(_mode(tmp_path, name)) is False
+        assert gpu_lease.mutes_chat(_mode(tmp_path, name, ready=False)) is True
+        assert gpu_lease.state(_mode(tmp_path, name))["mode"] == "erweitert"
 
 
-def test_the_preset_on_the_wire_comes_from_the_mode_not_the_caller(tmp_path):
+def test_the_preset_on_the_wire_is_the_one_that_is_loaded(tmp_path):
+    """In `erweitert` the holder picks the model and the policy proxy records
+    it in the lease (#1435). Following that is what keeps Solaris from asking
+    for e4b every turn and evicting the model the holder is working with."""
     free = tmp_path / "free" / gpu_lease.LEASE_FILENAME
     assert gpu_lease.preset(free) == "gemma-4-e4b"
-    assert gpu_lease.preset(_mode(tmp_path, "foundry")) == "gemma-4-12b"
-    assert gpu_lease.preset(_mode(tmp_path, "thinking")) == "qwen3.6-35b-a3b"
-    assert gpu_lease.preset(_mode(tmp_path, "coding")) == "qwen3.8-27b"
-    # An operator who deployed other weights is asked for those.
-    assert gpu_lease.preset(_mode(tmp_path, "coding", alias="qwen3.8-14b")) == (
-        "qwen3.8-14b"
+    assert gpu_lease.preset(_mode(tmp_path, "erweitert", alias="qwen3.8-27b")) == (
+        "qwen3.8-27b"
     )
+    assert gpu_lease.preset(_mode(tmp_path, "foundry", alias="gemma-4-12b")) == (
+        "gemma-4-12b"
+    )
+    # Nothing asked for yet: the household preset is the sane default.
+    assert gpu_lease.preset(_mode(tmp_path, "erweitert")) == "gemma-4-e4b"
     # An exclusive lease mutes the turn anyway; it never names a preset.
     assert gpu_lease.preset(_held(tmp_path)) == "gemma-4-e4b"
 
@@ -326,16 +350,19 @@ def test_the_preset_on_the_wire_comes_from_the_mode_not_the_caller(tmp_path):
 def test_the_allowed_set_is_the_boxs_own_list(tmp_path):
     free = tmp_path / "free" / gpu_lease.LEASE_FILENAME
     assert gpu_lease.allowed(free) == ["gemma-4-e4b"]
-    assert gpu_lease.allowed(
-        _mode(tmp_path, "foundry", allowed=["gemma-4-e4b", "gemma-4-12b"])
-    ) == ["gemma-4-e4b", "gemma-4-12b"]
-    # A lease file written before #1416 carries no list — the mode's own preset
-    # is the fallback, so an upgrade in flight never reads as "nothing allowed".
+    every = ["gemma-4-e4b", "gemma-4-12b", "qwen3.6-35b-a3b", "qwen3.8-27b"]
+    assert gpu_lease.allowed(_mode(tmp_path, "erweitert", allowed=every)) == every
+    # A lease file written before #1416 carries no list — the preset its old
+    # name meant is the fallback, so an upgrade in flight never reads as
+    # "nothing allowed".
     assert gpu_lease.allowed(_mode(tmp_path, "thinking")) == ["qwen3.6-35b-a3b"]
+    assert gpu_lease.allowed(_mode(tmp_path, "erweitert")) == ["gemma-4-e4b"]
 
 
-def test_only_the_thinking_mode_asks_the_model_to_think(tmp_path):
-    assert gpu_lease.thinks(_mode(tmp_path, "thinking")) is True
-    assert gpu_lease.thinks(_mode(tmp_path, "coding")) is False
-    assert gpu_lease.thinks(_mode(tmp_path, "foundry")) is False
+def test_thinking_is_offered_in_the_open_window_and_nowhere_else(tmp_path):
+    """`enable_thinking` stays a per-request switch (#1416); what the window
+    decides is only whether a model that can reason may be loaded at all."""
+    assert gpu_lease.thinks(_mode(tmp_path, "erweitert")) is True
+    assert gpu_lease.thinks(_mode(tmp_path, "coding")) is True
     assert gpu_lease.thinks(tmp_path / "free" / gpu_lease.LEASE_FILENAME) is False
+    assert gpu_lease.thinks(_held(tmp_path)) is False

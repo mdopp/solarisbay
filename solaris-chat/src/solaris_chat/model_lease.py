@@ -79,6 +79,13 @@ client may ask for. Two additions, both additive on the contract:
   instead of only learning that it cannot have the card. Every existing field
   is unchanged, and a caller that reads none of the new ones sees what it
   always saw.
+
+Since #1435 there is **one** window, `erweitert`, and `foundry`/`thinking`/
+`coding` are accepted as its older names. What separated them was only the set
+of presets they allowed, and `erweitert` allows every preset the router knows —
+so a caller that still asks for `foundry` gets the same window, is still
+answered by the 12B (`alias`), still files under its own holder and still ends
+the window the same way. `GET` reports the window under its name of today.
 """
 
 from __future__ import annotations
@@ -94,9 +101,17 @@ from solaris_chat import gpu_lease
 # The leases a neighbour may ask for; anything else is a 400. All are
 # `gpu-lease.py --model` values — the HTTP name and the box's profile name are
 # deliberately one word, so a lease cannot be requested under a name the box
-# does not know. `thinking` (#1416) is additive on the contract: an existing
-# caller that only ever sends `foundry` or `coding` sees no change.
-MODELS = ("foundry", "coding", "thinking")
+# does not know. Since #1435 there is one window, `erweitert`; `foundry`,
+# `coding` and `thinking` are its older names and are still accepted, so an
+# existing caller sees no change at all.
+MODELS = (gpu_lease.EXTENDED_MODE,)
+MODEL_ALIASES = dict(gpu_lease.MODE_ALIASES)
+
+
+def canonical(model: Any) -> str:
+    """The window a requested name stands for today (#1435)."""
+    return gpu_lease.canonical_mode(model)
+
 
 # 5 minutes to 24 hours. The floor keeps a lease from expiring inside its own
 # swap (the 12B cold-loads in ~40 s). The ceiling was the box's own default
@@ -115,13 +130,14 @@ TTL_DEFAULT_SECONDS = 14400
 # What a `preparing` answer tells the caller to wait before polling `GET`.
 RETRY_AFTER_SECONDS = 30
 
-# The model name llama-server reports (`--alias`) per lease, and for the
-# household model when no lease is held. The box sets the same strings in
-# `templates/llama/post-deploy.py`; the leased ones are read back out of the
-# lease file rather than assumed, so only the household default lives in two
-# places (and `llama-profile.json` overrides it). Same table as
-# `gpu_lease.MODE_PRESETS` — since #1416 the alias IS the router preset a
-# client asks for, so the two cannot drift.
+# The model name llama-server reports (`--alias`) for a window asked for under
+# one of the old names, and for the household model when no lease is held. The
+# box sets the same strings in `templates/llama/post-deploy.py`; a standing
+# window's alias is read back out of the lease file rather than assumed — in
+# `erweitert` the holder picks its own preset and the policy proxy records it
+# there — so only the household default lives in two places (and
+# `llama-profile.json` overrides it). Same table as `gpu_lease.MODE_PRESETS`:
+# since #1416 the alias IS the router preset a client asks for.
 ALIASES = dict(gpu_lease.MODE_PRESETS)
 HOUSEHOLD_ALIAS = gpu_lease.HOUSEHOLD_PRESET
 
@@ -178,7 +194,9 @@ def parse_payload(body: Any) -> tuple[str, int, str]:
     if set(body) - set(PAYLOAD_KEYS):
         raise ValueError("unexpected_field")
     model = body.get("model")
-    if not isinstance(model, str) or model.strip() not in MODELS:
+    if not isinstance(model, str) or (
+        model.strip() not in MODELS and model.strip() not in MODEL_ALIASES
+    ):
         raise ValueError("invalid_model")
     raw_ttl = body.get("ttl_s", TTL_DEFAULT_SECONDS)
     if isinstance(raw_ttl, bool) or not isinstance(raw_ttl, int) or raw_ttl <= 0:
@@ -308,7 +326,9 @@ def state(db_path: str) -> dict:
     }
     if gpu_lease.is_leased(path):
         lease = gpu_lease.record(path)
-        mode = lease.get("mode")
+        # Under the name it has today: a window taken before #1435 (or by a
+        # caller that still says `coding`) is the same window.
+        mode = canonical(lease.get("mode"))
         if mode not in MODELS:
             return idle
         held_by = str(lease.get("holder") or mode)
@@ -316,8 +336,11 @@ def state(db_path: str) -> dict:
             "last_renewed_at": _number(lease.get("last_renewed_at")),
             "renew_after": _number(lease.get("renew_after")),
         }
+        # In `erweitert` the holder picks the preset and the policy proxy
+        # records it in the lease; until something has been asked for, what is
+        # loaded is still the household model.
         alias = (
-            str(lease.get("alias") or ALIASES[mode])
+            str(lease.get("alias") or household_alias(db_path))
             if lease.get("ready")
             else household_alias(db_path)
         )
@@ -354,13 +377,13 @@ def state(db_path: str) -> dict:
     handled = read_status(db_path).get("requested_at")
     if (
         request.get("op") == "acquire"
-        and request.get("model") in MODELS
+        and canonical(request.get("model")) in MODELS
         and request.get("requested_at") != handled
     ):
         ttl = _number(request.get("ttl_s"))
         return {
             "state": "preparing",
-            "model": request["model"],
+            "model": canonical(request["model"]),
             "alias": household_alias(db_path),
             "expires_at": None,
             "holder": str(request.get("holder") or request["model"]),

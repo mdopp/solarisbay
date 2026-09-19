@@ -417,7 +417,7 @@ def test_a_preset_the_mode_refuses_is_named_instead_of_looking_like_idleness(loo
     )
     note = loop.refusal_note([event], "qwen3.8-27b")
     assert "qwen3.8-27b" in note and "Haushalt" in note
-    assert "Modell-Kachel" in note and "Programmieren" in note
+    assert "Modell-Kachel" in note and "Erweitert" in note
     assert loop.refusal_note(['{"type":"done"}'], "qwen3.8-27b") == ""
 
 

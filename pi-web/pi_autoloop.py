@@ -446,7 +446,7 @@ def refusal_note(lines: list[str], preset: str) -> str:
         mode = found.group(1) if found else "Haushalt"
         return (
             f"Modell {preset} ist im Modus {mode} nicht erlaubt. "
-            "In der Modell-Kachel in Solaris den Modus Programmieren wählen; "
+            "In der Modell-Kachel in Solaris den Modus Erweitert wählen; "
             "der Loop nimmt das Ticket beim nächsten Durchgang von selbst wieder auf."
         )
     return ""

@@ -1,6 +1,6 @@
 ---
 name: solaris-model-tool
-description: The .model dot-command — welches Modell gerade läuft, und die Grafikkarte für eine gewählte Zeit auf Haushalt + Denken, Fokus Denken oder Fokus Programmieren umschalten.
+description: The .model dot-command — welches Modell gerade läuft, und die Grafikkarte für eine gewählte Zeit von Haushalt auf Erweitert umschalten.
 kind: tool
 scope: household
 tool-id: model
@@ -11,7 +11,7 @@ tool-item-id-field: id
 tool-actions: model.set, model.lease, model.release
 tool-cell-schema: {"id": "id", "title": "title", "subtitle": "status_text", "meta": ["detail"], "badge": "badge", "actions": ["model.set"]}
 tool-action-params: {"model.set": {"profile": "$profile", "hours": "$hours"}}
-version: 2.3.0
+version: 3.0.0
 author: Solaris
 license: MIT
 ---
@@ -21,30 +21,37 @@ license: MIT
 **Usage:** `.model` zeigt je Wahl eine Zeile — welches Modell wie lange laufen
 soll — und schaltet auf Knopfdruck um.
 
-Jede Zeile sagt zweierlei: ob das **Haus** noch ganz es selbst ist, und ob die
-Karte **schnell** oder **denkend** arbeitet.
+Es gibt **zwei** Zustände, und die Zeile sagt genau einen Unterschied: gehört
+die Grafikkarte dem Haus, oder ist sie für ein größeres Modell freigegeben.
 
 | Zeile | Was sie bedeutet |
 |---|---|
-| **Haushalt + Schnell (Normalzustand)** | die Karte gehört dem Haus, Solaris antwortet so schnell wie möglich — hierher kommt man immer zurück |
-| **Haushalt + Denken · 1 h / 4 h / bis morgen 07:00** | ein größeres Modell für das ganze Haus; alles funktioniert wie gewohnt, Antworten dauern rund eine Sekunde länger |
-| **Fokus Denken · 1 h / 4 h / bis morgen 07:00** | die Karte geht an ein Lese- und Denkmodell — für lange Texte, Zusammenhänge und Knobelfragen. Das Haus antwortet weiter, nur langsamer |
-| **Fokus Programmieren · 1 h / 4 h / bis morgen 07:00** | die ganze Grafikkarte für einen Programmierlauf |
+| **Haushalt (Normalzustand)** | die Karte gehört dem Haus: Solaris antwortet so schnell wie möglich, Sprechen läuft flott, die Suche in Notizen und Dokumenten versteht auch sinngemäß Gemeintes — hierher kommt man immer zurück |
+| **Erweitert · 1 h / 4 h / bis morgen 07:00** | die Karte ist für ein größeres Modell frei. Wer sie benutzt, wählt sein Modell selbst. Das Haus antwortet weiter, nur langsamer — auch beim Sprechen — und die Suche findet solange nur Stichwörter |
 
-„Fokus" heißt: die Karte arbeitet für eine Aufgabe, das Haus tritt zurück und
-wird langsamer. „Haushalt" heißt: das Haus behält sie.
+Früher standen hier vier Zeilen („Haushalt + Denken", „Fokus Denken", „Fokus
+Programmieren"). Sie stellten alle dieselbe Umgebung her und unterschieden sich
+nur darin, welche Modelle sie erlaubten — vier Namen für zwei Zustände. Die
+Modelle selbst gibt es unverändert; nur wählt sie jetzt der, der sie benutzt.
 
 Ein Tipp nimmt die Karte **bis zu einer Zeit**, nicht „bis auf Weiteres".
 Danach kommt sie von selbst zurück — niemand muss daran denken.
 
-Auf einen Blick sagt jede Zeile zweierlei: rechts als fettes Kurzwort, **was
+Auf einen Blick sagt jede Zeile dreierlei: rechts als fettes Kurzwort, **was
 gerade passiert** — `läuft` / `wird geladen` / `wird freigegeben`, und gar
-nichts, wenn die Zeile still ist; unter dem Titel **welches Modell und bis
-wann** — „Qwen 35B · bis 19:42", „Gemma 4 12B · bis morgen 07:00", beim Haus
-„Gemma 4 e4b · Normalzustand". Zeilen, die nichts tun, nennen nur ihr Modell
-(„Qwen 27B"). Die Endzeit steht als **Uhrzeit**, nicht als Restdauer: „noch 42
-Min" muss man erst zur aktuellen Zeit dazurechnen, um zu wissen, wann die Karte
-wieder frei ist.
+nichts, wenn die Zeile still ist; unter dem Titel **welches Modell, bis wann
+und wer es hält** — „Qwen 27B · bis 19:42 · von pi-web", beim Haus „Gemma 4
+e4b · Normalzustand". Zeilen, die nichts tun, nennen nur ihr Modell
+(„größeres Modell"). Die Endzeit steht als **Uhrzeit**, nicht als Restdauer:
+„noch 42 Min" muss man erst zur aktuellen Zeit dazurechnen, um zu wissen, wann
+die Karte wieder frei ist.
+
+**Der Halter steht immer dabei.** „Erweitert" ist der einzige Zustand, in dem
+das Haus nicht bevorzugt bedient wird, und nicht nur die Kachel kann ihn
+nehmen: ein Programmierwerkzeug darf das auch. Wer dann am Telefon steht und
+einen langsamen Sprachassistenten erlebt, soll an derselben Zeile sehen, **dass**
+jemand die Karte hat, **wer** das ist und **bis wann** — statt zu rätseln, ob
+etwas kaputt ist.
 
 Während eines Wechsels sprechen **zwei** Zeilen: die alte „wird freigegeben",
 die neue „wird geladen".
@@ -61,7 +68,9 @@ deklarierte Id, deren Parameter die Zeile füllen kann, gewinnt — eine zweite 
 aus denselben Feldern ist unerreichbar. Ein Profil mit drei Dauer-Knöpfen wäre
 also ein Profil mit dreimal demselben Knopf. Darum ist jede Kombination aus
 Profil und Dauer eine eigene Zeile, und die Zeile trägt beides: `profile` und
-`hours`. Betitelte Aktionen je Zeile kommen mit #1381 B.
+`hours`. Die Aktions-Kennung bleibt `model.set` — die App verträgt weniger
+Zeilen, aber keine umbenannte Aktion (#1381). Betitelte Aktionen je Zeile
+kommen mit #1381 B.
 
 ## Warum das Widget die Zeit hält, nicht das Telefon
 
@@ -77,8 +86,8 @@ das Ende.
   `title`, `profile`, `hours`, `alias`, `state` (`active` = gerade geladen /
   `available` / `preparing` / `releasing`), das fertige Kurzwort `badge`
   („läuft" / „wird geladen" / „wird freigegeben" / leer), ein fertig
-  formulierter `status_text` („Qwen 27B · bis 19:42") und `detail` (das Modell:
-  „Qwen 27B"). `status_text` und `detail` sind **nie beide** gefüllt: die Kachel
+  formulierter `status_text` („Qwen 27B · bis 19:42 · von pi-web") und `detail`
+  (das Modell: „größeres Modell"). `status_text` und `detail` sind **nie beide** gefüllt: die Kachel
   klebt Untertitel und Meta zu **einer** Zeile zusammen, also steht der
   Modellname genau einmal darin. Rohe Zustands- oder Zeitfelder zeigt die Kachel
   nie: sie stellt ein Feld unverändert dar, und weder „active" noch
@@ -98,17 +107,24 @@ das Ende.
   nimmt dann — dabei tragen zwei Zeilen gleichzeitig ein Kurzwort: die
   abgebende „wird freigegeben", die kommende „wird geladen". Hält ein
   **anderer** Dienst die Karte, sagt die Aktion das im Klartext und ändert
-  nichts; die Zeile nennt den Halter („… · von pi-web").
-- **Was ein Modus seit #1416 tut:** llama-server hält alle Presets gleichzeitig
-  und lädt das an, nach dem gefragt wird. Ein Modus tauscht darum keinen Server
-  mehr aus, sondern stellt die Umgebung (Sprache auf GPU oder CPU) und legt
-  fest, welche Presets währenddessen erlaubt sind; ein Proxy vor dem Router
-  weist alles andere mit `409` ab. Der Einbettungs-Server läuft in jedem Modus
-  weiter, die semantische Suche bleibt also da. Solaris fragt von sich aus
-  immer das Preset des laufenden Modus — „Fokus Denken" ist `qwen3.6-35b-a3b`.
+  nichts; die Zeile nennt den Halter („… · von pi-web") — in jedem Zustand,
+  auch während des Ladens und des Freigebens.
+- **Was ein Modus seit #1416/#1435 tut:** llama-server hält alle Presets
+  gleichzeitig und lädt das an, nach dem gefragt wird. Ein Modus tauscht darum
+  keinen Server mehr aus, sondern stellt die Umgebung (Sprache auf GPU oder
+  CPU, Einbettungs-Server an oder aus) und legt fest, welche Presets
+  währenddessen erlaubt sind; ein Proxy vor dem Router weist alles andere mit
+  `409` ab. In „Haushalt" ist genau ein Preset erlaubt (`gemma-4-e4b`), in
+  „Erweitert" alle — dort gibt es nichts mehr zu verweigern, der Klient wählt
+  mit dem Feld `model`. Solaris selbst fragt das Preset an, das gerade geladen
+  ist, statt das des Halters zu verdrängen.
+- **In „Erweitert" pausiert die sinngemäße Suche:** der Einbettungs-Server
+  passt nicht neben ein großes Modell auf die Karte (gemessen, #1434), also
+  findet die Suche in Notizen und Dokumenten solange nur Stichwörter. Das ist
+  Teil der Entscheidung, kein Ausfall — „Haushalt" bringt sie zurück.
 - **Nachdenken kommt auf Zuruf, nicht auf Vorrat** (Operator 13.9.): auch in
-  „Fokus Denken" antwortet Solaris normal. Erst wenn die Frage darum bittet —
+  „Erweitert" antwortet Solaris normal. Erst wenn die Frage darum bittet —
   „denk mal nach", „überleg", „gründlich", „Schritt für Schritt", „rechne",
   „Logik" — überlegt das Modell ausführlich
   (`chat_template_kwargs.enable_thinking`). So kostet „mach das Licht aus" auch
-  im Denkfenster keine Denkzeit.
+  im offenen Fenster keine Denkzeit.

@@ -60,8 +60,8 @@ mode taken from the phone is in force on the next one:
 
 | Request | Answer |
 |---|---|
-| `model` in the mode's `allowed` set | forwarded to the router, streamed back chunk by chunk |
-| `model` outside it | **409** `{"error": {"message": …, "mode": "coding", "allowed": ["qwen3.8-27b"]}}` |
+| `model` in the mode's `allowed` set | forwarded to the router, streamed back chunk by chunk — and noted in the lease as the preset that is now being served (#1435) |
+| `model` outside it | **409** `{"error": {"message": …, "mode": "haushalt", "allowed": ["gemma-4-e4b"]}}` |
 | no `model` field | forwarded — the router answers from the preset it already has, which cannot be one outside the mode |
 | `GET /v1/models` | the whole catalogue — every preset the router knows, each marked `allowed_in_mode`, with the standing `mode` at the top level |
 | `/health`, `/props`, `/slots`, everything else | forwarded verbatim |
@@ -74,8 +74,9 @@ do it (PI WEB, aider, goose, Continue) never pass through the Engine. The
 Engine's own check stays as well: it only ever asks for the preset the
 standing mode names, so the refusal is belt and braces.
 
-The message is German and says what to do (*"Den Modus in der Modell-Kachel in
-Solaris umschalten"*), because the operator is who reads it — in PI WEB's
+The message is German and says what to do (*"Für die anderen Modelle in der
+Modell-Kachel in Solaris auf „Erweitert“ umschalten"*), because the operator is
+who reads it — in PI WEB's
 ticket protocol, in aider's error line, in a log someone scrolls.
 
 ### The listing names all four, the request is what is refused (#1431)
@@ -88,12 +89,12 @@ Since #1431 it lists **every** preset and marks each one instead:
 ```json
 {
   "object": "list",
-  "mode": "coding",
+  "mode": "haushalt",
   "data": [
-    {"id": "gemma-4-e4b",     "status": {"value": "unloaded"}, "allowed_in_mode": false},
+    {"id": "gemma-4-e4b",     "status": {"value": "loaded"},   "allowed_in_mode": true},
     {"id": "gemma-4-12b",     "status": {"value": "unloaded"}, "allowed_in_mode": false},
     {"id": "qwen3.6-35b-a3b", "status": {"value": "unloaded"}, "allowed_in_mode": false},
-    {"id": "qwen3.8-27b",     "status": {"value": "loaded"},   "allowed_in_mode": true}
+    {"id": "qwen3.8-27b",     "status": {"value": "unloaded"}, "allowed_in_mode": false}
   ]
 }
 ```
@@ -308,13 +309,25 @@ every preset, so a named mode sets two things and nothing else:
 2. **the mode policy** — the presets a client may ask for, written into the
    lease file as `allowed`.
 
+**Two modes since #1435**, not four. What separated `foundry`, `thinking` and
+`coding` was only the set of presets they allowed — the environment was the
+same in all three, which is a distinction without a difference. The question a
+mode has to answer is whether the card may serve something other than the
+household; *which* model that then is, the client decides with the `model`
+field, and the router loads it on demand.
+
 | Mode | Environment | Allowed presets | Solaris answers from |
 |---|---|---|---|
-| household (no lease) | voice GPU, batch jobs on | `gemma-4-e4b` | e4b |
-| `--model foundry` | voice GPU, batch jobs on | `gemma-4-e4b`, `gemma-4-12b` | the 12B |
-| `--model thinking` | voice **CPU**, batch jobs **off** | `qwen3.6-35b-a3b` | the 35B-A3B |
-| `--model coding` | voice **CPU**, batch jobs **off** | `qwen3.8-27b` | the 27B |
+| `haushalt` (no lease) | voice GPU, batch jobs on, embeddings up | `gemma-4-e4b` | e4b |
+| `--model erweitert` | voice **CPU**, batch jobs **off**, embeddings **down** | **every** preset the router knows | the preset that is loaded |
 | no `--model` | everything stopped | none | nothing — the fixed sentence |
+
+`foundry`, `thinking` and `coding` are still accepted as **aliases** of
+`erweitert` (contract mdopp/foundry-chronicle#321), and decide only which
+preset the holder is told it will be answered by. A lease file left on disk
+under one of the old names migrates to `erweitert` when it is read. The preset
+*definitions* are untouched — they describe weights, window and drafter and are
+what `presets.ini` is rendered from.
 
 A request for a preset the current mode does not allow is refused with the
 mode's name rather than served: the household model is never evicted by a
@@ -328,8 +341,7 @@ post-deploy installs `${DATA_DIR}/solarisbay/gpu-lease.py` for that:
 
 ```
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire someone
-python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire coder --model coding --duration 4h
-python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire reader --model thinking --duration 2h
+python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire coder --model erweitert --duration 4h
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py acquire foundry --model foundry --duration 5h
 python3 ${DATA_DIR}/solarisbay/gpu-lease.py release
 ```

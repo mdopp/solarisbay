@@ -169,7 +169,7 @@ def _get(url: str) -> tuple[int, dict]:
 
 
 def test_no_lease_allows_only_the_household_preset(pd, tmp_path):
-    assert pd.proxy_policy(str(tmp_path)) == (["gemma-4-e4b"], "household")
+    assert pd.proxy_policy(str(tmp_path)) == (["gemma-4-e4b"], "haushalt")
 
 
 def test_the_household_default_follows_the_deployed_alias(pd, tmp_path, monkeypatch):
@@ -178,15 +178,19 @@ def test_the_household_default_follows_the_deployed_alias(pd, tmp_path, monkeypa
     monkeypatch.setenv("LLAMA_MODEL_ALIAS", "gemma-4-e4b-de")
     pd.save_household_profile(str(tmp_path))
     monkeypatch.delenv("LLAMA_MODEL_ALIAS")
-    assert pd.proxy_policy(str(tmp_path)) == (["gemma-4-e4b-de"], "household")
+    assert pd.proxy_policy(str(tmp_path)) == (["gemma-4-e4b-de"], "haushalt")
 
 
 def test_a_mode_allows_what_the_lease_wrote(pd, tmp_path):
-    _lease(pd, tmp_path, "foundry", ["gemma-4-e4b", "gemma-4-12b"])
-    assert pd.proxy_policy(str(tmp_path)) == (
-        ["gemma-4-e4b", "gemma-4-12b"],
-        "foundry",
-    )
+    _lease(pd, tmp_path, "erweitert", PRESETS)
+    assert pd.proxy_policy(str(tmp_path)) == (PRESETS, "erweitert")
+
+
+def test_a_lease_left_under_an_old_name_is_read_as_erweitert(pd, tmp_path):
+    """A box upgraded mid-window (#1435). The proxy has to name the mode the
+    tile shows, not one nothing knows any more."""
+    _lease(pd, tmp_path, "coding", PRESETS)
+    assert pd.proxy_policy(str(tmp_path)) == (PRESETS, "erweitert")
 
 
 def test_an_exclusive_lease_allows_nothing(pd, tmp_path):
@@ -204,14 +208,26 @@ def test_the_requested_model_survives_every_shape_a_client_sends(pd):
 
 
 def test_the_denial_says_the_mode_the_list_and_what_to_do(pd):
-    body = pd.denial("qwen3.8-27b", "household", ["gemma-4-e4b"])
-    assert body["error"]["mode"] == "household"
+    """The one refusal left (#1435): in `haushalt` exactly one preset is
+    allowed, and the message says which and where to change it."""
+    body = pd.denial("qwen3.8-27b", "haushalt", ["gemma-4-e4b"])
+    assert body["error"]["mode"] == "haushalt"
     assert body["error"]["allowed"] == ["gemma-4-e4b"]
     message = body["error"]["message"]
     # pi_autoloop greps `"mode":` out of this body and names the tile in its
     # ticket protocol — both halves have to stay findable.
-    assert "qwen3.8-27b" in message and "household" in message
+    assert "qwen3.8-27b" in message and "haushalt" in message
     assert "gemma-4-e4b" in message and "Modell-Kachel" in message
+    assert "Erweitert" in message
+
+
+def test_in_erweitert_a_refusal_can_only_be_a_name_the_router_lacks(pd):
+    """Every preset is allowed there, so the message points at the request
+    rather than at the tile — switching modes would not help."""
+    message = pd.denial("qwen4", "erweitert", PRESETS)["error"]["message"]
+    for preset in PRESETS:
+        assert preset in message
+    assert "Modell-Kachel" not in message
 
 
 def test_an_exclusive_lease_says_the_card_is_gone_rather_than_listing_nothing(pd):
@@ -237,9 +253,38 @@ def test_a_preset_outside_the_mode_never_reaches_the_router(
     and cost the next resident turn a 10-20 s reload."""
     status, body = _post(f"{proxy}/v1/chat/completions", {"model": "qwen3.8-27b"})
     assert status == 409
-    assert body["error"]["mode"] == "household"
+    assert body["error"]["mode"] == "haushalt"
     assert body["error"]["allowed"] == ["gemma-4-e4b"]
     assert upstream.state["seen"] == []
+
+
+def test_in_erweitert_every_preset_is_served(pd, tmp_path, proxy, upstream):
+    """#1435: the client picks and the router swaps on demand, so there is
+    nothing left for the policy to refuse in this mode."""
+    _lease(pd, tmp_path, "erweitert", PRESETS)
+    for preset in PRESETS:
+        status, _ = _post(f"{proxy}/v1/chat/completions", {"model": preset})
+        assert status == 200, preset
+
+
+def test_the_door_records_which_preset_it_served(pd, tmp_path, proxy, upstream):
+    """The tile and the Engine have no other way to learn what the holder
+    picked (#1435): without this the tile would name the preset the window was
+    taken for, and Solaris would ask for e4b and evict the holder's model."""
+    _lease(pd, tmp_path, "erweitert", PRESETS)
+    _post(f"{proxy}/v1/chat/completions", {"model": "qwen3.8-27b"})
+    assert pd.read_lease(str(tmp_path))["alias"] == "qwen3.8-27b"
+    _post(f"{proxy}/v1/chat/completions", {"model": "gemma-4-12b"})
+    lease = pd.read_lease(str(tmp_path))
+    assert lease["alias"] == "gemma-4-12b"
+    # Everything else the box wrote survives the note.
+    assert lease["holder"] == "test" and lease["ready"] is True
+
+
+def test_a_refused_preset_is_not_recorded_as_served(pd, tmp_path, proxy, upstream):
+    _lease(pd, tmp_path, "haushalt", ["gemma-4-e4b"])
+    _post(f"{proxy}/v1/chat/completions", {"model": "qwen3.8-27b"})
+    assert pd.read_lease(str(tmp_path)).get("alias", "") == ""
 
 
 @pytest.mark.parametrize(
@@ -248,7 +293,7 @@ def test_a_preset_outside_the_mode_never_reaches_the_router(
 def test_every_model_carrying_endpoint_is_policed_not_just_chat(
     pd, tmp_path, proxy, upstream, path
 ):
-    _lease(pd, tmp_path, "thinking", ["qwen3.6-35b-a3b"])
+    _lease(pd, tmp_path, "haushalt", ["gemma-4-e4b"])
     status, _ = _post(f"{proxy}{path}", {"model": "gemma-4-12b"})
     assert status == 409
     assert upstream.state["seen"] == []
@@ -257,7 +302,7 @@ def test_every_model_carrying_endpoint_is_policed_not_just_chat(
 def test_a_request_naming_no_model_is_forwarded(pd, tmp_path, proxy, upstream):
     """The router answers it from the preset it already has resident, which
     cannot be one outside the mode — there is nothing here to refuse."""
-    _lease(pd, tmp_path, "coding", ["qwen3.8-27b"])
+    _lease(pd, tmp_path, "erweitert", PRESETS)
     status, _ = _post(f"{proxy}/v1/chat/completions", {"messages": []})
     assert status == 200
     assert ("POST", "/v1/chat/completions", None) in upstream.state["seen"]
@@ -266,9 +311,8 @@ def test_a_request_naming_no_model_is_forwarded(pd, tmp_path, proxy, upstream):
 @pytest.mark.parametrize(
     "mode,allowed",
     [
-        ("household", ["gemma-4-e4b"]),
-        ("foundry", ["gemma-4-e4b", "gemma-4-12b"]),
-        ("coding", ["qwen3.8-27b"]),
+        ("haushalt", ["gemma-4-e4b"]),
+        ("erweitert", PRESETS),
         ("exclusive", []),
     ],
 )
@@ -286,8 +330,8 @@ def test_the_model_list_names_every_preset_in_every_mode(
 @pytest.mark.parametrize(
     "mode,allowed",
     [
-        ("foundry", ["gemma-4-e4b", "gemma-4-12b"]),
-        ("coding", ["qwen3.8-27b"]),
+        ("haushalt", ["gemma-4-e4b"]),
+        ("erweitert", PRESETS),
         ("exclusive", []),
     ],
 )
@@ -304,7 +348,7 @@ def test_the_model_list_marks_which_presets_the_mode_allows(
 
 def test_the_model_list_without_a_lease_marks_the_household_preset(pd, tmp_path, proxy):
     _, body = _get(f"{proxy}/v1/models")
-    assert body["mode"] == "household"
+    assert body["mode"] == "haushalt"
     assert [entry["id"] for entry in body["data"] if entry["allowed_in_mode"]] == [
         "gemma-4-e4b"
     ]
@@ -316,7 +360,7 @@ def test_the_load_state_is_passed_through_and_is_not_the_permission(
     """Two axes: `status.value` says where the weights are, `allowed_in_mode`
     says whether this client may ask. An allowed preset is routinely unloaded
     — normal, and 7-17 s on the first turn."""
-    _lease(pd, tmp_path, "foundry", ["gemma-4-e4b", "gemma-4-12b"])
+    _lease(pd, tmp_path, "erweitert", ["gemma-4-e4b", "gemma-4-12b"])
     _, body = _get(f"{proxy}/v1/models")
     entries = {entry["id"]: entry for entry in body["data"]}
     assert entries["gemma-4-12b"]["status"]["value"] == "unloaded"
@@ -328,7 +372,7 @@ def test_the_load_state_is_passed_through_and_is_not_the_permission(
 def test_a_client_that_reads_only_the_id_still_parses_the_listing(pd, tmp_path, proxy):
     """The marking is additive: an OpenAI client knows `object` and `data[].id`
     and nothing else, and must not trip over what was added beside them."""
-    _lease(pd, tmp_path, "coding", ["qwen3.8-27b"])
+    _lease(pd, tmp_path, "erweitert", ["qwen3.8-27b"])
     _, body = _get(f"{proxy}/v1/models")
     assert body["object"] == "list"
     for entry in body["data"]:
@@ -339,14 +383,14 @@ def test_a_client_that_reads_only_the_id_still_parses_the_listing(pd, tmp_path, 
 def test_the_listing_is_not_the_gate(pd, tmp_path, proxy, upstream):
     """Listed and marked not-allowed is still refused at the request — the
     409 path is unchanged by #1431."""
-    _lease(pd, tmp_path, "coding", ["qwen3.8-27b"])
+    _lease(pd, tmp_path, "haushalt", ["gemma-4-e4b"])
     _, body = _get(f"{proxy}/v1/models")
     listed = {entry["id"]: entry["allowed_in_mode"] for entry in body["data"]}
     assert listed["gemma-4-12b"] is False
     status, refusal = _post(f"{proxy}/v1/chat/completions", {"model": "gemma-4-12b"})
     assert status == 409
-    assert refusal["error"]["mode"] == "coding"
-    assert refusal["error"]["allowed"] == ["qwen3.8-27b"]
+    assert refusal["error"]["mode"] == "haushalt"
+    assert refusal["error"]["allowed"] == ["gemma-4-e4b"]
     assert ("POST", "/v1/chat/completions", "gemma-4-12b") not in upstream.state["seen"]
 
 
@@ -393,7 +437,7 @@ def test_a_dead_router_is_a_502_with_the_mode_rather_than_a_dropped_socket(
         url = f"http://127.0.0.1:{server.server_address[1]}"
         status, body = _post(f"{url}/v1/chat/completions", {"model": "gemma-4-e4b"})
         assert status == 502
-        assert body["error"]["mode"] == "household"
+        assert body["error"]["mode"] == "haushalt"
     finally:
         server.shutdown()
         server.server_close()
