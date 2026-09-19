@@ -344,12 +344,16 @@ def sse_notice(text: str, model: str, now: float) -> bytes:
     at all, so the wait is spoken in the answer itself rather than hidden in a
     log the resident never opens.
     """
+    return sse_chunk({"content": text}, None, model, now)
+
+
+def sse_chunk(delta: dict, finish_reason: str | None, model: str, now: float) -> bytes:
     chunk = {
         "id": "pi-web-model-gate",
         "object": "chat.completion.chunk",
         "created": int(now),
         "model": model,
-        "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
     }
     return b"data: " + json.dumps(chunk).encode("utf-8") + b"\n\n"
 
@@ -586,7 +590,7 @@ def make_gate_server(
             )
             if streaming:
                 self._say(payload["error"]["message"] + "\n", model)
-                self._end_stream()
+                self._end_stream(model)
                 return
             self._answer(status, json.dumps(payload).encode("utf-8"))
 
@@ -688,8 +692,17 @@ def make_gate_server(
             except OSError:
                 self.close_connection = True
 
-        def _end_stream(self) -> None:
+        def _end_stream(self, model: str) -> None:
+            """Close a stream this gate wrote itself.
+
+            The last chunk has to carry a `finish_reason`, or the client throws
+            the whole answer away: measured on the box 19.9., a session that ran
+            into a refusal printed `Stream ended without finish_reason` and not
+            one word of the German sentence the gate had just streamed it. Only
+            this path needs it — a relayed upstream answer ends itself.
+            """
             try:
+                self.wfile.write(sse_chunk({}, "stop", model, time.time()))
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
             except OSError:

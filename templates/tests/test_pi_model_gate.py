@@ -344,6 +344,23 @@ def test_the_wait_reaches_the_session_as_assistant_text(gate):
     assert payload["object"] == "chat.completion.chunk"
 
 
+def test_a_stream_this_gate_closes_itself_carries_a_finish_reason(gate):
+    """Measured on the box 19.9.: a session that ran into a refusal printed
+    `Stream ended without finish_reason` and not one word of the German
+    sentence the gate had just streamed it. A client that never sees a
+    `finish_reason` throws the whole answer away, so the last chunk of a stream
+    this gate wrote itself has to carry one."""
+    frame = gate.sse_chunk({}, "stop", "qwen3.8-27b", 1_000_000)
+    payload = json.loads(frame[len(b"data: ") :].decode("utf-8"))
+    assert payload["choices"][0]["finish_reason"] == "stop"
+    assert payload["choices"][0]["delta"] == {}
+    # The wait notices stay open-ended — only the closing chunk finishes.
+    notice = json.loads(
+        gate.sse_notice("Moment.\n", "qwen3.8-27b", 1_000_000)[len(b"data: ") :]
+    )
+    assert notice["choices"][0]["finish_reason"] is None
+
+
 def test_a_switch_that_never_finishes_ends_in_an_answer_and_not_a_hang(gate, tmp_path):
     held = lease(gate, tmp_path)
     pathlib.Path(held.dir).mkdir(parents=True, exist_ok=True)
