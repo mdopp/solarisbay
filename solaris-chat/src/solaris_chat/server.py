@@ -3215,9 +3215,12 @@ def build_app(
         # renewal under an old name must not read as somebody else's window.
         window = model_lease.canonical(model)
         current = model_lease.state(solaris_db_path)
-        if current["state"] != "none" and (
-            current["model"] != window or current["holder"] != holder
-        ):
+        # Only a window somebody ELSE holds is a refusal. A holder asking for a
+        # different mode than the one it already has is changing its own window
+        # — PI WEB does exactly that when a session picks a preset its standing
+        # mode does not allow — and `gpu-lease.py` has always accepted it: its
+        # own guard is `holder != holder`, nothing about the mode.
+        if current["state"] != "none" and current["holder"] != holder:
             # The mode policy (#1416): the router serves every preset at once,
             # so a refused window is no longer a dead end — the caller is told
             # which mode stands and which presets it may ask the router for.
@@ -3239,7 +3242,11 @@ def build_app(
         # answered at once with the deadline it already has.
         model_lease.write_request(solaris_db_path, "acquire", model, ttl, holder=holder)
         log.info("chat.model_lease.request", model=model, ttl=ttl, holder=holder)
-        if current["state"] == "ready":
+        # `ready` only for a renewal of the window that already stands: a holder
+        # moving its own window to another mode still has the environment switch
+        # ahead of it, and answering `ready` would send it straight at a preset
+        # the standing mode still refuses.
+        if current["state"] == "ready" and current["model"] == window:
             return web.json_response(
                 {
                     "ok": True,

@@ -1435,12 +1435,26 @@ def lease_acquire(
             until_sec=int(now + duration_sec),
         )
         return 0
+    # A holder moving its own window to another mode (pi-web, when a session
+    # picks a preset the standing mode refuses) is a switch, not a first take:
+    # what the mode it is leaving had stopped has to come back, or `erweitert`
+    # -> `foundry` would leave the house without its batch transcription, its
+    # vault search and its GPU voice stack while claiming foundry. Only what
+    # the previous mode actually changed is undone, so an ordinary acquire out
+    # of `haushalt` still touches nothing it does not have to.
+    left = LEASE_PROFILES.get(canonical_mode(current.get("mode"))) or {}
     if profile["stop_gpu_units"]:
         systemctl("stop", LEASE_GPU_UNITS)
+    elif left.get("stop_gpu_units"):
+        systemctl("start", LEASE_GPU_UNITS)
     if profile["stop_embed"]:
         systemctl("stop", (EMBED_UNIT,))
+    elif left.get("stop_embed"):
+        systemctl("start", (EMBED_UNIT,))
     if profile["voice"] == "cpu":
         set_voice_device(data_dir, "cpu")
+    elif left.get("voice") == "cpu":
+        set_voice_device(data_dir, "gpu")
     # No restart: llama-server keeps serving every preset and loads the one the
     # holder asks for on its first request (#1416). The card is free of the
     # household model as soon as that happens — the router evicts the idle LRU

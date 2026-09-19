@@ -315,6 +315,33 @@ def test_an_extended_acquire_keeps_the_voice_units_running_on_the_cpu(
     assert env_file.read_text() == "WHISPER_DEVICE=cpu\nKOKORO_ONNX_PROVIDER=cpu\n"
 
 
+def test_a_holder_switching_its_own_window_undoes_the_mode_it_leaves(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    """`erweitert` -> `foundry` under the same holder is a switch, not a first
+    take. Only the new mode's stops used to be applied, so the batch GPU units,
+    the embeddings server and the GPU voice stack would have stayed down while
+    the lease claimed `foundry` — the one mode that exists to keep them."""
+    assert pd.lease_acquire(str(tmp_path), "pi-web", "11434", "erweitert", 3600) == 0
+    systemctl_calls.clear()
+    assert pd.lease_acquire(str(tmp_path), "pi-web", "11434", "foundry", 3600) == 0
+    assert ("start", pd.LEASE_GPU_UNITS) in systemctl_calls
+    assert ("start", (pd.EMBED_UNIT,)) in systemctl_calls
+    assert ("restart", pd.LEASE_VOICE_UNITS) in systemctl_calls
+    env_file = tmp_path / "solarisbay" / pd.VOICE_DEVICE_FILE
+    assert env_file.read_text() == "WHISPER_DEVICE=cuda\nKOKORO_ONNX_PROVIDER=cuda\n"
+    assert pd.read_lease(str(tmp_path))["mode"] == "foundry"
+
+
+def test_an_acquire_out_of_the_household_starts_nothing_it_need_not(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    """The undo above must not turn an ordinary first acquire into a burst of
+    starts and a voice restart the household never asked for."""
+    assert pd.lease_acquire(str(tmp_path), "pi-web", "11434", "foundry", 3600) == 0
+    assert systemctl_calls == []
+
+
 def test_an_extended_acquire_never_restarts_the_router(
     pd, tmp_path, swap_box, systemctl_calls
 ):
