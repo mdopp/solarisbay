@@ -313,7 +313,24 @@ def test_generated_names_and_descriptions_stay_inside_pis_limits(kit):
     assert len(name) <= kit.NAME_MAX and not name.endswith("-")
 
     fields = {"title": "T" * 900, "whenToUse": "W" * 900}
-    assert len(kit.skill_description(fields)) <= kit.DESCRIPTION_MAX
+    assert len(kit.skill_description(fields)) <= kit.INDEX_MAX <= kit.DESCRIPTION_MAX
+
+
+def test_the_description_is_the_trigger_clause_not_the_whole_entry(kit):
+    """Every description is in Pi's context on every turn; the catalog's
+    `whenToUse` carries the trigger first and what the entry decides after an
+    em-dash. Only the trigger is worth that standing charge — the rest is the
+    skill itself."""
+    fields = {
+        "title": "ADR 0007 — Container network isolation",
+        "whenToUse": "You are choosing a network mode for a template — this decides "
+        "which pods may keep hostNetwork and why.",
+    }
+    assert kit.skill_description(fields) == "You are choosing a network mode for a template"
+    # No `whenToUse`: the title is the only thing that says what the entry is.
+    assert kit.skill_description({"title": "A bare title"}) == "A bare title"
+    # An em-dash inside the title must not be mistaken for the separator.
+    assert kit.skill_description({"title": "ADR 0001 — SSO"}) == "ADR 0001 — SSO"
 
 
 def test_every_catalog_frontmatter_renders_as_parseable_yaml(kit, tmp_path):
@@ -348,11 +365,11 @@ def test_a_clipped_description_stays_valid_yaml(kit):
     point."""
     tail = '\\"x: ' * 12
     for pad in range(12):
-        title = "T" * (kit.DESCRIPTION_MAX - 4 - pad)
-        head = frontmatter(kit.render_skill("clipped", assist(title, tail)))
-        expected = kit.skill_description({"title": title, "whenToUse": tail})
+        when = "W" * (kit.INDEX_MAX - 4 - pad) + tail
+        head = frontmatter(kit.render_skill("clipped", assist("title", when)))
+        expected = kit.skill_description({"title": "title", "whenToUse": when})
         assert head["description"] == expected
-        assert expected.endswith("…") and len(expected) <= kit.DESCRIPTION_MAX
+        assert expected.endswith("…") and len(expected) <= kit.INDEX_MAX
 
 
 def test_every_frontmatter_the_catalog_can_hold_renders_as_parseable_yaml(
