@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.72.0](https://github.com/mdopp/solarisbay/compare/v0.71.1...v0.72.0) (2026-09-20)
+
+
+### Features
+
+* **pi-web:** give a session a browser it can actually look through ([927d65a](https://github.com/mdopp/solarisbay/commit/927d65abdbdeb449f81d0b0534ed79e8bc072f7a))
+* **pi-web:** give a session a browser it can actually look through ([1ae4f11](https://github.com/mdopp/solarisbay/commit/1ae4f1150c07f6ad0a8eac5197dbb2fc670113fd))
+
 ## [0.71.1](https://github.com/mdopp/solarisbay/compare/v0.71.0...v0.71.1) (2026-09-20)
 
 
