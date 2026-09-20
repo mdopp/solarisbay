@@ -514,6 +514,14 @@ def test_the_prelude_says_the_browser_is_here_and_where_to_import_it(kit):
     assert "Playwright" in kit.PRELUDE and "Chromium" in kit.PRELUDE
     assert "/usr/local/lib/node_modules" in kit.PRELUDE
     assert "npx playwright" in kit.PRELUDE
+    # Two wrong conclusions a session actually drew, both answered here now:
+    # "no root, so the libraries cannot be there" and "the browser cannot reach
+    # my dev server". The libraries are baked into the image; the browser shares
+    # this pod's network namespace, so localhost is a server the session started
+    # itself and anything else on the box is host.containers.internal (ADR 0007).
+    assert "install-deps" in kit.PRELUDE
+    assert "host.containers.internal" in kit.PRELUDE
+    assert "localhost" in kit.PRELUDE
     # The browser path is set in the Dockerfile; the prelude must not invent a
     # second one. If the image moves the download, this goes red.
     browsers_path = dockerfile_env()["PLAYWRIGHT_BROWSERS_PATH"]
