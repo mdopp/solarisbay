@@ -8,7 +8,7 @@ pod mounts three of its directories at `/opt/servicebay`: `agent-cli/` (the
 not read any of those where they lie — it reads **its own** locations, and this
 script is the bridge:
 
-  * an assist becomes `<agent-dir>/skills/servicebay/<id>/SKILL.md`, because Pi
+  * an ADR or recipe becomes `<agent-dir>/skills/servicebay/<id>/SKILL.md`, because Pi
     loads skills as Agent-Skills packages (`name` + `description` frontmatter,
     one directory per skill) and an assist's frontmatter is `title`/`whenToUse`
     /`kind`/`tags` — the same content in a different shape, so it is generated
@@ -49,6 +49,16 @@ PI_CONFIG_DIR_NAME = ".pi"
 # One folder we own entirely, so pruning a retired assist is a scoped delete and
 # never touches a skill somebody put in the agent directory by hand.
 SKILL_GROUP = "servicebay"
+# Which catalog kinds are offered as skills. Every skill costs ~100 tokens of
+# system prompt on every turn — name, description, path and tags — before Pi
+# has read a word, and the catalog has 55 entries. ADRs are the decisions a
+# session must not build past, recipes are what it does step by step; both
+# earn a standing slot. Guides, footguns and checklists are looked up when a
+# situation calls for them, and `servicebay assists --kind <kind>` /
+# `servicebay assist <id>` is that lookup (the handbook says so), so they cost
+# nothing until asked for. Measured on the box: 55 skills → 25 saves ~2.9 k of
+# a ~12.5 k-token preload.
+SKILL_KINDS = ("adr", "recipe")
 
 # The Agent-Skills limits Pi validates against (docs/skills.md).
 NAME_MAX = 64
@@ -62,27 +72,19 @@ INDEX_MAX = 300
 
 PRELUDE = """# Where you are: the PI WEB container on this box
 
-- **Your projects** are checkouts under `/workspace`, one folder each. That
-  folder is where you work and commit; nothing else on this filesystem is yours
-  to change.
-- **`servicebay` is on `$PATH`.** It is the CLI described below, already
-  pointing at this container's token — the project's own when the folder
-  under `/workspace` has one, otherwise the pod's. What that token may do is not
-  a thing to assume: a refusal names the scope it needed. The token file it uses
-  is `/data/servicebay/parent-token`, or the project's own beside it. Run
-  `servicebay --help` for the verbs. You never pass a token to it.
-- **The agent kit** is mounted read-only at `$SERVICEBAY_AGENT_KIT`
-  (`/opt/servicebay`). Its assists are also loaded as Pi skills, so
-  `/skill:<assist-id>` opens one without leaving the session.
-- **A project's gate is the project's own.** Its `AGENTS.md` or `CLAUDE.md` and
-  its CI workflow name the lint, type and test commands; run them before you
-  commit, and do not invent a substitute when you cannot find them.
-- **You cannot install a tool here, and there is no container engine** (ADR
-  0007): you are not root, and only `/data` and `/workspace` survive a restart.
-  So a missing command is a finding, not an obstacle — the handbook below says
-  what to do with one. This image is built from `pi-web/Dockerfile` in
-  `mdopp/solarisbay` and your git credential reaches that repo, so the fix is a
-  PR. `gh` is on `$PATH` and already holds this pod's token.
+- **Your projects** are checkouts under `/workspace`, one folder each — the only
+  place on this filesystem you change anything.
+- **`servicebay` is on `$PATH`**, already pointing at this container's token
+  (the project's own when the folder has one, otherwise the pod's at
+  `/data/servicebay/parent-token`). You never pass a token to it; `--help` lists
+  the verbs, and a refusal names the scope it needed.
+- **A project's gate is the project's own:** its `AGENTS.md` / `CLAUDE.md` and
+  its CI name the lint, type and test commands. Run them before you commit, and
+  do not invent a substitute when you cannot find them.
+- **No root, no container engine, nothing installs here** (ADR 0007); only
+  `/data` and `/workspace` survive a restart. A missing tool is a finding, not
+  an obstacle: the fix is a PR to `pi-web/Dockerfile` in `mdopp/solarisbay`,
+  and `gh` is on `$PATH` with this pod's token.
 """
 
 
@@ -225,6 +227,9 @@ def generate_skills(assists_dir: str, skills_dir: str) -> dict[str, object]:
         try:
             text = open(os.path.join(assists_dir, source), encoding="utf-8").read()
         except OSError:
+            continue
+        fields, _ = parse_frontmatter(text)
+        if fields.get("kind", "").strip() not in SKILL_KINDS:
             continue
         skill = render_skill(assist_id, text)
         if skill is None:

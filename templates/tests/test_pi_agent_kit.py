@@ -290,6 +290,34 @@ def test_a_retired_assist_stops_being_offered(kit, tmp_path):
     assert not (tmp_path / "skills" / "servicebay" / "gone").exists()
 
 
+def test_only_adrs_and_recipes_become_skills_the_rest_is_looked_up(kit, tmp_path):
+    """Every skill is ~100 tokens of system prompt on every turn. ADRs and
+    recipes earn that; a guide, footgun or checklist is fetched through
+    `servicebay assists` when a situation calls for it, and one generated
+    before this rule is pruned like a retired assist."""
+    (tmp_path / "assists").mkdir()
+    kinds = [
+        ("adr-0001-x", "adr"),
+        ("recipe-y", "recipe"),
+        ("footgun-z", "footgun"),
+        ("guide-w", "guide"),
+        ("checklist-v", "checklist"),
+    ]
+    for assist_id, kind in kinds:
+        (tmp_path / "assists" / f"{assist_id}.md").write_text(
+            ASSIST.replace("kind: adr", f"kind: {kind}"), encoding="utf-8"
+        )
+    stale = tmp_path / "skills" / "servicebay" / "footgun-z"
+    stale.mkdir(parents=True)
+    (stale / "SKILL.md").write_text("old", encoding="utf-8")
+
+    report = kit.generate_skills(str(tmp_path / "assists"), str(tmp_path / "skills"))
+    assert report["skills"] == 2 and report["pruned"] == ["footgun-z"]
+    generated = sorted(p.name for p in (tmp_path / "skills" / "servicebay").iterdir())
+    assert generated == ["adr-0001-x", "recipe-y"]
+    assert kit.SKILL_KINDS == ("adr", "recipe")
+
+
 def test_a_failed_delivery_does_not_empty_the_skills(kit, tmp_path):
     """An empty mount is ServiceBay's outage to report. Wiping the skills over it
     would turn one loud failure into a second, silent one here."""
