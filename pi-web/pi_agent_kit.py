@@ -62,7 +62,8 @@ PRELUDE = """# Where you are: the PI WEB container on this box
 - **`servicebay` is on `$PATH`.** It is the CLI described below, already
   pointing at this container's token — the project's own when the folder
   under `/workspace` has one, otherwise the pod's. What that token may do is not
-  a thing to assume: a refusal names the scope it needed. Run
+  a thing to assume: a refusal names the scope it needed. The token file it uses
+  is `/data/servicebay/parent-token`, or the project's own beside it. Run
   `servicebay --help` for the verbs. You never pass a token to it.
 - **The agent kit** is mounted read-only at `$SERVICEBAY_AGENT_KIT`
   (`/opt/servicebay`). Its assists are also loaded as Pi skills, so
