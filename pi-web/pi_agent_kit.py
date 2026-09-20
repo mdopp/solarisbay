@@ -30,10 +30,12 @@ gone within the hour anyway (ADR 0014).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+import time
 
 DEFAULT_KIT = "/opt/servicebay"
 
@@ -63,6 +65,17 @@ SKILL_KINDS = ("adr", "recipe")
 # `skill: always` in its frontmatter. The catalog decides, per entry, which
 # guide or footgun is worth ~100 tokens a turn — not this file by kind alone.
 SKILL_ALWAYS = "always"
+
+# What a session compares against to learn that its ground truth moved (#1454).
+# The generated skills and `AGENTS.md` are frozen at pod start while the mount
+# keeps being refreshed hourly, so the stamp records the digest of every kit file
+# those copies were made from; `solaris-kit-notice.js` re-scans the mount each
+# turn and names what no longer matches. It lives next to the copies, in the
+# agent directory Pi reads.
+STAMP_NAME = "servicebay-kit.json"
+# The two directories a session's *text* comes from. `agent-cli/` is not one: a
+# session never reads the CLI, it runs it, and it always runs the live copy.
+STAMP_SOURCES = ("agent-docs", "assists")
 
 # The Agent-Skills limits Pi validates against (docs/skills.md).
 NAME_MAX = 64
@@ -98,6 +111,11 @@ PRELUDE = """# Where you are: the PI WEB container on this box
   `node_modules` is not this container's inventory. If it really is missing,
   that is a finding, not an obstacle: the fix is a PR to `pi-web/Dockerfile` in
   `mdopp/solarisbay`, and `gh` is on `$PATH` with this pod's token.
+- **The catalog is live, your copies are not.** `servicebay assist <id>` reads
+  the mounted checkout and always gives you today's text; the generated skills
+  and this file were frozen when the pod started. When a recipe you are
+  following does not work, re-read it through `servicebay assist` before you
+  conclude the recipe is wrong.
 """
 
 
@@ -267,6 +285,46 @@ def generate_skills(assists_dir: str, skills_dir: str) -> dict[str, object]:
     return {"written": written, "skills": len(kept), "pruned": pruned, "catalog": "ok"}
 
 
+def kit_digest(kit: str) -> dict[str, str]:
+    """`{path below the mount: sha256}` for every file a session's text comes from."""
+    digests: dict[str, str] = {}
+    for group in STAMP_SOURCES:
+        directory = os.path.join(kit, group)
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for name in names:
+            try:
+                with open(os.path.join(directory, name), "rb") as handle:
+                    payload = handle.read()
+            except OSError:
+                continue
+            digests[f"{group}/{name}"] = hashlib.sha256(payload).hexdigest()
+    return digests
+
+
+def write_stamp(agent_dir: str, digests: dict[str, str]) -> dict[str, object]:
+    """Record what the copies generated in this run were made from.
+
+    `rev` is a digest over the digests, so it moves exactly when the text moves.
+    An mtime would not: ServiceBay's hourly refresh rewrites the checkout whether
+    or not its content changed, and a session would be told about a change every
+    hour that never happened.
+    """
+    joined = "".join(f"{path}:{digest}\n" for path, digest in sorted(digests.items()))
+    stamp: dict[str, object] = {
+        "rev": hashlib.sha256(joined.encode("utf-8")).hexdigest(),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "files": digests,
+    }
+    write_if_changed(
+        os.path.join(agent_dir, STAMP_NAME),
+        json.dumps(stamp, indent=2, sort_keys=True) + "\n",
+    )
+    return stamp
+
+
 def render_agents_md(shipped: str) -> str:
     """The global context file: this box's prelude, then ServiceBay's handbook.
 
@@ -306,10 +364,16 @@ def main(argv: list[str] | None = None) -> int:
     kit = args.kit or DEFAULT_KIT
     agent_dir = args.agent_dir or agent_dir_from_env()
 
+    # Digested before generating, not after: if ServiceBay's hourly refresh
+    # lands mid-run, a stamp taken first is older than the copies and costs one
+    # extra notice, while one taken afterwards would claim text the copies do
+    # not carry and the session would never hear about it.
+    digests = kit_digest(kit)
     skills = generate_skills(
         os.path.join(kit, "assists"), os.path.join(agent_dir, "skills")
     )
     agents = install_agents_md(os.path.join(kit, "agent-docs"), agent_dir)
+    stamp = write_stamp(agent_dir, digests)
 
     # Nothing at all under the mount is the ordinary state of a box whose
     # ServiceBay predates the agent-kit delivery. It costs the skills, not the
@@ -346,6 +410,11 @@ def main(argv: list[str] | None = None) -> int:
             f"pi-web-agent-kit: {agents['path']} "
             f"{'rewritten' if agents['changed'] else 'already current'}"
         )
+
+    print(
+        f"pi-web-agent-kit: kit stamp {str(stamp['rev'])[:12]} "
+        f"over {len(digests)} files"
+    )
     return 0
 
 

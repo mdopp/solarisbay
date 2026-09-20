@@ -481,6 +481,36 @@ statt aus ServiceBays Auslieferungsfehler hier einen zweiten, stillen zu machen.
 So wirkt eine geänderte Architekturentscheidung ohne neue Version: ServiceBay
 frischt den Checkout stündlich auf, der nächste Start übernimmt ihn.
 
+**Eine laufende Sitzung erfährt, dass sich das Kit bewegt hat (#1454).** Erzeugt
+wird nur beim Pod-Start, aufgefrischt wird stündlich — eine Sitzung, die schon
+läuft, behält ihren Text. Das ist ausgerechnet die Sitzung, die gerade in das
+Problem läuft, das die Korrektur behebt: am 20.9.2026 lag die Berichtigung um
+21:52 auf der Box, und dieselbe Sitzung lief bis 22:30 weiter, ohne sie je zu
+sehen. Deshalb schreibt `pi-web-agent-kit` im selben Lauf, in dem er die Kopien
+erzeugt, einen **Stempel** nach `/data/pi-agent/servicebay-kit.json`: `rev`,
+`at` und je eine SHA-256 über jede Kit-Datei, aus der diese Kopien gemacht
+wurden. Die Pi-Erweiterung `solaris-kit-notice.js` liest ihn beim Sitzungsstart,
+vergleicht ihn zu jedem Zug mit dem Mount und schickt **eine** Zeile, die die
+geänderten Dateien beim Namen nennt — „The ServiceBay agent kit changed since
+this session started (assists/…). Re-read what you are relying on." Kein
+erzwungenes Nachlesen, keine Wiederholung: erst eine *weitere* Änderung ist
+wieder eine Zeile wert.
+
+**Warum eine Pi-Erweiterung und nicht der Sitzungs-Daemon.** Das Ticket sagt
+„der sessiond vergleicht", aber der Daemon ist `@jmfederico/pi-web` — ein
+fremdes Bündel, das wir nicht ändern. Pis eigene Erweiterungs-Schnittstelle hat
+die Naht dafür: `turn_start` und `pi.sendMessage(…, { deliverAs: "steer" })`,
+nach `docs/extensions.md` des angehefteten `pi-coding-agent` „delivered after
+the current assistant turn finishes executing its tool calls, before the next
+LLM call". Die Zeile ist damit eine echte Nachricht in der Sitzung: im Verlauf
+sichtbar und dieser Erweiterung zugeschrieben. Das Modell-Gate
+(`pi_model_gate.py`) hätte denselben Satz an die ausgehende Anfrage hängen
+können, aber das ändert ein Gespräch von außerhalb Pis eigenem Modell —
+unsichtbar im Verlauf, unsichtbar in Pis Kontextrechnung und für den Betreiber
+nicht nachlesbar. Und **SHA-256 statt mtime**: ServiceBays Auffrischung schreibt
+den Checkout neu, ob sich sein Inhalt geändert hat oder nicht; ein
+mtime-Stempel meldete stündlich eine Änderung, die nie stattgefunden hat.
+
 **Die `AGENTS.md`, zweimal.** Global schreibt derselbe Init-Container
 `/data/pi-agent/AGENTS.md` — ein kurzer Vorspann dieser Box (wo `/workspace`
 liegt, dass `servicebay` auf dem `$PATH` steht, dass die Gates dem Projekt
@@ -746,7 +776,14 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   Text der Entscheidung. `ps auxww | grep servicebay` zeigt kein Token.
 - `pi list` nennt neben dem `relays`-Paket von PI WEB auch `pi-subagents`, und
   `cat /data/pi-agent/settings.json` führt es unter `packages`.
-- `ls /data/pi-agent/extensions` zeigt `solaris-llama.js`, und
+- `jq -r '.rev, .at, (.files | length)' /data/pi-agent/servicebay-kit.json`
+  nennt eine Revision, einen Zeitpunkt und so viele Dateien wie
+  `ls /opt/servicebay/assists/*.md | wc -l` plus eins. Wer in einer laufenden
+  Sitzung prüfen will, ob die Zeile kommt, wartet die nächste Auffrischung ab
+  (oder lässt ServiceBay ausliefern) und schaut, ob die Sitzung im nächsten Zug
+  genau eine Zeile mit den geänderten Dateinamen bekommt.
+- `ls /data/pi-agent/extensions` zeigt `solaris-llama.js` und
+  `solaris-kit-notice.js`, und
   `jq '.providers["solaris-llama"] | has("models")' /data/pi-agent/models.json`
   antwortet `false` — die Liste kommt aus der Erweiterung, nicht aus der Datei.
 - `podman exec pi-web-model-gate curl -s 127.0.0.1:11437/v1/models | jq

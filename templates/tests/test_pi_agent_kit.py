@@ -20,10 +20,13 @@ reads. Every failure here is quiet:
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -36,6 +39,7 @@ KIT = ROOT / "pi-web" / "pi_agent_kit.py"
 WRAPPER = ROOT / "pi-web" / "pi_servicebay.py"
 PROJECT = ROOT / "pi-web" / "pi_web_project.py"
 DOCKERFILE = ROOT / "pi-web" / "Dockerfile"
+NOTICE = ROOT / "pi-web" / "extensions" / "solaris-kit-notice.js"
 
 MOUNT_ROOT = "/opt/servicebay"
 # What ServiceBay delivers to on the box, written out in the pod spec as a
@@ -517,6 +521,13 @@ def test_the_prelude_says_the_browser_is_here_and_where_to_import_it(kit):
     assert browsers_path in kit.PRELUDE
 
 
+def test_the_prelude_names_the_catalog_as_the_live_copy(kit):
+    """A running session's skills and AGENTS.md are frozen at pod start, so the
+    prelude has to name the one path that is not (#1454)."""
+    assert "servicebay assist" in kit.PRELUDE
+    assert "live" in kit.PRELUDE
+
+
 def test_the_handbook_is_never_shortened_into_the_prelude(kit):
     shipped = "# Working on a ServiceBay box\n\nEvery word of it.\n"
     assert "Every word of it." in kit.render_agents_md(shipped)
@@ -809,3 +820,229 @@ def test_the_image_puts_the_cli_and_the_generator_where_the_pod_calls_them():
     dockerfile = (ROOT / "pi-web" / "Dockerfile").read_text(encoding="utf-8")
     assert "pi_servicebay.py /usr/local/bin/servicebay" in dockerfile
     assert "pi_agent_kit.py /usr/local/bin/pi-web-agent-kit" in dockerfile
+
+
+# ── the stamp, and the notice a running session gets ────────────────────────
+#
+# The kit reaches the box hourly and reaches Pi at pod start, so a session that
+# is already running keeps the text it started with — the session that most
+# needs a correction is the one currently running into the problem it corrects
+# (#1454). The generator stamps what the copies were made from; the Pi extension
+# `solaris-kit-notice.js` re-scans the mount each turn and says, once, what no
+# longer matches. Both halves are asserted here because each is silent alone: a
+# stamp nobody reads and a comparison against nothing both look like success.
+
+HARNESS = """
+import { unlinkSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import extension from "__MODULE__";
+
+const steps = JSON.parse(process.argv[2]);
+const kit = process.env.SERVICEBAY_AGENT_KIT;
+const sent = [];
+const handlers = {};
+const pi = {
+  on: (event, handler) => { handlers[event] = handler; },
+  sendMessage: (message, options) => { sent.push({ message, options }); },
+};
+await extension(pi);
+for (const step of steps) {
+  if (step.write) {
+    writeFileSync(path.join(kit, step.write.path), step.write.text);
+  } else if (step.remove) {
+    unlinkSync(path.join(kit, step.remove));
+  } else if (handlers[step.event]) {
+    await handlers[step.event]({}, {});
+  }
+}
+process.stdout.write(JSON.stringify(sent));
+"""
+
+RECIPE = "assists/recipe-create-service.md"
+
+
+def kit_tree(root: pathlib.Path) -> pathlib.Path:
+    """The mount as ServiceBay delivers it: one handbook, two catalog entries."""
+    (root / "agent-docs").mkdir(parents=True)
+    (root / "agent-docs" / "AGENTS.md").write_text("# handbook\n", encoding="utf-8")
+    (root / "assists").mkdir()
+    (root / "assists" / "adr-0007-network.md").write_text(ASSIST, encoding="utf-8")
+    (root / RECIPE).write_text(
+        assist("Create a service", "You are creating a service on this box."),
+        encoding="utf-8",
+    )
+    return root
+
+
+def stamp_of(agent_dir: pathlib.Path) -> dict:
+    return json.loads((agent_dir / "servicebay-kit.json").read_text(encoding="utf-8"))
+
+
+def run_notice(
+    tmp_path: pathlib.Path,
+    steps: list[dict],
+    mount: pathlib.Path,
+    agent_dir: pathlib.Path,
+) -> list[dict]:
+    """Drive the real extension through Node against a real mount.
+
+    The file ships as `.js` because Pi loads extensions through jiti, which reads
+    ESM either way; plain Node needs the `.mjs` extension to do the same, so the
+    copy is the extension under a name Node will import.
+    """
+    node = shutil.which("node")
+    assert node, "node is what runs this extension on the box"
+    module = tmp_path / "extension.mjs"
+    module.write_text(NOTICE.read_text(encoding="utf-8"), encoding="utf-8")
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(HARNESS.replace("__MODULE__", module.as_uri()), encoding="utf-8")
+    result = subprocess.run(
+        [node, str(harness), json.dumps(steps)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "SERVICEBAY_AGENT_KIT": str(mount),
+            "PI_CODING_AGENT_DIR": str(agent_dir),
+            "PI_WEB_AGENT_DIR": "",
+        },
+    )
+    return json.loads(result.stdout)
+
+
+@pytest.fixture
+def stamped(kit, tmp_path) -> tuple[pathlib.Path, pathlib.Path]:
+    """A pod start: generate from the mount the way the init container does."""
+    mount = kit_tree(tmp_path / "kit")
+    agent_dir = tmp_path / "pi-agent"
+    kit.main(["--kit", str(mount), "--agent-dir", str(agent_dir)])
+    return mount, agent_dir
+
+
+def test_the_generator_stamps_what_the_copies_were_made_from(stamped):
+    mount, agent_dir = stamped
+    stamp = stamp_of(agent_dir)
+    assert set(stamp["files"]) == {
+        "agent-docs/AGENTS.md",
+        "assists/adr-0007-network.md",
+        RECIPE,
+    }
+    handbook = (mount / "agent-docs" / "AGENTS.md").read_bytes()
+    assert (
+        stamp["files"]["agent-docs/AGENTS.md"] == hashlib.sha256(handbook).hexdigest()
+    )
+    assert stamp["rev"] and stamp["at"].endswith("Z")
+
+
+def test_the_stamp_moves_when_the_text_moves_and_not_when_the_file_is_rewritten(
+    kit, stamped
+):
+    """ServiceBay's hourly refresh rewrites the checkout whether or not its
+    content changed. A stamp that keyed on mtime would report a change every
+    hour, and an hourly false alarm is a notice nobody reads."""
+    mount, agent_dir = stamped
+    first = stamp_of(agent_dir)["rev"]
+
+    os.utime(mount / "assists" / "adr-0007-network.md", (0, 0))
+    kit.main(["--kit", str(mount), "--agent-dir", str(agent_dir)])
+    assert stamp_of(agent_dir)["rev"] == first
+
+    (mount / "assists" / "adr-0007-network.md").write_text(
+        ASSIST + "\nand the corrected step\n", encoding="utf-8"
+    )
+    kit.main(["--kit", str(mount), "--agent-dir", str(agent_dir)])
+    assert stamp_of(agent_dir)["rev"] != first
+
+
+def test_an_unchanged_kit_tells_the_session_nothing(stamped, tmp_path):
+    mount, agent_dir = stamped
+    steps = [
+        {"event": "session_start"},
+        {"event": "turn_start"},
+        {"event": "turn_start"},
+    ]
+    assert run_notice(tmp_path, steps, mount, agent_dir) == []
+
+
+def test_a_changed_file_is_named_once_on_the_next_turn(stamped, tmp_path):
+    mount, agent_dir = stamped
+    sent = run_notice(
+        tmp_path,
+        [
+            {"event": "session_start"},
+            {"event": "turn_start"},
+            {
+                "write": {
+                    "path": RECIPE,
+                    "text": "---\ntitle: x\nwhenToUse: y\n---\nfix",
+                }
+            },
+            {"event": "turn_start"},
+            {"event": "turn_start"},
+            {"event": "turn_start"},
+        ],
+        mount,
+        agent_dir,
+    )
+
+    assert len(sent) == 1, "said once, not every turn"
+    message, options = sent[0]["message"], sent[0]["options"]
+    assert RECIPE in message["content"]
+    assert "agent-docs/AGENTS.md" not in message["content"]
+    assert len(message["content"].splitlines()) == 1
+    # "Delivered after the current assistant turn finishes executing its tool
+    # calls, before the next LLM call" — and no `triggerTurn`, so an idle session
+    # is not woken by a catalog edit.
+    assert options == {"deliverAs": "steer"}
+
+
+def test_a_later_change_is_a_new_line_and_not_a_repeat(stamped, tmp_path):
+    mount, agent_dir = stamped
+    sent = run_notice(
+        tmp_path,
+        [
+            {"event": "session_start"},
+            {
+                "write": {
+                    "path": RECIPE,
+                    "text": "---\ntitle: x\nwhenToUse: y\n---\none",
+                }
+            },
+            {"event": "turn_start"},
+            {"write": {"path": "agent-docs/AGENTS.md", "text": "# corrected\n"}},
+            {"event": "turn_start"},
+            {"event": "turn_start"},
+        ],
+        mount,
+        agent_dir,
+    )
+
+    assert [sorted(entry["message"]["details"]["files"]) for entry in sent] == [
+        [RECIPE],
+        ["agent-docs/AGENTS.md"],
+    ]
+
+
+def test_a_pod_that_left_no_stamp_says_nothing_at_all(stamped, tmp_path):
+    """The stamp is the only thing that says what this session's copies were made
+    from. Without it the mount is not evidence of anything, and guessing would
+    open every session on such a pod with 'all 55 assists changed'."""
+    mount, agent_dir = stamped
+    (agent_dir / "servicebay-kit.json").unlink()
+    steps = [
+        {"event": "session_start"},
+        {"write": {"path": RECIPE, "text": "---\ntitle: x\nwhenToUse: y\n---\nfix"}},
+        {"event": "turn_start"},
+    ]
+    assert run_notice(tmp_path, steps, mount, agent_dir) == []
+
+
+def test_the_notice_ships_in_the_image_like_the_provider_extension():
+    """Pi captures extensions when `sessiond` starts, and the `pi-web-extensions`
+    init container copies the whole directory — so shipping the file in the image
+    is the whole install. It is asserted because a file left out of the image is
+    an extension that silently never runs."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    assert "COPY extensions /opt/solaris/pi-extensions" in dockerfile
+    assert NOTICE.exists()
