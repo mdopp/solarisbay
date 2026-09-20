@@ -322,8 +322,7 @@ def test_an_entry_marked_skill_always_is_a_skill_whatever_its_kind(kit, tmp_path
     """A guide about when to stop and ask is worth its slot in every prompt; the
     catalog says so on the entry, and the generator honours it over the kind."""
     (tmp_path / "assists").mkdir()
-    pinned = ASSIST.replace("kind: adr", "skill: always
-kind: guide")
+    pinned = ASSIST.replace("kind: adr", "skill: always\nkind: guide")
     (tmp_path / "assists" / "guide-when-to-ask.md").write_text(pinned, encoding="utf-8")
     (tmp_path / "assists" / "guide-other.md").write_text(
         ASSIST.replace("kind: adr", "kind: guide"), encoding="utf-8"
