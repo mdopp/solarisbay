@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.71.1](https://github.com/mdopp/solarisbay/compare/v0.71.0...v0.71.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pi-web:** keep the prelude under its line budget ([cf3656e](https://github.com/mdopp/solarisbay/commit/cf3656ece7c8a1097ae56d43e1655dba1962f0b1))
+* **pi-web:** let gh find the token this pod already has ([77a7909](https://github.com/mdopp/solarisbay/commit/77a79095433ba8c898d47afe10c969474b4b8b04))
+* **pi-web:** let gh find the token this pod already has ([56a7ed5](https://github.com/mdopp/solarisbay/commit/56a7ed54bf3c1ceb41db2482df3807a432cdca82)), closes [#1439](https://github.com/mdopp/solarisbay/issues/1439)
+
 ## [0.71.0](https://github.com/mdopp/solarisbay/compare/v0.70.0...v0.71.0) (2026-09-20)
 
 
