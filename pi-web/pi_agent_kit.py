@@ -53,6 +53,12 @@ SKILL_GROUP = "servicebay"
 # The Agent-Skills limits Pi validates against (docs/skills.md).
 NAME_MAX = 64
 DESCRIPTION_MAX = 1024
+# What a skill's description may cost in Pi's context. Pi keeps EVERY skill's
+# description in the system prompt on every turn, so 55 of them are a fixed
+# charge a session pays before its first word: at the catalog's full `whenToUse`
+# that was ~5 k tokens, a third of the box's whole preload. 300 characters hold
+# the trigger clause of every entry in the catalog today.
+INDEX_MAX = 300
 
 PRELUDE = """# Where you are: the PI WEB container on this box
 
@@ -144,12 +150,16 @@ def skill_name(assist_id: str) -> str:
 def skill_description(fields: dict[str, str]) -> str:
     """What Pi keeps in context for every skill, so it decides when to open it.
 
-    `whenToUse` is written for exactly that question, and the title says what
-    the entry is; a description missing both would leave the skill unfindable.
+    The catalog writes `whenToUse` as "<trigger> — <what this entry decides>".
+    The trigger is the part that answers "open this now?"; the rest is the entry
+    itself, one `/skill:` away, and the title repeats the id Pi already shows as
+    the name. So the description is the trigger alone, and the title only when
+    an entry carries no `whenToUse` — a skill without a description is one Pi
+    skips with a warning.
     """
-    title = fields.get("title", "").strip()
     when = fields.get("whenToUse", "").strip()
-    return clip(" — ".join(part for part in (title, when) if part), DESCRIPTION_MAX)
+    trigger = when.split(" — ", 1)[0].strip() or fields.get("title", "").strip()
+    return clip(trigger, INDEX_MAX)
 
 
 def render_skill(assist_id: str, text: str) -> str | None:
