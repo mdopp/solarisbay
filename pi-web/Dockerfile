@@ -65,8 +65,17 @@ ARG GH_VERSION=2.101.0
 RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
       -o /tmp/gh.tgz \
  && tar -xzf /tmp/gh.tgz -C /tmp \
- && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+ && mkdir -p /usr/local/lib/gh/bin \
+ && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/lib/gh/bin/gh \
  && rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_amd64"
+
+# ...and `gh` on `$PATH` is a wrapper, because the binary above cannot find its
+# own credential here. `gh auth login --with-token` refuses this token: it
+# validates against `read:org`, which a token minted for pushing code has no
+# reason to carry. GH_TOKEN skips that check, so the wrapper sets it from the
+# same mode-0600 store git reads -- in the child's environment only, never in
+# argv. Same shape as `servicebay` two lines down, for the same reason.
+COPY --chmod=0755 pi_gh.py /usr/local/bin/gh
 
 # Pi ships no MCP, so a session reads this box through a CLI instead: one
 # delegated read-only ServiceBay token per project (#1395).
