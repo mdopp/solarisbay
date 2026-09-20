@@ -318,6 +318,21 @@ def test_only_adrs_and_recipes_become_skills_the_rest_is_looked_up(kit, tmp_path
     assert kit.SKILL_KINDS == ("adr", "recipe")
 
 
+def test_an_entry_marked_skill_always_is_a_skill_whatever_its_kind(kit, tmp_path):
+    """A guide about when to stop and ask is worth its slot in every prompt; the
+    catalog says so on the entry, and the generator honours it over the kind."""
+    (tmp_path / "assists").mkdir()
+    pinned = ASSIST.replace("kind: adr", "skill: always\nkind: guide")
+    (tmp_path / "assists" / "guide-when-to-ask.md").write_text(pinned, encoding="utf-8")
+    (tmp_path / "assists" / "guide-other.md").write_text(
+        ASSIST.replace("kind: adr", "kind: guide"), encoding="utf-8"
+    )
+    report = kit.generate_skills(str(tmp_path / "assists"), str(tmp_path / "skills"))
+    assert report["skills"] == 1
+    assert (tmp_path / "skills" / "servicebay" / "guide-when-to-ask").exists()
+    assert not (tmp_path / "skills" / "servicebay" / "guide-other").exists()
+
+
 def test_a_failed_delivery_does_not_empty_the_skills(kit, tmp_path):
     """An empty mount is ServiceBay's outage to report. Wiping the skills over it
     would turn one loud failure into a second, silent one here."""
