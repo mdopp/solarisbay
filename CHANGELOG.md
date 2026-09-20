@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.72.1](https://github.com/mdopp/solarisbay/compare/v0.72.0...v0.72.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pi-web:** skill descriptions carry the trigger, not the whole entry ([#1448](https://github.com/mdopp/solarisbay/issues/1448)) ([03a494b](https://github.com/mdopp/solarisbay/commit/03a494b989ce53a3aa0dd4f4b27aba09e7fa4bbf))
+
 ## [0.72.0](https://github.com/mdopp/solarisbay/compare/v0.71.1...v0.72.0) (2026-09-20)
 
 
