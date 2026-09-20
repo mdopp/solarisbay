@@ -76,8 +76,10 @@ PRELUDE = """# Where you are: the PI WEB container on this box
   engine either (ADR 0007), so you cannot build or run an image; a fault in a
   container you wrote first becomes visible when CI goes red.
 - **A missing command you were told to use is a finding, not an obstacle.** Use
-  what is here — `fetch` in node for `curl`, node for `jq` — and put in your
-  report which command was missing and which detour you took. A detour inside one
+  what is here — and `gh` is here, already holding this pod's token — then put
+  in your
+  in your report which command was missing and which detour you took. A detour
+  inside one
   session is fine; a detour written into a recipe makes the gap permanent. Then
   fix it: this image is built from `pi-web/Dockerfile` in `mdopp/solarisbay`, and
   your git credential reaches that repo. Open the PR. After the merge CI builds
