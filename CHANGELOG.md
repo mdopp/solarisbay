@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.71.0](https://github.com/mdopp/solarisbay/compare/v0.70.0...v0.71.0) (2026-09-20)
+
+
+### Features
+
+* **pi-web:** give a session the tools its own assists prescribe ([c9ef4d5](https://github.com/mdopp/solarisbay/commit/c9ef4d5718634698c3b618ff25b26a97845b9c16))
+* **pi-web:** give a session the tools its own assists prescribe ([2b0732b](https://github.com/mdopp/solarisbay/commit/2b0732b0f0469dba0e4e8e768d7d352862f89ca8)), closes [#1439](https://github.com/mdopp/solarisbay/issues/1439)
+
 ## [0.70.0](https://github.com/mdopp/solarisbay/compare/v0.69.1...v0.70.0) (2026-09-19)
 
 
