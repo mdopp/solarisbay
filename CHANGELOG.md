@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.72.2](https://github.com/mdopp/solarisbay/compare/v0.72.1...v0.72.2) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pi-web:** only ADRs and recipes are skills; the prelude says less ([#1450](https://github.com/mdopp/solarisbay/issues/1450)) ([9c6671b](https://github.com/mdopp/solarisbay/commit/9c6671b57918a01c333bb022733549229e7541b4))
+
 ## [0.72.1](https://github.com/mdopp/solarisbay/compare/v0.72.0...v0.72.1) (2026-09-20)
 
 
