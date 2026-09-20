@@ -70,21 +70,12 @@ PRELUDE = """# Where you are: the PI WEB container on this box
 - **A project's gate is the project's own.** Its `AGENTS.md` or `CLAUDE.md` and
   its CI workflow name the lint, type and test commands; run them before you
   commit, and do not invent a substitute when you cannot find them.
-- **You cannot install a tool here, and you do not need to.** You are not root,
-  and only `/data` and `/workspace` survive a pod restart — anything you put
-  anywhere else is gone by morning and reached nobody. There is no container
-  engine either (ADR 0007), so you cannot build or run an image; a fault in a
-  container you wrote first becomes visible when CI goes red.
-- **A missing command you were told to use is a finding, not an obstacle.** Use
-  what is here — and `gh` is here, already holding this pod's token — then put
-  in your
-  in your report which command was missing and which detour you took. A detour
-  inside one
-  session is fine; a detour written into a recipe makes the gap permanent. Then
-  fix it: this image is built from `pi-web/Dockerfile` in `mdopp/solarisbay`, and
-  your git credential reaches that repo. Open the PR. After the merge CI builds
-  and `AutoUpdate=registry` carries the image to the box — that is how you get
-  yourself a tool, and it is the path every other change here takes too.
+- **You cannot install a tool here, and there is no container engine** (ADR
+  0007): you are not root, and only `/data` and `/workspace` survive a restart.
+  So a missing command is a finding, not an obstacle — the handbook below says
+  what to do with one. This image is built from `pi-web/Dockerfile` in
+  `mdopp/solarisbay` and your git credential reaches that repo, so the fix is a
+  PR. `gh` is on `$PATH` and already holds this pod's token.
 """
 
 
