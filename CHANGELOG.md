@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.72.3](https://github.com/mdopp/solarisbay/compare/v0.72.2...v0.72.3) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pi-web:** an entry marked skill: always is a skill whatever its kind ([#1452](https://github.com/mdopp/solarisbay/issues/1452)) ([30c98ed](https://github.com/mdopp/solarisbay/commit/30c98ed576aab826eff59ef539530f18c0b2564a))
+
 ## [0.72.2](https://github.com/mdopp/solarisbay/compare/v0.72.1...v0.72.2) (2026-09-20)
 
 
