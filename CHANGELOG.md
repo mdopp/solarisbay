@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.73.0](https://github.com/mdopp/solarisbay/compare/v0.72.3...v0.73.0) (2026-09-20)
+
+
+### Features
+
+* **pi-web:** a running session hears when the agent kit moves under it ([8778354](https://github.com/mdopp/solarisbay/commit/8778354961dab560b26c820107914882d5f5e888)), closes [#1454](https://github.com/mdopp/solarisbay/issues/1454)
+
+
+### Bug Fixes
+
+* **pi-web:** the prelude says a browser is here, and how to import it ([#1455](https://github.com/mdopp/solarisbay/issues/1455)) ([e68ff90](https://github.com/mdopp/solarisbay/commit/e68ff90e805d60c884fb60a785e63ffc88a92e0a))
+
 ## [0.72.3](https://github.com/mdopp/solarisbay/compare/v0.72.2...v0.72.3) (2026-09-20)
 
 
