@@ -492,13 +492,29 @@ def test_the_global_context_file_is_the_prelude_then_the_shipped_handbook(
     assert text.index("PI WEB container") < text.index("Working on a ServiceBay box")
 
 
-def test_the_prelude_says_the_three_things_only_this_box_knows(kit):
+def test_the_prelude_says_the_things_only_this_box_knows(kit):
     """It is deliberately short: everything general is in the shipped file, and a
     second copy of that here is the drift ADR 0014 exists to prevent."""
     assert "/workspace" in kit.PRELUDE
     assert "`servicebay` is on `$PATH`" in kit.PRELUDE
     assert "gate" in kit.PRELUDE
     assert len(kit.PRELUDE.splitlines()) < 30
+
+
+def test_the_prelude_says_the_browser_is_here_and_where_to_import_it(kit):
+    """A session that looks for Playwright in the project's `node_modules` finds
+    nothing and reports "not installed" — which happened, with a browser sitting
+    on the image the whole time. The prelude names it, and names the two ways to
+    reach a global package from a project directory.
+    """
+    assert "Playwright" in kit.PRELUDE and "Chromium" in kit.PRELUDE
+    assert "/usr/local/lib/node_modules" in kit.PRELUDE
+    assert "npx playwright" in kit.PRELUDE
+    # The browser path is set in the Dockerfile; the prelude must not invent a
+    # second one. If the image moves the download, this goes red.
+    browsers_path = dockerfile_env()["PLAYWRIGHT_BROWSERS_PATH"]
+    assert browsers_path == "/ms-playwright"
+    assert browsers_path in kit.PRELUDE
 
 
 def test_the_handbook_is_never_shortened_into_the_prelude(kit):
