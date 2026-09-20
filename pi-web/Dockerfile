@@ -37,13 +37,36 @@ FROM docker.io/library/node:22-trixie-slim AS runtime
 # python3 runs `pi-web-project` below: the box's other post-deploy/CLI tooling is
 # stdlib Python and covered by the repo's ruff + pytest gates, which a second
 # language in this one file would leave untested.
+#
+# The second install line is the session's own toolbox (#1439). The image shipped
+# without it while the assist catalog a session is handed prescribes exactly these
+# commands: `curl` appears in five assists -- among them
+# `footgun-mcp-from-a-container-on-the-box`, which explains how to reach
+# ServiceBay's API from a container on the box, and this IS that container -- and
+# `make` in sixteen. A session that cannot run what its own instructions prescribe
+# does not fail loudly; it routes around them in silence, and the gap survives
+# because nobody sees it. Still no compiler: that is what the `package` stage is
+# for.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates git less procps python3 ripgrep tini \
+      curl wget jq make patch file unzip zip openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=package /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=package /usr/local/bin /usr/local/bin
+
+# `gh` is how a session does GitHub work -- open a repo, a PR, read a CI log --
+# and Debian's archive carries no usable version, so it comes from the project's
+# own release as one static binary. Pinned for the same reason PI_WEB_VERSION is:
+# a rebuild must not move a tool under a running session. linux/amd64 only,
+# matching build-images.yml; a second architecture needs this line too.
+ARG GH_VERSION=2.101.0
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+      -o /tmp/gh.tgz \
+ && tar -xzf /tmp/gh.tgz -C /tmp \
+ && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+ && rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_amd64"
 
 # Pi ships no MCP, so a session reads this box through a CLI instead: one
 # delegated read-only ServiceBay token per project (#1395).
