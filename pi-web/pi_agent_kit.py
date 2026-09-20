@@ -98,6 +98,11 @@ PRELUDE = """# Where you are: the PI WEB container on this box
   `node_modules` is not this container's inventory. If it really is missing,
   that is a finding, not an obstacle: the fix is a PR to `pi-web/Dockerfile` in
   `mdopp/solarisbay`, and `gh` is on `$PATH` with this pod's token.
+- **The catalog is live, your copies are not.** `servicebay assist <id>` reads
+  the mounted checkout and always gives you today's text; the generated skills
+  and this file were frozen when the pod started. When a recipe you are
+  following does not work, re-read it through `servicebay assist` before you
+  conclude the recipe is wrong.
 """
 
 

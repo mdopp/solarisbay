@@ -517,6 +517,13 @@ def test_the_prelude_says_the_browser_is_here_and_where_to_import_it(kit):
     assert browsers_path in kit.PRELUDE
 
 
+def test_the_prelude_names_the_catalog_as_the_live_copy(kit):
+    """A running session's skills and AGENTS.md are frozen at pod start, so the
+    prelude has to name the one path that is not (#1454)."""
+    assert "servicebay assist" in kit.PRELUDE
+    assert "live" in kit.PRELUDE
+
+
 def test_the_handbook_is_never_shortened_into_the_prelude(kit):
     shipped = "# Working on a ServiceBay box\n\nEvery word of it.\n"
     assert "Every word of it." in kit.render_agents_md(shipped)
