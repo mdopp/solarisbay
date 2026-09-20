@@ -59,6 +59,10 @@ SKILL_GROUP = "servicebay"
 # nothing until asked for. Measured on the box: 55 skills → 25 saves ~2.9 k of
 # a ~12.5 k-token preload.
 SKILL_KINDS = ("adr", "recipe")
+# An entry of another kind that must still stand in every prompt says so itself:
+# `skill: always` in its frontmatter. The catalog decides, per entry, which
+# guide or footgun is worth ~100 tokens a turn — not this file by kind alone.
+SKILL_ALWAYS = "always"
 
 # The Agent-Skills limits Pi validates against (docs/skills.md).
 NAME_MAX = 64
@@ -229,7 +233,8 @@ def generate_skills(assists_dir: str, skills_dir: str) -> dict[str, object]:
         except OSError:
             continue
         fields, _ = parse_frontmatter(text)
-        if fields.get("kind", "").strip() not in SKILL_KINDS:
+        pinned = fields.get("skill", "").strip() == SKILL_ALWAYS
+        if not pinned and fields.get("kind", "").strip() not in SKILL_KINDS:
             continue
         skill = render_skill(assist_id, text)
         if skill is None:
