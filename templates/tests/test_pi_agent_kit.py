@@ -321,12 +321,10 @@ def test_the_description_is_the_trigger_clause_not_the_whole_entry(kit):
     `whenToUse` carries the trigger first and what the entry decides after an
     em-dash. Only the trigger is worth that standing charge — the rest is the
     skill itself."""
-    fields = {
-        "title": "ADR 0007 — Container network isolation",
-        "whenToUse": "You are choosing a network mode for a template — this decides "
-        "which pods may keep hostNetwork and why.",
-    }
-    assert kit.skill_description(fields) == "You are choosing a network mode for a template"
+    trigger = "You are choosing a network mode for a template"
+    payoff = "this decides which pods may keep hostNetwork and why"
+    fields = {"title": "ADR 0007 — Network", "whenToUse": f"{trigger} — {payoff}"}
+    assert kit.skill_description(fields) == trigger
     # No `whenToUse`: the title is the only thing that says what the entry is.
     assert kit.skill_description({"title": "A bare title"}) == "A bare title"
     # An em-dash inside the title must not be mistaken for the separator.
@@ -421,7 +419,6 @@ def test_a_quoted_value_reaches_pi_as_its_text_and_not_as_its_escapes(kit):
     )
     head = frontmatter(kit.render_skill("adr-0012", source))
     assert head["description"] == (
-        "ADR 0012 — Repair is reconciliation, not reinstallation — "
         'A drifted config is about to be "fixed" by reinstalling.'
     )
 
