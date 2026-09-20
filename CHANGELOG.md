@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.73.1](https://github.com/mdopp/solarisbay/compare/v0.73.0...v0.73.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pi-web:** the two wrong conclusions a session drew about the browser ([#1458](https://github.com/mdopp/solarisbay/issues/1458)) ([a0b27be](https://github.com/mdopp/solarisbay/commit/a0b27bec3c81ff11d5160b2ebeeee59c55bb317c))
+
 ## [0.73.0](https://github.com/mdopp/solarisbay/compare/v0.72.3...v0.73.0) (2026-09-20)
 
 
