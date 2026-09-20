@@ -98,19 +98,19 @@ PRELUDE = """# Where you are: the PI WEB container on this box
 - **A project's gate is the project's own:** its `AGENTS.md` / `CLAUDE.md` and
   its CI name the lint, type and test commands. Run them before you commit, and
   do not invent a substitute when you cannot find them.
-- **A browser is already installed.** Playwright and Chromium are global here
-  (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`), so you can load a page you
-  deployed and read its console errors without installing anything. A project's
-  own `node_modules` does not contain them, so `require("playwright")` inside a
-  project fails — reach the global copy instead: `npx playwright ...`, or
-  `NODE_PATH=/usr/local/lib/node_modules node ...`, or import
-  `/usr/local/lib/node_modules/playwright/index.mjs` by its path.
+- **A browser is here, with its libraries.** Playwright and Chromium are global
+  (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`) and the image already ran
+  `install --with-deps`, so never run `playwright install-deps`: it needs root,
+  it fails, and it says nothing about whether the browser works. From a project
+  `require("playwright")` misses the global copy — use `npx playwright ...` or
+  `NODE_PATH=/usr/local/lib/node_modules node ...`. It shares this pod's
+  network: `localhost:<port>` is a server you started, anything else on the box
+  is `host.containers.internal:<port>` (ADR 0007), never the public domain.
 - **No root, no container engine, nothing installs here** (ADR 0007); only
-  `/data` and `/workspace` survive a restart. Before you call a tool missing,
+  `/data` and `/workspace` survive a restart. Before calling a tool missing,
   look on `$PATH` and in `/usr/local/lib/node_modules` — a project's
-  `node_modules` is not this container's inventory. If it really is missing,
-  that is a finding, not an obstacle: the fix is a PR to `pi-web/Dockerfile` in
-  `mdopp/solarisbay`, and `gh` is on `$PATH` with this pod's token.
+  `node_modules` is not this container's inventory. If it really is, that is a
+  finding: PR `pi-web/Dockerfile` in `mdopp/solarisbay` (`gh` is on `$PATH`).
 - **The catalog is live, your copies are not.** `servicebay assist <id>` reads
   the mounted checkout and always gives you today's text; the generated skills
   and this file were frozen when the pod started. When a recipe you are
