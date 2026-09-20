@@ -77,6 +77,27 @@ RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_$
 # argv. Same shape as `servicebay` two lines down, for the same reason.
 COPY --chmod=0755 pi_gh.py /usr/local/bin/gh
 
+# A session that writes a web page has to be able to SEE it (#1444). Without a
+# browser it can fetch HTML and nothing more: no JavaScript, no layout, no
+# screenshot, no console errors. That is how a canvas game got written here and
+# shipped without anyone ever watching it draw a frame.
+#
+# In the image, not per project: the browser needs system libraries the slim
+# base does not carry, and `playwright install-deps` needs root, which a session
+# does not have. Installed from a project it fails at LAUNCH, not at install --
+# which reads like a bug in the project.
+#
+# PLAYWRIGHT_BROWSERS_PATH moves the download out of root's cache, where the
+# `node` user the sessions run as could not reach it, and a+rX opens it for
+# reading. Pinned like every other tool here; the browser build and the
+# Playwright release are one unit and must move together.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ARG PLAYWRIGHT_VERSION=1.63.0
+RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" \
+ && npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
+ && npm cache clean --force \
+ && chmod -R a+rX /ms-playwright
+
 # Pi ships no MCP, so a session reads this box through a CLI instead: one
 # delegated read-only ServiceBay token per project (#1395).
 COPY --chmod=0755 pi_web_project.py /usr/local/bin/pi-web-project
