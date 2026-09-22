@@ -479,7 +479,35 @@ Titel und `whenToUse` zusammen, denn genau die Zeile entscheidet, ob Pi den Skil
 verschwinden — und ein **leerer** Mount lässt die vorhandenen Skills stehen,
 statt aus ServiceBays Auslieferungsfehler hier einen zweiten, stillen zu machen.
 So wirkt eine geänderte Architekturentscheidung ohne neue Version: ServiceBay
-frischt den Checkout stündlich auf, der nächste Start übernimmt ihn.
+frischt den Checkout stündlich auf, und die Einheit unten übernimmt ihn.
+
+**Der Erzeuger folgt der Lieferung (#1460).** Bis v0.73 lief
+`pi-web-agent-kit` **nur** im Init-Container — das Handbuch war damit so alt wie
+der Pod, während der Mount stündlich weiterzog. Am 22.9.2026 gemessen: pi las
+eine `AGENTS.md` von 13:38 mit 357 Zeilen, das Kit auf der Box hatte 328 Zeilen
+von 18:47; tags zuvor lagen 22 Stunden dazwischen, und eine Sitzung steuerte
+elfmal den rohen `/mcp`-Endpunkt an, weil ihr eingefrorenes Handbuch ihn noch
+beschrieb — das Kit hatte den Abschnitt längst gelöscht. Eine neue *Sitzung*
+hilft nicht; erzeugt wird beim Pod-Start.
+
+Deshalb installiert das Post-Deploy dieselbe Form wie beim Lease-Broker daneben:
+`pi-web-kit-refresh.path` beobachtet
+`/mnt/data/servicebay/agent-kit/delivery.json` — die Datei, die ServiceBay bei
+**jeder** Auslieferung neu schreibt, in genau dem Verzeichnis, dessen
+`checkout/` der Pod einhängt — und startet `pi-web-kit-refresh.service`, einen
+`Type=oneshot`, der `podman exec -u node pi-web-web pi-web-agent-kit` ausführt.
+Kein `BindsTo`, kein `PartOf`: nicht die Lebenszeit des Pods, sondern die der
+Lieferung. Ein Lauf ohne Änderung kostet nichts — unveränderte Dateien werden
+nicht angefasst, und der Stempel oben rechnet über den **Inhalt**, nicht über
+die mtime, also bleibt es bei *einer* Hinweiszeile je echter Änderung, auch wenn
+der Erzeuger jetzt stündlich läuft. Ein Test hält den beobachteten Pfad gegen
+die `hostPath`-Einträge im Pod-Spec fest, denn genau dieses stille
+Auseinanderlaufen ist der Fehler, um den es hier geht.
+
+**Beim Ausrollen beachten:** ein vollständiger `post-deploy`-Lauf ruft auch
+`release_own_lease` und nimmt einer *laufenden* Pi-Sitzung das Modell weg. Das
+Ausrollen ist also nicht umsonst: entweder die beiden Einheiten einzeln
+installieren oder warten, bis Pi im Leerlauf ist.
 
 **Eine laufende Sitzung erfährt, dass sich das Kit bewegt hat (#1454).** Erzeugt
 wird nur beim Pod-Start, aufgefrischt wird stündlich — eine Sitzung, die schon
@@ -758,6 +786,12 @@ service. PI WEB is a developer tool that happens to live on the same box, like
   `systemctl --user status pi-web-lease-broker.path` is **active (waiting)** and
   `pi-web-lease-broker.service` is **inactive (dead)** between wishes — it runs
   only while one is pending.
+- `systemctl --user status pi-web-kit-refresh.path` is **active (waiting)** und
+  `.service` dazwischen **inactive (dead)**. Nach der nächsten Auslieferung
+  (`stat -c %y /mnt/data/servicebay/agent-kit/delivery.json`) nennt
+  `journalctl --user -u pi-web-kit-refresh` einen Lauf, und
+  `wc -l /data/pi-agent/AGENTS.md` stimmt mit
+  `wc -l /opt/servicebay/agent-docs/AGENTS.md` plus Vorspann überein.
 - `grep -c Install ~/.config/containers/systemd/pi-web.kube` is 1 — the service
   is up now and comes back after a reboot.
 - From another LAN device, `curl -m 3 http://<box>:8504/` must fail — the

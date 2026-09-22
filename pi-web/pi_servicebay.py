@@ -82,6 +82,40 @@ def token_file(cfg: dict, cwd: str, exists=os.path.exists) -> str:
     return cfg["parent_token_file"]
 
 
+def _usable(path: str) -> bool:
+    """A token file is usable when it exists and carries something."""
+    try:
+        with open(path, "rb") as handle:
+            return bool(handle.read(1))
+    except OSError:
+        return False
+
+
+def explicit_token_file(env, usable=_usable) -> tuple[str, str]:
+    """What an explicitly named token file resolves to.
+
+    Returns `(path, "")` when it is usable, `("", reason)` when it was named
+    but is unusable, and `("", "")` when nothing was named.
+
+    Naming a file is an instruction, not a hint: the pod's own token is
+    broader than any delegated one a caller would bother to name, so falling
+    back to it on a typo hands out `mutate` where `read` was asked for. That
+    happened — a check meant to prove a read-only refusal ran a real
+    force-update instead (#1461).
+    """
+    path = env.get(TOKEN_FILE_ENV, "")
+    if not path:
+        return "", ""
+    if usable(path):
+        return path, ""
+    return "", (
+        f"servicebay: {TOKEN_FILE_ENV} names {path}, which is missing, "
+        "unreadable or empty. Refusing to fall back to this container's own "
+        "token — it is wider than the one you named. Fix the file or unset "
+        "the variable."
+    )
+
+
 def child_env(env, path: str) -> dict:
     """The CLI's environment: the token *file*, and no token value anywhere."""
     child = dict(env)
@@ -103,7 +137,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    env = child_env(os.environ, token_file(cfg, os.getcwd()))
+    named, problem = explicit_token_file(os.environ)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
+    env = child_env(os.environ, named or token_file(cfg, os.getcwd()))
     os.execvpe("node", ["node", script, *args], env)
 
 
