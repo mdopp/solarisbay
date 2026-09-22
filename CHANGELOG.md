@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.73.2](https://github.com/mdopp/solarisbay/compare/v0.73.1...v0.73.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **pi-web:** refuse a named token file that is unusable instead of widening ([aa4860d](https://github.com/mdopp/solarisbay/commit/aa4860ded990ddb98b2c5445d7f45a84660f0246)), closes [#1461](https://github.com/mdopp/solarisbay/issues/1461)
+* **template:** regenerate pi's handbook after every kit delivery ([35a71e0](https://github.com/mdopp/solarisbay/commit/35a71e029c6a9eb0bf02f27da1e2198b44d75102)), closes [#1460](https://github.com/mdopp/solarisbay/issues/1460)
+
 ## [0.73.1](https://github.com/mdopp/solarisbay/compare/v0.73.0...v0.73.1) (2026-09-20)
 
 
