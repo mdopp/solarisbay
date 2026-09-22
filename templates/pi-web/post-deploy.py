@@ -109,6 +109,25 @@ BROKER_DEADLINE_SEC = 300
 # travels in the `preparing` record as `retry_after`, so the pod reads a cadence
 # off the answer instead of carrying a second copy of this number.
 GATE_POLL_SEC = 5
+
+# The kit generator follows the delivery (#1460). `pi-web-agent-kit` only ran in
+# the init container, so the handbook and skills a session reads were as old as
+# the pod while ServiceBay refreshed the mounted checkout hourly: box-measured
+# 2026-09-22, pi read a 357-line AGENTS.md from 13:38 against a 328-line kit
+# delivered at 18:47, and the day before the gap was 22 hours — long enough for
+# a session to go eleven times through an `/mcp` endpoint its frozen handbook
+# still described and the kit had already deleted.
+KIT_REFRESH_UNIT = "pi-web-kit-refresh"
+# ServiceBay rewrites this file on every delivery attempt, in the directory
+# whose `checkout/` the pod mounts — so it is the one host path that moves
+# exactly when the mounted text may have moved. `templates/tests` pins it
+# against the hostPath entries so the two cannot drift apart silently.
+KIT_DELIVERY_FILE = "/mnt/data/servicebay/agent-kit/delivery.json"
+# Where the generator runs: `web` carries the three kit mounts, the agent
+# directory and `PI_CODING_AGENT_DIR`, and it is up whenever the pod is.
+WEB_CONTAINER = "pi-web-web"
+KIT_GENERATOR = "pi-web-agent-kit"
+
 QUADLET_DIR = "~/.config/containers/systemd"
 KUBE_UNIT = "pi-web.kube"
 BOOT_INSTALL = "[Install]\nWantedBy=default.target\n"
@@ -624,6 +643,86 @@ def install_broker_units(data_dir: str, chat_port: str, script: str) -> None:
     jlog("info", "pi-web:broker", "lease broker installed", unit=f"{BROKER_UNIT}.path")
 
 
+# ── the kit generator follows the delivery (#1460) ──────────────────────────
+
+
+def render_kit_refresh_units() -> tuple[str, str]:
+    """The `.path`/`.service` pair that regenerates the handbook after a delivery.
+
+    Same shape as the lease broker above: a watcher on a file the box writes and
+    a `Type=oneshot` that ends with the run. Deliberately no `BindsTo`/`PartOf`
+    on the pod — this is not the pod's lifetime, it is the delivery's.
+
+    ServiceBay rewrites `delivery.json` on every attempt, so this fires hourly
+    whether or not the kit moved. That costs nothing: the generator skips a file
+    whose text is unchanged, and its stamp digests the kit's content rather than
+    its mtime, so `solaris-kit-notice` still says one line per real change.
+
+    `ExecStart=-` because a delivery can land while the pod is down; a failed
+    `podman exec` is then the ordinary case, not something to report.
+    """
+    path_unit = (
+        "[Unit]\n"
+        "Description=Watch for a ServiceBay agent-kit delivery (#1460)\n"
+        "\n"
+        "[Path]\n"
+        f"PathChanged={KIT_DELIVERY_FILE}\n"
+        f"Unit={KIT_REFRESH_UNIT}.service\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+    service_unit = (
+        "[Unit]\n"
+        "Description=Regenerate PI WEB's AGENTS.md and skills from the kit (#1460)\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "TimeoutStartSec=120\n"
+        f"ExecStart=-/usr/bin/podman exec -u node {WEB_CONTAINER} {KIT_GENERATOR}\n"
+    )
+    return path_unit, service_unit
+
+
+def install_kit_refresh_units() -> None:
+    """Write + enable the delivery watcher. Idempotent: same text, same enable."""
+    unit_dir = os.path.expanduser(SYSTEMD_USER_DIR)
+    path_unit, service_unit = render_kit_refresh_units()
+    try:
+        os.makedirs(unit_dir, exist_ok=True)
+        for name, text in (
+            (f"{KIT_REFRESH_UNIT}.path", path_unit),
+            (f"{KIT_REFRESH_UNIT}.service", service_unit),
+        ):
+            with open(os.path.join(unit_dir, name), "w", encoding="utf-8") as f:
+                f.write(text)
+            os.chmod(os.path.join(unit_dir, name), 0o644)
+    except OSError as e:
+        jlog(
+            "error",
+            "pi-web:kit",
+            "could not install the kit refresh unit; PI WEB keeps the handbook it started with",
+            path=unit_dir,
+            error=str(e),
+        )
+        return
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True
+    )
+    subprocess.run(
+        ["systemctl", "--user", "enable", "--now", f"{KIT_REFRESH_UNIT}.path"],
+        check=False,
+        capture_output=True,
+    )
+    jlog(
+        "info",
+        "pi-web:kit",
+        "kit refresh installed",
+        unit=f"{KIT_REFRESH_UNIT}.path",
+        watches=KIT_DELIVERY_FILE,
+    )
+
+
 # ── retiring the host-side lease unit (#1392) ───────────────────────────────
 
 
@@ -755,6 +854,7 @@ def main() -> int:
     write_models_json(data_dir, MODEL_GATE_PORT)
     retire_lease_unit(data_dir)
     install_broker_units(data_dir, chat_port, install_broker_script(data_dir))
+    install_kit_refresh_units()
     restore_boot_autostart()
     start_pod()
     release_own_lease(chat_port)

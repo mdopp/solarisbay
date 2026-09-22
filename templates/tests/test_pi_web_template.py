@@ -411,6 +411,79 @@ def test_no_unit_takes_the_card_by_pi_web_merely_running(pd):
     assert f"Unit={pd.BROKER_UNIT}.service" in path_unit
 
 
+# ── the kit generator follows the delivery (#1460) ──────────────────────────
+
+
+def _calls_in(function: str) -> set[str]:
+    """The plain function names called inside a top-level function of the post-deploy."""
+    tree = ast.parse((PI_WEB / "post-deploy.py").read_text(encoding="utf-8"))
+    body = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == function
+    )
+    return {
+        node.func.id
+        for node in ast.walk(body)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+
+def test_the_kit_generator_follows_the_delivery(pd):
+    """Generated only at pod start, refreshed hourly: pi read a 357-line
+    AGENTS.md from 13:38 while the kit on the box had 328 lines from 18:47, and
+    the day before the gap was 22 hours — a session went eleven times through an
+    `/mcp` endpoint its frozen handbook still described and the kit had deleted.
+
+    The fix is the lease broker's shape, not the pod's lifetime: a `.path` on the
+    delivery file and a `Type=oneshot` that ends with the run.
+    """
+    path_unit, service_unit = pd.render_kit_refresh_units()
+    assert f"PathChanged={pd.KIT_DELIVERY_FILE}" in path_unit
+    assert f"Unit={pd.KIT_REFRESH_UNIT}.service" in path_unit
+    assert "WantedBy=default.target" in path_unit
+    assert "Type=oneshot" in service_unit
+    assert f"podman exec -u node {pd.WEB_CONTAINER} {pd.KIT_GENERATOR}" in service_unit
+    for banned in ("BindsTo", "PartOf", "WantedBy=pi-web.service"):
+        assert banned not in path_unit + service_unit
+    assert "install_kit_refresh_units" in _calls_in("main")
+
+
+def test_the_watched_delivery_file_sits_with_the_mounted_checkout(pod, pd):
+    """The bug class this whole ticket is about: the unit watches one path and
+    the pod mounts another, and nothing says so — the handbook simply stops
+    moving. Both spellings are literals in two different files, so pin them.
+    """
+    checkouts = sorted(
+        volume["hostPath"]["path"]
+        for volume in pod["spec"]["volumes"]
+        if volume["name"].startswith("agent-kit-")
+    )
+    assert len(checkouts) == 3, checkouts
+    kit_root = pathlib.PurePosixPath(pd.KIT_DELIVERY_FILE).parent
+    for path in checkouts:
+        assert pathlib.PurePosixPath(path).parent == kit_root / "checkout", path
+
+
+def test_the_unit_runs_the_generator_the_init_container_runs(pod, pd):
+    """One generator, two callers: the init container at pod start and the unit
+    after every delivery. A renamed entry point must break both at once."""
+    init = next(
+        c
+        for c in pod["spec"]["initContainers"]
+        if c["name"] == f"{pod['metadata']['name']}-agent-kit"
+    )
+    assert f"exec {pd.KIT_GENERATOR}" in init["args"][-1]
+    web = next(c for c in pod["spec"]["containers"] if c["name"] == "web")
+    assert pd.WEB_CONTAINER == f"{pod['metadata']['name']}-{web['name']}"
+    mounts = {m["mountPath"] for m in web["volumeMounts"]}
+    assert {
+        "/opt/servicebay/agent-cli",
+        "/opt/servicebay/agent-docs",
+        "/opt/servicebay/assists",
+    } <= mounts
+
+
 def test_the_post_deploy_never_stops_the_pod(pd):
     """#1373 stopped pi-web after every deploy, which is why `pi.<domain>` was
     dead. Nothing may issue that stop again."""
