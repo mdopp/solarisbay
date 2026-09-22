@@ -1054,3 +1054,34 @@ def test_the_notice_ships_in_the_image_like_the_provider_extension():
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
     assert "COPY extensions /opt/solaris/pi-extensions" in dockerfile
     assert NOTICE.exists()
+
+
+def test_a_named_token_file_wins_over_the_pods_own(wrapper, tmp_path):
+    """Naming a file is an instruction, not a hint (#1461)."""
+    named = tmp_path / "child.token"
+    named.write_text("sb_child", encoding="utf-8")
+    path, problem = wrapper.explicit_token_file({wrapper.TOKEN_FILE_ENV: str(named)})
+    assert path == str(named) and problem == ""
+
+
+def test_an_empty_named_token_file_is_refused_not_widened(wrapper, tmp_path):
+    """The pod token carries mutate; falling back to it on a broken hand-off
+    grants more than the caller asked for — the #1461 force-update."""
+    empty = tmp_path / "empty.token"
+    empty.write_text("", encoding="utf-8")
+    path, problem = wrapper.explicit_token_file({wrapper.TOKEN_FILE_ENV: str(empty)})
+    assert path == ""
+    assert "wider than the one you named" in problem
+
+
+def test_a_missing_named_token_file_is_refused_not_widened(wrapper, tmp_path):
+    path, problem = wrapper.explicit_token_file(
+        {wrapper.TOKEN_FILE_ENV: str(tmp_path / "gone.token")}
+    )
+    assert path == ""
+    assert "missing, unreadable or empty" in problem
+
+
+def test_naming_nothing_still_resolves_the_usual_way(wrapper):
+    """An unnamed variable keeps the project/pod fallback (#1395)."""
+    assert wrapper.explicit_token_file({}) == ("", "")
