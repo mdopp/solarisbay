@@ -452,6 +452,22 @@ async def test_post_for_the_other_model_is_refused_with_the_deadline(
     assert not model_lease.request_path(_db(tmp_path)).exists()
 
 
+async def test_a_named_holder_takes_the_window_over_from_the_automatic_one(
+    aiohttp_client, tmp_path
+):
+    """Hand before automatic (operator 2026-10-05): the proxy's own window
+    yields to foundry, pi-web or the tile; theirs never yield to it."""
+    _hold(tmp_path, "erweitert", until=555.0, holder=gpu_lease.AUTO_HOLDER)
+    client = await aiohttp_client(_app(tmp_path))
+    r = await client.post(
+        "/api/model-lease", json={"model": "foundry", "ttl_s": 900, "holder": "foundry"}
+    )
+    # 202, not 200: foundry's own environment still has to be set, so the
+    # answer is `preparing` — the same as any holder moving to another mode.
+    assert r.status == 202
+    assert _request(tmp_path)["holder"] == "foundry"
+
+
 async def test_post_files_the_window_under_the_service_that_named_itself(
     aiohttp_client, tmp_path
 ):

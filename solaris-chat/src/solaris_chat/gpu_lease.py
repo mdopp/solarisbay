@@ -80,6 +80,13 @@ MODE_ALIASES = {
 # wins over this table, so an operator who deployed other weights, or a client
 # that picked its own preset, is asked for that one.
 HOUSEHOLD_PRESET = "gemma-4-e4b"
+
+# The holder the policy proxy on the box files its own window under when a
+# client names a preset outside the household and nobody has the card (operator
+# 2026-10-05: the mode follows the request). Hand before automatic: any named
+# holder — the tile, pi-web, foundry — may take a window over from this one,
+# so every "somebody else holds it" check lets this holder through.
+AUTO_HOLDER = "router"
 MODE_PRESETS = {
     "foundry": "gemma-4-12b",
     "thinking": "qwen3.6-35b-a3b",

@@ -115,11 +115,19 @@ das Ende.
   gleichzeitig und lädt das an, nach dem gefragt wird. Ein Modus tauscht darum
   keinen Server mehr aus, sondern stellt die Umgebung (Sprache auf GPU oder
   CPU, Einbettungs-Server an oder aus) und legt fest, welche Presets
-  währenddessen erlaubt sind; ein Proxy vor dem Router weist alles andere mit
-  `409` ab. In „Haushalt" ist genau ein Preset erlaubt (`gemma-4-e4b`), in
-  „Haushalt + Denken" zwei, in „Erweitert" alle — dort gibt es nichts mehr zu
-  verweigern, der Klient wählt mit dem Feld `model`. Solaris selbst fragt das
-  Preset an, das gerade geladen ist, statt das des Halters zu verdrängen.
+  währenddessen erlaubt sind. In „Haushalt" ist genau ein Preset erlaubt
+  (`gemma-4-e4b`), in „Haushalt + Denken" zwei, in „Erweitert" alle — dort
+  gibt es nichts mehr zu verweigern, der Klient wählt mit dem Feld `model`.
+  Solaris selbst fragt das Preset an, das gerade geladen ist, statt das des
+  Halters zu verdrängen.
+- **Der Modus folgt der Anfrage** (Operator 5.10.2026): fragt ein Programm —
+  ein Coding-Werkzeug, das Obsidian-Plugin — im Haushalt ein anderes Preset
+  an, nimmt der Proxy vor dem Router „Erweitert" von selbst (Halter `router`)
+  und gibt die Karte 30 Minuten nach der letzten Anfrage zurück. Die Zeile
+  zeigt das als „… · automatisch, von einem Programm angefragt". Hand vor
+  Automatik: ein von Hand oder von einem anderen Dienst gehaltener Modus
+  bleibt stehen, das Programm bekommt `409` mit dem Namen des Halters; die
+  Kachel darf eine automatische Zeile jederzeit übernehmen oder zurückgeben.
 - **Nur in „Erweitert" pausiert die sinngemäße Suche:** der Einbettungs-Server
   passt nicht neben das größte Modell auf die Karte (gemessen, #1434), also
   findet die Suche in Notizen und Dokumenten solange nur Stichwörter. Das ist
