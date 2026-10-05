@@ -207,18 +207,19 @@ def test_the_requested_model_survives_every_shape_a_client_sends(pd):
     assert pd.requested_model(b"") == ""
 
 
-def test_the_denial_says_the_mode_the_list_and_what_to_do(pd):
-    """The one refusal left (#1435): in `haushalt` exactly one preset is
-    allowed, and the message says which and where to change it."""
-    body = pd.denial("qwen3.8-27b", "haushalt", ["gemma-4-e4b"])
-    assert body["error"]["mode"] == "haushalt"
-    assert body["error"]["allowed"] == ["gemma-4-e4b"]
+def test_the_denial_says_the_mode_the_list_and_who_has_the_card(pd):
+    """The refusal left once the mode follows the request: a preset outside a
+    window somebody took by hand. The message names the holder and the tile
+    that shows until when."""
+    allowed = ["gemma-4-e4b", "gemma-4-12b"]
+    body = pd.denial("qwen3.8-27b", "foundry", allowed, "foundry")
+    assert body["error"]["mode"] == "foundry"
+    assert body["error"]["allowed"] == allowed
     message = body["error"]["message"]
     # pi_autoloop greps `"mode":` out of this body and names the tile in its
     # ticket protocol — both halves have to stay findable.
-    assert "qwen3.8-27b" in message and "haushalt" in message
-    assert "gemma-4-e4b" in message and "Modell-Kachel" in message
-    assert "Erweitert" in message
+    assert "qwen3.8-27b" in message and "foundry" in message
+    assert "gemma-4-12b" in message and "Modell-Kachel" in message
 
 
 def test_in_erweitert_a_refusal_can_only_be_a_name_the_router_lacks(pd):
@@ -246,16 +247,111 @@ def test_a_preset_the_mode_allows_is_forwarded(pd, tmp_path, proxy, upstream):
     assert ("POST", "/v1/chat/completions", "qwen3.8-27b") in upstream.state["seen"]
 
 
-def test_a_preset_outside_the_mode_never_reaches_the_router(
-    pd, tmp_path, proxy, upstream
+@pytest.fixture
+def box_switch(pd, monkeypatch):
+    """A `lease_acquire` that writes the window instead of moving units, and
+    records every call — what the proxy asks the box for is the thing under
+    test, not what the box then does with it (test_gpu_lease covers that)."""
+    calls: list[tuple] = []
+
+    def fake(data_dir, holder, port="11434", model="", duration_sec=0):
+        calls.append((holder, model, duration_sec))
+        pd.write_lease(
+            data_dir,
+            {
+                "holder": holder,
+                "mode": pd.canonical_mode(model),
+                "allowed": PRESETS,
+                "ready": True,
+            },
+        )
+        return 0
+
+    monkeypatch.setattr(pd, "lease_acquire", fake)
+    return calls
+
+
+def test_out_of_the_household_the_mode_follows_the_request(
+    pd, tmp_path, proxy, upstream, box_switch
 ):
-    """The whole point: served, this request would evict the household model
-    and cost the next resident turn a 10-20 s reload."""
+    """Operator 2026-10-05: a coding tool or the Obsidian plugin names its
+    model and gets it, without anybody switching the tile first. The proxy
+    takes `erweitert` itself and the request goes through."""
+    status, body = _post(f"{proxy}/v1/chat/completions", {"model": "qwen3.8-27b"})
+    assert status == 200
+    assert body == {"model": "qwen3.8-27b", "echo": True}
+    assert box_switch == [(pd.AUTO_HOLDER, "erweitert", pd.AUTO_LEASE_SEC)]
+    lease = pd.read_lease(str(tmp_path))
+    assert lease["holder"] == pd.AUTO_HOLDER
+    assert lease["alias"] == "qwen3.8-27b"
+
+
+def test_a_window_a_hand_has_taken_stands(pd, tmp_path, proxy, upstream, box_switch):
+    """Hand before automatic: foundry's window, or one chosen on the tile, is
+    never swapped away by a client — the 409 of #1416, now naming the holder."""
+    path = pathlib.Path(pd.lease_file(str(tmp_path)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "holder": "foundry",
+                "mode": "foundry",
+                "allowed": ["gemma-4-e4b", "gemma-4-12b"],
+                "ready": True,
+            }
+        )
+    )
+    status, body = _post(f"{proxy}/v1/chat/completions", {"model": "qwen3.8-27b"})
+    assert status == 409
+    assert body["error"]["mode"] == "foundry"
+    assert "foundry" in body["error"]["message"]
+    assert upstream.state["seen"] == []
+    assert box_switch == []
+
+
+def test_a_name_the_router_lacks_is_refused_not_switched_for(
+    pd, tmp_path, proxy, upstream, box_switch
+):
+    status, body = _post(f"{proxy}/v1/chat/completions", {"model": "qwen4"})
+    assert status == 409
+    assert "qwen4" in body["error"]["message"]
+    assert upstream.state["seen"] == []
+    assert box_switch == []
+
+
+def test_a_switch_the_box_refuses_is_a_refusal_not_a_served_request(
+    pd, tmp_path, proxy, upstream, monkeypatch
+):
+    """Served anyway, the request would evict the household model — the very
+    thing the policy exists to prevent (#1416)."""
+    monkeypatch.setattr(pd, "lease_acquire", lambda *a, **k: 1)
     status, body = _post(f"{proxy}/v1/chat/completions", {"model": "qwen3.8-27b"})
     assert status == 409
     assert body["error"]["mode"] == "haushalt"
     assert body["error"]["allowed"] == ["gemma-4-e4b"]
     assert upstream.state["seen"] == []
+
+
+def test_every_request_moves_the_automatic_windows_idle_clock(
+    pd, tmp_path, proxy, upstream, box_switch
+):
+    """Thirty idle minutes end the window, so every request has to count as
+    activity — but a coding tool fires several a minute, and the lease file
+    and the systemd timer are rewritten at most once a minute."""
+    _post(f"{proxy}/v1/chat/completions", {"model": "qwen3.8-27b"})
+    _post(f"{proxy}/v1/chat/completions", {"model": "qwen3.8-27b"})
+    _post(f"{proxy}/v1/chat/completions", {"model": "gemma-4-e4b"})
+    assert len(box_switch) == 1
+    assert pd.read_lease(str(tmp_path))["holder"] == pd.AUTO_HOLDER
+
+
+def test_a_hands_window_is_never_renewed_by_the_proxy(
+    pd, tmp_path, proxy, upstream, box_switch
+):
+    _lease(pd, tmp_path, "erweitert", PRESETS)
+    _post(f"{proxy}/v1/chat/completions", {"model": "qwen3.8-27b"})
+    assert box_switch == []
+    assert pd.read_lease(str(tmp_path))["holder"] == "test"
 
 
 def test_in_erweitert_every_preset_is_served(pd, tmp_path, proxy, upstream):

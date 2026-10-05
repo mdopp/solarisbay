@@ -61,23 +61,44 @@ mode taken from the phone is in force on the next one:
 | Request | Answer |
 |---|---|
 | `model` in the mode's `allowed` set | forwarded to the router, streamed back chunk by chunk — and noted in the lease as the preset that is now being served (#1435) |
-| `model` outside it | **409** `{"error": {"message": …, "mode": "haushalt", "allowed": ["gemma-4-e4b"]}}` |
+| `model` outside it, no lease standing | **the mode follows the request** (operator 2026-10-05): the proxy takes `erweitert` itself under holder `router`, then forwards — the first answer waits for the environment switch and the model load (10–50 s) |
+| `model` outside it, a named holder has the card | **409** `{"error": {"message": "… „foundry“ hat die Grafikkarte gerade …", "mode": "foundry", "allowed": ["gemma-4-e4b", "gemma-4-12b"]}}` |
+| `model` the router does not serve | **409** naming the four presets it does |
 | no `model` field | forwarded — the router answers from the preset it already has, which cannot be one outside the mode |
 | `GET /v1/models` | the whole catalogue — every preset the router knows, each marked `allowed_in_mode`, with the standing `mode` at the top level |
 | `/health`, `/props`, `/slots`, everything else | forwarded verbatim |
 
 Why it exists: without it, one client asking for the 27B during a household
-evening is *served*. `--models-max 1` then evicts Gemma, and the next resident
-turn — a voice command, a light — waits 10-20 s for it to load again. The
-Engine refusing that on its own side does not help, because the clients that
-do it (PI WEB, aider, goose, Continue) never pass through the Engine. The
-Engine's own check stays as well: it only ever asks for the preset the
-standing mode names, so the refusal is belt and braces.
+evening is *served*, `--models-max 1` evicts Gemma, and nothing on the box
+knows that the voice stack should now be on the CPU and the embeddings server
+down (#1434). The proxy is the one place every client passes — PI WEB, aider,
+goose, Continue, the Obsidian plugin never touch the Engine — so it is where
+the environment follows the request.
 
-The message is German and says what to do (*"Für die anderen Modelle in der
-Modell-Kachel in Solaris auf „Erweitert“ umschalten"*), because the operator is
-who reads it — in PI WEB's
-ticket protocol, in aider's error line, in a log someone scrolls.
+### The mode follows the request (operator 2026-10-05)
+
+Nobody has to switch the Modell tile before a coding session any more. A
+client names its preset; if no lease stands, the proxy takes `erweitert` under
+holder **`router`** — voice stack to the CPU, embeddings server down — and
+forwards. Every further request on the port renews that window (the lease
+file and the timer are rewritten at most once a minute); **30 minutes** without
+one give the card back: e4b is warmed, voice returns to the GPU, the embeddings
+server comes up. Solaris keeps answering throughout, from the preset that is
+loaded, as in every `erweitert` window.
+
+**Hand before automatic.** The proxy only ever takes the card out of
+`haushalt`, and only for a preset the router serves. A window a named holder has
+— foundry, pi-web, the tile — stands: a request outside its set gets the 409
+with the holder's name. In the other direction any named holder may take the
+window over from `router`: the box's `acquire`, the Engine's `/api/model-lease`
+and the tile all let `router` through where they refuse every other stranger.
+The tile shows such a window as *"… · automatisch, von einem Programm
+angefragt"*.
+
+The 409 message is German and says who has the card and where to look (*"„foundry“
+hat die Grafikkarte gerade; die Modell-Kachel in Solaris zeigt, bis wann"*),
+because the operator is who reads it — in PI WEB's ticket protocol, in aider's
+error line, in a log someone scrolls.
 
 ### The listing names all four, the request is what is refused (#1431)
 
@@ -335,13 +356,13 @@ file left on disk under one of them migrates to `erweitert` when it is read.
 The preset *definitions* are untouched — they describe weights, window and
 drafter and are what `presets.ini` is rendered from.
 
-A request for a preset the current mode does not allow is refused with the
-mode's name rather than served: the household model is never evicted by a
-stray request, and there is no thrashing between e4b and Qwen. **The policy
-proxy on `LLAMA_PORT` is what refuses it** (above) — every client on the box
-goes through it. The Engine checks on its own side too, asking only for the
-preset the standing mode names; the router behind the proxy has no policy at
-all.
+A request for a preset outside a window somebody holds by hand is refused with
+the mode's name rather than served; a request outside `haushalt` with no lease
+standing makes the policy proxy take `erweitert` itself and give it back after
+30 idle minutes (*The mode follows the request*, above). **The policy proxy on
+`LLAMA_PORT` is what decides** — every client on the box goes through it. The
+Engine checks on its own side too, asking only for the preset the standing mode
+names; the router behind the proxy has no policy at all.
 
 post-deploy installs `${DATA_DIR}/solarisbay/gpu-lease.py` for that:
 

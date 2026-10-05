@@ -3220,7 +3220,10 @@ def build_app(
         # — PI WEB does exactly that when a session picks a preset its standing
         # mode does not allow — and `gpu-lease.py` has always accepted it: its
         # own guard is `holder != holder`, nothing about the mode.
-        if current["state"] != "none" and current["holder"] != holder:
+        if current["state"] != "none" and current["holder"] not in (
+            holder,
+            gpu_lease.AUTO_HOLDER,
+        ):
             # The mode policy (#1416): the router serves every preset at once,
             # so a refused window is no longer a dead end — the caller is told
             # which mode stands and which presets it may ask the router for.
@@ -3431,7 +3434,10 @@ def build_app(
 
     def _held_elsewhere(current: dict) -> str:
         """The plain sentence for a window somebody else is using, or ""."""
-        if current["state"] == "none" or current["holder"] == model_widget.HOLDER:
+        if current["state"] == "none" or current["holder"] in (
+            model_widget.HOLDER,
+            gpu_lease.AUTO_HOLDER,
+        ):
             return ""
         when = model_widget.when_text(current.get("expires_at"))
         who = current["holder"] or current["model"]

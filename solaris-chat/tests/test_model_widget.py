@@ -597,6 +597,39 @@ async def test_a_window_somebody_else_holds_is_left_alone(aiohttp_client, tmp_pa
     assert not model_lease.request_path(_db(tmp_path)).exists()
 
 
+async def test_a_window_the_proxy_took_by_itself_yields_to_the_tile(
+    aiohttp_client, tmp_path
+):
+    """Hand before automatic (operator 2026-10-05)."""
+    client = await aiohttp_client(_app(tmp_path))
+    _hold(tmp_path, "erweitert", holder=gpu_lease.AUTO_HOLDER)
+    r = await client.post(
+        "/api/action-callback",
+        json={"action_id": "model.set", "params": {"profile": "foundry", "hours": 1}},
+    )
+    body = await r.json()
+    assert body["ok"] is True
+    assert model_lease.request_path(_db(tmp_path)).exists()
+
+
+def test_the_automatic_window_says_so_in_plain_words():
+    """`router` is a holder name nobody at the phone knows; the row says what
+    happened instead."""
+    rows = _rows(
+        {
+            "state": "ready",
+            "model": "erweitert",
+            "holder": gpu_lease.AUTO_HOLDER,
+            "alias": "qwen3.8-27b",
+            "expires_at": _at(hour=7, day=9),
+        }
+    )
+    assert (
+        rows["erweitert:1h"]["status_text"]
+        == "Qwen 27B · bis morgen 07:00 · automatisch, von einem Programm angefragt"
+    )
+
+
 async def test_every_button_the_def_offers_has_a_handler(aiohttp_client, tmp_path):
     """A def names its actions and the server auto-registers them from its
     handler pool (#1004). A button the callback answers `unknown_action` for is

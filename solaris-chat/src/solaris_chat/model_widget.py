@@ -259,7 +259,9 @@ def _status_text(
     # now the only window in which the house is not served, so somebody at the
     # phone has to be able to see THAT it was taken and by whom — otherwise a
     # voice assistant that has gone slow looks broken.
-    if holder and holder != HOLDER:
+    if holder == gpu_lease.AUTO_HOLDER:
+        parts.append("automatisch, von einem Programm angefragt")
+    elif holder and holder != HOLDER:
         parts.append(f"von {holder}")
     return " · ".join(parts)
 

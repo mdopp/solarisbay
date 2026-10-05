@@ -27,10 +27,12 @@ Seven responsibilities:
      nothing — asked for a preset, it loads it, evicting whatever was resident.
      So the router moved to LLAMA_ROUTER_PORT on loopback and this script's
      `proxy` verb took its place on LLAMA_PORT: it reads the lease's `allowed`
-     set per request, refuses a preset outside it with 409, marks every preset
-     in `/v1/models` as usable in the standing mode or not, and forwards
-     everything else to the router, chunk by chunk. Plus an HTTP health check
-     against `/health`, which passes through it.
+     set per request, marks every preset in `/v1/models` as usable in the
+     standing mode or not, and forwards everything else to the router, chunk
+     by chunk. A preset outside the set is refused with 409 only while a named
+     holder has the card; out of `haushalt` the proxy takes `erweitert` itself
+     and gives it back after 30 idle minutes (operator 2026-10-05). Plus an
+     HTTP health check against `/health`, which passes through it.
 
   5. **Install the GPU lease** (#1320, #1319, #1325). A copy of this script
      lands at `${DATA_DIR}/solarisbay/gpu-lease.py`; run with `acquire
@@ -68,6 +70,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -1053,6 +1056,24 @@ LEASE_EXPIRY_UNIT = "solaris-gpu-lease-expiry"
 # arms past it.
 LEASE_GRACE_FACTOR = 2
 
+# The mode follows the request (operator 2026-10-05). A client on LLAMA_PORT
+# that names a preset outside `haushalt` no longer gets a 409 to go and switch
+# the Modell tile by hand: the policy proxy takes `erweitert` itself, under this
+# holder, forwards the request, and renews on every further one. Thirty minutes
+# of silence give the card back — a coding pause survives, a real break returns
+# voice to the GPU and the embeddings server to the house. Hand before
+# automatic: the proxy only ever takes the card out of `haushalt` (or renews
+# its own window), and any named holder — widget, pi-web, foundry — may take
+# the window over from it, while nobody may take one over from them.
+AUTO_HOLDER = "router"
+AUTO_IDLE_SEC = 30 * 60
+# `schedule_expiry` fires after the grace, `2 x renew_after` = 2/3 of the TTL,
+# so the TTL that puts the release AUTO_IDLE_SEC after the last request is 1.5x.
+AUTO_LEASE_SEC = AUTO_IDLE_SEC * 3 // 2
+# Coding tools send several requests a minute; the lease file and the systemd
+# timer are re-armed at most this often.
+AUTO_RENEW_EVERY_SEC = 60
+
 
 def lease_file(data_dir: str) -> str:
     """The lease file, on the volume the chat pod mounts at /var/lib/solaris."""
@@ -1332,7 +1353,7 @@ def lease_acquire(
     `erweitert`. Without `--model` the card is emptied outright.
     """
     current = read_lease(data_dir)
-    if current and current.get("holder") != holder:
+    if current and current.get("holder") not in (holder, AUTO_HOLDER):
         jlog(
             "error",
             "llama:lease",
@@ -1341,6 +1362,13 @@ def lease_acquire(
             requested_by=holder,
         )
         return 1
+    if current and current.get("holder") == AUTO_HOLDER and holder != AUTO_HOLDER:
+        jlog(
+            "info",
+            "llama:lease",
+            "a named holder takes the window over from the automatic one",
+            holder=holder,
+        )
     mode = canonical_mode(model)
     if model and mode not in LEASE_PROFILES:
         jlog(
@@ -1363,6 +1391,7 @@ def lease_acquire(
     # under an old name (pi-web sends `coding`) renews instead of re-running
     # the whole environment switch on every heartbeat.
     if profile and canonical_mode(current.get("mode")) == mode and current.get("ready"):
+        current["holder"] = holder
         current["until"] = time.time() + duration_sec
         current["last_renewed_at"] = time.time()
         current["renew_after"] = renew_after(duration_sec)
@@ -1746,8 +1775,11 @@ def install_lease_script(data_dir: str) -> str:
 # So the router moved to LLAMA_ROUTER_PORT on loopback and this proxy holds
 # LLAMA_PORT instead, with the same wide bind and the same `blockLanAccess`
 # firewall rule the router used to have. Per request it reads the lease's
-# `allowed` set, answers 409 for a preset outside it, marks `/v1/models` with
-# which presets that set holds (#1431) and forwards everything else verbatim.
+# `allowed` set, marks `/v1/models` with which presets that set holds (#1431)
+# and forwards everything else verbatim. A preset outside the set is where the
+# mode follows the request (operator 2026-10-05): out of `haushalt` the proxy
+# takes `erweitert` under AUTO_HOLDER and forwards; while a named holder has
+# the card it answers 409 — hand before automatic.
 #
 # It is a verb of this script rather than a file of its own: the copy
 # `install_lease_script` already puts on the box carries the preset table, the
@@ -1825,29 +1857,38 @@ def requested_model(body: bytes) -> str:
     return model.strip() if isinstance(model, str) else ""
 
 
-def denial(model: str, mode: str, allowed: list[str]) -> dict[str, object]:
+def denial(
+    model: str, mode: str, allowed: list[str], holder: str = ""
+) -> dict[str, object]:
     """The 409 body: what was refused, which mode refused it, what may be asked
     for instead, and where the remedy is. German, because the operator is who
     reads it — in PI WEB's ticket protocol, in aider's error line, in a log
     someone scrolls.
 
-    With two modes (#1435) there is one refusal worth the name: `haushalt` lets
-    only the household preset through, and the way out of that is the Modell
-    tile. In `erweitert` every preset is allowed, so a refusal there can only
-    be a name the router does not serve — a typo, not a policy.
+    Since the mode follows the request there are two refusals left: a name the
+    router does not serve — a typo, not a policy — and a preset outside the
+    window a named holder has taken by hand, where the remedy is the tile that
+    shows who has the card and until when.
     """
     if not allowed:
         say = "Die Grafikkarte ist exklusiv vergeben; es antwortet gerade kein Modell."
         remedy = "Die Modell-Kachel in Solaris zeigt, bis wann."
-    elif len(allowed) == 1:
-        say = f"Erlaubt ist: {allowed[0]}."
-        remedy = (
-            "Für die anderen Modelle in der Modell-Kachel in Solaris "
-            "auf „Erweitert“ umschalten."
-        )
-    else:
-        say = f"Erlaubt sind: {', '.join(allowed)}."
+    elif model not in preset_profiles():
+        known = ", ".join(preset_profiles())
+        say = f"Dieses Modell kennt der Router nicht; er kennt: {known}."
         remedy = "Eines davon im Feld `model` der Anfrage angeben."
+    else:
+        say = (
+            f"Erlaubt ist: {allowed[0]}."
+            if len(allowed) == 1
+            else f"Erlaubt sind: {', '.join(allowed)}."
+        )
+        remedy = (
+            f"„{holder}“ hat die Grafikkarte gerade; die Modell-Kachel in "
+            "Solaris zeigt, bis wann."
+            if holder
+            else "Eines davon im Feld `model` der Anfrage angeben."
+        )
     return {
         "error": {
             "message": f"Modell {model} ist im Modus {mode} nicht erlaubt. "
@@ -1895,6 +1936,53 @@ def make_proxy_server(
     """The policy proxy, bound and ready to serve. Returned rather than run so
     the test drives the very object the `proxy` verb runs."""
 
+    # One environment switch at a time: the first request for a big preset
+    # takes the window while the others wait here and then find it standing.
+    switch = threading.Lock()
+    renewed = {"at": 0.0}
+
+    def auto_acquire() -> bool:
+        """Take `erweitert` for the request that just arrived, or renew it."""
+        rc = lease_acquire(
+            data_dir, AUTO_HOLDER, str(router_port), EXTENDED_MODE, AUTO_LEASE_SEC
+        )
+        renewed["at"] = time.time()
+        return rc == 0
+
+    def mode_follows(wanted: str) -> bool:
+        """Whether the proxy may serve `wanted` by taking the card itself:
+        only out of `haushalt`, only for a preset the router serves, and only
+        if the switch goes through. A window a named holder has stands."""
+        if wanted not in preset_profiles():
+            return False
+        with switch:
+            lease = read_lease(data_dir)
+            if lease:
+                # Taken while this request waited for the lock — by the
+                # request ahead of it, or by a hand. Either way the standing
+                # set decides.
+                return wanted in proxy_policy(data_dir)[0]
+            jlog(
+                "info",
+                "llama:policy",
+                "a client asked for a preset outside the household; taking erweitert for it",
+                model=wanted,
+                idle_sec=AUTO_IDLE_SEC,
+            )
+            return auto_acquire()
+
+    def renew_if_ours() -> None:
+        """Every request on the port moves the automatic window's idle clock,
+        at most once a minute."""
+        if time.time() - renewed["at"] < AUTO_RENEW_EVERY_SEC:
+            return
+        with switch:
+            if time.time() - renewed["at"] < AUTO_RENEW_EVERY_SEC:
+                return
+            if read_lease(data_dir).get("holder") != AUTO_HOLDER:
+                return
+            auto_acquire()
+
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -1914,7 +2002,8 @@ def make_proxy_server(
             # A request naming no model is forwarded: the router answers it
             # from the preset it already has resident, which cannot be one
             # outside the mode, so there is nothing here to refuse.
-            if wanted and wanted not in allowed:
+            if wanted and wanted not in allowed and not mode_follows(wanted):
+                holder = str(read_lease(data_dir).get("holder") or "")
                 jlog(
                     "info",
                     "llama:policy",
@@ -1922,12 +2011,15 @@ def make_proxy_server(
                     model=wanted,
                     mode=mode,
                     allowed=allowed,
+                    holder=holder,
                 )
                 self._answer(
-                    409, json.dumps(denial(wanted, mode, allowed)).encode("utf-8")
+                    409,
+                    json.dumps(denial(wanted, mode, allowed, holder)).encode("utf-8"),
                 )
                 return
             if wanted:
+                renew_if_ours()
                 note_preset(data_dir, wanted)
             self._forward(body)
 

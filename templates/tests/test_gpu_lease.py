@@ -118,6 +118,50 @@ def test_acquire_is_idempotent_for_the_same_holder(pd, tmp_path, systemctl_calls
     assert pd.lease_acquire(str(tmp_path), "foundry") == 0
 
 
+# ── the mode follows the request (operator 2026-10-05) ─────────────────────
+
+
+def test_a_named_holder_takes_the_window_over_from_the_automatic_one(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    """Hand before automatic: pi-web, the tile or foundry may take the card
+    from the proxy's own window. Same mode, so it is a renewal that changes
+    hands — nothing moves on the box, and the proxy stops renewing it."""
+    assert pd.lease_acquire(str(tmp_path), pd.AUTO_HOLDER, "11434", "erweitert") == 0
+    systemctl_calls.clear()
+    assert pd.lease_acquire(str(tmp_path), "pi-web", "11434", "coding", 900) == 0
+    assert pd.read_lease(str(tmp_path))["holder"] == "pi-web"
+    assert systemctl_calls == []
+
+
+def test_foundry_takes_its_own_environment_over_from_the_automatic_one(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    assert pd.lease_acquire(str(tmp_path), pd.AUTO_HOLDER, "11434", "erweitert") == 0
+    systemctl_calls.clear()
+    assert pd.lease_acquire(str(tmp_path), "foundry", "11434", "foundry", 900) == 0
+    lease = pd.read_lease(str(tmp_path))
+    assert lease["holder"] == "foundry" and lease["mode"] == "foundry"
+    assert ("start", (pd.EMBED_UNIT,)) in systemctl_calls
+
+
+def test_the_automatic_holder_never_takes_a_window_from_a_hand(
+    pd, tmp_path, swap_box, systemctl_calls
+):
+    assert pd.lease_acquire(str(tmp_path), "widget", "11434", "foundry", 900) == 0
+    systemctl_calls.clear()
+    assert pd.lease_acquire(str(tmp_path), pd.AUTO_HOLDER, "11434", "erweitert") == 1
+    assert pd.read_lease(str(tmp_path))["holder"] == "widget"
+    assert systemctl_calls == []
+
+
+def test_the_automatic_window_ends_thirty_minutes_after_its_last_request(pd):
+    """The operator chose 30 minutes (2026-10-05); the timer is armed at the
+    grace, not the TTL, so the TTL is what has to be derived from it."""
+    assert pd.AUTO_IDLE_SEC == 1800
+    assert pd.expiry_wake(pd.AUTO_LEASE_SEC) == 1800
+
+
 def test_release_starts_everything_and_clears_only_once_warm(
     pd, tmp_path, monkeypatch, systemctl_calls
 ):
